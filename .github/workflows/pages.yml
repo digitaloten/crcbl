@@ -367,8 +367,16 @@ jobs:
   #
   # So the cap is set clear of the slowest observed completion doubled, which
   # is what the measured variance asks for, and a generous cap still costs
-  # nothing on a run that passes. **The cost of getting this wrong is not a
-  # red gate**: a job the cap kills is `cancelled`, `deploy` is then skipped
+  # nothing on a run that passes. **The slowest observed is shard at 70
+  # minutes** (`05c57a1`, 2026-09-07), after 28 on `11d0506` and 55 on
+  # `ca27002`, with the demo itself unchanged between the last two — the same
+  # gate on real hardware and the same 200 frames on lavapipe read identical
+  # at both commits. The page logs say which half moved: `ssao` read 42 ms
+  # of p50 on the fast run and 74 on the slow one, `forward` 4251 and 11198,
+  # so the runner was the slower one and the workload wandered on top of it.
+  # 150 is that 70 doubled with a margin. **The cost of getting this wrong is
+  # not a red gate**: a job the cap kills is `cancelled`, `deploy` is then
+  # skipped
   # rather than failed, and the published site silently stays at the last
   # commit that got through — that has now happened three times. If a demo
   # ever does stop, the live page log `web/tools/browser-e2e.mjs` writes as
@@ -377,7 +385,7 @@ jobs:
     name: render ${{ matrix.demo }} in a real browser
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:

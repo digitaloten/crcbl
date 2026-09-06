@@ -887,3 +887,34 @@ the literal each sample used to carry, because the macro reaches it through
 `#[doc(inline)] pub use` in the module makes `crcbl::web::web_exports!` work
 too. The samples all call it as `crcbl::web_exports!`. Nothing enforces that; a
 future sample writing the longer path is not wrong, just inconsistent.
+
+## Shard's Pages leg doubled, and the demo did not (2026-09-07)
+
+`render shard in a real browser` in `pages.yml` took 1711 s on `11d0506`, 3284 s
+on `ca27002` — the first run after `apps/shard`'s loot slice — and 4173 s on
+`05c57a1`, against a cap of 90 minutes at the time. The checks that grew all
+wait a fixed number of frames —
+`a steady-state frame gives back everything it takes` went 407 s → 803 s,
+`the canvas has a backing store` 262 s → 513 s — so the number is the software
+rasteriser's frame time.
+
+**It is not the loot slice, measured three ways on 2026-09-07:** the same
+browser gate on this machine's hardware adapter reads 1.3 s for the steady-state
+check at `11d0506` and at `89d48d5`; 200 headless frames on lavapipe take 13.2 s
+at both, paced by the fixed-step clock; and the engine's own per-pass GPU table
+at exit is the same 26 labels at 55.9 ms and 55.8 ms of p50, `forward` 17.6 ms
+in both. The runner image (`ubuntu-24.04`) and Chrome (`152.0.7977.64`) are the
+same in both CI logs. What differs between the two Pages runs is the other legs,
+in both directions: `alcove` 3020 s → 1035 s, `quarry` 2435 s → 886 s, `puppet`
+2194 s → 1556 s. Shared runners land on different hardware, and shard is the
+heaviest scene, so it is the one that shows it.
+
+**The page logs say which half moved**, by the rule `pages.yml`'s header gives:
+`ssao` is resolution-bound, and it read 42.2 ms of p50 on the fast run and 74.0
+on the slow one; `forward` read 4251 and 11198; `shadow` 22.9 and 24.0. So the
+runner was the slower machine and the workload wandered on top of it, which is
+the header's "spread is the workload" finding with a slower host underneath. The
+cap went 90 → 150 in the same commit as this note, by that header's rule of the
+slowest completion doubled; nothing in `apps/shard` changed, and the lever if it
+ever fires again is `FRAMES_WATCHED`/`WINDOWS` in `web/tools/browser-e2e.mjs`'s
+steady-state check, the single largest cost.
