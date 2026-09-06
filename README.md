@@ -106,6 +106,8 @@ cargo run -p sandbox -- --headless        # needs neither; what CI runs
 # A game.
 cargo run -p breakout
 cargo run -p breakout -- --scene my.scn       # ...the same game, your own brick layout
+cargo run -p asteroids                        # rocks that split, waves that grow
+cargo run -p asteroids -- --balance my.ron    # ...the same game, your own numbers
 cargo run -p lantern                        # one room, every lighting effect
 cargo run -p lantern -- --stack my.ron      # ...the same room, your own render stack
 cargo run -p alcove                         # one room, every ambient-occlusion knob

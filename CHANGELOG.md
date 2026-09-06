@@ -77,6 +77,27 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **Asteroids' tuning constants are a data file.**
+  `apps/asteroids/assets/balance.ron` holds every number that decides how the
+  game plays: the ship's turn rate, thrust and coast; the respawn delay, its
+  ceiling and its clear radius; the starting lives; the bullet's speed, life,
+  cooldown and magazine; the split's child count and the angles it throws
+  children off at; and the first wave's rock count and the cap on it.
+  `asteroids --balance <FILE>` plays the same game on another file — the
+  committed table is compiled in and read through the same loader, and a file
+  that is not a balance table is refused by field, line and column before the
+  run starts rather than fallen back on. The rule for what moved: a value the
+  art, the protocol or the world's size is baked against stays a constant, so
+  the playfield's half-extents, the ship and bullet radii the baked `.crpix`
+  sprites are drawn to, the hit flash's life, the per-size rock table and the
+  ship's one-kilogram mass all stayed in `apps/asteroids/src/game.rs`, and the
+  tick rate and the seed stayed flags. The committed values are exactly the
+  numbers the constants held, so every checked-in golden frame is unchanged.
+  `crcbl_asteroids` no longer exports those constants or `wave_rocks`; they are
+  fields and a method on `Balance`, reachable through `Game::balance()`.
+- **`crcbl::ron`** re-exports the RON crate beside `crcbl::serde`, so a sample
+  can read a file it derived `Deserialize` for while still depending on `crcbl`
+  and the standard library and nothing else.
 - **Breakout reads its brick grid from a `.scn/` directory**, the first sample
   to load one. `apps/breakout/assets/scenes/board.scn/` is `scene.ron`,
   `env.ron` and `sys/bricks.ron`, read through `crcbl_scene::scn` from a

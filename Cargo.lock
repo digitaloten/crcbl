@@ -305,6 +305,7 @@ dependencies = [
  "glam",
  "log",
  "png",
+ "ron",
  "serde",
  "tempfile",
  "thiserror 2.0.20",

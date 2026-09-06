@@ -638,3 +638,26 @@ docs/backlog.md under the same heading.
   returned, leaving both behind. Fixed in the same change as `open_forward`,
   because the new entry point made the refusal path reachable from an
   application.
+
+## Asteroids' balance table: two records (2026-09-07)
+
+### The per-size rock table stayed in code
+
+**Considered and declined.** `RockSize::radius`, `speed`, `score` and `spin` in
+`apps/asteroids/src/game.rs` are four `const fn`s over one enum. `speed` and
+`score` are pure balance and would belong in
+`apps/asteroids/assets/balance.ron`; `radius` is the size the baked `.crpix`
+sprite is drawn to and `spin` is bounded by that sprite's texel count, so those
+two cannot move. Splitting one table across a file and the code was judged worse
+than leaving it whole. Moving it would mean a per-size sub-struct in the RON
+file and three more lookups on the split path.
+
+### `--balance` refuses a file name that is not an asset key
+
+**Behaviour that surprised us, not a bug.** `Balance::read_file` reads through
+`crcbl::assets::DirSource`, whose keys allow only ASCII alphanumerics, `.`, `_`
+and `-`. So `--balance "my tuning.ron"` is refused with "path escapes the
+storage root", which is the right refusal wearing the wrong words. Reading the
+file with `std::fs` instead — the shape `apps/lantern/src/args.rs`'s
+`read_stack` has — would drop the constraint and the one-loader-two-sources
+property together. Documented in `apps/asteroids/src/balance.rs`'s header.

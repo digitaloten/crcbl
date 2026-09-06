@@ -209,10 +209,11 @@ fn assemble<S: Shell + ?Sized>(
         }
         booted
     };
-    let game = Game::with_seed(
+    let game = Game::with_balance(
         options.common.headless,
         options.common.tick_hz,
         options.seed,
+        options.balance,
     )
     .map_err(AsteroidsError::Game)?;
     Ok(Loop::new(
@@ -758,7 +759,10 @@ mod tests {
         assert_eq!(summary.run.backend, ShellBackend::Headless);
         assert!(summary.run.ticks > 0, "the simulation never ran");
         assert_eq!(summary.state, GameState::WaitingToStart);
-        assert_eq!(summary.lives, game::STARTING_LIVES);
+        assert_eq!(
+            summary.lives,
+            crate::balance::Balance::built_in().starting_lives
+        );
     }
 
     /// Escape stops the simulation without stopping the loop, and does not
@@ -815,7 +819,7 @@ mod tests {
         let rocks = render.rocks.len();
         assert_eq!(
             rocks,
-            game::wave_rocks(0) as usize,
+            engine.game().game().balance().wave_rocks(0) as usize,
             "the first wave should be on the field",
         );
         assert!(render.ship_alive);

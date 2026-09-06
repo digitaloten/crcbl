@@ -32,6 +32,13 @@
 //! drawn per frame stutters, and an angle wraps, so the renderer interpolates it
 //! the short way round. [`lerp_angle`] carries the argument.
 //!
+//! **The numbers are a file, not a `const` table.** Everything that decides how
+//! this game *plays* — the ship's turn rate, thrust and coast, the respawn
+//! rules, the lives, the gun, the shape of a split and how a wave grows — is
+//! `assets/balance.ron`, read through the engine's asset seam and swappable
+//! with `--balance <FILE>`. What stays in code is what a picture or the
+//! protocol is built against; [`Balance`] carries the rule and the list.
+//!
 //! Three spatial cues — the engine, the gun, and a rock coming apart — through
 //! `crcbl-audio`'s grammar, with the listener at the camera in the middle of the
 //! field; a best score in `~/.config/asteroids` or the browser's Origin Private
@@ -49,6 +56,7 @@ mod app;
 mod args;
 mod art;
 mod audio;
+mod balance;
 mod best;
 mod game;
 mod gpu;
@@ -59,12 +67,11 @@ pub mod web;
 
 pub use app::{Asteroids, AsteroidsError, Loop, PendingLoop, Summary, run};
 pub use args::{Invocation, Options, USAGE, parse};
+pub use balance::{Balance, BalanceError};
 pub use game::{
-    BULLET_LIFE, BULLET_RADIUS, BULLET_SPEED, BulletView, DEFAULT_SEED, DEFAULT_TICK_HZ,
-    FIRE_COOLDOWN, FIRST_WAVE_ROCKS, FieldStats, Game, GameError, GameState, MAX_BULLETS,
-    MAX_WAVE_ROCKS, RESPAWN_CLEAR_RADIUS, RESPAWN_DELAY, RESPAWN_MAX_WAIT, RenderState, RockSize,
-    RockView, SHIP_DAMPING, SHIP_RADIUS, SHIP_THRUST, SHIP_TURN_RATE, SPLIT_CHILDREN,
-    STARTING_LIVES, WORLD_HALF_HEIGHT, WORLD_HALF_WIDTH, hash_unit, heading_vector, lerp_angle,
-    wave_rock_position, wave_rock_velocity, wave_rocks, wrap_axis, wrap_position, wrap_to_pi,
+    BULLET_RADIUS, BulletView, DEFAULT_SEED, DEFAULT_TICK_HZ, FieldStats, Game, GameError,
+    GameState, RenderState, RockSize, RockView, SHIP_RADIUS, WORLD_HALF_HEIGHT, WORLD_HALF_WIDTH,
+    hash_unit, heading_vector, lerp_angle, wave_rock_position, wave_rock_velocity, wrap_axis,
+    wrap_position, wrap_to_pi,
 };
 pub use menu::{FIRE_ID, Fire, MenuKind, Menus, fire_from_id};

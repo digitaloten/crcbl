@@ -93,6 +93,13 @@ crcbl-sprite = { workspace = true, features = ["load"] }
 # in the same types the renderer takes, without a second workspace path.
 glam = { workspace = true }
 log = { workspace = true }
+# Re-exported as `crcbl::ron` for the same reason `serde` is below: the format
+# every file a game reads at run time is written in, and a sample calling
+# `ron::from_str` on a type it derived `Deserialize` for has to be calling *the*
+# `ron` those derives were bounded by. Already in this crate's tree through
+# `crcbl-scene` and `crcbl-render`; naming it here is the re-export, not a new
+# dependency. `apps/asteroids/assets/balance.ron` is the first sample file.
+ron = { workspace = true }
 # Re-exported as `crcbl::serde` for the same reason `glam` is: a component a
 # sample hands `crcbl_scene::scn::chunk_of` has to derive *the* `Serialize`
 # the loader's bound names, and a sample that spells its own `serde` line is

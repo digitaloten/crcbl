@@ -290,6 +290,17 @@ pub use crcbl_webgpu as webgpu;
 /// message names neither crate helpfully.
 pub use glam as math;
 
+/// [`ron`]: the text format every file a game reads at run time is written in
+/// — a `.scn/` chunk, `crcbl_render::stack`'s camera stack, and a sample's own
+/// balance table.
+///
+/// Re-exported for [`serde`]'s reason and used the same way: a sample calling
+/// `ron::from_str` on its own type is calling it with the `serde` traits that
+/// type derived from [`serde`] below, and two versions of either in one binary
+/// is a trait bound that is not satisfied by the type that appears to satisfy
+/// it. `apps/asteroids` reads `assets/balance.ron` through this.
+pub use ron;
+
 /// [`serde`]: the traits a component derives to be a row of a `.scn/` chunk
 /// file, which [`scene::scn::chunk_of`] bounds
 /// its component type by.

@@ -74,10 +74,33 @@ and drawn per frame stutters, and an angle wraps, so the renderer interpolates
 it the short way round. `lerp_angle` in `apps/asteroids/src/game.rs` carries the
 argument.
 
-**Milestone 3 — tuning constants from a data file — is not built.** The
-constants are still in `apps/asteroids/src/game.rs`. That milestone is written
-as "(After stage 6)" and there is no `.scn/` directory anywhere in this tree, so
-it is waiting on the asset stage rather than on this sample.
+**Milestone 3 — tuning constants from a data file — is built.**
+`apps/asteroids/assets/balance.ron` is one RON struct holding every number that
+decides how the game plays: the ship's turn rate, thrust and coast; the respawn
+delay, its ceiling and the room the ship needs to come back into; the starting
+lives; the bullet's speed, life, cooldown and magazine; the split's child count
+and the angles it throws them off at; and the first wave's rock count and the
+cap on it. The committed file is compiled in and read back through a
+`MemorySource`, and `--balance <FILE>` points the same loader at another file
+through a `DirSource` — `apps/breakout`'s `--scene` shape, one loader with two
+sources. A file that is not a balance table is refused by line and column before
+the run starts, rather than fallen back on.
+
+The rule for what moved is written down in `apps/asteroids/src/balance.rs`: **a
+value the art, the protocol or the world's size is baked against stays a
+constant; a value that only changes how the game plays goes in the file.** So
+the playfield's half-extents, the ship and bullet radii the baked `.crpix`
+sprites are drawn to, the hit flash's life, the per-size rock table and the
+ship's one-kilogram mass all stayed in `apps/asteroids/src/game.rs`, and the
+tick rate and the seed stayed flags — a value with two doors can be asked for
+twice and answered differently.
+
+**The committed table is the numbers the game already had**, asserted field by
+field by `the_committed_table_is_the_numbers_this_game_shipped_with`. That is
+why the checked-in goldens under `apps/asteroids/tests/golden/` did not move,
+and it is the proof that the file replaced the constants rather than changing
+them. `crcbl::ron` — the re-export added for this — is what let the sample read
+it while still depending on `crcbl` and the standard library and nothing else.
 
 The soak's half of the exit criteria has a home in the suite:
 `hundreds_of_spawns_and_deaths_leak_nothing` asserts entity and pool counts

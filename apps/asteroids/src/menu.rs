@@ -22,9 +22,9 @@
 //!
 //! # There is no win menu, and that is not an omission
 //!
-//! The waves never stop and the count is capped rather than terminal
-//! (`game::MAX_WAVE_ROCKS`), so there is no state to reach. A `YOU WIN` panel
-//! would be a screen the game can never show.
+//! The waves never stop and the count is capped rather than terminal (the
+//! balance table's `max_wave_rocks`), so there is no state to reach. A
+//! `YOU WIN` panel would be a screen the game can never show.
 //!
 //! # What the menu takes from the keyboard, and the one thing it shadows
 //!

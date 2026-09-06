@@ -1,0 +1,52 @@
+// Asteroids' balance table — every number that decides how the game plays.
+//
+// Read by `apps/asteroids/src/balance.rs`, which is also where the rule for
+// what belongs here is written down. This copy is compiled into the binary and
+// is what a run without `--balance` plays; `--balance <FILE>` points the same
+// loader at another file.
+//
+// What is deliberately *not* here: the field's size, the ship and bullet radii
+// the baked `.crpix` art is drawn to, the per-size rock table and the hit
+// flash's life. Each of those is something a picture is built against, so each
+// stays a constant in `apps/asteroids/src/game.rs`.
+Balance(
+    // The ship. Turn rate in radians a second; thrust in newtons against a
+    // one-kilogram hull, so it reads as units per second squared; damping in
+    // kg/s. The last two are one tuning and not two: terminal speed is
+    // thrust / damping, and the coast's time constant is mass / damping.
+    ship_turn_rate: 3.4,
+    ship_thrust: 14.0,
+    ship_damping: 1.0,
+
+    // Dying. The ship stays gone for `respawn_delay`; past that it waits for
+    // `respawn_clear_radius` around the centre to be empty, but never longer
+    // than `respawn_max_wait` — rocks drift, and a slow one crossing the middle
+    // must not stall the game.
+    respawn_delay: 1.0,
+    respawn_max_wait: 5.0,
+    respawn_clear_radius: 3.5,
+    starting_lives: 3,
+
+    // The gun. The muzzle speed is added to the ship's own velocity, so a shot
+    // stays ahead of the ship that fired it. A shot's reach is
+    // `bullet_speed * bullet_life`, and it is deliberately shorter than the
+    // field is tall: the playfield wraps, and a longer-lived shot comes back
+    // round and arrives behind the ship.
+    bullet_speed: 24.0,
+    bullet_life: 0.8,
+    fire_cooldown: 0.16,
+    max_bullets: 4,
+
+    // Splits. A destroyed rock becomes `split_children` smaller ones, thrown
+    // off the parent's course by between `split_angle_min` and
+    // `split_angle_min + split_angle_range` radians, opposite ways round.
+    split_children: 2,
+    split_angle_min: 0.35,
+    split_angle_range: 0.6,
+
+    // Waves. Wave n opens with `first_wave_rocks + n` rocks, capped at
+    // `max_wave_rocks` — without a cap the twentieth wave is unplayable and
+    // slow, and neither is the difficulty curve this game wants.
+    first_wave_rocks: 4,
+    max_wave_rocks: 11,
+)

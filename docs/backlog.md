@@ -4996,19 +4996,20 @@ criterion.
 
 ## asteroids (`docs/plan/sample/02-asteroids.md`)
 
-### Asteroids' tuning constants are not data-driven (2026-08-27)
+### Asteroids' balance table is not validated beyond parsing (2026-09-07)
 
-**Not built.** Milestone 3 asks for "tuning constants from a data file — first
-use of data-driven balance outside scenes". The constants are still in
-`apps/asteroids/src/game.rs`. The milestone is written "(after stage 6)", and
-stage 6 now has both halves of what that needed: `crcbl_scene::scn` is a `.scn/`
-directory and `apps/breakout` reads one through `AssetSource`, so the pattern to
-copy exists. What asteroids still has no schema for is a _balance table_, which
-is not a scene.
+**A gap, stated.** `Balance` in `apps/asteroids/src/balance.rs` is refused only
+by ron: an unknown field, a wrong type or a missing key is a field name, a line
+and a column, and everything that parses is accepted. So `max_bullets: 0` is a
+game that cannot shoot, `split_children: 0` is rocks that vanish rather than
+split, and a `first_wave_rocks` near `u32::MAX` panics in a debug build inside
+`Balance::wave_rocks`. None of these is unsound and none is silent for long, but
+none is refused at the boundary either.
 
-**What it would take:** the stage 6 asset path, then a balance table this sample
-reads through `AssetSource`. **What it blocks:** the first demonstration that
-game balance is data rather than code — which every later sample inherits.
+**What it would take:** a range check at the end of `Balance::load`, naming the
+field and the bound. **What it blocks:** nothing today — `--balance` is a
+developer's flag on a sample. Worth doing when a second sample copies the
+pattern.
 
 ### Asteroids' 10-minute soak and stale-handle session are unrun (2026-08-27)
 

@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! asteroids [--headless] [--frames N] [--tick-hz N] [--backend B] [--seed N]
+//!           [--balance FILE]
 //! ```
 //!
 //! # What is left here after the engine took the shared half
@@ -11,9 +12,15 @@
 //! vocabulary — a backend names the GPU registry and a tick rate sets the
 //! session's clock — and four games spelling them out was four chances to spell
 //! them differently. This file is asteroids' own: its usage prose, its `--seed`,
-//! and the default seed that goes with it.
+//! the default seed that goes with it, and `--balance`.
+//!
+//! `--balance` has `apps/breakout/src/args.rs`'s `--scene` shape: the file is
+//! read **here**, while there is still an exit code to refuse the run with, and
+//! [`Options`] carries the parsed table rather than the path.
 
 use crcbl::args::{Common, Consumed};
+
+use crate::balance::Balance;
 
 /// The `--help` text.
 ///
@@ -54,6 +61,12 @@ OPTIONS:
                          headless offscreen ring renders at exactly this extent,
                          which is what makes a scale measurement reproducible.
     --seed <N>           Board seed. The same seed is the same rocks.
+    --balance <FILE>     Read the tuning constants from a RON file instead of
+                         the committed apps/asteroids/assets/balance.ron. FILE
+                         is one balance table: the ship's turn rate, thrust and
+                         coast, the respawn rules, the lives, the gun, the
+                         split and how a wave grows. A file that is not a
+                         balance table is refused by line and column.
     --screenshot <PATH>  Write the run's last presented frame to PATH as a PNG.
                          Turns --headless on: the frame is read back off the
                          offscreen ring, which is the only surface every backend
@@ -63,12 +76,18 @@ OPTIONS:
                          debug build, hidden in a release build'
     -h, --help           Print this help";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// **Not `Eq`.** [`Balance`] is mostly floats, and a float has no total
+/// equality; nothing compares two invocations for anything but a test's
+/// `assert_eq!`, which [`PartialEq`] serves.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Options {
     /// The flags every sample has.
     pub common: Common,
     /// The board seed. The same seed is the same rocks.
     pub seed: u64,
+    /// The numbers the run is played on: the committed table unless
+    /// `--balance` named another file.
+    pub balance: Balance,
 }
 
 impl Default for Options {
@@ -83,6 +102,7 @@ impl Default for Options {
             #[cfg(target_arch = "wasm32")]
             common: Common::new(crate::game::DEFAULT_TICK_HZ),
             seed: crate::game::DEFAULT_SEED,
+            balance: Balance::built_in(),
         }
     }
 }
@@ -111,6 +131,17 @@ pub fn parse(args: impl Iterator<Item = String>) -> Invocation {
             "--seed" => match crcbl::args::number("--seed", &mut args, "seed") {
                 Ok(seed) => options.seed = seed,
                 Err(message) => return Invocation::BadUsage(message),
+            },
+            "--balance" => match args.next() {
+                // Refused here rather than fallen back on: a run that quietly
+                // kept the committed table when the file it was pointed at
+                // would not parse is one that played the game it always played
+                // and reported nothing.
+                Some(path) => match Balance::read_file(&path) {
+                    Ok(balance) => options.balance = balance,
+                    Err(message) => return Invocation::BadUsage(message),
+                },
+                None => return Invocation::BadUsage("--balance needs a value".into()),
             },
             other => return Invocation::BadUsage(format!("unknown argument: {other}")),
         }
@@ -147,6 +178,7 @@ mod tests {
         assert!(!options.common.headless);
         assert_eq!(options.common.tick_hz, crate::game::DEFAULT_TICK_HZ);
         assert_eq!(options.seed, crate::game::DEFAULT_SEED);
+        assert_eq!(options.balance, Balance::built_in());
         assert_eq!(options.common.frame_budget(), None);
         assert_eq!(options.common.backend, None);
     }
@@ -182,6 +214,55 @@ mod tests {
         assert!(rejected(&["--nonsense"]).contains("nonsense"));
     }
 
+    /// **`--balance` reads a file at run time, and the numbers in it reach the
+    /// run.**
+    ///
+    /// The changed value is what makes that assertable: a parser that accepted
+    /// the flag and kept the committed table would pass any check that only
+    /// counted a successful parse.
+    #[test]
+    fn the_balance_flag_reads_a_file_and_refuses_one_that_is_not_a_table() {
+        let dir = std::env::temp_dir().join(format!("asteroids-args-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the temp dir is writable");
+        let path = dir.join("five-lives.ron");
+        let path = path.to_str().expect("utf-8");
+
+        let committed = crate::balance::BUILT_IN_BALANCE_RON;
+        std::fs::write(
+            path,
+            committed.replace("starting_lives: 3", "starting_lives: 5"),
+        )
+        .expect("the temp dir is writable");
+        let balance = parsed(&["--balance", path]).balance;
+        assert_eq!(
+            balance.starting_lives, 5,
+            "the file's table must reach the run"
+        );
+        assert_eq!(
+            balance.ship_turn_rate,
+            Balance::built_in().ship_turn_rate,
+            "only the one value should have moved",
+        );
+
+        // A file that is not a balance table is refused by the path, the line
+        // and the column, not absorbed as the committed one.
+        std::fs::write(path, committed.replace("ship_thrust", "ship_thrash"))
+            .expect("the temp dir is writable");
+        let message = rejected(&["--balance", path]);
+        assert!(message.contains(path), "{message}");
+        assert!(message.contains("line"), "{message}");
+        assert!(message.contains("column"), "{message}");
+        assert!(message.contains("ship_thrash"), "{message}");
+
+        assert!(
+            matches!(
+                parse(["--balance".to_string()].into_iter()),
+                Invocation::BadUsage(_)
+            ),
+            "--balance at the end of an argv is a run that silently kept the committed table"
+        );
+    }
+
     /// The shared flags are documented in two places — here and in
     /// `crcbl::args` — and this is what stops them disagreeing.
     ///
@@ -205,5 +286,9 @@ mod tests {
         );
         assert!(USAGE.contains("asteroids — the engine's third game, and its churn sample"));
         assert!(USAGE.contains("--seed"), "this game's own flag is missing");
+        assert!(
+            USAGE.contains("--balance"),
+            "this game's own flag is missing"
+        );
     }
 }
