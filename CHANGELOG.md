@@ -47,6 +47,33 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **The sun has a disc.** `docs/plan/43-render-standards.md` §8's last piece:
+  `sky.slang`'s atmosphere arm draws the sun itself beside the sky-view LUT,
+  which holds the scattered air alone and could not hold a body 0.533° across at
+  texels several degrees wide. Its radiance is the `Atmosphere`'s own
+  `sun_illuminance` over the disc's solid angle, so the disc and the
+  `DirectionalLight` a scene shades with carry the same energy —
+  `crcbl_shaders::atmosphere::SkyView::disc_radiance` is the value along a
+  direction and `SkyView::sun_disc` the one at its centre. Hillaire 2020's limb
+  darkening shapes it, divided by its own mean over the disc so the shaping
+  moves energy across the sun rather than removing a fifth of it, and the
+  transmittance along the sun's direction reddens it — a low sun's disc is
+  orange, and a sun under the horizon has none. The paper's `mu^a` is a `pow`
+  and no transcendental may reach a colour here, so it ships as `SUN_LIMB_FIT`,
+  a degree-six polynomial in four square roots that tracks the paper's curve to
+  6.1e-6. The result is clamped to `MAX_RADIANCE`, `Rgba16Float`'s largest
+  finite value, with bloom and exposure carrying the rest.
+
+  `crcbl_shaders::sky::SkyParams` gains a `sun_disc` row — the centre radiance
+  and the sun's angular radius as a versine — so `PARAMS_SIZE` grows by sixteen
+  bytes; a frame with no atmosphere writes zeroes there and reads none of them.
+  `SkyView::drawn_radiance` is the new host mirror of the whole fragment stage
+  (the LUT plus the disc, clamped) and is what a test predicting a drawn pixel
+  should call; `SkyView::radiance` still answers the scattered sky alone, which
+  is what `ssr.slang` reflects — a mirror does not show the sun.
+  `apps/sundial`'s `plaza-grazing` golden moved: eight pixels, where the sun
+  crosses the top of the frame at the bottom of its arc.
+
 - **CMAA2 is the morphological antialiasing tier, in SMAA 1x's place.**
   `docs/plan/49-antialiasing.md`'s eighth decision, rung 2.
   `Antialiasing::Cmaa2` replaces `Antialiasing::Smaa` on the ladder,
@@ -1087,6 +1114,18 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
   pin it the same way, since one claims a ratio in linear light and the other
   reads its background off a shaded frame beside a debug view that already
   resolves to the clamp.
+
+  **`apps/shard` authors an exposure to meet it.** Its zone is a torch-lit
+  interior whose ambient floor and inverse-square torch falloff sit an order of
+  magnitude under the scene-referred mid-grey the fit is anchored on, so the toe
+  — which returns zero below roughly a three-hundredth — drew the doused room
+  black: `web/tools/browser-e2e.mjs`'s torch block read one colour at 0.00 luma
+  in the middle of the canvas where it asks for a picture.
+  `apps/shard/src/gpu.rs`'s new `EXPOSURE`, set on the renderer in
+  `Gpu::from_context`, is the stop at which the fit lands back on the clamp's
+  own frame, measured on headless captures of the lit and doused zone against
+  that same pair under `TonemapCurve::Clamp`. No light, and no ambient floor,
+  moved.
 
   One guard did get weaker and is recorded in `docs/backlog.md`:
   `render_e2e.rs`'s `path_lsb_channels` now allows `Scene::DoubleSided` one

@@ -43,7 +43,8 @@
 //! [`Gpu::set_lighting`] is called once a draw with the simulated seconds and
 //! whether the torches are lit. [`crate::light::torches`] is a pure function of
 //! those two, so the frame's lights are decided by the simulation's clock and by
-//! one key — and nothing in this file decides how bright anything is.
+//! one key. What this file decides is not how bright a light is but what the
+//! camera does with the range they all land in, which is [`EXPOSURE`].
 //!
 //! # Pass order is declaration order
 //!
@@ -69,6 +70,44 @@ use crate::light;
 use crate::zone::{self, Figure, Foes};
 
 const FRAMES_IN_FLIGHT: usize = crcbl::engine::FRAMES_IN_FLIGHT;
+
+/// The stop this zone is drawn at, ahead of the renderer's ACES fit.
+///
+/// **A dark interior needs one, because the fit is anchored well above it.**
+/// [`ForwardRenderer::set_tonemap_curve`] defaults to the fit, whose toe returns
+/// zero for everything under roughly a three-hundredth and which is built around
+/// a scene-referred mid-grey of `0.18`. Nothing in here is near that: the
+/// brightest standing light is [`light::TORCH_INTENSITY`] divided by the square
+/// of the distance to it, and the floor under the whole room is
+/// [`zone::house_light`]'s ambient, which an ambient-lit wall's albedo takes
+/// down another two thirds. Left at [`crcbl::shaders::tonemap::DEFAULT_EXPOSURE`]
+/// the fit therefore draws the zone black, and that is not a scene the tonemap
+/// got wrong — it is a scene that never told the tonemap what a stop is.
+///
+/// **Measured against the picture, not picked.** Swept 2026-09-06 over headless
+/// captures of the zone on radv, lit and doused, against those same two frames
+/// drawn under
+/// [`TonemapCurve::Clamp`](crcbl::shaders::tonemap::TonemapCurve::Clamp) — the
+/// operator this zone's lights were authored against, and the identity on
+/// `0..=1`. This is the stop at which the fit lands back on the clamp's own
+/// picture: the doused capture reads a mean luminance of 3.60 over the canvas
+/// under either operator, down to the same two colours and the same 1.32 in the
+/// middle of it, and the lit one reads 9.78 against the clamp's 10.06 while
+/// spending the roll-off on twice the tonal range — 40 distinct colours against
+/// 20. Below it the toe takes the room back, and the doused middle falls to a
+/// single colour at every stop short of this one.
+///
+/// `web/tools/browser-e2e.mjs`'s torch block is what holds it, on SwiftShader
+/// where the Pages job reads it. That block asks for a doused zone darker than
+/// the lit one and still a picture, and it is the clause about the middle of the
+/// canvas that goes first: at
+/// [`DEFAULT_EXPOSURE`](crcbl::shaders::tonemap::DEFAULT_EXPOSURE) it read one
+/// colour at 0.00 luma inside, and at this stop two colours at 1.29 inside, the
+/// same reading on both of two runs. The **whole-canvas** means either side of
+/// it are worth less than that: the lit window read 5.03 before and 20.00 and
+/// 14.21 on the two runs after, because what is in frame when the window opens
+/// depends on where the character and the camera have got to.
+const EXPOSURE: f32 = 6.0;
 
 /// Which of `docs/plan/39-capabilities.md`'s selectors this device drew through,
 /// and which of topic 18's effects came out of the four-layer request — rule
@@ -208,6 +247,7 @@ impl Gpu {
             camera: RenderEffects::DEFAULT_STACK,
             ..ctx.effect_request()
         });
+        renderer.set_exposure(EXPOSURE);
         let paths = Paths::of(&ctx.device().caps(), renderer.resolved_effects());
         // Rolled back by hand from here on: `Gpu` has no `Drop`, so a `?` would
         // leak the forward renderer's pipelines rather than release them.

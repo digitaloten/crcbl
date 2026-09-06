@@ -2365,9 +2365,12 @@ const TORCH_STILL_LUMA = 0.01;
  * **The control for the control.** A build whose torch key merely *froze* the
  * flicker would hand this block a still frame with the heartbeat still running
  * and the picture still a picture, and pass everything else here; what it cannot
- * do is get darker. Measured 2026-09-04 on radv: the lit window read 16.01 of
- * mean luminance and the doused one 6.68, which is 0.42 of it, so the drop is
- * the torches' share of the frame.
+ * do is get darker. Measured 2026-09-04 on radv under the clamp the view then
+ * defaulted to: the lit window read 16.01 of mean luminance and the doused one
+ * 6.68, which is 0.42 of it, so the drop is the torches' share of the frame.
+ * Under the ACES fit and the exposure `apps/shard` authors for it (2026-09-06),
+ * SwiftShader read 14.21 lit and 5.06 doused, 0.36 — the same shape, still far
+ * under this ratio.
  *
  * # The blank-frame control is no longer a share of one colour
  *

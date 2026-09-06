@@ -269,10 +269,13 @@ pub fn spot() -> Light {
 /// this scene rather than about the updater. Measured 2026-09-04 by running the
 /// browser gate twice, once with `crcbl_render::rsm`'s `r_probe_bounce` off:
 /// the doused window read a mean luma of 6.68 with the bounce and 6.67 without,
-/// where the lit window read 16.01 against 15.73. So the braziers light the
-/// volume and [`spot`] does not — it is the coldest and least of the zone's
-/// lights and it stands in one corner of it. `docs/backlog.md` carries what
-/// that costs the gate.
+/// where the lit window read 16.01 against 15.73. Those digits were read under
+/// the clamp the view then defaulted to and not under the fit and the stop
+/// `crate::gpu` now draws through, and it is the pair rather than either
+/// reading that carries the claim. So the braziers light the volume and
+/// [`spot`] does not — it is the coldest and least of the zone's lights and it
+/// stands in one corner of it. `docs/backlog.md` carries what that costs the
+/// gate.
 #[must_use]
 pub fn torches(seconds: f64, lit: bool) -> Vec<Light> {
     let mut lights = vec![spot()];
