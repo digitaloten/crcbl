@@ -1559,8 +1559,19 @@ mod tests {
     /// Separate from the test above because it is a separate copy: the bounds
     /// on `r_ssao_radius` are literals repeating `crcbl_shaders::ssao`'s, and
     /// the two pairs can drift apart one at a time.
+    ///
+    /// Holds [`TECHNIQUE_SWITCH`] because the default it reads is a row
+    /// [`the_seams_other_side_is_what_the_chain_ships`] moves to
+    /// `RADIUS_MAX` and back under that switch; a read between its set and
+    /// its restore sees the moved value, which is a red that only opens under
+    /// the workspace run's parallelism.
+    ///
+    /// [`the_seams_other_side_is_what_the_chain_ships`]: fn@the_seams_other_side_is_what_the_chain_ships
     #[test]
     fn the_console_radius_range_is_the_range_the_march_honours() {
+        let _technique = TECHNIQUE_SWITCH
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(
             r_ssao_radius.kind(),
             crcbl_console::Kind::Float {
