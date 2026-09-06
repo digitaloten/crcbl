@@ -13953,24 +13953,40 @@ minutes in `.github/workflows/ci.yml`, seven times the measured job.
 **What the log still says, counted in the mesh step of that run**, in the order
 worth reading:
 
-- **`Fragment Function(fragmentMain): missing Buffer binding at index 3/4/5` and
-  `unused binding in encoder at Buffer index 0/6/7/8/9` — both addressed
-  2026-09-07, unverified.** The open question was whether `mesh.slang`'s
-  fragment stage reads `draw`, `meshes` or `visible_instances`; it does not.
-  `crcbl-shaders`'
+- **`Fragment Function(fragmentMain): missing Buffer binding` and
+  `unused binding in encoder at Buffer index N` — both addressed 2026-09-07 and
+  measured on the first run carrying it, `11d0506`: 20 and 140 findings against
+  about 4,000 and 23,000 on `5b0fe2f`.** The open question was whether
+  `mesh.slang`'s fragment stage reads `draw`, `meshes` or `visible_instances`;
+  it does not. `crcbl-shaders`'
   `the_mesh_fragment_stage_stores_the_geometry_globals_without_reading_them`
   reads the committed MSL and holds all five geometry globals to "declared,
   stored into `KernelContext`, never dereferenced". The fix is both halves at
   once: `crcbl_render::forward` declares bindings 1 to 5 fragment-visible so
   nothing is missing, and `crcbl_mtl::binding_mask` reads
   `MTLPipelineOption::BindingInfo` reflection so only the slots `isUsed` reports
-  are bound — which is also the "skip the placeholder binds for pipelines whose
-  reflection says the slot is unread" road for the second class.
-  `docs/notes/backends.md`'s "Metal binds by reflection" carries the design and
-  the open question (why the layer complains about buffers 3, 4 and 5 and not 1
-  and 2, which needs `isUsed` read on a device). **Nothing here has run a Metal
-  call**: the measurement is the next `mtl e2e (macos-latest)` job's counts for
-  these two classes, which should be zero.
+  are bound. `docs/notes/backends.md`'s "Metal binds by reflection" carries the
+  design. **What the residue is, read from that job's log:**
+  - The 20 `missing` findings are four draws in `run-forward-e2e.sh`, each
+    naming all five of indices 1 to 5; they land in the output of
+    `depth_probe::the_reflectivity_target_carries_the_bound_material_row_and_no_reflection_where_nothing_drew`
+    and `antialiasing::an_unconfigured_run_draws_the_rung_its_settings_resolve`.
+    Every other draw in the job is silent, so these four bind under a mask that
+    reports the five unread while the layer's own check reports them read — the
+    "why 3, 4 and 5 and not 1 and 2" question, now asked of four draws instead
+    of all of them. Which pipeline needs `isUsed` read on a device.
+  - The 140 `unused` findings are 137 in `run-mesh-e2e.sh`, all in the output of
+    `shadow_tiles::a_demoted_rig_costs_no_more_in_the_shadow_pass_than_a_whole_cell_one`,
+    at **vertex** buffer indices 0 and 5 (the frame block and
+    `forward draw counts and mesh dispatch args`), plus 3 in `hal_seam_e2e`'s
+    `an_indirect_dispatch_reads_its_workgroup_count_from_the_buffer`. A
+    `Set Vertex Buffer Validation` finding fires at the `set*`, so this is a
+    bind issued under a mask that says the slot is read by a pipeline whose
+    functions do not read it. The `BindingMask::all()` fallback is the simplest
+    explanation, and it was invisible: `missing_reflection` logged at `debug`
+    while the job's filter admits `warn`. It logs at `warn` now, so the next
+    `mtl e2e` log either names the pipeline or rules the fallback out.
+
 - **`previous setViewport was unused` / `previous setScissorRect was unused`** —
   610 each: a viewport and scissor set and then set again before any draw used
   them, so the first pair was wasted. Cheap to fold into the same per-encoder

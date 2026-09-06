@@ -715,13 +715,14 @@ fn raster_mask(label: &str, reflection: Option<&MTLRenderPipelineReflection>) ->
 /// Says which pipeline fell back to binding everything, so the fallback is
 /// visible rather than silent.
 ///
-/// `debug` rather than `warn`: a device that answers nothing here is not
-/// broken and nothing is wrong with the picture it draws — the only cost is the
-/// redundant `set*` calls and the debug layer's complaints about them, which is
-/// precisely what a reader chasing those complaints needs to be able to rule
-/// out.
+/// `warn` rather than `debug`, and the level is the point: nothing is wrong
+/// with the picture such a pipeline draws, but every slot it binds that its
+/// functions do not read is a debug-layer finding per draw, and the one place
+/// those findings are read is CI's `mtl e2e` log, whose filter admits `warn`
+/// and not `debug` (`crcbl_core::log`'s default). A reader chasing an
+/// `unused binding in encoder` count there has to be able to rule this out.
 fn missing_reflection(label: &str) {
-    crcbl_core::log::debug!(
+    crcbl_core::log::warn!(
         "crcbl-mtl: `{label}` was created with MTLPipelineOption::BindingInfo and Metal returned \
          no reflection, so every argument-table slot its layout permits will be bound"
     );
