@@ -5533,34 +5533,23 @@ failed `until` to mark the run rather than let later timing-sensitive checks
 believe their window is still valid, and that is a change to how `check` and
 `until` compose rather than to any one check.
 
-### DECIDED — Escape cannot pause a demo that holds the pointer lock (2026-08-26)
+### breach's locked-Escape check missed once in six runs (2026-09-06)
 
-The record behind this — the argument, the options and the measurements — is in
-`docs/notes/browser.md` under this heading.
-
-`crcbl::engine::PAUSE_KEY` is `KeyCode::Escape` for every sample. **A browser
-reserves Escape while a page holds Pointer Lock**: it exits the lock and the
-page never receives the key at all. Measured on Chromium 151 with a standalone
-probe — with the lock held, a CDP-dispatched Escape produced `keys=[]` on a
-`document` keydown listener and `pointerlockchange` fired `unlocked`; the same
-dispatch unlocked produced `keys=["Escape"]`.
-
-So on the three demos whose `pointer_mode` answers `PointerMode::Locked` —
-`apps/breach`, `apps/lantern`, `apps/quarry` — a visitor who has clicked to aim
-and then presses Escape to pause gets the pointer released and no pause, while
-each demo's own on-screen hint still says Escape pauses. The second Escape then
-works, because by then the lock is gone. Native builds are unaffected: this is
-the browser's key, not the shell's.
-
-Not currently caught by the browser gate, and the reason is worth keeping: group
-E blurs the page before it tests Escape, and a blur releases the lock, so the
-gate only ever presses Escape on an unlocked page.
-
-**DECIDED 2026-09-06 —** losing the pointer lock pauses: `pointerlockchange`
-reporting unlocked pauses the demo. That is the browser-FPS convention — Escape
-releases the lock, and the page treats the release as the pause rather than
-trying to see the key. It schedules the handler and the gate pressing Escape on
-a locked page.
+The browser gate's group E now presses Escape on a page that holds the pointer
+lock and asserts two things in order: the demo pauses, and
+`document.pointerLockElement` is null, because the release is what paused it. On
+the slice's first local run on breach the first held and the second did not —
+`the canvas still holds the pointer, so the pause above came from somewhere this check cannot see`,
+67/68 — and five reruns of breach and one of lantern under the same SwiftShader
+adapter, at load 8 to 18, were all green. Not reproduced, so not explained: a
+pause with the lock still held means either something re-took the lock between
+the release and the read, or the pause came from a key the browser delivered
+while locked, and the end state cannot say which. The gate now installs a
+`pointerlockchange`/`keydown` log on the document before the click and prints it
+on either failure (a green run reports `["change:unlocked"]`), and the null read
+waits for the edge instead of reading once. If it misses again, the printed log
+is the evidence this entry lacks. Not seen on CI's Pages job yet;
+`web/tools/browser-e2e.mjs`, group E, is where to look.
 
 ### The atlas re-tiling's leftovers: resolution, and one option declined (2026-08-26)
 

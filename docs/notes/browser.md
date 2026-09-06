@@ -134,17 +134,50 @@ the same engine code, so a second copy would only cost the gate taps; if
 breakout's group F block is ever removed, the guard in `web/run-browser-e2e.sh`
 moves with it.
 
-### DECIDED — Escape cannot pause a demo that holds the pointer lock (2026-08-26)
+### Losing the pointer lock is what pauses a demo in a browser (2026-09-06)
 
-Decision record; the decision is in `docs/backlog.md`.
+`crcbl::engine::PAUSE_KEY` is `KeyCode::Escape` for every sample, and **a
+browser reserves Escape while a page holds Pointer Lock**: it spends the key on
+releasing the lock and delivers no `keydown` anywhere. Measured on Chromium 151
+with a standalone probe — with the lock held, a CDP-dispatched Escape produced
+`keys=[]` on a `document` keydown listener and `pointerlockchange` fired
+`unlocked`; the same dispatch unlocked produced `keys=["Escape"]`. So a visitor
+who clicked to aim and then pressed Escape to pause got the pointer released and
+no pause, while the page's own hint said Escape pauses.
 
-The options, none taken yet:
+**What shipped: the release _is_ the pause.** `__crcbl_web_pointer_lock` in
+`crates/crcbl-shell/src/web/mod.rs` queues a `ShellEvent::Focus` with `focused`
+clear when the lock goes away while the shell still wants it — an exit the
+engine did not ask for — and `crcbl::engine::lose_focus` does the rest, which is
+the same rule a blur already takes. Nothing in the engine or in any sample
+learned a second rule, and native shells are untouched: this is the browser's
+key, not the shell's.
 
-- **Treat losing the lock as the pause**, which is what browser first-person
-  games conventionally do — `pointerlockchange` to unlocked pauses the demo. One
-  Escape then reads to the visitor as "pause", and alt-tab pauses too, which is
-  the behaviour a player expects anyway. Costs a new edge from the shim into the
-  engine.
+The consequences worth knowing:
+
+- **More demos hold the pointer than the three this was first written about**:
+  `apps/alcove`, `apps/breach`, `apps/lantern`, `apps/quarry` and `apps/sundial`
+  all answer `PointerMode::Locked` while they run. `locks` in
+  `web/tools/browser-e2e.mjs`'s `EXPECTATIONS` names them, and group E holds
+  that list against the engine's own `__crcbl_web_pointer_lock_wanted` on every
+  demo — so a sixth cannot join by skipping the check.
+- **The two exits that queue nothing** are a release the engine asked for
+  (`set_pointer_mode` clears the request before the shim's poll calls
+  `exitPointerLock`) and a `pointerlockerror` on a lock that was never granted.
+  Both are in the unit test, because either one would pause a run nobody stepped
+  out of.
+- **The canvas keeps `document.activeElement` across such an exit**, so
+  `WindowState::focused` reads false on the web backend while the DOM still has
+  the focus, until the page's next real `focus` or `blur`. Nothing in the engine
+  reads that field; a consumer that tracks focus from the events sees exactly
+  what `window_state` reports.
+- **Anything that drops the lock by hand now pauses the demo**, which is what
+  `releasePointer` in the knobs block and the mouse-look control in group C of
+  `web/tools/browser-e2e.mjs` had to be taught: both put the run back in play
+  before measuring a heartbeat.
+
+The two options declined, for the reason each was declined:
+
 - **Bind a second pause key in the browser** and say so in the hint. Cheapest,
   but it makes the demo's controls differ per target, which is the divergence
   "the same build runs in both" exists to avoid.

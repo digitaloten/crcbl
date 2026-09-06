@@ -93,7 +93,10 @@
 //! no `abs`, and [`Button`](ShellEvent::Button) and [`Wheel`](ShellEvent::Wheel)
 //! carry no position: there is no meaningful absolute position under a lock,
 //! and the frozen one would make anything reading it appear to work until the
-//! day it does not.
+//! day it does not. An exit *this shell never asked for* is also the only lock
+//! transition that queues an event — a [`Focus`](ShellEvent::Focus) loss, since
+//! that is what the player leaving means to a loop; see
+//! [`__crcbl_web_pointer_lock`](shim::__crcbl_web_pointer_lock).
 //!
 //! # Touch, and the pointer events that come with it
 //!
@@ -808,17 +811,51 @@ pub(crate) mod shim {
     /// with [`__crcbl_web_fullscreen`], the answer may be one nobody asked for
     /// — Escape releases the lock, and a `pointerlockerror` ends a request that
     /// no key or click will ever report — so this is the engine's only source
-    /// of truth about it. Not an event: there is no `ShellEvent` for "the
-    /// pointer mode changed", and what a consumer actually reads is the shape
-    /// of the [`PointerMotion`](ShellEvent::PointerMotion) that follows.
+    /// of truth about it. What a consumer reads of the lock while it holds is
+    /// the shape of the [`PointerMotion`](ShellEvent::PointerMotion) that
+    /// follows: there is no `ShellEvent` for "the pointer mode changed".
+    ///
+    /// # A lock the browser takes back is a focus loss
+    ///
+    /// One exit does queue an event: the one **the engine did not ask for**.
+    /// The lock was held, the shell still wants it, and the pointer came back
+    /// anyway — the player pressed Escape, which this shell will never see as a
+    /// key because the browser spends it on the lock itself, or the tab went
+    /// away under them. It arrives as [`Focus`](ShellEvent::Focus) with
+    /// `focused` clear, the event a loop already discharges by releasing every
+    /// held key and pausing, rather than as a second rule that would have to be
+    /// written into every game: the player stepped out either way, and
+    /// `crcbl::engine::lose_focus` is what that means here. The canvas keeps
+    /// `document.activeElement` across such an exit, so
+    /// [`window_state`](crate::Shell::window_state) reports the canvas
+    /// unfocused while the DOM still has it — until the page's next real
+    /// `focus` or `blur` says otherwise, which is the only thing that moves it
+    /// back.
+    ///
+    /// The two exits that queue nothing are the ones nobody stepped out of: a
+    /// release this shell asked for through
+    /// [`set_pointer_mode`](crate::Shell::set_pointer_mode), which clears the
+    /// request before the shim's poll calls `exitPointerLock`; and a
+    /// `pointerlockerror` on a request that was never granted, which would
+    /// otherwise pause a game for a lock it never had.
     #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
     pub unsafe extern "C" fn __crcbl_web_pointer_lock(canvas: u32, state: u32) {
         let locked = state & STATE_EDGE != 0;
+        // Decided under the bridge borrow and queued outside it: `queue_for`
+        // takes that same borrow, and nesting them would panic.
+        let mut taken_back = false;
         with_bridge(|bridge| {
             if bridge.canvas == canvas {
+                taken_back = bridge.pointer_locked && !locked && bridge.pointer_lock_wanted;
                 bridge.pointer_locked = locked;
             }
         });
+        if taken_back {
+            queue_for(canvas, |window, _| ShellEvent::Focus {
+                window,
+                focused: false,
+            });
+        }
     }
 
     /// A `pointerdown` or `pointerup`. `button` is `MouseEvent.button`.
@@ -2142,6 +2179,79 @@ mod tests {
             .create_window(&WindowDesc::default())
             .expect("the canvas is still there");
         assert_eq!(shim::__crcbl_web_pointer_lock_wanted(9), 0);
+    }
+
+    /// **A lock the browser takes back is the player stepping out.**
+    ///
+    /// Escape is the gesture, and it is the one key this backend can never see:
+    /// a browser spends it on the lock and delivers no `keydown` anywhere, so a
+    /// demo whose hint says Escape pauses stayed locked and never paused. The
+    /// exit itself is what says the player left, and it is reported as the
+    /// focus loss a loop already pauses on — asserted here as the event,
+    /// because that is the whole of what this backend can promise: what the
+    /// engine does with a focus loss is `crcbl::engine::lose_focus`'s.
+    ///
+    /// The two exits after it are the controls, and each is a way this could
+    /// pause a run nobody stepped out of.
+    #[test]
+    fn a_lock_the_browser_takes_back_arrives_as_a_focus_loss() {
+        let (mut shell, window) = shell_with_window(0);
+        // SAFETY: the shim ABI; nothing is dereferenced by these entry points.
+        unsafe { shim::__crcbl_web_focus(0, STATE_EDGE) };
+        drain(&mut shell);
+        assert!(shell.window_state(window).expect("state").focused);
+
+        shell
+            .set_pointer_mode(window, PointerMode::Locked)
+            .expect("recorded");
+        // SAFETY: the shim ABI.
+        unsafe { shim::__crcbl_web_pointer_lock(0, STATE_EDGE) };
+        assert!(
+            drain(&mut shell).is_empty(),
+            "taking the lock is not an event"
+        );
+
+        // Escape, arriving as the only thing the browser sends for it: the lock
+        // is gone while the engine still wants it.
+        // SAFETY: the shim ABI.
+        unsafe { shim::__crcbl_web_pointer_lock(0, 0) };
+        let events = drain(&mut shell);
+        assert!(
+            matches!(
+                events.as_slice(),
+                [ShellEvent::Focus { focused: false, .. }]
+            ),
+            "an unasked exit is the focus loss a loop pauses on, got {events:?}",
+        );
+        assert!(
+            !shell.window_state(window).expect("state").focused,
+            "and the shell reports what it just said",
+        );
+
+        // The same zero again, which is both a repeat of a state that has not
+        // changed and what a refused request looks like: `pointerlockerror`
+        // fires on a lock that was never granted and leaves
+        // `pointerLockElement` exactly as it was. Neither is a player stepping
+        // out of anything.
+        // SAFETY: the shim ABI.
+        unsafe { shim::__crcbl_web_pointer_lock(0, 0) };
+        assert!(drain(&mut shell).is_empty(), "one exit, one event");
+
+        // And the release the engine asked for is not the player leaving
+        // either: the request is withdrawn first, and the shim's next poll is
+        // what calls `exitPointerLock`.
+        // SAFETY: the shim ABI.
+        unsafe { shim::__crcbl_web_pointer_lock(0, STATE_EDGE) };
+        drain(&mut shell);
+        shell
+            .set_pointer_mode(window, PointerMode::Free)
+            .expect("recorded");
+        // SAFETY: the shim ABI.
+        unsafe { shim::__crcbl_web_pointer_lock(0, 0) };
+        assert!(
+            drain(&mut shell).is_empty(),
+            "a lock this shell gave up is not a lock the browser took back",
+        );
     }
 
     #[test]

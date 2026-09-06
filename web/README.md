@@ -413,5 +413,7 @@ all runs here. What it cannot see, a black canvas included, is what
   to promise, so a first-person camera in a browser gets what it gets natively.
   `crates/crcbl-shell/src/web/mod.rs` carries the caveat — a browser that
   declines the option is retried without it, and the deltas are then the
-  adjusted stream.
+  adjusted stream. A lock the browser takes back pauses the demo: Escape never
+  arrives as a key while the lock is held, so the release is what the engine
+  reads.
 - **No service worker, no offline cache.** The site is static files.

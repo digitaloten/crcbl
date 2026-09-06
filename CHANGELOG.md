@@ -900,6 +900,13 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Fixed
 
+- **Losing the pointer lock pauses a demo in a browser.** A browser reserves
+  Escape while a page holds Pointer Lock — it spends the key on releasing the
+  lock and delivers no `keydown` anywhere — so the samples that ask for
+  `PointerMode::Locked` (alcove, breach, lantern, quarry, sundial) could not be
+  paused with the key their own page says pauses them. The Web shell backend now
+  reports a lock the browser takes back as a `ShellEvent::Focus` loss, which is
+  the rule the loop already pauses on. Native shells are unaffected.
 - **`crcbl-sprite` documents with `load` alone.** `load.rs`'s doc comments
   linked into the `bake` module across the feature seam, so a dependent that
   turned on `load` without `bake` got a rustdoc error instead of a page; the

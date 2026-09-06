@@ -835,6 +835,14 @@ const EXPECTATIONS = {
     // which that pass does not see — so the stats readback correctly never
     // arrives for them. See group D.
     culls: true,
+    // **The demo holds the pointer while it runs**: `Lantern::pointer_mode`
+    // answers `PointerMode::Locked`, so the page really takes Pointer Lock and
+    // Escape never arrives as a key — the browser spends it on the lock. Group
+    // E presses it under the lock and asserts the pause that follows. Every row
+    // *without* this flag asserts the opposite, that the engine is not asking
+    // for the pointer at all, so a demo that starts locking and forgets the
+    // flag goes red here rather than quietly skipping the check.
+    locks: true,
     key: null,
     waiting: (line) =>
       line.includes('[HUD] tick: 60') && line.includes('lighting: Rasterised'),
@@ -876,6 +884,8 @@ const EXPECTATIONS = {
     // The seventh demo that draws mesh instances, so the seventh whose cull pass
     // has something to count. See lantern's row and group D.
     culls: true,
+    // Held while the court is being flown, like lantern's row above.
+    locks: true,
     // The second demo whose canvas is meant to hold still — see the note above
     // and options' row, which is the other.
     still: true,
@@ -1055,6 +1065,8 @@ const EXPECTATIONS = {
     // The eighth demo that draws mesh instances, so the eighth whose cull pass
     // has something to count. See lantern's row and group D.
     culls: true,
+    // Held while the run is live, like lantern's row above.
+    locks: true,
     key: null,
     waiting: (line) =>
       line.includes('[HUD] tick: 60') &&
@@ -1216,6 +1228,8 @@ const EXPECTATIONS = {
     // The other demo whose cull pass has something to count — see lantern's row
     // and group D. This one is the sample that pass exists for.
     culls: true,
+    // Held while the run is live, like lantern's row above.
+    locks: true,
     key: null,
     waiting: (line) =>
       line.includes('[HUD] tick: 60') &&
@@ -1558,6 +1572,9 @@ const EXPECTATIONS = {
     // The fifth demo that draws mesh instances, so the fifth whose cull pass
     // has something to count. See lantern's row and group D.
     culls: true,
+    // Held while the range is live, like lantern's row above — and this is the
+    // demo whose group C block takes and gives back the lock by hand.
+    locks: true,
     // **No start key, and no start click.** This demo has no waiting state to
     // leave: the range runs its own demonstration from the first tick and the
     // first thing the player does ends it, so there is nothing for group C's
@@ -3898,6 +3915,33 @@ try {
     }
   };
 
+  /**
+   * Waits until the engine has really let the pointer go, and the shim with it.
+   *
+   * **A released lock is not a released request.** The browser drops
+   * `pointerLockElement` the instant it is asked to, while the engine only sees
+   * the exit on its next frame — and until it has, it is still asking for the
+   * pointer and `web/engine/shell.js` still has a `pointerdown` armed to take
+   * it. A click made in that window grabs the lock straight back, and the
+   * Escape after it is spent on the lock again instead of reaching the pause.
+   *
+   * So both halves are waited for: the engine's own answer, read through the
+   * export the shim polls once a frame, and then two frames of the demo's loop
+   * — which is the shim having had its own poll to take the armed click down.
+   */
+  const pointerGivenBack = async () => {
+    const letGo = await until(async () =>
+      (await evaluate(
+        page,
+        `crcbl.exports.__crcbl_web_pointer_lock_wanted(crcbl.gpu.canvasId)`
+      )) === 0
+        ? true
+        : null
+    );
+    await loopFrames(page);
+    return letGo === true;
+  };
+
   const rect = await focusPoint();
   const inViewport = await evaluate(
     page,
@@ -4121,8 +4165,14 @@ try {
      * arrives: it reads exactly like a control that was never wired to
      * anything, which is what it read as here until this existed. `Esc` is how
      * a visitor gets out of it, and `web/pages/alcove.html` says so; this is
-     * that same release, asked for directly so the key does not also reach the
-     * demo's pause.
+     * that same release, asked for directly rather than through the key.
+     *
+     * **It pauses the demo, exactly as Escape would.** A lock the engine did
+     * not give up is the player stepping out — group E presses Escape on a
+     * locked page and asserts that pause — so this leaves the run paused just
+     * as the click on the control below would have. Nothing here reads a
+     * heartbeat until `resume` has put it back, which is what the note above
+     * this block is about.
      *
      * The two frames afterwards are not decoration. The release is a round trip
      * through the browser process, and a click dispatched in the same breath is
@@ -5448,6 +5498,34 @@ try {
         ? true
         : null
     );
+    // **Giving the lock up pauses the demo**, and it is meant to: a lock the
+    // engine did not release is the player stepping out, which is the claim
+    // group E presses Escape on a locked page to make. The control below counts
+    // heartbeats, so the run has to be back in play before it starts.
+    //
+    // **The pause is waited for before the click, not merely expected**, and
+    // then the request behind it — see `pointerGivenBack`, which is what stops
+    // the click grabbing the lock straight back. The click then lands on a
+    // paused demo, where nothing is armed, and Escape resumes.
+    const pausedByRelease = await until(async () =>
+      (await evaluate(page, `crcbl.status()`)) === 6 ? true : null
+    );
+    await pointerGivenBack();
+    await clickAt(grab);
+    for (const type of ['keyDown', 'keyUp']) {
+      await page.send('Input.dispatchKeyEvent', {
+        type,
+        code: 'Escape',
+        key: 'Escape',
+        windowsVirtualKeyCode: 27,
+        nativeVirtualKeyCode: 27,
+      });
+    }
+    const playingFree =
+      pausedByRelease === true &&
+      (await until(async () =>
+        (await evaluate(page, `crcbl.status()`)) === 3 ? true : null
+      ));
     const freeMark = hud().length;
     await delivered();
     await sweep(1);
@@ -5459,18 +5537,24 @@ try {
     check(
       'C',
       'mouse movement with a visible cursor turns nothing',
-      freed === true && freeMoves.moves >= MOUSE_LOOK_STEPS && freeStill,
+      freed === true &&
+        playingFree === true &&
+        freeMoves.moves >= MOUSE_LOOK_STEPS &&
+        freeStill,
       freed !== true
         ? 'the canvas would not give the pointer lock up, so this control would ' +
             'have been measured under the very lock it is the control for'
-        : freeMoves.moves < MOUSE_LOOK_STEPS
-          ? `the canvas saw ${freeMoves.moves} of the ${MOUSE_LOOK_STEPS} move(s) ` +
-            `dispatched, so a view that stood still says nothing about the demo`
-          : freeStill
-            ? `${freeMoves.moves} move(s) carrying ${freeMoves.dx} px of movementX ` +
-              `reached the canvas and the yaw held ${freeYaw[0]}`
-            : `the yaw took ${[...new Set(freeYaw)].join(', ')} with the cursor ` +
-              `visible — the view is turning on a pointer the page does not hold`
+        : playingFree !== true
+          ? `${pausedByRelease === true ? 'the demo never came back out of the pause the release put it in' : 'giving the lock up did not pause the demo'}, ` +
+            `so a still view says nothing — status ${await evaluate(page, `crcbl.status()`)}`
+          : freeMoves.moves < MOUSE_LOOK_STEPS
+            ? `the canvas saw ${freeMoves.moves} of the ${MOUSE_LOOK_STEPS} move(s) ` +
+              `dispatched, so a view that stood still says nothing about the demo`
+            : freeStill
+              ? `${freeMoves.moves} move(s) carrying ${freeMoves.dx} px of movementX ` +
+                `reached the canvas and the yaw held ${freeYaw[0]}`
+              : `the yaw took ${[...new Set(freeYaw)].join(', ')} with the cursor ` +
+                `visible — the view is turning on a pointer the page does not hold`
     );
 
     const shotsBeforeGrab = latest(range.shots) ?? 0;
@@ -8128,6 +8212,152 @@ try {
     await pause(windowMs);
     return hud().length - before;
   };
+
+  // **Escape, pressed on a page that is holding the pointer.** That is the only
+  // way the demos which ask for Pointer Lock ever meet the key: a browser
+  // reserves Escape while a page is locked, spends it on releasing the lock and
+  // delivers no `keydown` to anyone — so the demos whose hint says Escape pauses
+  // stayed locked and kept playing, which is what this block is here about. What
+  // pauses them is the release itself: `__crcbl_web_pointer_lock` in
+  // `crates/crcbl-shell/src/web/mod.rs` reports an exit the engine never asked
+  // for as the focus loss the loop already pauses on.
+  //
+  // **Ahead of the blur rather than in place of it.** Everything below presses
+  // Escape on a page that is *not* locked — the blur that starts it releases the
+  // lock — which is the different question this group has always asked.
+  const wantsLock = await evaluate(
+    page,
+    `crcbl.exports.__crcbl_web_pointer_lock_wanted(crcbl.gpu.canvasId)`
+  );
+  // Asked of every demo and in both directions: the engine's own answer, read
+  // through the export the shim polls once a frame, against what this file says
+  // about it. A demo that starts locking without `locks` on its row would
+  // otherwise skip the checks below and say nothing at all about them.
+  check(
+    'E',
+    'the demos that hold the pointer are the ones this file says hold it',
+    (wantsLock !== 0) === Boolean(EXPECTED.locks),
+    `the engine ${wantsLock !== 0 ? 'is' : 'is not'} asking for the pointer and ` +
+      `this demo's row ${EXPECTED.locks ? 'says it does' : 'does not say it does'}`
+  );
+
+  if (EXPECTED.locks) {
+    // A log of what the document saw, read back only when a check below
+    // fails: each pointerlockchange with the element it left, and every keydown
+    // that reached the document. The two checks under it are about an ordering
+    // — the browser releases the lock, the release pauses the demo — and a
+    // failure that only reports the end state cannot say which half moved.
+    await evaluate(
+      page,
+      `(() => { window.__crcblLockLog = [];
+                document.addEventListener('pointerlockchange', () =>
+                  window.__crcblLockLog.push('change:' +
+                    (document.pointerLockElement ? 'locked' : 'unlocked')));
+                document.addEventListener('keydown', (e) =>
+                  window.__crcblLockLog.push('key:' + e.code));
+                return true; })()`
+    );
+    const lockLog = async () =>
+      JSON.stringify(await evaluate(page, `window.__crcblLockLog`));
+    // The corner again, for the reason every other click in this group takes it:
+    // a centred click is a click on whatever the demo lays out in the middle.
+    const grabbed = await focusPoint();
+    await clickAt(grabbed);
+    const holding = await until(async () =>
+      (await evaluate(
+        page,
+        `document.pointerLockElement === document.getElementById('canvas')`
+      ))
+        ? true
+        : null
+    );
+    check(
+      'E',
+      'a click on the canvas takes the pointer lock',
+      holding === true,
+      holding === true
+        ? 'the canvas is the document.pointerLockElement'
+        : 'the click never took the lock, so the check under this one would be ' +
+            'the unlocked Escape this group already presses further down'
+    );
+
+    // Read before the key and required to be 3, for the reason the resume check
+    // at the end of this group reads its own status first: a demo that was
+    // already paused would report 6 whatever Escape did.
+    const beforeLocked = await evaluate(page, `crcbl.status()`);
+    for (const type of ['keyDown', 'keyUp']) {
+      await page.send('Input.dispatchKeyEvent', {
+        type,
+        code: 'Escape',
+        key: 'Escape',
+        windowsVirtualKeyCode: 27,
+        nativeVirtualKeyCode: 27,
+      });
+    }
+    const pausedLocked =
+      holding === true &&
+      beforeLocked === 3 &&
+      (await until(async () => {
+        const status = await evaluate(page, `crcbl.status()`);
+        return status === 6 ? status : null;
+      }));
+    check(
+      'E',
+      'Escape pauses a demo that is holding the pointer lock',
+      pausedLocked === 6,
+      beforeLocked === 3
+        ? `status ${await evaluate(page, `crcbl.status()`)}, the document saw ` +
+            (await lockLog())
+        : `the demo was not running going in (status ${beforeLocked}), so ` +
+            'nothing here is about Escape'
+    );
+
+    // And the lock is gone, which is where that pause came from: the key itself
+    // reached no listener on the page at all.
+    const spentOnTheLock = await until(async () =>
+      (await evaluate(page, `document.pointerLockElement === null`))
+        ? true
+        : null
+    );
+    check(
+      'E',
+      'and the lock is what the browser spent that Escape on',
+      spentOnTheLock === true,
+      spentOnTheLock === true
+        ? 'the canvas is no longer the document.pointerLockElement'
+        : 'the canvas still holds the pointer, so the pause above came from ' +
+            `somewhere this check cannot see; the document saw ${await lockLog()}`
+    );
+
+    // **Put the run back before the rest of the group.** A demo left paused here
+    // would hand "blurring the canvas pauses the demo" a 6 it did not cause, and
+    // every check under that one is about a pause this group made itself. The
+    // click lands once the engine has let the pointer go — `pointerGivenBack`
+    // says why that wait is not optional — so nothing is armed to take the lock
+    // and what follows is a running page with a visible cursor, the state group
+    // E has always run on.
+    await pointerGivenBack();
+    await clickAt(grabbed);
+    for (const type of ['keyDown', 'keyUp']) {
+      await page.send('Input.dispatchKeyEvent', {
+        type,
+        code: 'Escape',
+        key: 'Escape',
+        windowsVirtualKeyCode: 27,
+        nativeVirtualKeyCode: 27,
+      });
+    }
+    const backInPlay = await until(async () => {
+      const status = await evaluate(page, `crcbl.status()`);
+      return status === 3 ? status : null;
+    });
+    check(
+      'E',
+      'and the run goes back into play for the rest of the group',
+      backInPlay === 3,
+      `status ${await evaluate(page, `crcbl.status()`)}`
+    );
+  }
 
   await evaluate(page, `document.getElementById('stop').focus()`);
   const paused = await until(async () => {
