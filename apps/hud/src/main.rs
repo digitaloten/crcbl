@@ -22,10 +22,11 @@ fn main() -> ExitCode {
         run,
         |summary| {
             format!(
-                "hud: {} frames, {} ticks on the {} shell at {}x{}, {} \
+                "hud: {} frames, {} ticks ({} simulated) on the {} shell at {}x{}, {} \
                  (wave {}, {} page commands, {:?})",
                 summary.run.frames,
                 summary.run.ticks,
+                summary.sim_ticks,
                 summary.run.backend,
                 summary.run.extent.0,
                 summary.run.extent.1,

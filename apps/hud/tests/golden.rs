@@ -225,7 +225,7 @@ fn the_frame_the_binary_wrote_matches_its_golden() {
         extent: EXTENT,
         args: &[],
         stdout_contains: &["wave 1"],
-        simulation_advanced: false,
+        simulation_advanced: true,
     }
     .screenshot(&backend);
     eprintln!("hud golden: device on {adapter}");

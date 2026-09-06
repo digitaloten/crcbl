@@ -254,8 +254,7 @@ table — rather than against a run of the code.
   asserting the loop's count instead, which passed a frozen build twice — and
   `apps/asteroids`, `apps/horde` and `apps/hud` never gained it. The fixture
   keeps each caller's behaviour (`simulation_advanced`) rather than quietly
-  adding an assertion to three suites; closing that gap is open work in
-  `docs/backlog.md`.
+  adding an assertion to three suites; that gap was closed the same day, below.
 - The `srgb_encode` copies differed in two ways. `apps/sundial`'s and
   `apps/alcove`'s return a level out of 255 where the other four return `[0, 1]`
   — both shapes are kept, as `encode_level` and `encode`. And `sprite_e2e`'s
@@ -274,6 +273,54 @@ The options weighed, kept because (b) will look attractive again:
   its own copy of every `const` — fine here, surprising later.
 - **(c) Leave it.** Five copies of about a hundred lines, and the next sample
   makes six.
+
+**Both loose ends the move left were closed on 2026-09-06.**
+
+**Every sample suite now checks that its simulation advanced.** `apps/asteroids`
+and `apps/horde` carry a `sim_ticks` field on their `Summary`, read from a
+`Game::ticks_run` that is now public as breakout's and flappy's already were;
+`apps/hud` reads the accessor it already had. All three front ends print it as
+`(N simulated)` beside the loop's own count — which is where
+`SampleRun::simulation_advanced` reads it — and all five suites set the flag.
+
+The backlog's open question was whether the three summaries carried that figure.
+**None of them did**, so the field alone would have failed the run rather than
+checked it, and its guess that `apps/hud` is "a ticker rather than a game loop"
+and would not want the check was wrong in the direction that matters. Measured
+by freezing each `Game::tick` behind an early return:
+
+- `apps/asteroids` and `apps/hud` red on the new assertion and on nothing else.
+  Frozen, hud exits 0, presents every frame it was asked for, and prints
+  `hud: 60 frames, 59 ticks (0 simulated) … (wave 1, 30 page commands, …)`: the
+  wave, the page's command count and the loop's own tick count all read exactly
+  as they do on a live run. The simulated figure is the only thing that notices.
+- `apps/horde` is the one sample where an older assertion fires first.
+  `--prefill` _queues_ the start edge for the next tick rather than poking the
+  state, so a horde whose tick does nothing never reaches `Playing` and fails
+  `stdout_contains` before the count is looked at. Its red was measured instead
+  by dropping the `ticks_run += 1` line alone, which leaves the run otherwise
+  intact: `horde: 60 frames, 59 ticks (0 simulated) … Playing`.
+
+**`srgb_decode` followed `srgb_encode`** into `crcbl_golden::srgb` as `decode`,
+re-exported at that crate's root. Its callers were `crcbl`'s `render_e2e` and
+`sprite_e2e`, `apps/alcove`'s `eotf`, `apps/viewer`'s `linear_of` and
+`apps/breakout`'s `to_linear` — the last two inside `#[cfg(test)]` modules under
+`src/`, which is why `apps/viewer` now takes `crcbl-golden` as a dev-dependency
+(`apps/breakout` already had one). The callers that hand it a byte keep a
+one-line adapter of their own; nothing else was reshaped.
+
+**The five copies differed in exactly one thing: where they change arms.**
+`render_e2e` switched at `0.040_449_935` and the other four at the
+specification's rounded `0.040_45`. **Nothing measured moved, and nothing
+could**: the two thresholds are about 6e-8 apart, no `byte / 255` lands between
+them, and for the signals that do the two arms answer within 3e-9 of each other
+in linear light. `KNEE_ENCODED` is `12.92 × KNEE_LINEAR` now so that there is
+one knee rather than two spellings of it — tidiness, and its doc comment says so
+rather than claiming a fix. What the new sweep of `decode(encode(x))` holds is
+the pair being inverses at all, which is the claim that would have caught a
+transcription slip in either direction. `crcbl_render::mip`'s
+`srgb_to_linear`/`linear_to_srgb` stay where they are, for the reason given
+above.
 
 ### DECIDED — quarry keeps one face, and documents the degenerate split
 

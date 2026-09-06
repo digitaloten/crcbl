@@ -22,10 +22,11 @@ fn main() -> ExitCode {
         run,
         |summary| {
             format!(
-                "asteroids: {} frames, {} ticks on the {} shell at {}x{}, {} \
-                 (score {}, wave {}, lives {}, {:?}, {:?})",
+                "asteroids: {} frames, {} ticks ({} simulated) on the {} shell at {}x{}, \
+                 {} (score {}, wave {}, lives {}, {:?}, {:?})",
                 summary.run.frames,
                 summary.run.ticks,
+                summary.sim_ticks,
                 summary.run.backend,
                 summary.run.extent.0,
                 summary.run.extent.1,

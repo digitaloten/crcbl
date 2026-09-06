@@ -1847,7 +1847,12 @@ pub struct Game {
     /// yields exactly one tick per call.
     tick_period: Duration,
     sim_time: Duration,
-    ticks_run: u64,
+    /// Ticks this `Game` has actually run, which is **not** the loop's tick
+    /// count: the loop counts the times it called [`Game::tick`], and a build
+    /// whose call does nothing still raises that. This only moves when the
+    /// simulation did, which is what lets a caller outside the binary tell a
+    /// frozen run from a live one — see `tests/golden.rs`.
+    pub ticks_run: u64,
     /// Queued key events from the shell pump, replayed after `begin_tick`.
     pending_keys: Vec<(KeyCode, bool)>,
     /// The output stream and the three cues. On the facade rather than in the

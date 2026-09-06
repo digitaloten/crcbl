@@ -22,11 +22,12 @@ fn main() -> ExitCode {
         run,
         |summary| {
             format!(
-                "horde: {} frames, {} ticks on the {} shell at {}x{}, {} \
+                "horde: {} frames, {} ticks ({} simulated) on the {} shell at {}x{}, {} \
                  (survived {:.1}s, {} kills, level {}, {} enemies left, \
                  scene {:?}, {:?}, {:?})",
                 summary.run.frames,
                 summary.run.ticks,
+                summary.sim_ticks,
                 summary.run.backend,
                 summary.run.extent.0,
                 summary.run.extent.1,

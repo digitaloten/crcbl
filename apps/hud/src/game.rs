@@ -632,7 +632,11 @@ impl Game {
         self.logged_wave = ticker.wave;
     }
 
-    /// How many times [`Game::tick`] has been called.
+    /// Ticks this `Game` has actually run, which is **not** the loop's tick
+    /// count: the loop counts the times it called [`Game::tick`], and a build
+    /// whose call does nothing still raises that. This only moves when the
+    /// ticker did, which is what lets a caller outside the binary tell a frozen
+    /// run from a live one — see `tests/golden.rs`.
     #[must_use]
     pub const fn ticks_run(&self) -> u64 {
         self.ticks_run

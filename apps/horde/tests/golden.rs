@@ -275,7 +275,7 @@ fn the_frame_the_binary_wrote_matches_its_golden() {
         // prefill having reached `Playing` is a precondition for every claim
         // below rather than a nicety.
         stdout_contains: &["Playing"],
-        simulation_advanced: false,
+        simulation_advanced: true,
     }
     .screenshot(&backend);
     eprintln!("horde golden: device on {adapter}");

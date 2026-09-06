@@ -1081,6 +1081,15 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- **Every sample's golden suite now checks that its simulation advanced.**
+  `apps/asteroids`, `apps/horde` and `apps/hud` report a simulated tick count in
+  their `--frames` summary — `60 frames, 59 ticks (0 simulated)` on a frozen
+  build — read from a `Game::ticks_run` that is public on the first two and
+  already had an accessor on the third, and their golden suites set
+  `SampleRun::simulation_advanced` as `apps/breakout` and `apps/flappy` already
+  did. The check is not decoration: with its `Game::tick` emptied, hud exits 0,
+  presents every frame it was asked for and prints the same wave and
+  page-command count as a live run, and nothing else in its suite notices.
 - **The five sample golden suites share one harness.**
   `apps/{asteroids,breakout,flappy,horde,hud}` drive their binaries through a
   new test-support crate, `apps/crcbl-sample-test`, instead of five copies of

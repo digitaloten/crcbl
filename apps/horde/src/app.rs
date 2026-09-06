@@ -80,6 +80,12 @@ pub use crate::args::Options;
 pub struct Summary {
     /// The half of the report every sample shares.
     pub run: RunSummary,
+    /// Times the simulation actually advanced, from [`Game::ticks_run`].
+    ///
+    /// Distinct from [`RunSummary::ticks`], and the distinction is the point:
+    /// that one counts the loop's calls to `Game::tick` and rises whether or not
+    /// the call did anything.
+    pub sim_ticks: u64,
     /// How long the run lasted, in simulated seconds.
     pub elapsed: f64,
     pub kills: u64,
@@ -490,6 +496,7 @@ impl HostedGame for Horde {
     fn summary(&self, run: RunSummary) -> Summary {
         Summary {
             run,
+            sim_ticks: self.game.ticks_run,
             elapsed: self.game.elapsed,
             kills: self.game.kills,
             level: self.game.level,
