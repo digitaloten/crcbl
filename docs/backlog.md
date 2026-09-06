@@ -4974,6 +4974,17 @@ driven over an item set, writing an atlas.
 **What it blocks:** grid UI item icons, so it is on the kit's critical path, not
 beside it.
 
+### `Stack` carries no per-instance quality (2026-09-07)
+
+**A topic 34 finding.** `apps/shard` wanted a rarity tier on a stack and got it
+by re-deriving the tier from the loot seed and the foe index
+(`loot::rarity_of`), which works only because shard's `StackId`s are minted by a
+bounded roster and the seed is in the process. A game whose instances arrive
+from a server, a trade or a stash cannot re-derive one, so the kit will need
+either a per-instance payload on `crcbl_inventory::Stack` or an instance table
+the kit owns. Not built here: it is an engine change, and shard's exit criterion
+is that it made none.
+
 ## The sample plans — what they still owe
 
 Every file under `docs/plan/sample/` was audited against its app and against the
@@ -5676,16 +5687,25 @@ fix, if it ever bites, is to release the lock when a touch contact arrives — t
 poll re-arms on the next frame, so a later mouse click takes it back — rather
 than to drop the contact or report it somewhere the finger is not.
 
-### `apps/shard` covers five verbs of milestone 1's six (2026-09-07)
+### `apps/shard` covers all six verbs of milestone 1 (2026-09-07)
 
 `docs/plan/sample/15-shard.md`'s milestone 1 loop is explore, fight, loot,
-level, save, resume. Five are built — **loot** landed 2026-09-07 on
-`crcbl-inventory`. What the rest needs, so the next slice does not re-derive it:
+level, save, resume. All six are built — **loot** landed 2026-09-07 on
+`crcbl-inventory`, **level** and rarity the same day. What is left, so the next
+slice does not re-derive it:
 
-- **Rarity.** The drop is one of a five-item table with one roll; there is no
-  tier, no affix and no quality. The roll is already a hash of the seed and the
-  foe's index (`loot::drop_of`), so a rarity table hangs off the same roll.
-- **Level.** Nothing exists, and it is the missing verb.
+- **Nothing to spend a level on.** A level deepens the health pool
+  (`level::health_max`) and does nothing else: no skill, no stat point, no
+  equipment. The kit has no equipment slot either — `loot::carried` is
+  deliberately unfiltered, and a filter is what `docs/plan/34-inventory.md`
+  makes a slot out of.
+- **A tier is not an affix.** `loot::Rarity` scales the experience a find
+  teaches, because no verb in shard _uses_ an item. An affix on an item's own
+  effect needs a use verb before it needs an affix system.
+- **No browser check plays all six through.** `web/tools/browser-e2e.mjs`'s
+  shard blocks cover explore, fight, save and resume; nothing presses `F` or
+  reads `level`/`xp` off the heartbeat, so milestone 1's first exit criterion is
+  open on the page rather than in the build.
 - **Sector streaming.** The zone is one fixed `zone::LAYOUT`. The plan wants
   modular pieces "assembled per seed", and the pieces are the part slice 1 built
   — a seeded assembler over them, and the border locking `docs/plan/25-lod.md`
@@ -5715,10 +5735,10 @@ left out:
   the shape to hoist is `Vault::open` plus `Vault::source`.
 - **No migration seam, and it now has a casualty.**
   `docs/plan/14-persistence.md` still owes `crcbl-store` a
-  `fn migrate(old_ver, bytes)`. Shard's version bump to 2 orphaned every save
-  written at version 1: they read as no save, with a logged reason, and the zone
-  opens fresh. Acceptable for a sample with no players; the entry that must
-  close is topic 14's, not this one.
+  `fn migrate(old_ver, bytes)`. Shard's version bumps to 2 and then 3 orphaned
+  every save written before them: they read as no save, with a logged reason,
+  and the zone opens fresh. Acceptable for a sample with no players; the entry
+  that must close is topic 14's, not this one.
 - **No save on teardown.** `crcbl::engine::HostedGame` has no hook that runs on
   the way out and takes `&mut self` — `summary` takes `&self` and is a getter —
   so the autosave cadence is the whole of when a save happens. A tab or a window

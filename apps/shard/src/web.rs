@@ -18,18 +18,19 @@
 //! demos can be open in one browser and the exports must not collide, so the macro
 //! takes each name as an argument rather than building it from a prefix.
 //!
-//! # This page is `docs/plan/sample/15-shard.md`'s milestone 1, five verbs in
+//! # This page is `docs/plan/sample/15-shard.md`'s milestone 1, all six verbs in
 //!
 //! That doc's milestone 1 is "a complete play session — explore, fight, loot,
 //! level, save, resume — in a browser, from the same build that runs natively".
-//! **Five of those six are here.** A visitor walks a torch-lit zone, puts its
-//! torches out, fights what is standing in it, takes what it leaves into a grid
-//! inventory they can drag items around in, and comes back to a character where
-//! they left them *still carrying it*: the save goes into the Origin Private
-//! File System through [`crate::save`], on the same build that writes it to the
-//! platform data directory natively. **Level** is the one that is missing —
-//! there is no experience and nothing to spend it on — and `docs/backlog.md`
-//! carries it with what it would take.
+//! **All six are here.** A visitor walks a torch-lit zone, puts its torches out,
+//! fights what is standing in it, takes what it leaves — at the
+//! [`Rarity`](crate::loot::Rarity) the seed rolled for it — into a grid inventory
+//! they can drag items around in, levels on what both are worth, and comes back
+//! to a character where they left them *still carrying it*: the save goes into
+//! the Origin Private File System through [`crate::save`], on the same build that
+//! writes it to the platform data directory natively. What a level is worth is a
+//! deeper health pool and nothing else — there is no skill and no stat point to
+//! spend it on, which `docs/backlog.md` carries with what it would take.
 //!
 //! The grid is `docs/plan/34-inventory.md`'s kit, which links into the wasm
 //! module like any other: it has no IO, no clock and no `glam`, which is what

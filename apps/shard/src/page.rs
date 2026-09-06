@@ -5,6 +5,8 @@
 //!  │ POSITION  0.0 18.0 │
 //!  │ FOOTING   floor    │
 //!  │ HEALTH    100/100  │
+//!  │ LEVEL     1        │
+//!  │ NEXT      20/30    │
 //!  │ FOES      3        │
 //!  │ LOOT      1 down   │
 //!  │ CARRIED   2        │
@@ -28,7 +30,10 @@
 //! is: they move when the *world* does and hold still when it does not. So are
 //! the two loot readings: what is lying on the floor and what the character is
 //! carrying both change when a player fells something or presses `F`, and never
-//! between two frames they did nothing in.
+//! between two frames they did nothing in. **And so are the two level
+//! readings**: experience is granted on the tick a foe falls or a stack is
+//! taken and by nothing else, so `LEVEL` and the progress under it are as still
+//! as the position is while a player stands there.
 //! [`crate::foe::POSTS`] puts every foe out of notice range of where the gate
 //! stands the character to take those samples, and
 //! `no_foe_can_reach_the_character_where_the_zone_opens` is what holds it there.
@@ -49,6 +54,13 @@
 //! on the floor and how many the character is carrying, which is what tells a
 //! player there is something to press `F` for.
 //!
+//! The level pair earns its place on the same terms as the health row: a player
+//! who cannot see what they are working toward cannot tell a fight that is
+//! getting them somewhere from one that is not. `NEXT` is
+//! [`crate::level::into_level`] over [`crate::level::level_span`] — how far into
+//! this level they are, over how far it goes — and the word below at the top,
+//! because a bar with no end is not a reading.
+//!
 //! **Nothing about the save is drawn here either, and that is the same rule.**
 //! An autosave counter would change every `crate::save::SAVE_PERIOD_S` of
 //! simulated time and make the still-frame control above impossible to pass on a
@@ -67,6 +79,7 @@ use crcbl::ui::text::FontAtlas;
 use crcbl::ui::widget::NATURAL_FONT_SIZE;
 
 use crate::game::RenderState;
+use crate::level;
 
 const PANEL_BG: [f32; 4] = [0.06, 0.05, 0.04, 0.80];
 const BORDER: [f32; 4] = [0.38, 0.32, 0.25, 1.0];
@@ -80,6 +93,9 @@ const OUT: [f32; 4] = [0.52, 0.56, 0.66, 1.0];
 /// What a reading that is bad news is drawn in: half the character's health
 /// gone, or something in the zone still standing.
 const HURT: [f32; 4] = [0.92, 0.36, 0.30, 1.0];
+
+/// What the progress row reads once there is no level left to reach.
+const AT_THE_TOP: &str = "max";
 
 /// The panel's inset from the top-left corner, in pixels.
 const PANEL_INSET: f32 = 16.0;
@@ -126,6 +142,11 @@ pub fn draw(
     let width = extent.0 as f32;
     let height = extent.1 as f32;
 
+    // Both off the one number the simulation carries, so the panel cannot draw
+    // a level that disagrees with the pool beside it — see `crate::level`.
+    let level = level::level_for(state.experience);
+    let pool = level::health_max(level);
+
     let rows: Vec<(&str, String, [f32; 4])> = vec![
         (
             "POSITION",
@@ -144,12 +165,21 @@ pub fn draw(
         ),
         (
             "HEALTH",
-            format!("{}/{}", state.health, crate::foe::HEALTH_MAX),
-            if state.health * 2 <= crate::foe::HEALTH_MAX {
+            format!("{}/{}", state.health, pool),
+            if state.health * 2 <= pool {
                 HURT
             } else {
                 VALUE
             },
+        ),
+        ("LEVEL", format!("{level}"), VALUE),
+        (
+            "NEXT",
+            level::level_span(state.experience).map_or_else(
+                || AT_THE_TOP.to_string(),
+                |span| format!("{}/{}", level::into_level(state.experience), span),
+            ),
+            VALUE,
         ),
         (
             "FOES",
@@ -227,6 +257,7 @@ mod tests {
             elapsed: 12.5,
             foes: [crate::foe::FoeView::default(); crate::foe::FOES],
             health: crate::foe::HEALTH_MAX,
+            experience: 0,
             alive: crate::foe::FOES,
             carried: 0,
             floor: 0,
@@ -257,7 +288,7 @@ mod tests {
 
         let drawn = text(&list);
         for reading in [
-            "POSITION", "FOOTING", "dais", "TORCHES", "LIT", "LOOT", "CARRIED",
+            "POSITION", "FOOTING", "dais", "TORCHES", "LIT", "LOOT", "CARRIED", "LEVEL", "NEXT",
         ] {
             assert!(
                 drawn.contains(&reading),
@@ -368,6 +399,68 @@ mod tests {
         assert!(
             looting.contains(&"5".to_string()),
             "no carried count: {looting:?}"
+        );
+    }
+
+    /// **The level pair follows what the character has learned**, and the
+    /// progress row runs out at the top rather than dividing by nothing.
+    ///
+    /// Three readings and each is the control for the others: a build that drew
+    /// a constant level passes none of them, one that drew the raw experience
+    /// where the level goes fails the first, and one whose progress row was
+    /// `experience / threshold` rather than the offset into the current level
+    /// fails the second — a character standing exactly on a row is at the
+    /// *start* of it.
+    #[test]
+    fn the_level_readings_follow_the_experience_the_character_has() {
+        let atlas = FontAtlas::built_in();
+        let readings = |experience: u64| {
+            let mut list = DrawList::new();
+            draw(
+                &mut list,
+                &atlas,
+                (960, 720),
+                &RenderState {
+                    experience,
+                    ..on_the_dais()
+                },
+                true,
+            );
+            let drawn: Vec<String> = text(&list).into_iter().map(String::from).collect();
+            drawn
+        };
+
+        let fresh = readings(0);
+        assert!(
+            fresh.contains(&"1".to_string()),
+            "no first level: {fresh:?}"
+        );
+        let span = level::level_span(0).expect("the first level has a next");
+        assert!(
+            fresh.contains(&format!("0/{span}")),
+            "a fresh character is not at the start of the first level: {fresh:?}",
+        );
+
+        // One short of the second row is still the first level, and the row
+        // after it is the second — the boundary the overlay has to draw.
+        let second = level::THRESHOLDS[1];
+        let below = readings(second - 1);
+        assert!(
+            below.contains(&format!("{}/{span}", span - 1)),
+            "one experience short of level 2: {below:?}",
+        );
+        let at = readings(second);
+        assert!(at.contains(&"2".to_string()), "no second level: {at:?}");
+
+        // …and the top level has nothing under it to divide by.
+        let top = readings(level::EXPERIENCE_MAX);
+        assert!(
+            top.contains(&AT_THE_TOP.to_string()),
+            "the top level still drew a progress fraction: {top:?}",
+        );
+        assert!(
+            top.contains(&format!("{}", level::MAX_LEVEL)),
+            "the top level is not drawn: {top:?}",
         );
     }
 

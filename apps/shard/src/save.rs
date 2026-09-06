@@ -40,24 +40,32 @@
 //!
 //! # What is in the payload, and what is deliberately not
 //!
-//! Where the character is standing, what they have left, how many times they
-//! have been put down, how much health each foe has — which is what says who is
-//! felled, because [`crate::foe::Foe`] is never alive at zero — and **what they
-//! are carrying**.
+//! Where the character is standing, what they have left, **what they have
+//! learned**, how many times they have been put down, how much health each foe
+//! has — which is what says who is felled, because [`crate::foe::Foe`] is never
+//! alive at zero — and **what they are carrying**.
 //!
 //! The inventory arrived in `PAYLOAD_VERSION` 2 and it is the reason the
 //! payload is no longer a fixed length: a grid holds between nothing and one
-//! stack per foe. **What is on the floor is not written**, and that is not an
-//! omission — an instance is on the floor exactly when the foe that left it is
-//! down and its stack is not in the grid, so `crate::game`'s `Stage::restore`
-//! derives it. A second copy of the same fact is a second copy that can
-//! disagree, and a save whose two halves disagreed would be one that duplicates
-//! an item or loses one.
+//! stack per foe. Experience arrived in 3, and it is one field rather than two:
+//! **the level is not written**, because it is [`crate::level::level_for`] of
+//! the experience beside it and a second copy is a second copy that can
+//! disagree. The same argument keeps two other things out of the payload:
 //!
-//! **A version 1 payload reads as no save**, with the reason logged. There is no
-//! migration seam — `docs/plan/14-persistence.md` owes `crcbl-store` one and it
-//! is not built — so a bump orphans the saves written before it, which for a
-//! sample with no players is the honest trade and for the engine is not.
+//! * **What is on the floor is not written.** An instance is on the floor
+//!   exactly when the foe that left it is down and its stack is not in the
+//!   grid, so `crate::game`'s `Stage::restore` derives it. A save whose two
+//!   halves disagreed would be one that duplicates an item or loses one.
+//! * **A stack's rarity is not written.** A tier is
+//!   [`crate::loot::rarity_of`] of the seed and the foe that minted the stack,
+//!   exactly as the item and the count are, so a resumed grid answers the same
+//!   way a floor does without a byte having to agree with a roll.
+//!
+//! **A payload from an older version reads as no save**, with the reason logged.
+//! There is no migration seam — `docs/plan/14-persistence.md` owes `crcbl-store`
+//! one and it is not built — so a bump orphans the saves written before it,
+//! which for a sample with no players is the honest trade and for the engine is
+//! not.
 //!
 //! Nor is the **clock** restored. [`SaveHeader::playtime_secs`] accumulates
 //! across sessions and is read back, but the simulation's own tick counter and
@@ -76,8 +84,9 @@
 //! | 6 | 24 | the capsule **centre**, three `f64` |
 //! | 30 | 4 | the character's health, `u32` |
 //! | 34 | 8 | how many times they have been put down, `u64` |
-//! | 42 | 4 | how many foes follow, `u32` |
-//! | 46 | 4 each | each foe's health, `u32`, in [`crate::foe::POSTS`] order |
+//! | 42 | 8 | what they have learned, `u64` |
+//! | 50 | 4 | how many foes follow, `u32` |
+//! | 54 | 4 each | each foe's health, `u32`, in [`crate::foe::POSTS`] order |
 //! | `PAYLOAD_HEAD` − 4 | 4 | how many placements follow, `u32` |
 //! | then | 13 each | one placement, `PLACEMENT_BYTES` |
 //!
@@ -93,8 +102,10 @@
 //!
 //! **Every field is decoded through this module's `decode`, which refuses anything
 //! it cannot stand behind** rather than clamping it: a wrong length, a foreign magic, an
-//! unknown version, a roster that is not this zone's, a health above the
-//! archetype's maximum, a position that is not a finite number inside
+//! unknown version, a roster that is not this zone's, an experience past what
+//! this zone can ever pay out, a health above what the level that experience
+//! buys allows, a foe's health above its archetype's maximum, a position that is
+//! not a finite number inside
 //! `POSITION_LIMIT_M`, a placement count past the roster, an item key no
 //! catalogue holds, a stack no foe could have left, two placements claiming one
 //! stack, or a cell the item does not fit in. A refused save reads as *no save*
@@ -117,7 +128,8 @@ use crcbl::net::types::SectorId;
 use crcbl::store::StorageSource;
 use crcbl::store::save::{SaveData, SaveHeader, SaveReader, SaveWriter, SectorSave};
 
-use crate::foe::{self, FOES, HEALTH_MAX};
+use crate::foe::{self, FOES};
+use crate::level;
 use crate::loot;
 
 // ---------------------------------------------------------------------------
@@ -182,14 +194,16 @@ const PAYLOAD_MAGIC: &[u8; 4] = b"SHRD";
 /// per-system version `docs/plan/14-persistence.md` asks the header to carry and
 /// it does not. Bump it when a field is added, moved or reinterpreted.
 ///
-/// **1 → 2** added what the character is carrying. A version 1 file reads as no
+/// **1 → 2** added what the character is carrying. **2 → 3** added what they
+/// have learned, which is also what decides the ceiling their health is checked
+/// against. A file from an older version reads as no
 /// save: there is no migration seam anywhere in `crcbl-store` yet, and inventing
 /// one here would be an engine decision taken in a sample.
-const PAYLOAD_VERSION: u16 = 2;
+const PAYLOAD_VERSION: u16 = 3;
 
-/// The fixed part of the payload: magic, version, centre, health, downs and the
-/// foe count.
-const PAYLOAD_FIXED: usize = 4 + 2 + 3 * 8 + 4 + 8 + 4;
+/// The fixed part of the payload: magic, version, centre, health, downs,
+/// experience and the foe count.
+const PAYLOAD_FIXED: usize = 4 + 2 + 3 * 8 + 4 + 8 + 8 + 4;
 
 /// Everything before the first placement: the fixed part, this zone's roster,
 /// and the count of placements that follow.
@@ -229,8 +243,13 @@ const POSITION_LIMIT_M: f64 = 1.0e4;
 pub struct Character {
     /// The centre of the character's capsule, in metres.
     pub centre: DVec3,
-    /// What they have left, out of [`crate::foe::HEALTH_MAX`].
+    /// What they have left, out of the pool their level allows —
+    /// [`crate::level::health_max`].
     pub health: u32,
+    /// What they have learned. The **level is not a field**: it is
+    /// [`crate::level::level_for`] of this, so a save cannot carry a level that
+    /// disagrees with the experience beside it.
+    pub experience: u64,
     /// How many times they have been put down and returned to the spawn.
     pub downs: u64,
     /// Each foe's health, in [`crate::foe::POSTS`] order. Zero is felled.
@@ -259,6 +278,7 @@ fn encode(character: &Character) -> Vec<u8> {
     }
     bytes.extend_from_slice(&character.health.to_le_bytes());
     bytes.extend_from_slice(&character.downs.to_le_bytes());
+    bytes.extend_from_slice(&character.experience.to_le_bytes());
     // Written rather than implied by the length, so a roster that changed size
     // is refused by name in `decode` instead of being read off a payload that
     // happens to be the right length for a different zone.
@@ -331,6 +351,11 @@ fn read_u32(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"))
 }
 
+/// Reads eight bytes at `at` as a `u64`, which the caller has bounds-checked.
+fn read_u64(bytes: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(bytes[at..at + 8].try_into().expect("eight bytes"))
+}
+
 /// The character a save holds, or `None` for a save this build will not stand
 /// behind.
 ///
@@ -376,12 +401,28 @@ fn decode(data: &SaveData) -> Option<Character> {
         return None;
     }
     let health = read_u32(bytes, 30);
-    if health == 0 || health > HEALTH_MAX {
-        crcbl::log::warn!("save: {health} health is not a live character; starting fresh");
+    let downs = read_u64(bytes, 34);
+    // **Read before the health, because it is what the health is measured
+    // against.** The zone pays out one kill per post and one find per drop and
+    // nothing respawns, so anything past `level::EXPERIENCE_MAX` is a total no
+    // session could have reached — and letting one through would let a payload
+    // buy a pool this game does not have.
+    let experience = read_u64(bytes, 42);
+    if experience > level::EXPERIENCE_MAX {
+        crcbl::log::warn!(
+            "save: {experience} experience, past the {} this zone can pay out; starting fresh",
+            level::EXPERIENCE_MAX,
+        );
         return None;
     }
-    let downs = u64::from_le_bytes(bytes[34..42].try_into().expect("eight bytes"));
-    let roster = read_u32(bytes, 42) as usize;
+    let pool = level::health_max(level::level_for(experience));
+    if health == 0 || health > pool {
+        crcbl::log::warn!(
+            "save: {health} health is not a live character with a {pool} pool; starting fresh",
+        );
+        return None;
+    }
+    let roster = read_u32(bytes, 50) as usize;
     if roster != FOES {
         crcbl::log::warn!("save: {roster} foes, not {FOES}; starting fresh");
         return None;
@@ -414,6 +455,7 @@ fn decode(data: &SaveData) -> Option<Character> {
     Some(Character {
         centre,
         health,
+        experience,
         downs,
         foes,
         playtime_secs,
@@ -705,6 +747,11 @@ mod tests {
         Character {
             centre: DVec3::new(-2.5, 0.9, -7.25),
             health: 41,
+            // Past the second level's row, so the pool `decode` measures the
+            // health against is a *levelled* one rather than the starting pool
+            // — which is what makes `a_health_no_level_pays_for_reads_as_no_save`
+            // a check of the level rather than of one constant.
+            experience: 45,
             downs: 3,
             // A felled husk, a wounded adept, an untouched warden — each
             // inside its own archetype's ceiling, which `decode` checks
@@ -762,6 +809,7 @@ mod tests {
         let read = decode(&data).expect("the payload this build just wrote");
         assert_eq!(read.centre, character.centre);
         assert_eq!(read.health, character.health);
+        assert_eq!(read.experience, character.experience);
         assert_eq!(read.downs, character.downs);
         assert_eq!(read.foes, character.foes);
         assert_eq!(read.playtime_secs, character.playtime_secs);
@@ -831,14 +879,22 @@ mod tests {
         assert!(decode(&saved(dead, 1.0, 1)).is_none(), "no health left");
 
         let mut overfull = good.clone();
-        overfull[30..34].copy_from_slice(&(HEALTH_MAX + 1).to_le_bytes());
+        let pool = level::health_max(level::level_for(walked().experience));
+        overfull[30..34].copy_from_slice(&(pool + 1).to_le_bytes());
         assert!(
             decode(&saved(overfull, 1.0, 1)).is_none(),
             "over the maximum"
         );
 
+        let mut learned = good.clone();
+        learned[42..50].copy_from_slice(&(level::EXPERIENCE_MAX + 1).to_le_bytes());
+        assert!(
+            decode(&saved(learned, 1.0, 1)).is_none(),
+            "more experience than this zone pays out",
+        );
+
         let mut roster = good.clone();
-        roster[42..46].copy_from_slice(&(FOES as u32 + 1).to_le_bytes());
+        roster[50..54].copy_from_slice(&(FOES as u32 + 1).to_le_bytes());
         assert!(decode(&saved(roster, 1.0, 1)).is_none(), "another roster");
 
         let mut mighty = good.clone();
@@ -860,26 +916,66 @@ mod tests {
         assert!(decode(&elsewhere).is_none(), "another sector");
     }
 
-    /// **A payload version 1 could have written reads as no save.** There is no
-    /// migration seam, so the honest answer to a file this build cannot read is
-    /// a fresh zone and a logged reason — not a grid guessed from a format that
-    /// had none.
+    /// **A payload from every version before this one reads as no save.** There
+    /// is no migration seam, so the honest answer to a file this build cannot
+    /// read is a fresh zone and a logged reason — not a field guessed from a
+    /// format that had none.
     ///
-    /// The control is the length: a version 1 payload is exactly the fixed half
-    /// plus this roster, which is a length version 2 also accepts for an empty
-    /// grid — so a build that checked only the length would read it as a
-    /// character carrying nothing.
+    /// The bytes are **this build's own**, with only the version stamped over:
+    /// that makes the length, the magic, the roster and every field correct, so
+    /// the only thing that can refuse them is the version check itself. A build
+    /// that leant on the length would pass this and read a genuinely older file
+    /// as a character with whatever the new fields' bytes happened to be.
     #[test]
-    fn a_payload_from_version_one_reads_as_no_save() {
-        let mut old = encode(&Character {
-            grid: loot::carried(),
+    fn a_payload_from_an_older_version_reads_as_no_save() {
+        for older in 1..PAYLOAD_VERSION {
+            let mut old = encode(&walked());
+            assert!(
+                decode(&saved(old.clone(), 1.0, 1)).is_some(),
+                "the control: these bytes are this build's own",
+            );
+            old[4..6].copy_from_slice(&older.to_le_bytes());
+            assert!(
+                decode(&saved(old, 1.0, 1)).is_none(),
+                "version {older} was read anyway",
+            );
+        }
+    }
+
+    /// **A health no level pays for reads as no save.** The ceiling is the pool
+    /// the payload's *own* experience buys, so a file claiming the top level's
+    /// health with nothing learned is refused.
+    ///
+    /// The control is the pair: the same health is accepted the moment the
+    /// experience beside it is enough for it, which is what says this refuses a
+    /// level rather than refusing a large number.
+    #[test]
+    fn a_health_no_level_pays_for_reads_as_no_save() {
+        let deep = level::health_max(level::MAX_LEVEL);
+        let top = level::THRESHOLDS[level::THRESHOLDS.len() - 1];
+        assert!(
+            deep > level::health_max(1),
+            "every level has the same pool, so this test asserts nothing",
+        );
+
+        let unearned = encode(&Character {
+            health: deep,
+            experience: 0,
             ..walked()
         });
-        assert_eq!(old.len(), PAYLOAD_HEAD, "a v1 payload is a v2 empty one");
-        old[4..6].copy_from_slice(&1u16.to_le_bytes());
         assert!(
-            decode(&saved(old, 1.0, 1)).is_none(),
-            "a version this build cannot stand behind was read anyway",
+            decode(&saved(unearned, 1.0, 1)).is_none(),
+            "a first-level character carrying the top level's pool",
+        );
+
+        let earned = encode(&Character {
+            health: deep,
+            experience: top,
+            ..walked()
+        });
+        assert!(
+            decode(&saved(earned, 1.0, 1)).is_some(),
+            "a top-level character was refused their own pool",
         );
     }
 

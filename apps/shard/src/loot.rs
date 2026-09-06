@@ -30,13 +30,37 @@
 //!
 //! # The roll is a hash, not a stream
 //!
-//! Which item a foe leaves is a function of the seed and the foe's index and of
-//! nothing else — `apps/sparks/src/show.rs`'s rule, and for the same reason: a
+//! Which item a foe leaves — and which [`Rarity`] it leaves it at — is a function
+//! of the seed and the foe's index and of nothing else —
+//! `apps/sparks/src/show.rs`'s rule, and for the same reason: a
 //! draw from a stream depends on how many draws came before it, so a zone
 //! whose foes were felled in a different order would leave different loot and
 //! two runs of one seed would stop agreeing. A hash has no such history, so
 //! [`a_headless_run_is_deterministic`](crate::app) holds whatever the player
 //! did.
+//!
+//! # A tier is derived, never stored
+//!
+//! [`crcbl::inventory::Stack`] carries an item, an identity and a count, and
+//! shard wanted a fourth thing of it — which is a topic-34 finding rather than
+//! a field added here. What it does **not** do is keep a side table of tiers
+//! keyed by [`StackId`]: a tier is [`rarity_of`] of the seed and the foe's
+//! index, exactly as the item and the count are, so a stack in the grid, a
+//! stack on the floor and a stack read back out of a save all answer the same
+//! way without anything having to agree with anything. That is `crate::game`'s
+//! own rule about the floor — "a second copy of the same fact is a second copy
+//! that can disagree" — applied one step further, and it is why
+//! `crate::save`'s payload has no rarity field.
+//!
+//! # What a tier is worth
+//!
+//! There is no verb that *uses* an item — nothing here is equipped, eaten or
+//! swung — so a tier cannot scale an effect that does not exist. What it scales
+//! is [`Rarity::experience`]: a rarer find teaches the character more, and
+//! `crate::level` is where a total becomes a level and a level becomes a deeper
+//! pool. So the tier is a number the fight verb can feel rather than a colour
+//! on a cell, and the colour is on the cell as well — `crate::panel` draws each
+//! stack's footprint outlined in its tier.
 //!
 //! # Every instance is one a felled foe left
 //!
@@ -84,6 +108,70 @@ const FOE_STRIDE: u32 = 0x9E37_79B9;
 /// A second, unrelated key, so how many of an item a foe leaves is not a
 /// function of which item it left.
 const COUNT_SALT: u32 = 0x2545_F491;
+
+/// A third, so which tier a foe leaves is not a function of either of them.
+const RARITY_SALT: u32 = 0x6C07_7EE5;
+
+/// How many parts the tier roll is divided into. Every tier's
+/// [`Rarity::share`] is a slice of this, and they cover it exactly —
+/// `the_tiers_cover_the_whole_roll` is what says so.
+const RARITY_TOTAL: u32 = 100;
+
+/// How good a find is.
+///
+/// Three tiers rather than the genre's five, for [`crate::foe::Kind`]'s
+/// reason: this zone drops one stack per post, so a table with more tiers than
+/// it has drops is a table most of whose rows a session never sees.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rarity {
+    /// What most finds are.
+    Common,
+    /// Better than most.
+    Uncommon,
+    /// The one a player tells somebody about.
+    Rare,
+}
+
+impl Rarity {
+    /// Every tier, commonest first.
+    pub const ALL: [Self; 3] = [Self::Common, Self::Uncommon, Self::Rare];
+
+    /// What `crate::game`'s drop line calls it. The panel draws a colour
+    /// rather than a word, for the reason its own docs give.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Common => "common",
+            Self::Uncommon => "uncommon",
+            Self::Rare => "rare",
+        }
+    }
+
+    /// How many parts of `RARITY_TOTAL` the roll gives this tier.
+    #[must_use]
+    pub const fn share(self) -> u32 {
+        match self {
+            Self::Common => 60,
+            Self::Uncommon => 30,
+            Self::Rare => 10,
+        }
+    }
+
+    /// What taking a find of this tier teaches the character.
+    ///
+    /// The whole of what a tier *means* — see the module docs on why it is not
+    /// an affix on an effect. [`crate::level`] is what turns the total into a
+    /// level, and [`crate::level::EXPERIENCE_MAX`] is bounded by the richest of
+    /// these.
+    #[must_use]
+    pub const fn experience(self) -> u32 {
+        match self {
+            Self::Common => 5,
+            Self::Uncommon => 15,
+            Self::Rare => 40,
+        }
+    }
+}
 
 /// The item table every session reads, parsed once.
 ///
@@ -172,6 +260,27 @@ pub fn drop_of(seed: u32, index: usize) -> Stack {
     let roll = mix(seed ^ COUNT_SALT ^ (index as u32).wrapping_mul(FOE_STRIDE));
     let count = 1 + (roll % u32::from(max)) as u16;
     Stack::new(item, stack_id(index), count)
+}
+
+/// Which tier foe `index`'s drop is, on `seed`.
+///
+/// A third roll off the same mixer rather than a slice of either of the others,
+/// so a table edit that changes how many items there are cannot silently change
+/// which tiers a zone leaves — the same argument [`drop_of`]'s count makes.
+///
+/// Spelled as an explicit chain rather than a loop with a fallback arm: the
+/// three shares cover `RARITY_TOTAL` exactly, so every roll lands on one tier
+/// and there is no "cannot happen" branch to justify.
+#[must_use]
+pub fn rarity_of(seed: u32, index: usize) -> Rarity {
+    let roll = mix(seed ^ RARITY_SALT ^ (index as u32).wrapping_mul(FOE_STRIDE)) % RARITY_TOTAL;
+    if roll < Rarity::Common.share() {
+        Rarity::Common
+    } else if roll < Rarity::Common.share() + Rarity::Uncommon.share() {
+        Rarity::Uncommon
+    } else {
+        Rarity::Rare
+    }
 }
 
 /// The identity of foe `index`'s drop: **one-based**, so a `StackId(0)` is
@@ -307,6 +416,88 @@ mod tests {
             "64 seeds produced {} distinct hauls",
             hauls.len(),
         );
+    }
+
+    /// **The tiers cover the roll exactly, and none of them is empty.** What
+    /// [`rarity_of`]'s chain rests on: shares that summed under
+    /// [`RARITY_TOTAL`] would leave a band of rolls falling through to the last
+    /// arm whatever it was meant to be, and one summing over it would make the
+    /// last tier unreachable.
+    #[test]
+    fn the_tiers_cover_the_whole_roll() {
+        let covered: u32 = Rarity::ALL.iter().map(|tier| tier.share()).sum();
+        assert_eq!(covered, RARITY_TOTAL, "the shares do not cover the roll");
+        for tier in Rarity::ALL {
+            assert!(tier.share() > 0, "{} is a tier nothing rolls", tier.label());
+            assert!(!tier.label().is_empty());
+        }
+        // …and they are ordered, which is what makes "rarer" mean anything: a
+        // rarer tier is rolled less often and is worth more.
+        for pair in Rarity::ALL.windows(2) {
+            assert!(
+                pair[1].share() < pair[0].share(),
+                "{} is not rarer than {}",
+                pair[1].label(),
+                pair[0].label(),
+            );
+            assert!(
+                pair[1].experience() > pair[0].experience(),
+                "{} is not worth more than {}",
+                pair[1].label(),
+                pair[0].label(),
+            );
+        }
+    }
+
+    /// **A tier is a function of the seed and the foe, and the table is one the
+    /// zone actually rolls.**
+    ///
+    /// Three claims, and the second and third are the controls: without the
+    /// spread, a build that answered [`Rarity::Common`] for everything would
+    /// pass "it is deterministic"; without the shares matching the weights, a
+    /// build whose chain compared the wrong bound would still be deterministic
+    /// and still hit every tier.
+    #[test]
+    fn the_tier_is_rolled_from_the_seed_and_the_foe_in_the_shares_the_table_gives() {
+        for index in 0..FOES {
+            assert_eq!(
+                rarity_of(DEFAULT_SEED, index),
+                rarity_of(DEFAULT_SEED, index),
+                "the same seed and foe rolled two tiers",
+            );
+        }
+
+        // Every tier is one this zone leaves, over the seeds a player could ask
+        // for, and each in something like its own share of them.
+        const SEEDS: u32 = 4096;
+        let mut seen = [0u32; Rarity::ALL.len()];
+        for seed in 0..SEEDS {
+            for index in 0..FOES {
+                let tier = rarity_of(seed, index);
+                let at = Rarity::ALL
+                    .iter()
+                    .position(|candidate| *candidate == tier)
+                    .expect("every tier is in the table");
+                seen[at] += 1;
+            }
+        }
+        let rolls = SEEDS * FOES as u32;
+        for (at, tier) in Rarity::ALL.iter().enumerate() {
+            let want = rolls * tier.share() / RARITY_TOTAL;
+            let slack = want / 4;
+            assert!(
+                seen[at] > 0,
+                "{} was never rolled in {rolls} rolls",
+                tier.label(),
+            );
+            assert!(
+                seen[at].abs_diff(want) <= slack,
+                "{} came up {} times in {rolls}, against the {} its share asks for",
+                tier.label(),
+                seen[at],
+                want,
+            );
+        }
     }
 
     /// **Two foes on one seed are rolled apart.** The control for the stride:

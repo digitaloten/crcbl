@@ -145,7 +145,13 @@ pub const ADEPT_FAR: f64 = 8.0;
 /// picture.
 pub const WARDEN_WINDUP_S: f64 = 0.9;
 
-/// What the character starts with, and what a return to the spawn gives back.
+/// What the character starts with: the pool at the **first** level.
+///
+/// A level deepens it — [`crate::level::health_max`] is this plus a step per
+/// level, and `the_first_level_is_the_pool_the_character_starts_with` is what
+/// keeps the two from drifting apart. A return to the spawn gives back whatever
+/// the character's *current* level allows rather than this number, so a levelled
+/// character who is put down comes up with the deeper pool full.
 pub const HEALTH_MAX: u32 = 100;
 
 /// How far the character's cleave reaches, in metres.
@@ -238,6 +244,22 @@ impl Kind {
             Self::Husk => 20,
             Self::Adept => 40,
             Self::Warden => 100,
+        }
+    }
+
+    /// What felling one teaches the character.
+    ///
+    /// Ordered by how much of a fight it is rather than by how many there are
+    /// of it — a warden is five blows and a husk is one — so the zone pays for
+    /// the risk. [`crate::level`] is where a total becomes a level, and it is
+    /// what bounds the whole zone's payout: one kill per post, and nothing
+    /// respawns.
+    #[must_use]
+    pub const fn experience(self) -> u32 {
+        match self {
+            Self::Husk => 20,
+            Self::Adept => 35,
+            Self::Warden => 60,
         }
     }
 

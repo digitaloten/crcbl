@@ -145,24 +145,47 @@ grid, so what looks solid is solid. There is no roof, because the camera is
 above one. This is the modular kit this doc asks for deliberately — the pieces
 `docs/plan/25-lod.md`'s border locking has to hold together — at its first size.
 
-**Five of milestone 1's six verbs are here: explore, fight, loot, save,
+**All six of milestone 1's verbs are here: explore, fight, loot, level, save,
 resume.** A felled foe leaves a stack where it falls, `F` takes it into a `4×4`
 grid on the character, `I` opens the panel that draws it, a pointer drag moves
 items between cells, and the save carries the grid — placements, rotations,
-counts and stack ids — across a resume at payload version 2. That grid is
+counts and stack ids — across a resume. That grid is
 `docs/plan/34-inventory.md`'s kit, `crates/crcbl-inventory`, and **shard is its
 first consumer rather than its second**: `docs/backlog.md`'s decision of
 2026-09-06 is that shard forces the kit and breach adopts it later, which is the
 one place this doc's original plan was overtaken. The exit criterion that
 depends on it — "used without a single engine change made on its behalf" — is
-**met**: nothing in `crcbl-inventory`, `crcbl-ui` or `crcbl` changed for this
+**met**: nothing in `crcbl-inventory`, `crcbl-ui` or `crcbl` changed for either
 slice, and what shard wanted from them is filed as topic 34 findings.
 
-**The missing verb is level**, and with it rarity: there is no experience,
-nothing to spend it on, and a drop is one of a five-item table rather than a
-tier with affixes. There is no sector streaming and no networking of any kind —
-the plan says milestone 1 ships none, and the loopback here is sample rule 2
-rather than a network. The golden frames per `GeometryPath`, the recorded
+**Level and rarity arrived together**, because each is what makes the other
+worth having. Felling a foe is worth `foe::Kind::experience` — a warden is five
+blows and a husk is one, so the zone pays for the risk rather than for the count
+— and taking what it left is worth its tier. Both go into one running total, and
+`apps/shard/src/level.rs` is a **table of thresholds** rather than a curve: the
+total each level begins at, written out, so the progression is something a
+reviewer reads instead of something only a run knows. A level deepens the
+character's health pool and does nothing else — the ceiling rises, the health
+under it does not, and a return to the spawn is what pours the deeper one — and
+the table's last row is set against the _least_ a full clear pays out, so the
+top level is reachable on every seed rather than on the lucky ones.
+
+**A tier is rolled the way the item and the count already were**: a hash of the
+seed and the foe's index off a third salt, so it has no history and a zone
+cleared in another order leaves the same haul at the same tiers. Nothing stores
+it — a tier is that hash wherever it is asked for, on the floor, in the grid or
+after a resume — which is why there is no side table keyed by `StackId` and no
+rarity field in the payload. It is **visible** as the outline every cell of a
+stack is drawn in, and it **means** something the fight verb can feel: no verb
+here uses an item — nothing is equipped, eaten or swung — so what a tier scales
+is what the find teaches. The overlay carries the level and how far into it the
+character is, the `[HUD]` heartbeat carries the same pair, and the save is at
+payload version 3, holding the experience and deriving the level from it.
+
+What a level is **not** yet is something to spend: there is no skill, no stat
+point and no equipment. There is no sector streaming and no networking of any
+kind — the plan says milestone 1 ships none, and the loopback here is sample
+rule 2 rather than a network. The golden frames per `GeometryPath`, the recorded
 browser budget and the peak wasm memory figure are all not taken.
 
 **One absence is in the picture rather than in the feature list: the character
@@ -181,7 +204,11 @@ run over.
 **Milestone 1**
 
 - A complete play session — explore, fight, loot, level, save, resume — in a
-  browser, from the same build that runs natively.
+  browser, from the same build that runs natively. **All six verbs are in that
+  build** as of 2026-09-07, but nothing yet plays them through on the page:
+  `web/tools/browser-e2e.mjs`'s shard blocks cover explore, fight, save and
+  resume, and a block that presses `F` and reads the level pair off the
+  heartbeat is what closes this.
 - Golden frames per `GeometryPath` from a fixed camera set, plus the
   human-reviewed comparison recorded here.
 - Recorded browser budget for real 3D content, and the peak wasm memory figure.

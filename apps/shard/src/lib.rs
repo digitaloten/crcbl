@@ -41,6 +41,9 @@
 //!                                                    │
 //!    I ──▶ panel ──▶ pointer drag ──────────────▶ Grid::move_within
 //!
+//!    a foe falls ──┬──▶ Stage::experience ──▶ level::level_for ──▶ health_max
+//!    a stack taken ┘
+//!
 //!    L ──▶ torches_lit ──┐
 //!                        ├──▶ light::torches(elapsed, lit) ──▶ ForwardRenderer::set_lights
 //!    tick clock ─────────┘
@@ -75,11 +78,14 @@
 //! carry real content", and a browser's frame goes through `IndirectPerBatch`,
 //! `ArrayPages` and `LightingPath::Rasterised` by construction.
 //!
-//! # The loot loop
+//! # The loot loop, and what it teaches
 //!
-//! [`loot`] is the item table, the grid the character carries and the roll that
-//! decides what a felled foe leaves; [`panel`] is the grid drawn, with a pointer
-//! drag built out of `crcbl-ui`'s press capture. Everything about *where an item
+//! [`loot`] is the item table, the grid the character carries and the two rolls
+//! that decide what a felled foe leaves and at which [`loot::Rarity`]; [`panel`]
+//! is the grid drawn — each stack's footprint outlined in its tier — with a
+//! pointer drag built out of `crcbl-ui`'s press capture. [`level`] is what a
+//! felled foe and a taken find are *worth*: a table of thresholds, and a level
+//! that deepens the character's health pool. Everything about *where an item
 //! fits* is [`crcbl::inventory`] — `docs/plan/34-inventory.md`'s kit, of which
 //! this sample is the first consumer — and **not one line of the engine changed
 //! for it**, which is that plan's own exit criterion. What the kit did not offer
@@ -98,13 +104,14 @@
 //!
 //! # What is not here yet
 //!
-//! **Five of milestone 1's six verbs are here: explore, fight, loot, save,
-//! resume.** What is missing from the six is **level**: there is no experience
-//! and nothing to spend it on. The loot that is here is one item per felled foe
-//! with no rarity — the table is a handful of items and the roll picks one of
-//! them, so there is no tier, no affix and no quality. There is no sector
-//! streaming and no networking of any kind — the plan says milestone 1 ships
-//! none, and the loopback here is sample rule 2 rather than a network. The
+//! **All six of milestone 1's verbs are here: explore, fight, loot, level, save,
+//! resume.** What a level does not yet have is anything to *spend* it on: there
+//! is no skill, no stat point and no equipment, and the whole of what a level is
+//! worth is a deeper health pool. A tier is likewise not an affix on an item's
+//! effect, because nothing here has an effect — no item is equipped, eaten or
+//! swung — so what [`loot::Rarity`] scales is what the find teaches. There is no
+//! sector streaming and no networking of any kind — the plan says milestone 1
+//! ships none, and the loopback here is sample rule 2 rather than a network. The
 //! golden frames per `GeometryPath` that milestone 1's exit criteria ask for are
 //! not here either, and neither is the recorded browser budget or the peak wasm
 //! memory figure. `docs/backlog.md` carries all of it, with what each would take.
@@ -135,6 +142,7 @@ pub mod camera;
 pub mod foe;
 pub mod game;
 mod gpu;
+pub mod level;
 pub mod light;
 pub mod loot;
 pub mod menu;
@@ -152,7 +160,8 @@ pub use camera::{Iso, walk_direction};
 pub use foe::{Foe, FoeView, Kind};
 pub use game::{Controls, DEFAULT_TICK_HZ, Dropped, Game, GameError, RenderState, Stats};
 pub use gpu::{Gpu, Paths};
-pub use loot::{DEFAULT_SEED, GRID_H, GRID_W, LOOT_REACH_M};
+pub use level::{MAX_LEVEL, THRESHOLDS};
+pub use loot::{DEFAULT_SEED, GRID_H, GRID_W, LOOT_REACH_M, Rarity};
 pub use menu::{MenuKind, Menus};
 pub use page::PageStats;
 pub use panel::PanelStats;

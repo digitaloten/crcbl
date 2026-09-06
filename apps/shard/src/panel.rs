@@ -47,6 +47,15 @@
 //! plan's answer and it is not a verb yet; the placeholder pair lives in the
 //! catalogue rather than in a table of shard's own, because the catalogue is
 //! already the one file that names every item.
+//!
+//! # A tier is the outline, and it is derived rather than held
+//!
+//! Every cell a stack covers is outlined in its [`Rarity`], so a rare find is
+//! legible at a glance without a second glyph in a cell that already carries a
+//! letter and a count. The tier is not something this module is handed per
+//! stack: it is [`loot::rarity_of`] of the run's seed and the foe whose id the
+//! stack carries, which is why [`draw`] takes a seed. `crate::loot` argues why
+//! nothing stores it.
 
 use crcbl::inventory::{Cell, Grid};
 use crcbl::math::Vec2;
@@ -54,7 +63,8 @@ use crcbl::ui::draw_list::DrawList;
 use crcbl::ui::text::FontAtlas;
 use crcbl::ui::widget::{ButtonState, NATURAL_FONT_SIZE, PointerInput, UiState, WidgetId};
 
-use crate::loot;
+use crate::foe::FOES;
+use crate::loot::{self, Rarity};
 
 /// The panel's own background, a shade darker than [`crate::page`]'s so the two
 /// read as different surfaces when they overlap.
@@ -69,6 +79,25 @@ const CELL_LIT: [f32; 4] = [0.20, 0.18, 0.15, 1.0];
 const LABEL: [f32; 4] = [0.72, 0.66, 0.58, 1.0];
 /// A letter or a count drawn over an item's own colour.
 const GLYPH: [f32; 4] = [0.06, 0.05, 0.04, 1.0];
+
+/// What a [`Rarity::Common`] find's cells are outlined in — a shade off
+/// [`BORDER`], so an ordinary find reads as ordinary without disappearing into
+/// the grid it is sitting in.
+const TIER_COMMON: [f32; 4] = [0.55, 0.52, 0.48, 1.0];
+/// …a [`Rarity::Uncommon`] one's.
+const TIER_UNCOMMON: [f32; 4] = [0.42, 0.78, 0.52, 1.0];
+/// …and a [`Rarity::Rare`] one's, which is the only tier drawn brighter than
+/// anything else on the panel.
+const TIER_RARE: [f32; 4] = [0.98, 0.78, 0.30, 1.0];
+
+/// The outline a tier is drawn in.
+const fn tier_colour(rarity: Rarity) -> [f32; 4] {
+    match rarity {
+        Rarity::Common => TIER_COMMON,
+        Rarity::Uncommon => TIER_UNCOMMON,
+        Rarity::Rare => TIER_RARE,
+    }
+}
 
 /// How wide one cell is, in pixels.
 const CELL_PX: f32 = 34.0;
@@ -167,11 +196,14 @@ fn cell_of(id: WidgetId) -> Option<Cell> {
 ///
 /// `ui` is the one piece of state a drag cannot do without — which cell owns the
 /// press — and it is the caller's because it has to survive between frames.
+/// `seed` is the run's loot seed, which is what a stack's tier is rolled from —
+/// see the module docs.
 pub fn draw(
     list: &mut DrawList,
     atlas: &FontAtlas,
     extent: (u32, u32),
     grid: &Grid,
+    seed: u32,
     ui: &mut UiState,
     pointer: PointerInput,
 ) -> PanelStats {
@@ -216,6 +248,11 @@ pub fn draw(
         let Some(def) = catalog.get(stack.item()) else {
             continue;
         };
+        // The tier of the foe that minted this stack. `None` is an id no foe of
+        // this roster mints, which `crate::save`'s decoder refuses and a played
+        // session cannot produce — such a stack is drawn without a tier rather
+        // than with a guessed one.
+        let tier = loot::foe_of(stack.id(), FOES).map(|foe| loot::rarity_of(seed, foe));
         let shape = def.shape().rotated(placement.rotation());
         for covered in shape.cells() {
             let cell = Cell::new(placement.at().x + covered.x, placement.at().y + covered.y);
@@ -225,6 +262,12 @@ pub fn draw(
                 to - Vec2::splat(BORDER_WIDTH),
                 def.colour(),
             );
+            // Over the grid line the cell loop already drew, so the footprint —
+            // an L included, because this follows the covered cells rather than
+            // a bounding box — is outlined in its own tier.
+            if let Some(tier) = tier {
+                list.rect_outline(at, to, BORDER_WIDTH, tier_colour(tier));
+            }
         }
         let (at, _) = cell_bounds(extent, placement.at());
         list.text(
@@ -285,6 +328,10 @@ mod tests {
 
     /// The extent every sample's headless ring opens at.
     const EXTENT: (u32, u32) = (960, 720);
+
+    /// The seed the published page runs, so what these tests draw is what a
+    /// visitor sees.
+    const SEED: u32 = loot::DEFAULT_SEED;
 
     /// A grid holding the plate at the top-left and a stack of bandages beside
     /// it — a `2×2` and a `1×1`, which is what the drawing has to handle.
@@ -379,6 +426,7 @@ mod tests {
             &atlas,
             EXTENT,
             &loot::carried(),
+            SEED,
             &mut ui,
             PointerInput::default(),
         );
@@ -390,6 +438,7 @@ mod tests {
             &atlas,
             EXTENT,
             &packed(),
+            SEED,
             &mut ui,
             PointerInput::default(),
         );
@@ -423,6 +472,7 @@ mod tests {
                 &atlas,
                 EXTENT,
                 &grid,
+                SEED,
                 &mut ui,
                 PointerInput::hovering(Vec2::new(4.0, 4.0)),
             );
@@ -433,6 +483,89 @@ mod tests {
             commands(),
             "the panel draws something that ticks"
         );
+    }
+
+    /// **Every cell a stack covers is outlined in the tier the seed rolled for
+    /// it, and a seed that rolls another tier draws another colour.**
+    ///
+    /// The second half is the control and it is the whole check: without it, a
+    /// build that outlined everything in one constant would pass "the tier
+    /// colour is on the panel" for every stack on every seed. The colours are
+    /// looked up through [`tier_colour`] rather than written out here, so this
+    /// asserts the *correspondence* — that the cells carrying a stack carry its
+    /// own tier — rather than restating a palette.
+    #[test]
+    fn a_stack_is_outlined_in_the_tier_its_seed_rolled_for_it() {
+        let atlas = FontAtlas::built_in();
+        let grid = packed();
+        let outlines = |seed: u32| {
+            let mut ui = UiState::new();
+            let mut list = DrawList::new();
+            draw(
+                &mut list,
+                &atlas,
+                EXTENT,
+                &grid,
+                seed,
+                &mut ui,
+                PointerInput::default(),
+            );
+            let found: Vec<(Vec2, [f32; 4])> = list
+                .commands()
+                .iter()
+                .filter_map(|command| match command {
+                    DrawCommand::RectOutline { min, color, .. } => Some((*min, *color)),
+                    _ => None,
+                })
+                .collect();
+            found
+        };
+
+        // Where every cell of every placement is drawn, and which tier owns it.
+        let footprint = |seed: u32| {
+            let catalog = loot::catalog();
+            let mut cells: Vec<(Vec2, [f32; 4])> = Vec::new();
+            for (_, placement) in grid.slots() {
+                let def = catalog.get(placement.stack().item()).expect("an item");
+                let foe = loot::foe_of(placement.stack().id(), FOES).expect("a foe minted it");
+                let colour = tier_colour(loot::rarity_of(seed, foe));
+                for covered in def.shape().rotated(placement.rotation()).cells() {
+                    let cell =
+                        Cell::new(placement.at().x + covered.x, placement.at().y + covered.y);
+                    cells.push((cell_bounds(EXTENT, cell).0, colour));
+                }
+            }
+            cells
+        };
+
+        let drawn = outlines(SEED);
+        for (at, colour) in footprint(SEED) {
+            assert!(
+                drawn.contains(&(at, colour)),
+                "no {colour:?} outline at {at:?}: {drawn:?}",
+            );
+        }
+
+        // The control: a seed that rolls a different tier for the husk's drop
+        // draws a different colour on the same cells.
+        let other = (0..4096u32)
+            .find(|seed| loot::rarity_of(*seed, 0) != loot::rarity_of(SEED, 0))
+            .expect("some seed rolls the husk's drop another tier");
+        let elsewhere = outlines(other);
+        let moved = footprint(other)
+            .into_iter()
+            .filter(|entry| !drawn.contains(entry))
+            .count();
+        assert!(
+            moved > 0,
+            "the tier outline is the same on every seed, so it is not a tier",
+        );
+        for entry in footprint(other) {
+            assert!(
+                elsewhere.contains(&entry),
+                "seed {other} did not outline {entry:?}",
+            );
+        }
     }
 
     /// **A press on one cell and a release on another is a drag; a press and a
@@ -453,7 +586,7 @@ mod tests {
         };
         let frame = |ui: &mut UiState, pointer: PointerInput| {
             let mut list = DrawList::new();
-            draw(&mut list, &atlas, EXTENT, &grid, ui, pointer)
+            draw(&mut list, &atlas, EXTENT, &grid, SEED, ui, pointer)
         };
 
         let from = Cell::new(0, 0);

@@ -8,15 +8,21 @@
 //!                     └──▶ RenderState ──▶ crate::app, crate::page, crate::gpu
 //! ```
 //!
-//! # Three verbs: *explore*, *fight* and *loot*
+//! # Four verbs: *explore*, *fight*, *loot* and *level*
 //!
 //! `docs/plan/sample/15-shard.md`'s milestone 1 is "explore, fight, loot, level,
-//! save, resume". This file is the first three of those: a character, a zone
+//! save, resume". This file is the first four of those: a character, a zone
 //! with stone in it, gravity, three archetypes of foe with one ability each, a
-//! blow that answers them, and what they leave when they go down. There is no
-//! rarity and no experience — a drop is one of [`crate::loot`]'s table, rolled
-//! from the seed and the foe's index, and there is nothing to level.
-//! `docs/backlog.md` carries the rest with what each would take.
+//! blow that answers them, what they leave when they go down, and what the
+//! character learns from both.
+//!
+//! **Experience arrives from two places and levels are read off one table.**
+//! Felling a foe is worth [`foe::Kind::experience`] and taking what it left is
+//! worth [`loot::Rarity::experience`], both into the stage's running total. What
+//! that total is worth is [`crate::level::THRESHOLDS`], and what a level is worth
+//! is a deeper health pool. Nothing here decides either — this file owns *when*
+//! experience is granted and the one rule that joins a level to the pool, which
+//! is that a raise widens the ceiling without healing a wound.
 //!
 //! **The loot moves inside the tick.** Which stack is in reach and whether it
 //! fits the character's grid are the stage's answers, so the pickup crosses the
@@ -86,6 +92,7 @@ use crcbl::session::Loopback;
 
 use crate::camera::walk_direction;
 use crate::foe::{self, Foe, FoeView, Kind};
+use crate::level;
 use crate::loot;
 use crate::zone;
 
@@ -337,8 +344,15 @@ struct Stage {
     /// How many stacks have been taken off the floor. **Monotone**, which is
     /// what a reader polling the heartbeat late needs of it.
     picked: u64,
-    /// What the character has left, out of [`foe::HEALTH_MAX`].
+    /// What the character has left, out of [`Stage::health_max`].
     health: u32,
+    /// What they have learned, from every foe felled and every stack taken.
+    ///
+    /// **Monotone**: nothing spends it and nothing takes it away, which is what
+    /// lets a reader polling the heartbeat late compare two lines. The level is
+    /// [`level::level_for`] of it and is never stored beside it — a second copy
+    /// is a second copy that can disagree.
+    experience: u64,
     /// How many times they have been put down and returned to the spawn.
     downs: u64,
     /// How many of the foes had the character engaged at the end of the last
@@ -445,7 +459,11 @@ impl Stage {
             grid: loot::carried(),
             floor: Vec::new(),
             picked: 0,
+            // The first level's pool. `crate::level`'s
+            // `the_first_level_is_the_pool_the_character_starts_with` is what
+            // keeps this constant and `level::health_max` from drifting apart.
             health: foe::HEALTH_MAX,
+            experience: 0,
             downs: 0,
             engaged: 0,
             swings: 0,
@@ -468,6 +486,34 @@ impl Stage {
     /// How many foes are still on their feet.
     fn alive(&self) -> usize {
         self.foes.iter().filter(|foe| foe.is_alive()).count()
+    }
+
+    /// How deep the character's pool is at the level they have reached.
+    fn health_max(&self) -> u32 {
+        level::health_max(level::level_for(self.experience))
+    }
+
+    /// Adds `experience` to what the character has learned, and says so when
+    /// that crossed a threshold.
+    ///
+    /// **A raise does not heal.** The ceiling moves and the health under it
+    /// does not, so a character who levels at four health is a character at
+    /// four health with further to climb — and `Stage::health` stays at or
+    /// under [`Stage::health_max`] by construction, because the maximum only
+    /// ever grows. Filling the pool is the *down*'s job, in [`run_tick`], and
+    /// keeping the two rules apart is what stops a level-up quietly undoing a
+    /// fight.
+    fn gain(&mut self, experience: u32) {
+        let before = level::level_for(self.experience);
+        self.experience += u64::from(experience);
+        let after = level::level_for(self.experience);
+        if after > before {
+            crcbl::log::info!(
+                "level: {before} → {after} at {} experience; the pool is now {}",
+                self.experience,
+                level::health_max(after),
+            );
+        }
     }
 
     /// The nearest stack on the floor the character could reach, as an index
@@ -502,8 +548,9 @@ impl Stage {
     fn drop_loot(&mut self, index: usize, at: DVec3) {
         let stack = loot::drop_of(self.seed, index);
         crcbl::log::info!(
-            "loot: the {} left {} x{} at {:.2} {:.2}",
+            "loot: the {} left a {} {} x{} at {:.2} {:.2}",
             foe::POSTS[index].kind.label(),
+            loot::rarity_of(self.seed, index).label(),
             loot::catalog()
                 .get(stack.item())
                 .map_or("something", crcbl::inventory::ItemDef::name),
@@ -536,6 +583,10 @@ impl Stage {
         }
         self.floor.remove(index);
         self.picked += 1;
+        // **The tier is what a find is worth**, and it is read off the seed and
+        // the foe rather than off the stack, because a `Stack` carries no tier
+        // — see `crate::loot`.
+        self.gain(loot::rarity_of(self.seed, dropped.foe).experience());
     }
 
     /// Puts back on the floor every stack a felled foe left that the character
@@ -586,6 +637,7 @@ impl Stage {
         self.player.set_position(character.centre);
         self.fall_speed = 0.0;
         self.health = character.health;
+        self.experience = character.experience;
         self.downs = character.downs;
         self.playtime = character.playtime_secs;
         for (foe, health) in self.foes.iter_mut().zip(character.foes) {
@@ -606,6 +658,7 @@ impl Stage {
         crate::save::Character {
             centre: self.player.position(),
             health: self.health,
+            experience: self.experience,
             downs: self.downs,
             foes,
             playtime_secs: self.playtime,
@@ -697,9 +750,10 @@ fn swing(stage: &mut Stage) {
             fell.push((index, foe.feet()));
         }
     }
-    // After the loop, because the drop reads the seed and the floor off the
-    // stage the loop is holding pieces of.
+    // After the loop, because the drop and the experience both read the seed
+    // and the floor off the stage the loop is holding pieces of.
     for (index, at) in fell {
+        stage.gain(stage.foes[index].kind().experience());
         stage.drop_loot(index, at);
     }
 }
@@ -756,9 +810,12 @@ fn run_tick(stage: &mut Stage, intent: Intent, dt: f64) {
 
     // **The character can lose.** Running out returns them to the spawn with
     // full health and one more down against their name — which is what makes
-    // the health a pool rather than a number that only falls.
+    // the health a pool rather than a number that only falls. **Full is the
+    // pool their *level* allows**, not the one they started the zone with:
+    // `Stage::gain` widens the ceiling and never fills it, so this is the one
+    // place a deeper pool is actually poured.
     if stage.health == 0 {
-        stage.health = foe::HEALTH_MAX;
+        stage.health = stage.health_max();
         stage.downs += 1;
         let config = *stage.player.config();
         stage
@@ -840,8 +897,12 @@ pub struct RenderState {
     pub elapsed: f64,
     /// One view per [`foe::POSTS`] row, in that order.
     pub foes: [FoeView; foe::FOES],
-    /// What the character has left, out of [`foe::HEALTH_MAX`].
+    /// What the character has left, out of the pool their level allows.
     pub health: u32,
+    /// What they have learned. The level and the pool are both
+    /// [`crate::level`]'s of this — carried alone so the frame and the
+    /// simulation cannot disagree about which level a total is.
+    pub experience: u64,
     /// How many foes are still on their feet.
     pub alive: usize,
     /// How many stacks the character is carrying.
@@ -880,8 +941,11 @@ pub struct Stats {
     /// first tick, and one that never noticed anything leaves it at zero for the
     /// whole run.
     pub engaged: usize,
-    /// What the character has left, out of [`foe::HEALTH_MAX`].
+    /// What the character has left, out of the pool their level allows.
     pub health: u32,
+    /// What they have learned. **Monotone**, so a reader polling the heartbeat
+    /// late cannot miss a level — see [`crate::level`].
+    pub experience: u64,
     /// How many times they have been put down and returned to the spawn.
     pub downs: u64,
     /// Blows swung, and the bodies those blows landed on. `swings` above `hits`
@@ -928,7 +992,11 @@ impl crcbl::ui::DebugModule for Stats {
         section.row("climbed", format_args!("{}", self.climbed));
         section.row(
             "health",
-            format_args!("{}/{}", self.health, foe::HEALTH_MAX),
+            format_args!("{}/{}", self.health, self.health_max()),
+        );
+        section.row(
+            "level",
+            format_args!("{} ({} xp)", self.level(), self.experience),
         );
         section.row("downs", format_args!("{}", self.downs));
         section.row("foes", format_args!("{}/{}", self.alive, foe::FOES));
@@ -949,6 +1017,18 @@ impl crcbl::ui::DebugModule for Stats {
 }
 
 impl Stats {
+    /// Which level the character has reached, off their experience.
+    #[must_use]
+    pub const fn level(&self) -> u32 {
+        level::level_for(self.experience)
+    }
+
+    /// How deep their pool is at it.
+    #[must_use]
+    pub const fn health_max(&self) -> u32 {
+        level::health_max(self.level())
+    }
+
     /// What the cleave would answer, as one word.
     ///
     /// `"none"` rather than an empty string, so a heartbeat that names it cannot
@@ -1138,6 +1218,7 @@ impl Game {
             elapsed: stage.elapsed,
             foes: foe::views(&stage.foes, stage.elapsed),
             health: stage.health,
+            experience: stage.experience,
             alive: stage.alive(),
             carried: stage.grid.len(),
             floor: stage.floor.len(),
@@ -1174,6 +1255,7 @@ impl Game {
             alive: stage.alive(),
             engaged: stage.engaged,
             health: stage.health,
+            experience: stage.experience,
             downs: stage.downs,
             swings: stage.swings,
             hits: stage.hits,
@@ -1185,6 +1267,16 @@ impl Game {
             floor: stage.floor.len(),
             picked: stage.picked,
         }
+    }
+
+    /// What this zone's loot is rolled from — the item, the count and the tier.
+    ///
+    /// Read off the stage rather than kept a second time beside it, for
+    /// `Stage::restore_floor`'s reason: the seed the simulation is actually
+    /// using is the only one a tier drawn on the panel may be rolled from.
+    #[must_use]
+    pub fn seed(&self) -> u32 {
+        lock(&self.shared).seed
     }
 
     /// What the character is carrying, for the panel that draws it.
@@ -1557,6 +1649,7 @@ mod tests {
         hold(&mut played, AHEAD, 1.0);
         played.health = 37;
         played.downs = 4;
+        played.experience = 62;
         played.foes[0].wounded(&mut played.world, foe::HEALTH_MAX);
         played.foes[2].wounded(&mut played.world, 40);
         let saved = played.snapshot();
@@ -1597,6 +1690,8 @@ mod tests {
             saved.centre,
         );
         assert_eq!(stats.health, saved.health);
+        assert_eq!(stats.experience, saved.experience);
+        assert_eq!(stats.level(), level::level_for(saved.experience));
         assert_eq!(stats.downs, saved.downs);
         assert_eq!(stats.alive, foe::FOES - 1, "the felled foe was back up");
 
@@ -1609,6 +1704,8 @@ mod tests {
             "a fresh zone opened already cleared"
         );
         assert_eq!(opened.health, foe::HEALTH_MAX);
+        assert_eq!(opened.experience, 0, "a fresh zone opened part-levelled");
+        assert_eq!(opened.level(), 1);
         assert_eq!(opened.downs, 0);
         assert!(
             (opened.position.z - zone::spawn().z).abs() < 1e-9,
@@ -1790,6 +1887,109 @@ mod tests {
     /// Which foe minted `stack`, which every stack in this zone has.
     fn carried_foe(stack: Stack) -> usize {
         loot::foe_of(stack.id(), foe::FOES).expect("every stack names a foe")
+    }
+
+    // ---- the level verb ---------------------------------------------------
+
+    /// **Felling a foe teaches the character, and taking what it left teaches
+    /// more.** The two places experience is granted, and the only two — a build
+    /// that granted it per tick, per swing or per frame would report a total
+    /// that is not the sum of the archetypes that fell.
+    ///
+    /// The control is the run before the kill: `experience` is zero for every
+    /// tick of the walk up the corridor, so this is a grant rather than a
+    /// counter that was always climbing.
+    #[test]
+    fn felling_a_foe_teaches_the_character_and_taking_what_it_left_teaches_more() {
+        let mut stage = ready();
+        hold(&mut stage, AHEAD, 1.0);
+        assert_eq!(stage.experience, 0, "the zone opened part-levelled");
+        assert_eq!(level::level_for(stage.experience), 1);
+
+        until_something_falls(&mut stage);
+        // Summed over whatever fell, because one cleave answers everything in
+        // reach and two bodies can go down on one tick.
+        let fell: u64 = stage
+            .foes
+            .iter()
+            .filter(|foe| !foe.is_alive())
+            .map(|foe| u64::from(foe.kind().experience()))
+            .sum();
+        assert!(fell > 0, "nothing fell, so nothing was owed");
+        assert_eq!(
+            stage.experience,
+            fell,
+            "{} foe(s) fell, worth {fell}, and the character learned {}",
+            felled(&stage),
+            stage.experience,
+        );
+
+        // …and the find on top of it, worth what its tier is worth.
+        assert!(!stage.floor.is_empty(), "a felled foe left nothing");
+        let tier = loot::rarity_of(stage.seed, stage.floor[0].foe);
+        let before = stage.experience;
+        let carried = stage.grid.len();
+        run_tick(&mut stage, REACH, DT);
+        assert_eq!(stage.grid.len(), carried + 1, "the pickup took nothing");
+        assert_eq!(
+            stage.experience,
+            before + u64::from(tier.experience()),
+            "a {} find taught {} rather than the {} its tier is worth",
+            tier.label(),
+            stage.experience - before,
+            tier.experience(),
+        );
+    }
+
+    /// **A level turns exactly on the table's row, and it widens the pool
+    /// without healing the wound; the down is what pours it.**
+    ///
+    /// Three claims and each is the other's control. One experience short of
+    /// the row is still the level below — a build comparing with `>` would fail
+    /// that and pass everything else. The health held across the raise is what
+    /// says a level is a ceiling rather than a heal, which a build that refilled
+    /// on level-up would fail. And the refill after the down has to be the
+    /// **new** pool, which a build that kept `foe::HEALTH_MAX` as the refill
+    /// would fail while passing both of the others.
+    #[test]
+    fn a_level_turns_on_the_tables_row_and_widens_the_pool_without_healing() {
+        let mut stage = ready();
+        let row = level::THRESHOLDS[1];
+        let short = u32::try_from(row - 1).expect("the first row fits one grant");
+
+        stage.health = 12;
+        stage.gain(short);
+        assert_eq!(
+            level::level_for(stage.experience),
+            1,
+            "the level turned one experience early",
+        );
+        assert_eq!(stage.health_max(), foe::HEALTH_MAX);
+
+        stage.gain(1);
+        assert_eq!(
+            level::level_for(stage.experience),
+            2,
+            "{row} experience did not turn the level the table says it does",
+        );
+        assert_eq!(stage.health, 12, "the level healed a wound");
+        assert_eq!(
+            stage.health_max(),
+            foe::HEALTH_MAX + level::HEALTH_PER_LEVEL,
+            "the level did not widen the pool",
+        );
+
+        // …and the pool a down pours is the one the level allows, not the one
+        // the character opened the zone with.
+        stage.health = 0;
+        run_tick(&mut stage, Intent::default(), DT);
+        assert_eq!(stage.downs, 1, "running out did not put them down");
+        assert_eq!(
+            stage.health,
+            stage.health_max(),
+            "the down refilled the pool the character started with",
+        );
+        assert!(stage.health > foe::HEALTH_MAX);
     }
 
     /// **A grid with no room leaves the stack where it fell.** The refusal path,

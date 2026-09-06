@@ -213,8 +213,11 @@ pub struct Summary {
     pub climbed: u64,
     /// How many foes were still on their feet when the run ended.
     pub foes_alive: usize,
-    /// What the character had left, out of [`crate::foe::HEALTH_MAX`].
+    /// What the character had left, out of the pool their level allowed.
     pub health: u32,
+    /// What they had learned. The level is [`crate::level::level_for`] of it,
+    /// so a summary carries one number rather than two that could disagree.
+    pub experience: u64,
     /// Blows swung, and the bodies they landed on.
     pub swings: u64,
     pub hits: u64,
@@ -357,6 +360,13 @@ impl Shard {
     ///   `taken` is monotone and sits at zero for the whole of the run before
     ///   anything engaged, which is what tells damage from a number that only
     ///   ever counts up.
+    /// * `level` and `xp` — the sixth verb. `xp` is **monotone**: nothing spends
+    ///   experience and nothing takes it away, so a reader polling late cannot
+    ///   miss a level, and it sits at zero for every beat before the first foe
+    ///   falls — which is what tells a level from a counter that was always
+    ///   climbing. `level` is [`crate::level::level_for`] of it and is never a
+    ///   second number the line could disagree with itself about. What a level
+    ///   is worth is the pool `hp` is drawn out of; see [`crate::level`].
     /// * `resumed` and `saves` — whether this session opened from a save, and
     ///   how many times the character has been written out since. **The pair
     ///   the save block turns on**, and each answers a question the other
@@ -392,7 +402,8 @@ impl Shard {
         crcbl::log::info!(
             "[HUD] tick: {}  px: {:.2}  py: {:.2}  pz: {:.2}  bearing: {:.3}  \
              ground: {}  blocked: {}  climbed: {}  foes: {}  engaged: {}  \
-             hp: {}  downs: {}  swings: {}  hits: {}  dealt: {}  taken: {}  \
+             hp: {}  downs: {}  level: {}  xp: {}  \
+             swings: {}  hits: {}  dealt: {}  taken: {}  \
              target: {}  floor: {}  carried: {}  picked: {}  \
              torches: {}  flame: {:.3}  \
              resumed: {}  saves: {}  \
@@ -409,6 +420,8 @@ impl Shard {
             stats.engaged,
             stats.health,
             stats.downs,
+            stats.level(),
+            stats.experience,
             stats.swings,
             stats.hits,
             stats.dealt,
@@ -870,6 +883,7 @@ impl HostedGame for Shard {
                 gpu.atlas(),
                 extent,
                 &grid,
+                self.game.seed(),
                 &mut self.ui,
                 PointerInput {
                     pos: surface_pixels(self.pointer_at, extent),
@@ -914,6 +928,7 @@ impl HostedGame for Shard {
             climbed: self.stats.climbed,
             foes_alive: self.stats.alive,
             health: self.stats.health,
+            experience: self.stats.experience,
             swings: self.stats.swings,
             hits: self.stats.hits,
             dealt: self.stats.dealt,
@@ -933,6 +948,7 @@ impl HostedGame for Shard {
         crcbl::log::info!(
             "shard: {} frames, {} ticks, feet at {:.2} {:.2} {:.2}, \
              {} blocked and {} climbed, {}/{} foes standing, {} health left, \
+             level {} on {} experience, \
              {}/{} blows landed for {} against {} taken, \
              {} stack(s) carried and {} on the floor after {} taken, torches {}, \
              {} save(s) written to the {}, \
@@ -948,6 +964,8 @@ impl HostedGame for Shard {
             summary.foes_alive,
             crate::foe::FOES,
             summary.health,
+            crate::level::level_for(summary.experience),
+            summary.experience,
             summary.hits,
             summary.swings,
             summary.dealt,
@@ -1356,8 +1374,8 @@ mod tests {
 
         let drawn = ui_text(&engine);
         for row in [
-            "tick", "climbed", "health", "foes", "engaged", "target", "carried", "loot", "state",
-            "writes", "where", "geometry", "lighting", "effects",
+            "tick", "climbed", "health", "level", "foes", "engaged", "target", "carried", "loot",
+            "state", "writes", "where", "geometry", "lighting", "effects",
         ] {
             assert!(drawn.iter().any(|t| t == row), "missing {row}: {drawn:?}");
         }
@@ -1569,6 +1587,52 @@ mod tests {
         frames(&mut engine, 2);
         assert!(!engine.game().panel_open(), "it would not close again");
         engine.finish(ExitReason::FrameBudget).expect("teardown");
+    }
+
+    /// **A headless run that fells a foe comes back having learned something**,
+    /// and the level and the pool it reports are both that one number's.
+    ///
+    /// The whole path, end to end: shell key → action map → wire → module →
+    /// cleave → `Stage::gain`. The control is the reading before the fight —
+    /// experience is zero for every frame of the approach, so this is a grant
+    /// on a kill rather than a counter that was always climbing — and the two
+    /// derived readings are what say the run carries one number rather than
+    /// three that could drift apart.
+    #[test]
+    fn a_headless_run_that_fells_a_foe_gains_experience() {
+        let mut engine = scripted(&headless(4_000));
+        frames(&mut engine, 8);
+        assert_eq!(
+            engine.game().game().stats().experience,
+            0,
+            "the zone opened part-levelled",
+        );
+
+        hold_until(
+            &mut engine,
+            &[KeyCode::KeyW, KeyCode::Space],
+            "a foe fell",
+            |engine| engine.game().game().stats().alive < crate::foe::FOES,
+        );
+        let stats = engine.game().game().stats();
+        assert!(
+            stats.experience > 0,
+            "{} of {} foes fell and the character learned nothing",
+            crate::foe::FOES - stats.alive,
+            crate::foe::FOES,
+        );
+        assert_eq!(stats.level(), crate::level::level_for(stats.experience));
+        assert_eq!(
+            stats.health_max(),
+            crate::level::health_max(stats.level()),
+            "the pool the run reports is not the one its level allows",
+        );
+
+        let summary = engine.finish(ExitReason::FrameBudget).expect("teardown");
+        assert_eq!(
+            summary.experience, stats.experience,
+            "the summary lost what the run learned",
+        );
     }
 
     /// **A pointer drag moves an item between two cells of the panel.**

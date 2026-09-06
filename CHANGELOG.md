@@ -77,6 +77,37 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **`apps/shard` gets milestone 1's level verb, and loot gets rarity with it.**
+  Felling a foe is worth `foe::Kind::experience` — 20 for a husk, 35 for an
+  adept, 60 for a warden — and taking what it left is worth its tier; both go
+  into one running total, and the new `src/level.rs` turns that total into a
+  level through `THRESHOLDS`, a named const array of the experience each level
+  begins at rather than a formula nobody can read. A level deepens the
+  character's health pool by `HEALTH_PER_LEVEL` and does nothing else: the
+  ceiling rises, the health under it does not, and a return to the spawn is what
+  pours the deeper pool. The table's last row sits inside the _least_ a full
+  clear pays out, so the top level is reachable on every seed rather than on the
+  lucky ones, and `level::EXPERIENCE_MAX` — the most this roster can ever pay —
+  is what the save's decoder measures a payload against. A drop now carries a
+  `loot::Rarity`, common / uncommon / rare in 60/30/10 parts of the roll, rolled
+  off the same `lowbias32` mixer as the item and the count with a third salt: a
+  hash of the seed and the foe's index, so the same seed leaves the same tiers
+  however the zone was cleared. **Nothing stores a tier** —
+  `crcbl::inventory::Stack` has no field for one and shard adds no side table;
+  it is re-derived wherever it is asked for, which is why the payload has no
+  rarity byte and a resumed grid, the floor and a fresh drop cannot disagree. It
+  is visible as the colour every cell of a stack is outlined in on the `I`
+  panel, and it _means_ the experience the find teaches, because no verb here
+  uses an item. `save::PAYLOAD_VERSION` is **3**: the payload gained the
+  experience as a `u64` after the down count, the **level is derived rather than
+  written** so a save cannot carry one that disagrees with the experience beside
+  it, and the health ceiling `decode` refuses a payload against is now that
+  level's pool. A payload from any older version reads as no save with a logged
+  reason, as version 1's did. The `[HUD]` heartbeat gains `level` and `xp`, the
+  overlay gains a `LEVEL` reading and a `NEXT` row showing how far into the
+  level the character is, and the debug panel gains a `level` row. Not one line
+  of the engine changed for any of it, which is `docs/plan/sample/15-shard.md`'s
+  exit criterion.
 - **Asteroids' tuning constants are a data file.**
   `apps/asteroids/assets/balance.ron` holds every number that decides how the
   game plays: the ship's turn rate, thrust and coast; the respawn delay, its
