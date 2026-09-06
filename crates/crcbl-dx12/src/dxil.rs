@@ -901,38 +901,32 @@ mod tests {
             (
                 "cmaa2_edges",
                 &crcbl_shaders::CMAA2_EDGES,
-                &["clearMain", "edgesMain"],
-                // The block, the tonemapped frame it reads, and the five working
+                &["edgesMain"],
+                // The block, the tonemapped frame it reads, and the two working
                 // buffers — in declaration order, which is binding order, so
-                // `b0`, `t0` and `u0` through `u4`. All five are UAVs, where
+                // `b0`, `t0`, `u0` and `u1`. Both buffers are UAVs, where
                 // `exposure` above has one SRV in the middle of its run, because
-                // every one of them is written somewhere in the tier.
+                // both are written somewhere in the tier.
                 //
-                // **Six here where the source declares seven.** The item list
-                // is the seventh, no entry point of this file touches it, and
-                // `dxc` drops a resource the shader never reads — so the
-                // container declares no register for it and this row must not
-                // either. It is declared last in the source precisely so that
-                // what it leaves behind is the end of the run rather than a
-                // hole in it, which is the gap
+                // The whole declaration, with nothing left over: this source's
+                // one entry point reaches every resource it declares, so there
+                // is no register `dxc` reserves and drops and no gap for
                 // [`registers_are_dense_from_zero_in_every_committed_container`]
-                // refuses. `cmaa2_shapes` below reads it, and its own row is
-                // seven long.
-                &[Cbv, Srv, Uav, Uav, Uav, Uav],
+                // to refuse. `cmaa2_shapes` below declares the same four,
+                // because one bind-group layout serves both.
+                &[Cbv, Srv, Uav, Uav],
             ),
             (
                 "cmaa2_shapes",
                 &crcbl_shaders::CMAA2_SHAPES,
-                &["shapesMain", "accumulateMain"],
-                // The same seven in the same order, because one bind-group
+                &["shapesMain"],
+                // The same four in the same order, because one bind-group
                 // layout serves both files and Metal takes its indices from the
                 // declarations — see `crcbl_shaders::declaration_order`. A row
                 // of its own because the two containers are compiled separately
                 // and nothing else compares them: that the two sources agree is
-                // something a reader has to check, and this is where it is. The
-                // run is one longer than `cmaa2_edges`' above because these two
-                // entry points between them read every one of the five.
-                &[Cbv, Srv, Uav, Uav, Uav, Uav, Uav],
+                // something a reader has to check, and this is where it is.
+                &[Cbv, Srv, Uav, Uav],
             ),
             (
                 "cmaa2_apply",

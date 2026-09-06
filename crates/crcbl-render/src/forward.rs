@@ -1303,7 +1303,7 @@ fn fullscreen_passes(
     // an `else if` rather than two independent terms.
     //
     // **[`Cmaa2::FULLSCREEN_PASSES`] and not [`Cmaa2::PASSES`]**: what this
-    // function counts is full-screen *draws*, and four of that tier's five
+    // function counts is full-screen *draws*, and two of that tier's three
     // passes are compute dispatches. [`crate::exposure`]'s three are left out
     // of this arithmetic for the same reason.
     if effects.contains(RenderEffects::CMAA2) {
@@ -5628,7 +5628,7 @@ impl ForwardRenderer {
 
         // --- the higher antialiasing tier ---
         //
-        // The same slot, filled by CMAA2's four dispatches and one draw
+        // The same slot, filled by CMAA2's two dispatches and one draw
         // instead of FXAA's one draw — see [`crate::cmaa2`], which says why the
         // two are built together and at most one recorded. It carries no lookup
         // table, so unlike the tier it replaced it takes no `queue`: there is
@@ -9110,7 +9110,7 @@ impl ForwardRenderer {
         // **Two tiers share that slot and at most one fills it** — see
         // [`RenderEffects::CMAA2`], which is where "never both" is written down.
         // The shape above is the same either way; what differs is what the
-        // resolve reads besides the tonemap's image. CMAA2's five working
+        // resolve reads besides the tonemap's image. CMAA2's two working
         // buffers are declared inside its own pass group rather than here,
         // where the tier it replaced declared two images: they are buffers,
         // and [`crate::cmaa2`]'s header says why the graph owns them all the
@@ -11143,24 +11143,6 @@ impl ForwardRenderer {
         } else {
             1.0
         };
-    }
-
-    /// Caps both of CMAA2's append lists at `cap` entries, or restores the
-    /// capacities the frame's own extent implies.
-    ///
-    /// **This exists so a test can reach the overflow path**, and it says so
-    /// rather than pretending to be a quality knob. `crate::cmaa2`'s two lists
-    /// are sized as a fraction of the frame; a frame dense enough in edges to
-    /// fill one is not something a fixture can draw at a readable size, and
-    /// what happens when one fills — the entries past the cap are dropped and
-    /// their pixels keep the colour they came in with — is the one behaviour of
-    /// that tier no picture shows.
-    /// `crates/crcbl/tests/mesh_e2e/cmaa2.rs` is the caller.
-    ///
-    /// Takes effect on the next [`begin_frame`](Self::begin_frame), on
-    /// [`set_render_scale`](Self::set_render_scale)'s terms exactly.
-    pub fn set_cmaa2_capacity_cap(&mut self, cap: Option<u32>) {
-        self.cmaa2.set_capacity_cap(cap);
     }
 
     /// The render scale in force, after the clamp
@@ -19432,8 +19414,8 @@ mod tests {
 
         // **The two antialiasing tiers share one resolve slot**, so neither is
         // a plain removal and neither belongs in the loop above: switching
-        // CMAA2 off while FXAA stays on swaps five passes for one rather than
-        // losing five, and the loop's "gain nothing in their place" comparison
+        // CMAA2 off while FXAA stays on swaps three passes for one rather than
+        // losing three, and the loop's "gain nothing in their place" comparison
         // is exactly what that violates. Three frames say it instead.
         let both = all_on.clone();
         let cheap = without(&mut renderer, RenderEffects::CMAA2);
@@ -19441,13 +19423,7 @@ mod tests {
             &mut renderer,
             RenderEffects::CMAA2.union(RenderEffects::ANTIALIASING),
         );
-        const CMAA2_PASSES: [&str; 5] = [
-            "cmaa2-clear",
-            "cmaa2-edges",
-            "cmaa2-shapes",
-            "cmaa2-accumulate",
-            "cmaa2-apply",
-        ];
+        const CMAA2_PASSES: [&str; 3] = ["cmaa2-edges", "cmaa2-shapes", "cmaa2-apply"];
         let resolve_of = |labels: &[String]| -> Vec<String> {
             labels
                 .iter()
@@ -22926,78 +22902,6 @@ mod tests {
             pool,
             commands,
         }
-    }
-
-    /// **A frame whose CMAA2 lists are far too small still records, compiles
-    /// and executes.**
-    ///
-    /// The overflow path on the one device that has no shader at all, which is
-    /// what makes this a different question from
-    /// `crates/crcbl/tests/mesh_e2e/cmaa2.rs`'s version: that one reads a real
-    /// frame back and says the picture degraded safely, and this one says the
-    /// *frame* is legal — five passes recorded, every buffer declared, and a
-    /// graph the compiler accepts — at a capacity small enough that
-    /// `crcbl_shaders::cmaa2`'s floor is the only thing holding the lists off
-    /// zero. A capacity that reached a buffer of no bytes would be refused by
-    /// the seam here, before any device could be asked to run it.
-    #[test]
-    fn a_frame_whose_cmaa2_lists_are_capped_to_nothing_is_still_a_legal_frame() {
-        let (_recorder, device, queue) = open();
-        let device = device.as_ref();
-        let mut renderer =
-            ForwardRenderer::new(device, queue, Format::Rgba8UnormSrgb).expect("built");
-        renderer.set_effect_request(EffectRequest {
-            programmatic: EffectOverride::none().force(RenderEffects::CMAA2, Some(true)),
-            ..EffectRequest::default()
-        });
-        // Zero, which `Cmaa2Params::with_capacity_cap` lifts to a single entry
-        // — the smallest list this tier can be asked for, and the one whose
-        // buffers are closest to the size the seam refuses outright.
-        renderer.set_cmaa2_capacity_cap(Some(0));
-        renderer
-            .begin_frame(
-                device,
-                &Camera::default(),
-                &DirectionalLight::default(),
-                TEST_EXTENT,
-            )
-            .expect("write");
-
-        let imported = swapchain_image(device);
-        let mut pool = crate::TransientPool::new();
-        let mut graph = crate::RenderGraph::new(queue);
-        let target = graph.import_image("target", imported);
-        renderer.add_passes(&mut graph, &pool, target, TEST_EXTENT);
-        let compiled = graph.compile(&pool).expect("a legal frame");
-        let labels: Vec<String> = compiled
-            .passes()
-            .iter()
-            .map(|pass| pass.label().to_string())
-            .collect();
-        for label in [
-            "cmaa2-clear",
-            "cmaa2-edges",
-            "cmaa2-shapes",
-            "cmaa2-accumulate",
-            "cmaa2-apply",
-        ] {
-            assert!(
-                labels.iter().any(|recorded| recorded == label),
-                "a capped frame must still record `{label}`: {labels:#?}"
-            );
-        }
-
-        let mut encoder = device.create_command_encoder(&crcbl_hal::CommandEncoderDesc {
-            label: Some("capped cmaa2 frame"),
-            queue,
-        });
-        compiled
-            .execute(device, &mut pool, encoder.as_mut(), None)
-            .expect("the graph executed");
-        let commands = encoder.finish().expect("recording succeeded");
-        device.destroy_command_buffer(commands);
-        renderer.destroy(device);
-        pool.destroy(device);
     }
 
     /// A stand-in for the acquired swapchain image the frame normally ends in,

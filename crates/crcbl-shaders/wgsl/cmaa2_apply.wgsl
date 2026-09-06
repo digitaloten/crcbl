@@ -2,8 +2,6 @@ struct Cmaa2Params_std140_0
 {
     @align(16) viewport_x_0 : u32,
     @align(4) viewport_y_0 : u32,
-    @align(8) candidate_capacity_0 : u32,
-    @align(4) item_capacity_0 : u32,
 };
 
 @binding(2) @group(0) var<uniform> params_0 : Cmaa2Params_std140_0;

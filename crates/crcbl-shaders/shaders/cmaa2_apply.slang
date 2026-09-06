@@ -1,21 +1,21 @@
 // crcbl-targets: spirv, wgsl, msl, dxil
 
-// `docs/plan/49-antialiasing.md`'s CMAA2 tier, last of its five passes: the
+// `docs/plan/49-antialiasing.md`'s CMAA2 tier, last of its three passes: the
 // deferred colour apply. `cmaa2_edges.slang`'s header describes the tier and
 // what each pass hands the next.
 //
-// Every pixel reads the fixed-point total `cmaa2_shapes.slang`'s
-// `accumulateMain` left for it, converts it **once**, and mixes it with its own
-// colour. A pixel no blend item reached has a total of zero and is written
-// through unchanged, which is most of the frame.
+// Every pixel reads the fixed-point total `cmaa2_shapes.slang` left for it,
+// converts it **once**, and mixes it with its own colour. A pixel no run
+// reached has a total of zero and is written through unchanged, which is most
+// of the frame.
 //
-// # This one is a fullscreen draw where the four before it are dispatches
+// # This one is a fullscreen draw where the two before it are dispatches
 //
 // It is the pass that writes the caller's target, and a caller's target is a
 // swapchain image. **A swapchain image cannot be a storage image**: Vulkan has
 // no storage-image view of an sRGB format at all, and WebGPU's storage-texture
 // format list excludes every sRGB encoding for the same reason — the write
-// would have to skip the encode the format exists to apply. So the compute
+// would have to skip the encode the format exists to apply. So the two compute
 // stages hand their result to a fullscreen triangle, which writes the target
 // the way every other resolve in this engine does.
 //
@@ -46,16 +46,11 @@ struct Cmaa2Params
     uint viewport_x;
     /// Its height.
     uint viewport_y;
-    /// How many entries the candidate list holds. Unread here, and present
-    /// because one block serves every pass.
-    uint candidate_capacity;
-    /// How many blend items the item list holds, likewise.
-    uint item_capacity;
 };
 
 // Declaration order is binding order and it is load-bearing on Metal — see
 // `crcbl_shaders::declaration_order`. This file has a layout of its own: the
-// four compute passes bind five storage buffers this stage has no use for, and
+// two compute passes bind a writable edge buffer this stage has no use for, and
 // a writable storage buffer is not something a vertex stage may be handed at
 // all.
 
@@ -65,7 +60,7 @@ struct Cmaa2Params
 Texture2D<float4> source;
 
 /// `[pixel * ACCUM_WORDS]`: three colour words and a weight word per pixel, as
-/// `cmaa2_shapes.slang`'s `accumulateMain` left them.
+/// `cmaa2_shapes.slang` left them.
 ///
 /// `StructuredBuffer` rather than `RWStructuredBuffer`: nothing here writes it,
 /// and read-only is what lets it be bound to a fragment stage on every backend.
@@ -130,7 +125,7 @@ float4 fragmentMain(FullscreenOutput input) : SV_Target
                      * INV_BLEND_FIXED_POINT_SCALE;
 
     // The accumulated colour is already premultiplied by its own weights, so
-    // the pixel keeps whatever share of itself the items left over. A total
+    // the pixel keeps whatever share of itself the runs left over. A total
     // above one means more coverage was attributed to this pixel than it has —
     // several runs claiming the same pixel — and the honest answer there is the
     // weighted mean of what claimed it rather than a colour scaled past its

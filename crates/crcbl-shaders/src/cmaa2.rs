@@ -6,41 +6,33 @@
 //! mirror in the crate that owns the sources means there is one place to change
 //! rather than one per consumer.
 //!
-//! # What the tier stores, and how wide each list is
+//! # What the tier stores
 //!
-//! `docs/plan/49-antialiasing.md`'s CMAA2 rung is five passes over five
-//! buffers: two counters, one edge word per pixel, a **candidate** list of edge
-//! pixels, a **blend item** list, and a fixed-point accumulation of
-//! [`ACCUM_WORDS`] per pixel. The two lists have capacities rather than a
-//! bound — how many edges a frame has is a property of the picture — so
-//! [`candidate_capacity`] and [`item_capacity`] set them as a fraction of the
-//! frame, and a frame that exceeds one **drops** the entries past it.
+//! `docs/plan/49-antialiasing.md`'s CMAA2 rung is three passes over two
+//! buffers: one edge word per pixel, and a fixed-point accumulation of
+//! [`ACCUM_WORDS`] per pixel. **Neither is a list and neither has a capacity**
+//! — both are indexed by the pixel they belong to, so both are exactly as long
+//! as the frame and nothing can arrive that does not fit.
 //!
-//! Dropping is the whole degradation: the pixel an unwritten item was for keeps
-//! its unresolved colour, and `cmaa2_shapes.slang` clamps every count it reads
-//! back to the same capacity, so nothing is ever read or written outside a
-//! list. `crates/crcbl/tests/mesh_e2e/cmaa2.rs` drives a frame past a
-//! deliberately tiny cap and holds that.
+//! That is a property the tier is built for rather than a convenience. An
+//! earlier shape appended edge pixels and blend items to buffers sized as a
+//! fraction of the frame and dropped what arrived past the capacity, and which
+//! entries won the room was the device's scheduling — so a frame with enough
+//! edges to fill a list was not a function of its inputs.
+//! `crates/crcbl/tests/mesh_e2e/cmaa2.rs`'s
+//! `a_dense_edge_frame_resolves_to_the_same_bytes_every_time` is what holds the
+//! shape that replaced it.
 
 /// Invocations per workgroup, matching `[numthreads(64, 1, 1)]` in every
 /// `cmaa2_*.slang` compute entry point.
 pub const WORKGROUP_SIZE: u32 = 64;
 
-/// Bytes of the uniform block: four `uint`s.
+/// Bytes of the uniform block: two `uint`s and the tail `std140` pads them to.
 ///
-/// Sixteen bytes of value, which is already the multiple of 16 `std140`
-/// requires of a uniform block's size, so there is no tail padding to write.
+/// Eight bytes of value. `std140` rounds a uniform block's size up to a
+/// multiple of 16, so the buffer is sixteen and [`Cmaa2Params::to_bytes`]
+/// leaves the second half zero — a shader reads neither half of it.
 pub const PARAMS_SIZE: usize = 16;
-
-/// Words in the control buffer: the candidate count and the blend-item count.
-///
-/// Both are atomic adds, so both start each frame at zero — `clearMain` is the
-/// dispatch that writes it, on `clear_counters.slang`'s terms.
-pub const CONTROL_WORDS: u32 = 2;
-
-/// Words per blend item: the pixel being blended, the pixel whose colour it
-/// takes a share of, and that share as a fixed-point weight.
-pub const ITEM_WORDS: u32 = 3;
 
 /// Words per pixel in the accumulation: three colour channels and the weight
 /// they were premultiplied by.
@@ -55,10 +47,10 @@ pub const WORD_BYTES: u64 = 4;
 /// Two to the twentieth, and the choice is bounded from both sides. **Below**:
 /// one part in 1048576 is three orders of magnitude finer than the `1/255` step
 /// of an eight-bit target, so no accumulated colour can be quantised into a
-/// different written texel. **Above**: a `u32` holds 4096 of these, and a pixel
-/// takes a handful of blend items whose weights are each at most
-/// [`MAX_BLEND_WEIGHT`] and whose colours are saturated into `[0, 1]`, so the
-/// sum has no path to a wrap.
+/// different written texel. **Above**: the sum a pixel can be given is bounded
+/// by [`MAX_BLEND_WEIGHT`], [`MAX_LINE_LENGTH`] and [`WALK_DIRECTIONS`], and
+/// this module's `the_fixed_point_scale_is_finer_than_the_target_and_wider_than_the_sum`
+/// is where that bound is arithmetic against `u32::MAX` rather than a claim.
 ///
 /// It is a power of two, which is what makes the conversion back exact — see
 /// `INV_BLEND_FIXED_POINT_SCALE` in `shaders/cmaa2_apply.slang`.
@@ -70,6 +62,17 @@ pub const BLEND_FIXED_POINT_SCALE: u32 = 1 << 20;
 /// the argument for leaving a longer run unclassified rather than truncating
 /// it.
 pub const MAX_LINE_LENGTH: u32 = 64;
+
+/// How many runs can reach one pixel's accumulation.
+///
+/// Four, and they are the four walks `cmaa2_shapes.slang`'s `blend_line` can be
+/// entered from with this pixel in its reach: the horizontal run this pixel is
+/// an element of, the horizontal run the pixel *below* it is an element of —
+/// which hands its share across the boundary they share — and the same pair
+/// down the two columns. A run is maximal, so a pixel is an element of at most
+/// one in each axis, and it is the across-the-boundary partner of at most one
+/// more in each.
+pub const WALK_DIRECTIONS: u32 = 4;
 
 /// The luma delta across a pixel boundary, in display space, below which
 /// `cmaa2_edges.slang` marks no edge.
@@ -92,55 +95,8 @@ pub const LOCAL_CONTRAST_ADAPTATION_FACTOR: f32 = 2.0;
 /// This transcription's number; that shader's constant argues it.
 pub const U_SHAPE_WEIGHT: f32 = 0.5;
 
-/// The largest share one blend item may carry: half a pixel.
+/// The largest share one contribution may carry: half a pixel.
 pub const MAX_BLEND_WEIGHT: f32 = 0.5;
-
-/// What fraction of a frame's pixels the candidate list holds — one in
-/// [`CANDIDATE_DIVISOR`].
-///
-/// An eighth. A frame whose edge pixels are more than an eighth of it is not a
-/// picture with edges in it, it is noise, and the tier has nothing useful to do
-/// with the rest — so this buys the list's memory back rather than sizing for a
-/// frame nobody draws. Past it the candidates are dropped, which this module's
-/// header describes.
-pub const CANDIDATE_DIVISOR: u32 = 8;
-
-/// The same for the blend-item list — one in [`ITEM_DIVISOR`].
-///
-/// A quarter, which is twice the candidate list: a pixel may be covered by a
-/// horizontal run and a vertical one, and each covered pixel is one item.
-pub const ITEM_DIVISOR: u32 = 4;
-
-/// The floor under both capacities, in entries.
-///
-/// One workgroup. A frame small enough for a divided capacity to fall under
-/// this is a frame where the memory saved is nothing and the arithmetic is all
-/// that is left, and a capacity of zero would make the whole tier a no-op with
-/// no tell.
-pub const MIN_LIST_CAPACITY: u32 = WORKGROUP_SIZE;
-
-/// How many candidates a frame of `width` by `height` may append before they
-/// start being dropped.
-#[must_use]
-pub fn candidate_capacity(width: u32, height: u32) -> u32 {
-    list_capacity(width, height, CANDIDATE_DIVISOR)
-}
-
-/// How many blend items it may append, likewise.
-#[must_use]
-pub fn item_capacity(width: u32, height: u32) -> u32 {
-    list_capacity(width, height, ITEM_DIVISOR)
-}
-
-/// A frame's pixel count divided by `divisor`, floored at [`MIN_LIST_CAPACITY`].
-///
-/// Saturating rather than wrapping: an extent a caller got wrong is a capacity
-/// that is merely large, and the buffer built from it is refused by the seam
-/// where a wrapped one would be silently tiny.
-fn list_capacity(width: u32, height: u32, divisor: u32) -> u32 {
-    let pixels = width.max(1).saturating_mul(height.max(1));
-    (pixels / divisor).max(MIN_LIST_CAPACITY)
-}
 
 /// The uniform block, matching `struct Cmaa2Params` in every `cmaa2_*.slang`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -150,14 +106,10 @@ pub struct Cmaa2Params {
     pub viewport_x: u32,
     /// Its height.
     pub viewport_y: u32,
-    /// See [`candidate_capacity`].
-    pub candidate_capacity: u32,
-    /// See [`item_capacity`].
-    pub item_capacity: u32,
 }
 
 impl Cmaa2Params {
-    /// The block for a frame of `width` by `height` at the default capacities.
+    /// The block for a frame of `width` by `height`.
     ///
     /// The extent is floored at one texel: a zero extent would make the pixel
     /// count zero, and a dispatch of no groups is something Metal rejects
@@ -167,31 +119,6 @@ impl Cmaa2Params {
         Self {
             viewport_x: width.max(1),
             viewport_y: height.max(1),
-            candidate_capacity: candidate_capacity(width, height),
-            item_capacity: item_capacity(width, height),
-        }
-    }
-
-    /// The same block with both list capacities clamped to `cap`.
-    ///
-    /// **A window for a test**, on [`crate::exposure`]'s terms: the overflow
-    /// path is the one behaviour of this tier that no picture shows, and the
-    /// only way to reach it on a frame small enough to check is to make the
-    /// lists small. `crates/crcbl/tests/mesh_e2e/cmaa2.rs` is the caller.
-    ///
-    /// A cap of zero is lifted to **one** entry rather than honoured: a buffer
-    /// of no bytes is refused at the seam, so a frame built from it would fail
-    /// before any device saw it, which is not the path a caller asking for a
-    /// tiny list wants to test. The floor here is one and not
-    /// [`MIN_LIST_CAPACITY`] on purpose — a cap that could not go below a whole
-    /// workgroup would be a knob that cannot reach what it exists for.
-    #[must_use]
-    pub fn with_capacity_cap(self, cap: u32) -> Self {
-        let cap = cap.max(1);
-        Self {
-            candidate_capacity: self.candidate_capacity.min(cap),
-            item_capacity: self.item_capacity.min(cap),
-            ..self
         }
     }
 
@@ -199,15 +126,7 @@ impl Cmaa2Params {
     #[must_use]
     pub fn to_bytes(self) -> [u8; PARAMS_SIZE] {
         let mut bytes = [0u8; PARAMS_SIZE];
-        for (slot, value) in [
-            self.viewport_x,
-            self.viewport_y,
-            self.candidate_capacity,
-            self.item_capacity,
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        for (slot, value) in [self.viewport_x, self.viewport_y].into_iter().enumerate() {
             let at = slot * 4;
             bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
         }
@@ -239,18 +158,13 @@ mod tests {
     ///
     /// Nothing else can catch a rename or a reorder: the shaders compile either
     /// way and the buffer is bound either way, and a block whose members moved
-    /// would read a capacity as an extent and dispatch over the wrong frame.
+    /// would read a height as a width and dispatch over the wrong frame.
     /// Reading the sources is the check, and they are hash-pinned by the
     /// manifest, so they are the files the committed artifacts were built from.
     #[test]
     fn every_cmaa2_source_declares_the_block_to_bytes_writes() {
         for (name, source) in SOURCES {
-            for member in [
-                "uint viewport_x;",
-                "uint viewport_y;",
-                "uint candidate_capacity;",
-                "uint item_capacity;",
-            ] {
+            for member in ["uint viewport_x;", "uint viewport_y;"] {
                 assert!(
                     source.contains(member),
                     "{name} does not declare `{member}`"
@@ -263,7 +177,39 @@ mod tests {
         }
     }
 
-    /// The four compute entry points declare the workgroup size this crate
+    /// **The two compute sources bind four resources and stop**, which is the
+    /// shape the tier's determinism rests on.
+    ///
+    /// The buffers this tier has left are both indexed by pixel, so neither can
+    /// overflow and neither drops. A fifth binding would be a working buffer
+    /// that is not one-per-pixel — the append lists that used to sit at
+    /// bindings 4 and 6 are what this refuses — and nothing else here would
+    /// notice, because a dropped entry is a pixel that merely keeps its own
+    /// colour. It is also what makes one bind-group layout serve both files:
+    /// `crcbl_render::cmaa2` builds exactly one, with these four entries.
+    #[test]
+    fn the_two_compute_sources_bind_the_same_four_resources_and_no_more() {
+        for name in ["cmaa2_edges.slang", "cmaa2_shapes.slang"] {
+            let source = SOURCES
+                .into_iter()
+                .find(|(source_name, _)| *source_name == name)
+                .expect("a listed source")
+                .1;
+            for binding in 0..4 {
+                assert!(
+                    source.contains(&format!("[[vk::binding({binding}, 0)]]")),
+                    "{name} does not declare binding {binding}"
+                );
+            }
+            assert!(
+                !source.contains("[[vk::binding(4, 0)]]"),
+                "{name} declares a fifth binding, so this tier has a working buffer \
+                 that is not one word per pixel"
+            );
+        }
+    }
+
+    /// The two compute entry points declare the workgroup size this crate
     /// sizes their dispatches with.
     ///
     /// A mismatch is this tier's quietest failure: a dispatch sized against the
@@ -289,19 +235,14 @@ mod tests {
     /// both.
     ///
     /// The shaders have no `#include`, so each of these is two copies of one
-    /// number — and a drift in any of them is a filter that reads a list it did
-    /// not fill or scales a weight nothing divides back.
+    /// number — and a drift in any of them is a filter that scales a weight
+    /// nothing divides back or walks a run of a length the host did not price.
     #[test]
     fn the_shared_constants_are_spelled_the_same_in_the_sources() {
         let edges = SOURCES[0].1;
         let shapes = SOURCES[1].1;
         let apply = SOURCES[2].1;
         for (name, source, declaration) in [
-            (
-                "cmaa2_edges.slang",
-                edges,
-                format!("static const uint CONTROL_WORDS = {CONTROL_WORDS};"),
-            ),
             (
                 "cmaa2_edges.slang",
                 edges,
@@ -324,11 +265,6 @@ mod tests {
                 "cmaa2_shapes.slang",
                 shapes,
                 format!("static const uint ACCUM_WORDS = {ACCUM_WORDS};"),
-            ),
-            (
-                "cmaa2_shapes.slang",
-                shapes,
-                format!("static const uint ITEM_WORDS = {ITEM_WORDS};"),
             ),
             (
                 "cmaa2_shapes.slang",
@@ -380,8 +316,6 @@ mod tests {
         let bytes = Cmaa2Params {
             viewport_x: 1920,
             viewport_y: 1080,
-            candidate_capacity: 7,
-            item_capacity: 9,
         }
         .to_bytes();
         assert_eq!(bytes.len(), PARAMS_SIZE);
@@ -394,68 +328,44 @@ mod tests {
             |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("4"));
         assert_eq!(uint_at(0), 1920, "viewport_x at offset 0");
         assert_eq!(uint_at(4), 1080, "viewport_y at offset 4");
-        assert_eq!(uint_at(8), 7, "candidate_capacity at offset 8");
-        assert_eq!(uint_at(12), 9, "item_capacity at offset 12");
+        assert_eq!(uint_at(8), 0, "the std140 tail is padding and stays zero");
+        assert_eq!(uint_at(12), 0, "the std140 tail is padding and stays zero");
     }
 
-    /// The capacities are a fraction of the frame, and never zero.
-    ///
-    /// The floor is the half that matters: a capacity of zero is a tier that
-    /// records five passes and filters nothing, which is indistinguishable from
-    /// a correct frame with no edges in it.
+    /// An extent of nothing still asks for a frame, because a dispatch of no
+    /// groups is something Metal refuses outright.
     #[test]
-    fn the_capacities_scale_with_the_frame_and_never_reach_zero() {
-        assert_eq!(candidate_capacity(1920, 1080), 1920 * 1080 / 8);
-        assert_eq!(item_capacity(1920, 1080), 1920 * 1080 / 4);
-        for (width, height) in [(0, 0), (1, 1), (8, 8), (16, 16)] {
-            assert!(candidate_capacity(width, height) >= MIN_LIST_CAPACITY);
-            assert!(item_capacity(width, height) >= MIN_LIST_CAPACITY);
-        }
-    }
-
-    /// An extent large enough to overflow a `u32` pixel count still produces a
-    /// capacity rather than a wrapped one.
-    #[test]
-    fn a_capacity_is_saturated_rather_than_wrapped() {
-        let capacity = candidate_capacity(u32::MAX, u32::MAX);
-        assert_eq!(capacity, u32::MAX / CANDIDATE_DIVISOR);
-    }
-
-    /// The cap a test drives the overflow path with lowers both lists and
-    /// touches nothing else.
-    #[test]
-    fn the_capacity_cap_lowers_both_lists_and_leaves_the_extent_alone() {
-        let params = Cmaa2Params::for_extent(256, 192).with_capacity_cap(4);
-        assert_eq!(params.viewport_x, 256);
-        assert_eq!(params.viewport_y, 192);
-        assert_eq!(params.candidate_capacity, 4);
-        assert_eq!(params.item_capacity, 4);
-
-        // A cap above what the frame asked for leaves the frame's own answer.
-        let uncapped = Cmaa2Params::for_extent(256, 192).with_capacity_cap(u32::MAX);
-        assert_eq!(uncapped, Cmaa2Params::for_extent(256, 192));
-
-        // And a cap of zero is one entry, not none: a buffer of no bytes is
-        // refused at the seam, and that is not the path this knob is for.
-        let floored = Cmaa2Params::for_extent(256, 192).with_capacity_cap(0);
-        assert_eq!(floored.candidate_capacity, 1);
-        assert_eq!(floored.item_capacity, 1);
+    fn a_zero_extent_is_floored_at_one_texel() {
+        assert_eq!(
+            Cmaa2Params::for_extent(0, 0),
+            Cmaa2Params {
+                viewport_x: 1,
+                viewport_y: 1,
+            }
+        );
     }
 
     /// The fixed-point scale's two bounds, as arithmetic rather than as prose.
     ///
     /// Below: one step of the scale is finer than one step of an eight-bit
-    /// channel. Above: a `u32` holds enough of them that a pixel taking every
-    /// blend item a run of [`MAX_LINE_LENGTH`] can produce, in both axes, is
-    /// nowhere near a wrap.
+    /// channel.
+    ///
+    /// Above: the widest total one pixel's weight word can be given, over-bound
+    /// by giving it **every element** of a run of [`MAX_LINE_LENGTH`] in each
+    /// of the [`WALK_DIRECTIONS`] a run can reach it from — which is far more
+    /// than the four contributions the walk can actually leave, one per
+    /// direction — and each at the largest share [`MAX_BLEND_WEIGHT`] allows.
+    /// The three colour words are the same weights scaled by a channel
+    /// saturated into `[0, 1]`, so the weight word bounds all four.
     #[test]
     fn the_fixed_point_scale_is_finer_than_the_target_and_wider_than_the_sum() {
         assert!(1.0 / f64::from(BLEND_FIXED_POINT_SCALE) < 1.0 / 255.0);
-        let widest = f64::from(u32::MAX) / f64::from(BLEND_FIXED_POINT_SCALE);
-        let reachable = f64::from(MAX_LINE_LENGTH) * 2.0 * f64::from(MAX_BLEND_WEIGHT);
+        let per_contribution = f64::from(MAX_BLEND_WEIGHT) * f64::from(BLEND_FIXED_POINT_SCALE);
+        let widest = f64::from(WALK_DIRECTIONS) * f64::from(MAX_LINE_LENGTH) * per_contribution;
         assert!(
-            widest > reachable,
-            "a u32 holds {widest} weights of one and a pixel can be claimed by {reachable}"
+            widest < f64::from(u32::MAX),
+            "a pixel can be given up to {widest} of fixed point and a u32 holds {}",
+            f64::from(u32::MAX)
         );
     }
 }

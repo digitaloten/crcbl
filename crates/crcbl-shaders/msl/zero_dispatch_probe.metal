@@ -3,14 +3,14 @@
 #include <metal_texture>
 using namespace metal;
 
-#line 60 "shaders/zero_dispatch_probe.slang"
+#line 61 "shaders/zero_dispatch_probe.slang"
 struct Amplification_0
 {
     float4 tint_0;
 };
 
 
-#line 84
+#line 85
 [[object]] void culledTaskMain(uint3 group_0 [[threadgroup_position_in_grid]], Amplification_0 object_data* _slang_mesh_payload [[payload]], mesh_grid_properties  _slang_mgp)
 {
     thread Amplification_0 amplification_0;

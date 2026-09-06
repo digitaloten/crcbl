@@ -46,28 +46,25 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
   `Z` or `U`, an analytic coverage integral over the run, and a deferred colour
   apply.
 
-  Five passes where SMAA drew three, and only the last is a draw: `cmaa2-clear`,
-  `cmaa2-edges`, `cmaa2-shapes` and `cmaa2-accumulate` are compute, and
-  `cmaa2-apply` is one fullscreen triangle. The three between the ends run per
-  **edge** rather than per pixel — the candidate list and the blend items live
-  in storage buffers a work-group appends to with atomic counters — which is the
-  cost model the tier was chosen for: on lavapipe the resolve slot gets
-  **cheaper** than FXAA's, 2.451 ms to 1.728 ms at 1920×1080, while on radv it
-  goes 0.027 ms to 0.109 ms.
+  Three passes where SMAA drew three fullscreen ones, and only the last of these
+  is a draw: `cmaa2-edges` and `cmaa2-shapes` are compute and `cmaa2-apply` is
+  one fullscreen triangle. All three cover the frame, and the classification is
+  proportional to the frame's **edges** rather than its pixels because a pixel
+  whose edge word is zero returns after one buffer read — which is the cost
+  model the tier was chosen for: on lavapipe the resolve slot gets **cheaper**
+  than FXAA's, 2.542 ms to 1.744 ms at 1920×1080, while on radv it goes 0.023 ms
+  to 0.093 ms.
 
-  **A frame is a function of its inputs, not of the scheduler.** Blend items
-  reach a pixel in whatever order the device runs them and float addition is not
-  associative, so the accumulation is integer, in fixed point at
-  `crcbl_shaders::cmaa2::BLEND_FIXED_POINT_SCALE`, and converts back once per
-  pixel in the apply. Two runs of one frame come back byte-identical on radv and
-  on lavapipe.
-
-  **The two append lists have capacities, and a frame that exceeds one degrades
-  visibly rather than corrupting anything**: entries past the cap are dropped,
-  every count read back is clamped to the capacity, nothing is written outside a
-  list, and the pixels those entries were for keep their unresolved colour.
-  `ForwardRenderer::set_cmaa2_capacity_cap` is what the tests drive a frame past
-  a tiny cap with.
+  **A frame is a function of its inputs, not of the scheduler**, and the tier
+  has two independent reasons to be. Shares reach a pixel in whatever order the
+  device runs them and float addition is not associative, so the accumulation is
+  integer, in fixed point at `crcbl_shaders::cmaa2::BLEND_FIXED_POINT_SCALE`,
+  and converts back once per pixel in the apply. And **nothing is queued and
+  nothing is dropped**: both of the tier's buffers hold one entry per pixel, so
+  there is no capacity a dense frame can exceed and no choice for a device to
+  make about which entries survive. A grid of small spun cubes covering a
+  256×192 frame resolves to the same bytes over eight independent runs, on radv
+  and on lavapipe.
 
   No lookup table: the shape rules are analytic, so nothing is cooked and
   nothing is committed as data. The tier is historyless, so it is golden-safe.

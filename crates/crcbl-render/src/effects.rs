@@ -176,15 +176,16 @@ bitflags::bitflags! {
         /// tenths of a second. `docs/plan/48-post-processing.md` carries the
         /// adaptation as the next rung.
         const AUTO_EXPOSURE = 1 << 6;
-        /// CMAA2 — the edge detect that appends a candidate list, the shape
-        /// classification with its bounded long-edge search, the fixed-point
-        /// accumulate and the deferred colour apply.
+        /// CMAA2 — the edge detect that writes one edge word per pixel, the
+        /// shape classification with its bounded long-edge search, adding its
+        /// fixed-point shares straight into the accumulation, and the deferred
+        /// colour apply.
         /// [`Antialiasing::Cmaa2`] is the rung a settings file names it by.
         ///
         /// `docs/plan/49-antialiasing.md`'s antialiasing ladder, second rung and
         /// **the higher of the two antialiasing tiers**. When it is set it takes
         /// the resolve slot instead of [`ANTIALIASING`](Self::ANTIALIASING):
-        /// five passes where FXAA is one, over-blurring far less of the thin
+        /// three passes where FXAA is one, over-blurring far less of the thin
         /// geometry and text that is FXAA's known weakness, and costing what a
         /// frame's *edges* cost rather than what its pixels do.
         ///
@@ -367,7 +368,7 @@ pub enum Antialiasing {
     None,
     /// FXAA 3.11 — [`RenderEffects::ANTIALIASING`], one fullscreen pass.
     Fxaa,
-    /// CMAA2 — [`RenderEffects::CMAA2`], five passes and the higher tier.
+    /// CMAA2 — [`RenderEffects::CMAA2`], three passes and the higher tier.
     Cmaa2,
 }
 

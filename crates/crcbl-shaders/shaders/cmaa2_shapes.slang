@@ -1,10 +1,10 @@
 // crcbl-targets: spirv, wgsl, msl, dxil
 
-// `docs/plan/49-antialiasing.md`'s CMAA2 tier, second and third of its five
-// passes: the candidate classification with its bounded long-edge search, and
-// the fixed-point accumulate that turns the blend items it appends into a
-// per-pixel total. `cmaa2_edges.slang`'s header describes the tier, what each
-// pass hands the next, and which parts of the reference this transcribes.
+// `docs/plan/49-antialiasing.md`'s CMAA2 tier, second of its three passes: the
+// shape classification with its bounded long-edge search, which adds every
+// share it derives straight into the per-pixel fixed-point accumulation.
+// `cmaa2_edges.slang`'s header describes the tier, what each pass hands the
+// next, and which parts of the reference this transcribes.
 //
 // # The shapes, and where their coverage comes from
 //
@@ -32,27 +32,38 @@
 // difference from the SMAA tier this replaces — that one carried two committed
 // tables and this one carries none.
 //
-// # Why the accumulate is a pass of its own, and in fixed point
+// # One invocation per pixel, and why that is not the same as per candidate
 //
-// A run's blend items land on pixels other runs also land on, so a pixel's
-// total is a sum over items that reach it in whatever order the device
+// This pass used to run once per entry of a **candidate list** the edge pass
+// appended to, sized as a fraction of the frame, which dropped whatever arrived
+// past its capacity. `cmaa2_edges.slang`'s header carries what that cost: the
+// picture became a function of the device's scheduling on any frame dense
+// enough to fill the list. So the list is gone and the dispatch covers the
+// frame, with each invocation testing the same predicate the append tested — a
+// non-zero `edges` word. The work per candidate is unchanged; a non-candidate
+// costs one buffer read and an early return.
+//
+// # Fixed point, because a float sum in arrival order is not a function of its
+// inputs
+//
+// A run's shares land on pixels other runs also land on, so a pixel's total is
+// a sum over contributions that reach it in whatever order the device
 // schedules. **Float addition is not associative**, so a float sum in arrival
-// order makes a frame a function of the scheduler rather than of its inputs —
-// which is the property `docs/plan/49-antialiasing.md` spends its length
-// refusing, and which no golden could hold. Integer addition is associative and
-// commutative, so the accumulation is in fixed point at
+// order would make a frame a function of the scheduler rather than of its
+// inputs — which is the property `docs/plan/49-antialiasing.md` spends its
+// length refusing, and which no golden could hold. Integer addition is
+// associative and commutative, so the accumulation is in fixed point at
 // `BLEND_FIXED_POINT_SCALE` and the one conversion back to float happens per
-// pixel in `cmaa2_apply.slang`, after every item has landed.
+// pixel in `cmaa2_apply.slang`, after every share has landed.
 //
-// That "after" is why it is a separate dispatch: a pixel cannot read its own
-// total until every workgroup that might add to it has finished, and the only
-// ordering this engine has between workgroups is a pass boundary — the same
-// argument `clear_counters.slang` makes about its zero.
+// That "after" is why the resolve is a separate dispatch: a pixel cannot read
+// its own total until every workgroup that might add to it has finished, and
+// the only ordering this engine has between workgroups is a pass boundary.
 //
 // # No `#include`
 //
 // `cmaa2_edges.slang` repeats `bloom_composite.slang`'s rule. The parameter
-// block and the seven resource declarations below are that file's, copied,
+// block and the four resource declarations below are that file's, copied,
 // because one bind-group layout serves both.
 
 /// Everything the CMAA2 passes take from the CPU — `cmaa2_edges.slang` declares
@@ -63,51 +74,30 @@ struct Cmaa2Params
     uint viewport_x;
     /// Its height.
     uint viewport_y;
-    /// How many entries the candidate list holds.
-    uint candidate_capacity;
-    /// How many blend items the item list holds.
-    uint item_capacity;
 };
 
 // Declaration order is binding order and it is load-bearing on Metal — see
-// `crcbl_shaders::declaration_order`. These seven are `cmaa2_edges.slang`'s, in
+// `crcbl_shaders::declaration_order`. These four are `cmaa2_edges.slang`'s, in
 // its order, because one layout serves both files.
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<Cmaa2Params> params;
 
-/// The tonemapped frame. Read by `accumulateMain` for the colour a blend item
-/// carries a share of; `shapesMain` reads only the edge buffer.
+/// The tonemapped frame, read for the colour a share carries part of.
 [[vk::binding(1, 0)]]
 Texture2D<float4> source;
 
-/// `[0]`: candidates appended. `[1]`: blend items appended.
-[[vk::binding(2, 0)]]
-RWStructuredBuffer<Atomic<uint> > control;
-
 /// `[pixel]`: the edge bits `cmaa2_edges.slang` wrote.
-[[vk::binding(3, 0)]]
+[[vk::binding(2, 0)]]
 RWStructuredBuffer<uint> edges;
-
-/// `[slot]`: the pixel index of each edge pixel.
-[[vk::binding(4, 0)]]
-RWStructuredBuffer<uint> candidates;
 
 /// `[pixel * ACCUM_WORDS]`: the fixed-point accumulation, three colour words
 /// and a weight word per pixel.
-[[vk::binding(5, 0)]]
+[[vk::binding(3, 0)]]
 RWStructuredBuffer<Atomic<uint> > accum;
-
-/// `[slot * ITEM_WORDS]`: the blend items — the pixel being blended, the pixel
-/// whose colour it takes a share of, and that share as a fixed-point weight.
-[[vk::binding(6, 0)]]
-RWStructuredBuffer<uint> items;
 
 /// Words per pixel in `accum`, matching `crcbl_shaders::cmaa2::ACCUM_WORDS`.
 static const uint ACCUM_WORDS = 4;
-
-/// Words per blend item, matching `crcbl_shaders::cmaa2::ITEM_WORDS`.
-static const uint ITEM_WORDS = 3;
 
 /// Bit 0 of an `edges` word: an edge on the pixel's west boundary.
 static const uint EDGE_LEFT = 1;
@@ -131,10 +121,11 @@ static const uint MAX_LINE_LENGTH = 64;
 /// Two to the twentieth. The precision argument is in two halves and both
 /// matter. **Below**: one part in 1048576 is three orders of magnitude finer
 /// than the `1/255` step of an eight-bit target, so the quantisation cannot
-/// move a written texel. **Above**: a `uint` holds 4096 of these, and a pixel
-/// takes a handful of blend items, so the accumulation has no path to a wrap —
-/// the weights it sums are each at most `MAX_BLEND_WEIGHT` and the colours they
-/// scale are saturated into `[0, 1]`.
+/// move a written texel. **Above**: the accumulation has no path to a wrap, and
+/// `crcbl_shaders::cmaa2`'s headroom test is where that is arithmetic rather
+/// than prose — it derives the largest total a pixel can be given from
+/// `MAX_LINE_LENGTH`, `MAX_BLEND_WEIGHT` and the walk directions below, and
+/// compares it against what a `uint` holds.
 static const float BLEND_FIXED_POINT_SCALE = 1048576.0;
 
 /// How much of the `U` reconstruction is applied — matching
@@ -147,14 +138,14 @@ static const float BLEND_FIXED_POINT_SCALE = 1048576.0;
 /// `cmaa2_edges.slang`'s header and `docs/backlog.md`.
 static const float U_SHAPE_WEIGHT = 0.5;
 
-/// The smallest share worth an item, as a fraction.
+/// The smallest share worth accumulating, as a fraction.
 ///
 /// Half the `1/255` step of an eight-bit target: a contribution below it cannot
-/// move the pixel it lands on, and every one of them is a list slot, an atomic
-/// add and a dispatched invocation.
+/// move the pixel it lands on, and every one of them is four atomic adds and a
+/// texel fetch.
 static const float MIN_BLEND_WEIGHT = 0.001953125;
 
-/// The largest share one item may carry.
+/// The largest share one contribution may carry.
 ///
 /// Half: a reconstructed line is at most half a pixel off the aliased boundary
 /// it replaces, so a pixel is at most half its neighbour's.
@@ -235,33 +226,55 @@ float boundary_height(float t, int start, int end, bool u_shape)
     return -0.5 * float(start) * (1.0 - t) - 0.5 * float(end) * t;
 }
 
-/// Appends one blend item, dropping it where the list is already full.
+/// Adds `target`'s share of the colour at `from` into the accumulation.
 ///
-/// **A slot past the capacity is dropped**, and that is the whole of what an
-/// overflowing frame costs: the counter has moved, so `accumulateMain` clamps
-/// what it reads back to the same capacity, and the pixel the dropped item was
-/// for keeps its unresolved colour. There is no path from an overflow to a
-/// write outside this buffer.
+/// **Four integer atomic adds and nothing read back**, which is what makes the
+/// total a pixel ends the pass with independent of the order the invocations
+/// producing it ran in. Nothing is queued, nothing is dropped, and there is no
+/// capacity to exceed — `cmaa2_edges.slang`'s header carries what the append
+/// list this replaces cost.
 ///
-/// A share below [`MIN_BLEND_WEIGHT`] is not appended at all: it cannot move
-/// the pixel it lands on, and every item is a slot, an atomic add and a
-/// dispatched invocation.
-void append_item(uint target, uint from, float share)
+/// A share below [`MIN_BLEND_WEIGHT`] is skipped: it cannot move the pixel it
+/// lands on, and it is still four atomics and a fetch.
+///
+/// The weight is quantised **once** and the colour is scaled by the quantised
+/// value, so the three colour words and the weight word stay consistent with
+/// each other — a colour scaled by the unrounded share and divided by the
+/// rounded one in `cmaa2_apply.slang` would not be the colour that was read.
+///
+/// The two index guards are not reachable from the walks below, which stay
+/// inside the frame by construction — a run's pixels all carry the boundary bit
+/// that says the pixel across it exists — and they are here because these are
+/// unchecked buffer indices: the cost is a comparison and what it buys is that
+/// a future walk cannot scribble outside the accumulation.
+void accumulate(uint target, uint from, float share)
 {
     if (share < MIN_BLEND_WEIGHT)
     {
         return;
     }
-    uint slot = control[1].add(1);
-    if (slot < params.item_capacity)
+    uint pixels = params.viewport_x * params.viewport_y;
+    if (target >= pixels || from >= pixels)
     {
-        items[slot * ITEM_WORDS + 0] = target;
-        items[slot * ITEM_WORDS + 1] = from;
-        items[slot * ITEM_WORDS + 2] = uint(min(share, MAX_BLEND_WEIGHT) * BLEND_FIXED_POINT_SCALE);
+        return;
     }
+
+    uint width = params.viewport_x;
+    int2 texel = int2(int(from % width), int(from / width));
+    // Saturated, so the products below cannot exceed the weight and the
+    // headroom argument holds for any frame — including one an earlier pass
+    // left above one.
+    float3 color = saturate(source.Load(int3(texel, 0)).rgb);
+    uint weight = uint(min(share, MAX_BLEND_WEIGHT) * BLEND_FIXED_POINT_SCALE);
+    float scaled = float(weight);
+
+    accum[target * ACCUM_WORDS + 0].add(uint(color.r * scaled));
+    accum[target * ACCUM_WORDS + 1].add(uint(color.g * scaled));
+    accum[target * ACCUM_WORDS + 2].add(uint(color.b * scaled));
+    accum[target * ACCUM_WORDS + 3].add(weight);
 }
 
-/// Appends the blend items one classified run leaves.
+/// Accumulates the shares one classified run leaves.
 ///
 /// `first` is the pixel index of the run's first element, `stride` the index
 /// step between consecutive elements — one along a row, a row's width down a
@@ -282,8 +295,8 @@ void append_item(uint target, uint from, float share)
 /// exactly zero — and an eighth of the pixel above the line belongs below it and
 /// an eighth below belongs above, which is a mix a filter must make and a mean
 /// says is unnecessary. So the two areas are integrated separately, and a pixel
-/// the line crosses appends **two** items.
-void emit_line(uint first, uint stride, uint len, uint offset, int start, int end)
+/// the line crosses contributes **two** shares.
+void blend_line(uint first, uint stride, uint len, uint offset, int start, int end)
 {
     if (start == 0 || end == 0)
     {
@@ -326,37 +339,39 @@ void emit_line(uint first, uint stride, uint len, uint offset, int start, int en
         uint pixel = first + i * stride;
         // `below` is area this pixel should have had from the other side of the
         // boundary, and `above` the same for the pixel across it.
-        append_item(pixel, pixel - offset, below);
-        append_item(pixel - offset, pixel, above);
+        accumulate(pixel, pixel - offset, below);
+        accumulate(pixel - offset, pixel, above);
     }
 }
 
-/// One invocation per candidate slot: classify the runs that **start** at this
-/// candidate and append their blend items.
+/// One invocation per pixel: classify the runs that **start** at this pixel and
+/// accumulate their shares.
 ///
-/// Only a run's first pixel does the work, so a run of length `n` is walked
-/// once rather than `n` times — which is what keeps this pass proportional to
-/// the frame's edges. A pixel may start a horizontal run and a vertical one,
-/// and both are processed.
+/// A pixel with no edge word returns immediately — that is the predicate the
+/// retired candidate list was filled on, tested in place. Of the pixels that do
+/// carry one, only a run's first does the walk, so a run of length `n` is
+/// walked once rather than `n` times. A pixel may start a horizontal run and a
+/// vertical one, and both are processed.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void shapesMain(uint3 thread: SV_DispatchThreadID)
 {
-    // **Clamped to the capacity**, not to the counter: an overflowing frame
-    // left the counter above the list it could write, and a dispatch that
-    // trusted the counter would read slots nothing filled.
-    uint count = min(control[0].load(), params.candidate_capacity);
-    uint slot = thread.x;
-    if (slot >= count)
+    uint index = thread.x;
+    uint width = params.viewport_x;
+    uint pixels = width * params.viewport_y;
+    if (index >= pixels)
     {
         return;
     }
 
-    uint index = candidates[slot];
-    uint width = params.viewport_x;
+    uint own = edges[index];
+    if (own == 0)
+    {
+        return;
+    }
+
     uint x = index % width;
     uint y = index / width;
-    uint own = edges[index];
 
     // A horizontal run starts here when this pixel carries a north boundary and
     // the pixel to its west does not.
@@ -369,7 +384,7 @@ void shapesMain(uint3 thread: SV_DispatchThreadID)
         }
         if (len <= MAX_LINE_LENGTH)
         {
-            emit_line(index, 1, len, width, horizontal_turn(x, y), horizontal_turn(x + len, y));
+            blend_line(index, 1, len, width, horizontal_turn(x, y), horizontal_turn(x + len, y));
         }
     }
 
@@ -384,48 +399,7 @@ void shapesMain(uint3 thread: SV_DispatchThreadID)
         }
         if (len <= MAX_LINE_LENGTH)
         {
-            emit_line(index, width, len, 1, vertical_turn(x, y), vertical_turn(x, y + len));
+            blend_line(index, width, len, 1, vertical_turn(x, y), vertical_turn(x, y + len));
         }
     }
-}
-
-/// One invocation per blend item: add its share of one pixel's colour to
-/// another pixel's fixed-point total.
-///
-/// **Order-independent by construction.** Every invocation here does four
-/// integer atomic adds and reads nothing back, so the total a pixel ends with
-/// is the same whatever order the device runs them in — which is what makes a
-/// frame this tier resolved a function of its inputs.
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void accumulateMain(uint3 thread: SV_DispatchThreadID)
-{
-    uint count = min(control[1].load(), params.item_capacity);
-    uint slot = thread.x;
-    if (slot >= count)
-    {
-        return;
-    }
-
-    uint target = items[slot * ITEM_WORDS + 0];
-    uint from = items[slot * ITEM_WORDS + 1];
-    uint weight = items[slot * ITEM_WORDS + 2];
-    uint pixels = params.viewport_x * params.viewport_y;
-    if (target >= pixels || from >= pixels)
-    {
-        return;
-    }
-
-    uint width = params.viewport_x;
-    int2 texel = int2(int(from % width), int(from / width));
-    // Saturated, so the products below cannot exceed the weight and the
-    // accumulation's headroom argument holds for any frame — including one an
-    // earlier pass left above one.
-    float3 color = saturate(source.Load(int3(texel, 0)).rgb);
-    float share = float(weight);
-
-    accum[target * ACCUM_WORDS + 0].add(uint(color.r * share));
-    accum[target * ACCUM_WORDS + 1].add(uint(color.g * share));
-    accum[target * ACCUM_WORDS + 2].add(uint(color.b * share));
-    accum[target * ACCUM_WORDS + 3].add(weight);
 }

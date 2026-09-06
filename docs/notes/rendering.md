@@ -2236,3 +2236,43 @@ change — two triangles per segment, expanded in NDC by a pixel width from a
 constant — not a new pass. `push_stroke`'s bevel logic is a screen-space helper
 that does not transfer to a world-space segment whose two ends have different
 depths, so "lift `push_stroke`" is probably still not the answer.
+
+## CMAA2's append lists made a dense frame a function of the schedule (2026-09-06)
+
+The tier first shipped with five passes and two lists: `cmaa2-edges` appended
+every edge pixel to a candidate list, `cmaa2-shapes` ran once per candidate and
+appended each coverage share as a blend item, and `cmaa2-accumulate` ran once
+per item. Each list was an atomic counter into a buffer sized as a fraction of
+the frame (`CANDIDATE_DIVISOR` 8, `ITEM_DIVISOR` 4) and each **dropped** what
+arrived past its capacity, with every count read back clamped so nothing was
+ever written outside a list. Which entries won the room was the device's
+scheduling of the work-groups that produced them, so the tier's determinism held
+only while a frame's edges fitted. Reproduced twice: with CMAA2 temporarily in
+`RenderEffects::DEFAULT_STACK`, four of six runs of
+`the_specular_aa_scene_draws_the_same_frame_on_every_geometry_path` differed
+between the mesh-shader and indirect-count paths (240, 186, 42 and 264 channels,
+worst by 77); and `a_dense_edge_frame_resolves_to_the_same_bytes_every_time` — a
+grid of small spun cubes covering a 256×192 frame — moved up to 2411 of its
+pixels between runs of one frame on radv, on every one of three attempts.
+
+Both lists left. The classification became one invocation per pixel testing the
+predicate the append used to test, and every share now goes into the fixed-point
+accumulation directly as four integer atomic adds. Both buffers the tier has
+left hold one entry per pixel, so there is no capacity to exceed. The sabotage
+that shows the observer's teeth on a different axis: zero the weight word's add
+in `cmaa2_shapes.slang`'s `accumulate` and
+`cmaa2_changes_a_band_along_the_edges_and_nothing_else` goes red on its "moved
+pixels" claim.
+
+**Dropping the two list passes cost nothing on radv and saved time on
+lavapipe.** Against the five-pass build at `15d6bca`, measured by
+`docs/plan/49-antialiasing.md`'s protocol in the same session: on radv the
+resolve slot goes **0.095 → 0.093 ms** (`cmaa2-clear` 0.001, `cmaa2-edges`
+0.043, `cmaa2-shapes` 0.026, `cmaa2-accumulate` 0.002, `cmaa2-apply` 0.023
+before) and the whole frame **1.562 → 1.571 ms**, which is inside the run-to-run
+spread either way; on lavapipe the slot goes **2.004 → 1.744 ms** (0.101, 0.112,
+0.108, 0.108, 1.575 before) and the whole frame **102.307 → 101.344 ms**. The
+saving is the two dispatches themselves: each cost about a tenth of a
+millisecond on lavapipe whatever it was asked to do, which is that driver's
+fixed cost per dispatch, and the work they were doing did not go away — it moved
+into `cmaa2-shapes`, whose own row is unchanged.

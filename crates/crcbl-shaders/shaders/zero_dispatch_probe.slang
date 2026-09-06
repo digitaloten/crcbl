@@ -3,7 +3,8 @@
 // An amplification stage that dispatches **zero** mesh groups for half of its
 // groups, feeding `mesh_shader.slang`'s mesh stage.
 //
-// `docs/backlog.md`'s D3D12 mesh-shading entry is being bisected: WARP reports
+// `docs/notes/backends.md`'s D3D12 mesh-shading record is being bisected: WARP
+// reports
 // `MeshShaderTier = TIER_1`, survives every combination of {direct
 // `DispatchMesh`, indirect `ExecuteIndirect`} x {mesh only, amplified} that
 // `crcbl-dx12`'s probes drive — including 1024 amplification groups through one

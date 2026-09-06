@@ -1832,23 +1832,13 @@ no tier. What the slice did not do:
   definition. A run with Intel's published source beside it is the missing
   evidence; the shipped values pass the sweep this file's observer measured, on
   both drivers, and nothing stronger is claimed for them.
-- **The out-of-bounds half of the overflow behaviour is invisible without
-  GPU-assisted validation.** Robust buffer access discards a store past a
-  binding's size, so removing the append guard in `cmaa2_shapes.slang` changes
-  no readback at all — the sabotage only shows as
-  `VUID-vkCmdDispatch-storageBuffers-06936` under
-  `VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT`, which no gate turns on. What
-  `a_frame_that_overflows_the_lists_still_finishes_and_stays_finite` actually
-  guards is the visible half: the frame completes and the dropped entries leave
-  their pixels unresolved. A gate that runs GPU-AV over the e2e suites would
-  cover the rest, and would catch this class everywhere rather than here.
 - **No backend but Vulkan has drawn it.** The Metal, DXIL and WGSL artifacts are
   compiled and committed and `crcbl-shaders`' guard tests read the sources, but
   every frame measured came out of radv and lavapipe. The mesh e2e suite names
   no backend, so running it under `CRCBL_GPU=mtl`/`dx12`/`wgpu` is the whole of
   the missing evidence — no new test.
 - **No demo asks for `CMAA2`, so the browser has never run it**, and the
-  browser-gate cost is unmeasured: five passes where FXAA is one. The default
+  browser-gate cost is unmeasured: three passes where FXAA is one. The default
   flip above is what would change that, and it is the reason to measure the
   browser before taking it rather than after.
 - **The pass fusion plan 48 describes has not landed, so the edge detect
@@ -1861,12 +1851,20 @@ no tier. What the slice did not do:
   allocated transiently each frame; at 1920×1080 that is about 33 MB. Nothing
   has measured whether it matters, and a packed two-word form is the obvious
   first thing to try if it does.
-- **The per-edge passes dispatch over the list capacity, not the list count.**
-  `cmaa2-shapes` and `cmaa2-accumulate` each run a fixed number of groups sized
-  from the capacity and exit early on invocations past the counter, because the
-  count lives on the device and the graph has no indirect dispatch. The measured
-  cost is in plan 49 and is small; an indirect dispatch would make the tier's
-  cost track the frame's edges the way its cost model claims.
+- **`a_dense_edge_frame_resolves_to_the_same_bytes_every_time` opens a device
+  per resolve.** `DENSE_RESOLVES` independent devices, because the claim is
+  about what a fresh device produces rather than what one device repeats; on
+  lavapipe that is about five seconds of the mesh e2e suite for one test, on
+  radv under a second. A single device resolving the same frame eight times
+  would be a cheaper test of a weaker claim, and nobody has decided the suite
+  needs the cheaper one.
+- **A run longer than `MAX_LINE_LENGTH` is left unclassified, and no test
+  observes that branch.** `cmaa2_shapes.slang` walks a run of like boundaries to
+  at most `crcbl_shaders::cmaa2::MAX_LINE_LENGTH` pixels and emits nothing for a
+  run that reaches it; no test names the constant, so nothing asserts that such
+  a run keeps its unresolved colour rather than being truncated and blended. A
+  fixture with one straight silhouette longer than the bound is the missing
+  observer.
 
 ### What auto-exposure left owed (2026-08-29)
 
@@ -16828,12 +16826,3 @@ draws, and expansion would have meant a width in world or screen units, a
 miter/round decision at every joint, and four vertices where there are two. If a
 caller ever needs a thick world-space line, that is the argument to revisit, and
 `push_stroke` is still the thing to lift.
-
-## Two shader headers still cite the backlog for the dx12 WARP record (2026-09-06)
-
-`crates/crcbl-shaders/shaders/task_write_probe.slang` and
-`zero_dispatch_probe.slang` open with "`docs/backlog.md`'s D3D12 mesh-shading
-entry is being bisected"; that bisection now lives in `docs/notes/backends.md`.
-Not repointed with the split because a shader source's comment is hashed into
-the committed manifest, so the edit is a `compile-shaders.sh` regeneration — it
-rides with the next slice that regenerates the artifacts anyway.

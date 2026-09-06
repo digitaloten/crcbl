@@ -1,8 +1,8 @@
 //! CMAA2 through the frame, measured against the same scene without it.
 //!
-//! `crcbl_render::cmaa2` records five passes into the resolve slot —
-//! `cmaa2-clear`, `cmaa2-edges`, `cmaa2-shapes`, `cmaa2-accumulate` and
-//! `cmaa2-apply` — where [`RenderEffects::ANTIALIASING`] records one. What a GPU
+//! `crcbl_render::cmaa2` records three passes into the resolve slot —
+//! `cmaa2-edges`, `cmaa2-shapes` and `cmaa2-apply` — where
+//! [`RenderEffects::ANTIALIASING`] records one. What a GPU
 //! test can say about that is not what a golden would say (a blessed picture of
 //! an antialiased cube is a picture of *something*, and stays green when the
 //! filter degrades into a blur or into a copy). It is the shape of the
@@ -10,13 +10,13 @@
 //! same scene — `docs/plan/49-antialiasing.md` says in as many words that CMAA2
 //! is held to its observer:
 //!
-//! * **The frame changed at all.** Five passes that ran and wrote their source
+//! * **The frame changed at all.** Three passes that ran and wrote their source
 //!   through would leave the frame byte-identical to the no-AA one, which is
 //!   the whole failure mode a blessed image cannot see.
 //! * **It changed in a band along the silhouettes and nowhere else.** CMAA2
 //!   classifies only pixels its edge pass marked, so a pixel with no luma
 //!   discontinuity anywhere near it must come out of the apply untouched. A
-//!   filter that lost its candidate list, read the wrong texel or accumulated a
+//!   filter that lost its edge predicate, read the wrong texel or accumulated a
 //!   weight nothing derived touches the flat faces too — and the flat faces are
 //!   most of this frame.
 //! * **It changed by a little, not by a lot.** A reconstructed line is at most
@@ -33,8 +33,10 @@
 //! Two more live here that the tier this replaced had no need of, because it
 //! was three fullscreen draws and this one is a scatter into shared memory:
 //! [`the_same_frame_resolves_to_the_same_bytes_twice`] and
-//! [`a_frame_that_overflows_the_lists_still_finishes_and_stays_finite`]. Each
-//! carries its own argument.
+//! [`a_dense_edge_frame_resolves_to_the_same_bytes_every_time`]. Each carries
+//! its own argument, and between them they cover the two ways a scatter stops
+//! being a function of its inputs — the arithmetic it sums in, and what it does
+//! when there is more to sum than it planned for.
 //!
 //! # Both tiers are drawn, because they share one slot
 //!
@@ -55,9 +57,12 @@
 //! different rasteriser.
 
 use crate::harness::Headless;
-use crate::mesh_scene::{mesh_camera, place_cube, render_mesh};
+use crate::mesh_scene::{MESH_EXTENT, MESH_SECONDS, mesh_camera, place, place_cube, render_mesh};
+use crcbl::math::{Mat4, Vec3};
+use crcbl::render::scene::{DEMO_CUBE, DEMO_UNTINTED};
 use crcbl::render::{
-    EffectOverride, EffectRequest, ForwardRenderer, Projection, RenderEffects, TransientPool,
+    Camera, EffectOverride, EffectRequest, ForwardRenderer, Projection, RenderEffects,
+    TransientPool,
 };
 use crcbl_golden::Image;
 
@@ -70,9 +75,9 @@ const EDGE_LUMA_STEP: f64 = 12.0;
 
 /// How far from an edge pixel the resolve is allowed to reach, in pixels.
 ///
-/// CMAA2's blend items move a pixel toward one *immediate* neighbour — the one
-/// on the other side of the boundary the run was found along — so a changed
-/// pixel is either on an edge or beside one. The extra pixel of slack is for
+/// CMAA2 moves a pixel toward one *immediate* neighbour — the one on the other
+/// side of the boundary the run was found along — so a changed pixel is either
+/// on an edge or beside one. The extra pixel of slack is for
 /// the mask itself: the shader detects its edges on its own luma estimate at
 /// its own threshold, which need not agree pixel-for-pixel with the one this
 /// file computes on the read-back frame.
@@ -221,9 +226,8 @@ fn difference(base: &Image, frame: &Image, band: &[bool]) -> Difference {
     }
 }
 
-/// The demo cube drawn with the resolve slot set as the caller asks, and
-/// CMAA2's two append lists capped at `cap` entries where one is given.
-fn cube_frame(effects: EffectOverride, cap: Option<u32>) -> Image {
+/// The demo cube drawn with the resolve slot set as the caller asks.
+fn cube_frame(effects: EffectOverride) -> Image {
     let headless = Headless::open_for_mesh();
     let mut pool = TransientPool::new();
     let mut renderer =
@@ -233,7 +237,6 @@ fn cube_frame(effects: EffectOverride, cap: Option<u32>) -> Image {
         programmatic: effects,
         ..EffectRequest::default()
     });
-    renderer.set_cmaa2_capacity_cap(cap);
     place_cube(&mut renderer);
     let camera = mesh_camera(Projection::default());
     render_mesh(&headless, &mut renderer, &mut pool, &camera, None)
@@ -247,13 +250,187 @@ fn tier(fxaa: bool, cmaa2: bool) -> EffectOverride {
         .force(RenderEffects::CMAA2, Some(cmaa2))
 }
 
+/// How many cells across the frame [`dense_frame`] cuts it into, and how many
+/// down.
+///
+/// Sixteen by twelve is the frame's own 4:3 in whole cells, so a cell is a
+/// square sixteen texels on a side and every cube in the grid covers the same
+/// area of the frame as every other.
+const DENSE_COLUMNS: u32 = 16;
+
+/// The other half of that grid — see [`DENSE_COLUMNS`].
+const DENSE_ROWS: u32 = 12;
+
+/// Half the world height [`dense_frame`]'s orthographic camera covers.
+///
+/// The unit, and it is arbitrary: an orthographic projection has no perspective
+/// divide, so the grid's pixel geometry is fixed by [`DENSE_COLUMNS`] and
+/// [`DENSE_ROWS`] alone and this is only the scale everything else is measured
+/// in.
+const DENSE_HALF_HEIGHT: f32 = 1.0;
+
+/// How wide each cube in the grid is, as a fraction of its cell.
+///
+/// Under one so the cubes do not touch. A grid of cubes that met would have one
+/// silhouette around the outside of it instead of
+/// [`DENSE_COLUMNS`] × [`DENSE_ROWS`] of them, which is the opposite of what
+/// this fixture exists for.
+const DENSE_CUBE_FILL: f32 = 0.65;
+
+/// Where [`dense_frame`]'s camera stands, and the depth range it sees.
+///
+/// Down the `+Z` axis at a grid that sits in the `z = 0` plane, with the cubes'
+/// own half-extent well inside the slab: an orthographic camera clips on a
+/// finite far plane, unlike the perspective one every other frame in this suite
+/// is drawn with.
+const DENSE_CAMERA_DISTANCE: f32 = 4.0;
+
+/// The near plane of that camera — see [`DENSE_CAMERA_DISTANCE`].
+const DENSE_NEAR: f32 = 0.1;
+
+/// Its far plane, likewise.
+const DENSE_FAR: f32 = 10.0;
+
+/// How many times [`a_dense_edge_frame_resolves_to_the_same_bytes_every_time`]
+/// resolves its frame.
+///
+/// Eight, and the count is the sensitivity. Whether two runs of a
+/// scheduling-dependent resolve happen to agree is itself a matter of chance,
+/// so one repeat only catches a defect that fires more often than not and every
+/// repeat past that is another chance for a rarer one to show. Eight is where
+/// that stops being worth another device and another frame — and it is well
+/// past what the shape this replaced needed, which moved this frame by
+/// thousands of pixels on every comparison of every attempt.
+const DENSE_RESOLVES: usize = 8;
+
+/// **A frame packed with silhouettes**, resolved through CMAA2.
+///
+/// [`cube_frame`]'s scene is one cube on a flat background, which is a few
+/// thousand edge pixels in a frame of 49152 — comfortably inside anything this
+/// tier would size a working set for. This one is a grid of small spun cubes
+/// covering the whole frame, so the edges are a large fraction of it rather
+/// than a band across the middle, which is the regime where a per-frame budget
+/// and the picture start to interact.
+///
+/// The cubes are placed on the `z = 0` plane and drawn through an
+/// **orthographic** camera, which is the one projection in this suite that maps
+/// the grid onto the frame with no perspective divide: every cube is the same
+/// number of texels across, so the fixture's density is a property of
+/// [`DENSE_COLUMNS`], [`DENSE_ROWS`] and [`DENSE_CUBE_FILL`] and not of where a
+/// cube happens to sit.
+fn dense_frame(effects: EffectOverride) -> Image {
+    let headless = Headless::open_for_mesh();
+    let mut pool = TransientPool::new();
+    let mut renderer =
+        ForwardRenderer::new(headless.device.as_ref(), headless.queue, headless.format)
+            .expect("the forward renderer builds");
+    renderer.set_effect_request(EffectRequest {
+        programmatic: effects,
+        ..EffectRequest::default()
+    });
+
+    let (width, height) = MESH_EXTENT;
+    let half_width = DENSE_HALF_HEIGHT * width as f32 / height as f32;
+    let cell = 2.0 * DENSE_HALF_HEIGHT / DENSE_ROWS as f32;
+    // The spin every mesh frame in this suite is drawn at, so each cube shows
+    // three differently-coloured faces and the grid carries interior edges as
+    // well as silhouettes.
+    let spin = ForwardRenderer::spin(MESH_SECONDS);
+    for row in 0..DENSE_ROWS {
+        for column in 0..DENSE_COLUMNS {
+            let x = -half_width + (column as f32 + 0.5) * (2.0 * half_width / DENSE_COLUMNS as f32);
+            let y = -DENSE_HALF_HEIGHT + (row as f32 + 0.5) * cell;
+            place(
+                &mut renderer,
+                DEMO_CUBE,
+                DEMO_UNTINTED,
+                Mat4::from_translation(Vec3::new(x, y, 0.0))
+                    * Mat4::from_scale(Vec3::splat(cell * DENSE_CUBE_FILL))
+                    * spin,
+            );
+        }
+    }
+
+    let camera = Camera {
+        eye: Vec3::new(0.0, 0.0, DENSE_CAMERA_DISTANCE),
+        target: Vec3::ZERO,
+        up: Vec3::Y,
+        projection: Projection::Orthographic {
+            half_height: DENSE_HALF_HEIGHT,
+            near: DENSE_NEAR,
+            far: DENSE_FAR,
+        },
+    };
+    render_mesh(&headless, &mut renderer, &mut pool, &camera, None)
+}
+
+/// **A frame whose edges are most of it resolves to the same bytes every
+/// time.**
+///
+/// [`the_same_frame_resolves_to_the_same_bytes_twice`] makes the same claim on
+/// the one-cube scene, and the two do not replace each other: that one holds
+/// the accumulation's arithmetic — a float sum in arrival order would move on a
+/// scene with any edges at all — and this one holds the tier's *working set*.
+/// A pass that keeps its intermediate results in a fixed budget and discards
+/// what does not fit has a picture that depends on **which** entries won the
+/// room, and which ones win is the device's scheduling of the work-groups that
+/// produced them. That is invisible on a scene whose edges fit and is the whole
+/// behaviour on one whose edges do not, so the fixture has to be dense — see
+/// [`dense_frame`].
+///
+/// [`DENSE_RESOLVES`] independent runs, each opening its own device and
+/// submitting its own frame, all compared against the first. The count is the
+/// sensitivity: see that constant.
+#[test]
+#[ignore = "needs a real GPU; run crates/crcbl/tests/run-mesh-e2e.sh"]
+fn a_dense_edge_frame_resolves_to_the_same_bytes_every_time() {
+    let none = dense_frame(tier(false, false));
+    let first = dense_frame(tier(false, true));
+    let (width, height) = (first.width(), first.height());
+    let differing = |a: &Image, b: &Image| {
+        (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .filter(|&(x, y)| a.pixel(x, y) != b.pixel(x, y))
+            .count()
+    };
+
+    // **Not vacuous**, and this is the half that makes the rest mean something:
+    // a fixture the tier found no edges in would come back identical every run
+    // whatever the resolve did with it. The unresolved frame is what says CMAA2
+    // moved this one.
+    let resolved = differing(&none, &first);
+    let mut worst = 0usize;
+    for run in 1..DENSE_RESOLVES {
+        let again = dense_frame(tier(false, true));
+        let moved = differing(&first, &again);
+        eprintln!(
+            "crcbl mesh e2e: cmaa2 dense determinism — {width}x{height}, the \
+             resolve moved {resolved} pixels; run {run} differs from the first \
+             in {moved} pixels"
+        );
+        worst = worst.max(moved);
+    }
+
+    assert!(
+        resolved > 0,
+        "the dense frame is byte-identical with the tier on and off, so this \
+         fixture has nothing for the resolve to be nondeterministic about"
+    );
+    assert_eq!(
+        worst, 0,
+        "a dense-edge frame resolved {DENSE_RESOLVES} times differs from its \
+         own first run in up to {worst} pixels, so what the tier keeps depends \
+         on the order the device produced it in"
+    );
+}
+
 /// **CMAA2 softens the silhouettes and leaves the rest of the frame alone.**
 #[test]
 #[ignore = "needs a real GPU; run crates/crcbl/tests/run-mesh-e2e.sh"]
 fn cmaa2_changes_a_band_along_the_edges_and_nothing_else() {
-    let none = cube_frame(tier(false, false), None);
-    let fxaa = cube_frame(tier(true, false), None);
-    let cmaa2 = cube_frame(tier(false, true), None);
+    let none = cube_frame(tier(false, false));
+    let fxaa = cube_frame(tier(true, false));
+    let cmaa2 = cube_frame(tier(false, true));
 
     let (width, height) = (none.width(), none.height());
     let total = (width * height) as f64;
@@ -298,7 +475,7 @@ fn cmaa2_changes_a_band_along_the_edges_and_nothing_else() {
          {band_pixels} in the band of {total}"
     );
 
-    // **Five passes ran and something came out of them.**
+    // **Three passes ran and something came out of them.**
     assert!(
         against_cmaa2.changed as f64 / total >= MIN_CHANGED_FRACTION,
         "cmaa2 moved {} of {total} pixels, which is a resolve that wrote its \
@@ -322,7 +499,7 @@ fn cmaa2_changes_a_band_along_the_edges_and_nothing_else() {
     assert_eq!(
         against_cmaa2.changed_off_band, 0,
         "cmaa2 moved {} pixels with no luma discontinuity within {BAND_RADIUS}, \
-         so the apply is not reading its candidate list",
+         so the apply is not reading its edge buffer",
         against_cmaa2.changed_off_band
     );
 
@@ -346,14 +523,14 @@ fn cmaa2_changes_a_band_along_the_edges_and_nothing_else() {
 /// **The same frame resolves to the same bytes twice.**
 ///
 /// This is the assertion the tier's whole apply design exists for. CMAA2's
-/// blend items are *scattered*: a pixel's colour is a sum over items produced
-/// by different work-groups, which reach it in whatever order the device
-/// schedules. A float sum in that order would make the frame a function of the
-/// scheduler — `docs/plan/49-antialiasing.md`'s determinism argument, and the
-/// reason a golden could not be blessed on it — so
-/// `cmaa2_shapes.slang`'s `accumulateMain` sums in fixed point with integer
-/// atomics, which are associative and commutative, and
-/// `cmaa2_apply.slang` converts once, per pixel, after every item has landed.
+/// shares are *scattered*: a pixel's colour is a sum over contributions
+/// produced by different work-groups, which reach it in whatever order the
+/// device schedules. A float sum in that order would make the frame a function
+/// of the scheduler — `docs/plan/49-antialiasing.md`'s determinism argument,
+/// and the reason a golden could not be blessed on it — so
+/// `cmaa2_shapes.slang` sums in fixed point with integer atomics, which are
+/// associative and commutative, and `cmaa2_apply.slang` converts once, per
+/// pixel, after every share has landed.
 ///
 /// **Two whole runs, not two frames of one run.** Each `cube_frame` opens its
 /// own device, records its own graph and submits its own frame, so what this
@@ -366,8 +543,8 @@ fn cmaa2_changes_a_band_along_the_edges_and_nothing_else() {
 #[test]
 #[ignore = "needs a real GPU; run crates/crcbl/tests/run-mesh-e2e.sh"]
 fn the_same_frame_resolves_to_the_same_bytes_twice() {
-    let first = cube_frame(tier(false, true), None);
-    let second = cube_frame(tier(false, true), None);
+    let first = cube_frame(tier(false, true));
+    let second = cube_frame(tier(false, true));
 
     let differing = (0..first.height())
         .flat_map(|y| (0..first.width()).map(move |x| (x, y)))
@@ -387,105 +564,6 @@ fn the_same_frame_resolves_to_the_same_bytes_twice() {
     assert_eq!(
         differing, 0,
         "two runs of one frame differ in {differing} pixels, so the apply's \
-         accumulation depends on the order its items arrived in"
-    );
-}
-
-/// How many entries the overflow test leaves in each of CMAA2's lists.
-///
-/// Far below what this scene needs — the observer above prints the frame's edge
-/// pixel count and it is in the thousands — so the edge pass fills the candidate
-/// list within its first work-group and every classification after that is
-/// dropped. A cap rather than a smaller frame because the capacity is a
-/// *fraction* of the frame: there is no extent at which a cube's silhouette
-/// overflows the list it was sized for.
-const OVERFLOW_CAP: u32 = 8;
-
-/// **A frame that overflows both lists still finishes, and every pixel of it is
-/// a colour.**
-///
-/// The degradation this tier's capacities are chosen for: an entry past the cap
-/// is dropped, `cmaa2_shapes.slang` and its `accumulateMain` clamp every count
-/// they read back to the same capacity, and the pixel a dropped item was for
-/// keeps the colour it came in with. What must **not** happen is a write outside
-/// the list — which on a real device is another buffer's memory, and on a
-/// validation layer is an error the run never returns from.
-///
-/// Four things are asserted and the last two are the ones with teeth: the run
-/// completed, every pixel is a real colour rather than the uninitialised
-/// contents of an aliased transient, the frame is **not** the uncapped one — so
-/// the cap actually reached the shader and the drop path actually ran — and the
-/// cap left far less of the resolve than the uncapped frame carries, which is
-/// what says entries were dropped rather than merely reordered. Measured on
-/// radv and lavapipe at 2026-09-06: the capped frame differs from the
-/// unresolved one in 8 pixels where the uncapped frame differs in 788.
-///
-/// **What it cannot see is the write itself.** A device with robust buffer
-/// access discards a store past a bound descriptor's range, so removing the
-/// `slot < capacity` guard in `cmaa2_edges.slang` leaves this readback
-/// bit-identical; what catches it is Vulkan's **GPU-assisted** validation,
-/// which reports `VUID-vkCmdDispatch-storageBuffers-06936` against the
-/// candidate list and which the harness's validation gate then fails on.
-/// `docs/backlog.md` carries that the suite does not enable it by default.
-#[test]
-#[ignore = "needs a real GPU; run crates/crcbl/tests/run-mesh-e2e.sh"]
-fn a_frame_that_overflows_the_lists_still_finishes_and_stays_finite() {
-    let none = cube_frame(tier(false, false), None);
-    let capped = cube_frame(tier(false, true), Some(OVERFLOW_CAP));
-    let uncapped = cube_frame(tier(false, true), None);
-
-    let (width, height) = (capped.width(), capped.height());
-    let changed = |a: &Image, b: &Image| {
-        (0..height)
-            .flat_map(|y| (0..width).map(move |x| (x, y)))
-            .filter(|&(x, y)| a.pixel(x, y) != b.pixel(x, y))
-            .count()
-    };
-    let against_none = changed(&none, &capped);
-    let against_uncapped = changed(&uncapped, &capped);
-    eprintln!(
-        "crcbl mesh e2e: cmaa2 overflow — cap {OVERFLOW_CAP}: {against_none} pixels \
-         differ from the unresolved frame, {against_uncapped} from the uncapped one"
-    );
-
-    // The run reached here, which is the first claim: an out-of-bounds write
-    // past either list is a device loss or a validation error, and neither
-    // returns an image.
-    assert_eq!(
-        (capped.width(), capped.height()),
-        (none.width(), none.height()),
-        "the capped frame came back at a different extent"
-    );
-    // Every pixel is a colour. A transient buffer is aliased against other
-    // frames' memory, so a pixel the apply resolved out of an accumulation
-    // nothing zeroed would come back as whatever was last in that allocation —
-    // which the alpha channel is what catches, because every path out of
-    // `cmaa2_apply.slang` writes it opaque.
-    for y in 0..height {
-        for x in 0..width {
-            let pixel = capped.pixel(x, y).expect("inside the image");
-            assert_eq!(
-                pixel[3], 0xFF,
-                "({x}, {y}) came back as {pixel:?}, which is not a colour this \
-                 pass writes"
-            );
-        }
-    }
-    // And the overflow degraded the filter rather than removing it.
-    assert!(
-        against_uncapped > 0,
-        "the capped frame is byte-identical to the uncapped one, so the cap \
-         reached nothing and this test is measuring the frame it was not \
-         written for"
-    );
-    // **Most of the resolve was dropped**, which is what says the lists filled
-    // rather than merely being smaller than they might have been. A quarter is
-    // a bound with room in it either way: the measurement is two orders of
-    // magnitude apart, and a cap that dropped nothing would land at parity.
-    assert!(
-        against_none * 4 < against_uncapped,
-        "the capped frame moved {against_none} pixels off the unresolved frame \
-         against the uncapped frame's {against_uncapped}, which is not a list \
-         that filled"
+         accumulation depends on the order its shares arrived in"
     );
 }

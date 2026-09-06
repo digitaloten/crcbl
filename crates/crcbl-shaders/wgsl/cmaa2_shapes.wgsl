@@ -1,23 +1,15 @@
-@binding(2) @group(0) var<storage, read_write> control_0 : array<atomic<u32>>;
-
 struct Cmaa2Params_std140_0
 {
     @align(16) viewport_x_0 : u32,
     @align(4) viewport_y_0 : u32,
-    @align(8) candidate_capacity_0 : u32,
-    @align(4) item_capacity_0 : u32,
 };
 
 @binding(0) @group(0) var<uniform> params_0 : Cmaa2Params_std140_0;
-@binding(4) @group(0) var<storage, read_write> candidates_0 : array<u32>;
-
-@binding(3) @group(0) var<storage, read_write> edges_0 : array<u32>;
-
-@binding(6) @group(0) var<storage, read_write> items_0 : array<u32>;
+@binding(2) @group(0) var<storage, read_write> edges_0 : array<u32>;
 
 @binding(1) @group(0) var source_0 : texture_2d<f32>;
 
-@binding(5) @group(0) var<storage, read_write> accum_0 : array<atomic<u32>>;
+@binding(3) @group(0) var<storage, read_write> accum_0 : array<atomic<u32>>;
 
 fn edge_at_0( x_0 : u32,  y_0 : u32) -> u32
 {
@@ -86,40 +78,59 @@ fn boundary_height_0( t_0 : f32,  start_0 : i32,  end_0 : i32,  u_shape_0 : bool
     return -0.5f * f32(start_0) * (1.0f - t_0) - 0.5f * f32(end_0) * t_0;
 }
 
-fn append_item_0( target_0 : u32,  from_0 : u32,  share_0 : f32)
+fn accumulate_0( target_0 : u32,  from_0 : u32,  share_0 : f32)
 {
     if(share_0 < 0.001953125f)
     {
         return;
     }
-    var slot_0 : u32 = atomicAdd(&(control_0[i32(1)]), u32(1));
-    if(slot_0 < (params_0.item_capacity_0))
+    var pixels_0 : u32 = params_0.viewport_x_0 * params_0.viewport_y_0;
+    var _S3 : bool;
+    if(target_0 >= pixels_0)
     {
-        var _S3 : u32 = slot_0 * u32(3);
-        items_0[_S3] = target_0;
-        items_0[_S3 + u32(1)] = from_0;
-        items_0[_S3 + u32(2)] = u32(min(share_0, 0.5f) * 1.048576e+06f);
-    }
-    return;
-}
-
-fn emit_line_0( first_0 : u32,  stride_0 : u32,  len_0 : u32,  offset_0 : u32,  start_1 : i32,  end_1 : i32)
-{
-    var _S4 : bool;
-    if(start_1 == i32(0))
-    {
-        _S4 = true;
+        _S3 = true;
     }
     else
     {
-        _S4 = end_1 == i32(0);
+        _S3 = from_0 >= pixels_0;
     }
-    if(_S4)
+    if(_S3)
     {
         return;
     }
-    var _S5 : f32 = 1.0f / f32(len_0);
-    var _S6 : bool = start_1 == end_1;
+    var width_0 : u32 = params_0.viewport_x_0;
+    var _S4 : u32 = from_0 % params_0.viewport_x_0;
+    var _S5 : i32 = i32(_S4);
+    var _S6 : u32 = from_0 / width_0;
+    var _S7 : vec3<i32> = vec3<i32>(vec2<i32>(_S5, i32(_S6)), i32(0));
+    var color_0 : vec3<f32> = saturate((textureLoad((source_0), ((_S7)).xy, ((_S7)).z)).xyz);
+    var weight_0 : u32 = u32(min(share_0, 0.5f) * 1.048576e+06f);
+    var scaled_0 : f32 = f32(weight_0);
+    var _S8 : u32 = target_0 * u32(4);
+    var _S9 : u32 = atomicAdd(&(accum_0[_S8]), u32(color_0.x * scaled_0));
+    var _S10 : u32 = atomicAdd(&(accum_0[_S8 + u32(1)]), u32(color_0.y * scaled_0));
+    var _S11 : u32 = atomicAdd(&(accum_0[_S8 + u32(2)]), u32(color_0.z * scaled_0));
+    var _S12 : u32 = atomicAdd(&(accum_0[_S8 + u32(3)]), weight_0);
+    return;
+}
+
+fn blend_line_0( first_0 : u32,  stride_0 : u32,  len_0 : u32,  offset_0 : u32,  start_1 : i32,  end_1 : i32)
+{
+    var _S13 : bool;
+    if(start_1 == i32(0))
+    {
+        _S13 = true;
+    }
+    else
+    {
+        _S13 = end_1 == i32(0);
+    }
+    if(_S13)
+    {
+        return;
+    }
+    var _S14 : f32 = 1.0f / f32(len_0);
+    var _S15 : bool = start_1 == end_1;
     var i_0 : u32 = u32(0);
     for(;;)
     {
@@ -130,45 +141,45 @@ fn emit_line_0( first_0 : u32,  stride_0 : u32,  len_0 : u32,  offset_0 : u32,  
         {
             break;
         }
-        var near_0 : f32 = boundary_height_0(f32(i_0) * _S5, start_1, end_1, _S6);
-        var _S7 : u32 = i_0 + u32(1);
-        var far_0 : f32 = boundary_height_0(f32(_S7) * _S5, start_1, end_1, _S6);
+        var near_0 : f32 = boundary_height_0(f32(i_0) * _S14, start_1, end_1, _S15);
+        var _S16 : u32 = i_0 + u32(1);
+        var far_0 : f32 = boundary_height_0(f32(_S16) * _S14, start_1, end_1, _S15);
         if(near_0 <= 0.0f)
         {
-            _S4 = far_0 <= 0.0f;
+            _S13 = far_0 <= 0.0f;
         }
         else
         {
-            _S4 = false;
+            _S13 = false;
         }
         var below_1 : f32;
         var above_1 : f32;
-        if(_S4)
+        if(_S13)
         {
             below_1 = -0.5f * (near_0 + far_0);
             above_1 = 0.0f;
         }
         else
         {
-            var _S8 : bool;
+            var _S17 : bool;
             if(near_0 >= 0.0f)
             {
-                _S8 = far_0 >= 0.0f;
+                _S17 = far_0 >= 0.0f;
             }
             else
             {
-                _S8 = false;
+                _S17 = false;
             }
-            if(_S8)
+            if(_S17)
             {
-                var _S9 : f32 = 0.5f * (near_0 + far_0);
+                var _S18 : f32 = 0.5f * (near_0 + far_0);
                 below_1 = 0.0f;
-                above_1 = _S9;
+                above_1 = _S18;
             }
             else
             {
                 var crossing_0 : f32 = near_0 / (near_0 - far_0);
-                var _S10 : f32 = 0.5f * abs(min(near_0, far_0));
+                var _S19 : f32 = 0.5f * abs(min(near_0, far_0));
                 if(near_0 < 0.0f)
                 {
                     below_1 = crossing_0;
@@ -177,8 +188,8 @@ fn emit_line_0( first_0 : u32,  stride_0 : u32,  len_0 : u32,  offset_0 : u32,  
                 {
                     below_1 = 1.0f - crossing_0;
                 }
-                var _S11 : f32 = _S10 * below_1;
-                var _S12 : f32 = 0.5f * max(near_0, far_0);
+                var _S20 : f32 = _S19 * below_1;
+                var _S21 : f32 = 0.5f * max(near_0, far_0);
                 if(near_0 > 0.0f)
                 {
                     above_1 = crossing_0;
@@ -187,16 +198,16 @@ fn emit_line_0( first_0 : u32,  stride_0 : u32,  len_0 : u32,  offset_0 : u32,  
                 {
                     above_1 = 1.0f - crossing_0;
                 }
-                var _S13 : f32 = _S12 * above_1;
-                below_1 = _S11;
-                above_1 = _S13;
+                var _S22 : f32 = _S21 * above_1;
+                below_1 = _S20;
+                above_1 = _S22;
             }
         }
         var pixel_0 : u32 = first_0 + i_0 * stride_0;
-        var _S14 : u32 = pixel_0 - offset_0;
-        append_item_0(pixel_0, _S14, below_1);
-        append_item_0(_S14, pixel_0, above_1);
-        i_0 = _S7;
+        var _S23 : u32 = pixel_0 - offset_0;
+        accumulate_0(pixel_0, _S23, below_1);
+        accumulate_0(_S23, pixel_0, above_1);
+        i_0 = _S16;
     }
     return;
 }
@@ -213,16 +224,16 @@ fn vertical_turn_0( column_1 : u32,  row_1 : u32) -> i32
     {
         left_0 = false;
     }
-    var _S15 : bool;
+    var _S24 : bool;
     if(left_0)
     {
-        _S15 = !right_0;
+        _S24 = !right_0;
     }
     else
     {
-        _S15 = false;
+        _S24 = false;
     }
-    if(_S15)
+    if(_S24)
     {
         return i32(1);
     }
@@ -245,45 +256,47 @@ fn vertical_turn_0( column_1 : u32,  row_1 : u32) -> i32
 @workgroup_size(64, 1, 1)
 fn shapesMain(@builtin(global_invocation_id) thread_0 : vec3<u32>)
 {
-    var _S16 : bool;
-    var _S17 : bool;
-    var _S18 : u32 = atomicLoad(&(control_0[i32(0)]));
-    var slot_1 : u32 = thread_0.x;
-    if(slot_1 >= (min(_S18, params_0.candidate_capacity_0)))
+    var _S25 : bool;
+    var _S26 : bool;
+    var index_0 : u32 = thread_0.x;
+    var width_1 : u32 = params_0.viewport_x_0;
+    if(index_0 >= (params_0.viewport_x_0 * params_0.viewport_y_0))
     {
         return;
     }
-    var index_0 : u32 = candidates_0[slot_1];
-    var width_0 : u32 = params_0.viewport_x_0;
-    var x_1 : u32 = candidates_0[slot_1] % params_0.viewport_x_0;
-    var y_1 : u32 = index_0 / width_0;
     var own_0 : u32 = edges_0[index_0];
-    var _S19 : bool;
-    if(((edges_0[index_0] & (u32(2)))) != u32(0))
+    if(edges_0[index_0] == u32(0))
     {
-        _S19 = (((edge_at_0(x_1 - u32(1), y_1)) & (u32(2)))) == u32(0);
+        return;
+    }
+    var x_1 : u32 = index_0 % width_1;
+    var y_1 : u32 = index_0 / width_1;
+    var _S27 : bool;
+    if(((own_0 & (u32(2)))) != u32(0))
+    {
+        _S27 = (((edge_at_0(x_1 - u32(1), y_1)) & (u32(2)))) == u32(0);
     }
     else
     {
-        _S19 = false;
+        _S27 = false;
     }
     var len_1 : u32;
-    if(_S19)
+    if(_S27)
     {
         len_1 = u32(1);
         for(;;)
         {
-            var _S20 : bool = len_1 <= u32(64);
-            _S16 = _S20;
-            if(_S20)
+            var _S28 : bool = len_1 <= u32(64);
+            _S25 = _S28;
+            if(_S28)
             {
-                _S19 = (((edge_at_0(x_1 + len_1, y_1)) & (u32(2)))) != u32(0);
+                _S27 = (((edge_at_0(x_1 + len_1, y_1)) & (u32(2)))) != u32(0);
             }
             else
             {
-                _S19 = false;
+                _S27 = false;
             }
-            if(_S19)
+            if(_S27)
             {
             }
             else
@@ -292,35 +305,35 @@ fn shapesMain(@builtin(global_invocation_id) thread_0 : vec3<u32>)
             }
             len_1 = len_1 + u32(1);
         }
-        if(_S16)
+        if(_S25)
         {
-            emit_line_0(index_0, u32(1), len_1, width_0, horizontal_turn_0(x_1, y_1), horizontal_turn_0(x_1 + len_1, y_1));
+            blend_line_0(index_0, u32(1), len_1, width_1, horizontal_turn_0(x_1, y_1), horizontal_turn_0(x_1 + len_1, y_1));
         }
     }
     if(((own_0 & (u32(1)))) != u32(0))
     {
-        _S19 = (((edge_at_0(x_1, y_1 - u32(1))) & (u32(1)))) == u32(0);
+        _S27 = (((edge_at_0(x_1, y_1 - u32(1))) & (u32(1)))) == u32(0);
     }
     else
     {
-        _S19 = false;
+        _S27 = false;
     }
-    if(_S19)
+    if(_S27)
     {
         len_1 = u32(1);
         for(;;)
         {
-            var _S21 : bool = len_1 <= u32(64);
-            _S17 = _S21;
-            if(_S21)
+            var _S29 : bool = len_1 <= u32(64);
+            _S26 = _S29;
+            if(_S29)
             {
-                _S19 = (((edge_at_0(x_1, y_1 + len_1)) & (u32(1)))) != u32(0);
+                _S27 = (((edge_at_0(x_1, y_1 + len_1)) & (u32(1)))) != u32(0);
             }
             else
             {
-                _S19 = false;
+                _S27 = false;
             }
-            if(_S19)
+            if(_S27)
             {
             }
             else
@@ -329,54 +342,11 @@ fn shapesMain(@builtin(global_invocation_id) thread_0 : vec3<u32>)
             }
             len_1 = len_1 + u32(1);
         }
-        if(_S17)
+        if(_S26)
         {
-            emit_line_0(index_0, width_0, len_1, u32(1), vertical_turn_0(x_1, y_1), vertical_turn_0(x_1, y_1 + len_1));
+            blend_line_0(index_0, width_1, len_1, u32(1), vertical_turn_0(x_1, y_1), vertical_turn_0(x_1, y_1 + len_1));
         }
     }
-    return;
-}
-
-@compute
-@workgroup_size(64, 1, 1)
-fn accumulateMain(@builtin(global_invocation_id) thread_1 : vec3<u32>)
-{
-    var _S22 : u32 = atomicLoad(&(control_0[i32(1)]));
-    var slot_2 : u32 = thread_1.x;
-    if(slot_2 >= (min(_S22, params_0.item_capacity_0)))
-    {
-        return;
-    }
-    var _S23 : u32 = slot_2 * u32(3);
-    var target_1 : u32 = items_0[_S23];
-    var from_1 : u32 = items_0[_S23 + u32(1)];
-    var weight_0 : u32 = items_0[_S23 + u32(2)];
-    var pixels_0 : u32 = params_0.viewport_x_0 * params_0.viewport_y_0;
-    var _S24 : bool;
-    if(items_0[_S23] >= pixels_0)
-    {
-        _S24 = true;
-    }
-    else
-    {
-        _S24 = from_1 >= pixels_0;
-    }
-    if(_S24)
-    {
-        return;
-    }
-    var width_1 : u32 = params_0.viewport_x_0;
-    var _S25 : u32 = from_1 % params_0.viewport_x_0;
-    var _S26 : i32 = i32(_S25);
-    var _S27 : u32 = from_1 / width_1;
-    var _S28 : vec3<i32> = vec3<i32>(vec2<i32>(_S26, i32(_S27)), i32(0));
-    var color_0 : vec3<f32> = saturate((textureLoad((source_0), ((_S28)).xy, ((_S28)).z)).xyz);
-    var share_1 : f32 = f32(weight_0);
-    var _S29 : u32 = target_1 * u32(4);
-    var _S30 : u32 = atomicAdd(&(accum_0[_S29]), u32(color_0.x * share_1));
-    var _S31 : u32 = atomicAdd(&(accum_0[_S29 + u32(1)]), u32(color_0.y * share_1));
-    var _S32 : u32 = atomicAdd(&(accum_0[_S29 + u32(2)]), u32(color_0.z * share_1));
-    var _S33 : u32 = atomicAdd(&(accum_0[_S29 + u32(3)]), weight_0);
     return;
 }
 

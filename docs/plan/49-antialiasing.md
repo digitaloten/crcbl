@@ -134,28 +134,6 @@ time. What left with this change is `crcbl_render::smaa`, `smaa_edges.slang`,
 word — which now reads the way any word no rung wears does, with one warning and
 an unpicked tier.
 
-**Five passes where SMAA was three, and only one of them is a draw.** The edge
-detect and the resolve run per pixel; the three between them run per **edge**,
-which is the cost model this tier was chosen for:
-
-1. `cmaa2-clear` zeroes the two counters, on `clear_counters.slang`'s terms — a
-   counter another invocation of the same dispatch may already have added to
-   cannot be zeroed inside it.
-2. `cmaa2-edges` marks each pixel's west and north boundaries against a
-   threshold with a local-contrast adaptation, writes the per-pixel edge word,
-   zeroes that pixel's accumulation, and **appends** every edge pixel to a
-   candidate list.
-3. `cmaa2-shapes` runs once per candidate: a run of like boundaries is walked to
-   its two ends, classified `Z` or `U` by how the boundary turns at each, and
-   the coverage a straight reconstruction leaves is integrated over each of the
-   run's pixels — two areas per pixel where the reconstruction crosses inside
-   it, which is the case a 45° staircase is entirely made of. Each is appended
-   as a **blend item**.
-4. `cmaa2-accumulate` runs once per item and adds it to the target pixel's
-   total.
-5. `cmaa2-apply` is the one fullscreen draw: it converts each pixel's total once
-   and writes the caller's target.
-
 Four things about it are specific to this tree:
 
 - **No lookup table, so nothing is cooked.** SMAA's area and search tables were
@@ -163,7 +141,7 @@ Four things about it are specific to this tree:
   them; CMAA2's shape rules are analytic and the coverage is integrated in the
   shader. That whole data cost, and the CI step guarding it, left with the tier.
 - **The accumulation is fixed point with integer atomics**, at
-  `crcbl_shaders::cmaa2::BLEND_FIXED_POINT_SCALE`. Blend items reach a pixel in
+  `crcbl_shaders::cmaa2::BLEND_FIXED_POINT_SCALE`. Shares reach a pixel in
   whatever order the device schedules, float addition is not associative, and a
   frame that is a function of the scheduler is the thing this file's determinism
   arguments spend their length refusing. Integer addition is associative and
@@ -172,36 +150,33 @@ Four things about it are specific to this tree:
   come back byte-identical on radv and on lavapipe —
   `the_same_frame_resolves_to_the_same_bytes_twice` — and under a float sum in
   arrival order they do not.
-- **The two append lists have capacities and a frame may exceed them.** They are
-  a fraction of the frame — `crcbl_shaders::cmaa2::CANDIDATE_DIVISOR` and
-  `ITEM_DIVISOR` — and an entry past the cap is **dropped**, with every count
-  read back clamped to the same capacity, so the pixel it was for keeps its
-  unresolved colour and nothing is ever written outside a list.
-  `a_frame_that_overflows_the_lists_still_finishes_and_stays_finite` drives a
-  frame past a deliberately tiny cap on both adapters, and
-  `a_frame_whose_cmaa2_lists_are_capped_to_nothing_is_still_a_legal_frame` does
-  the same on the null device.
+- **Nothing is queued and nothing is dropped.** Both of the tier's working
+  buffers hold one entry per pixel, so there is no capacity a dense frame can
+  exceed and no choice for a device to make about which entries survive;
+  `a_dense_edge_frame_resolves_to_the_same_bytes_every_time` holds it, and
+  `docs/notes/rendering.md` records the append lists it replaced.
 - **It is historyless, so it is deterministic by construction**, and that is
   what makes it golden-safe where TAA is not. Its inputs are one frame's pixels;
   no frame it draws is a function of how many frames preceded it.
 
 **What it cost, measured 2026-09-06.**
-`apps/lantern --headless --frames 400 --size 1920x1080 --backend vk`, three runs
-a configuration, the medians of the p50s each run reported for its own passes,
-on an RX 7900 XTX under radv and on lavapipe —
-[43-render-standards.md](43-render-standards.md)'s protocol unchanged. On
-**radv** the resolve slot goes from FXAA's **0.027 ms** to CMAA2's **0.109 ms**
-(`cmaa2-clear` 0.001, `cmaa2-edges` 0.045, `cmaa2-shapes` 0.035,
-`cmaa2-accumulate` 0.004, `cmaa2-apply` 0.024), and the whole frame from **1.472
-ms** to **1.576 ms**. On **lavapipe** it goes the other way: FXAA's **2.451 ms**
-becomes CMAA2's **1.728 ms** (0.118, 0.121, 0.122, 0.120, 1.247), and the whole
-frame from **89.104 ms** to **88.713 ms**. That is the cost model the eighth
-decision picked this tier for, arriving: the work that scales with the frame's
-_pixels_ is one cheap dispatch and one cheap draw, and the software rasteriser —
-which is the tier every golden runs on — pays less for the better filter than it
-paid for the worse one. The four compute dispatches on lavapipe all land within
-a hundredth of a millisecond of each other, which is that driver's timestamp
-resolution rather than four passes of equal weight.
+`apps/lantern --headless --frames 400 --size 1920x1080 --backend vk --stack <a RON naming the tier>`,
+three runs a configuration, the medians of the p50s each run reported for its
+own passes, on an RX 7900 XTX under radv and on lavapipe —
+[43-render-standards.md](43-render-standards.md)'s protocol unchanged. Lantern's
+monitor view resolves with FXAA whatever `--stack` asks of the room, so the
+room's own FXAA is the **difference** between the two configurations' `fxaa`
+rows rather than the row itself.
+
+On **radv** the room's resolve slot goes from FXAA's **0.023 ms** to CMAA2's
+**0.093 ms** (`cmaa2-edges` 0.044, `cmaa2-shapes` 0.026, `cmaa2-apply` 0.023),
+and the whole frame from **1.469 ms** to **1.571 ms**. On **lavapipe** it goes
+the other way: FXAA's **2.542 ms** becomes CMAA2's **1.744 ms** (0.112, 0.105,
+1.527), and the whole frame from **102.904 ms** to **101.344 ms**. That is the
+cost model the eighth decision picked this tier for, arriving: the work that
+scales with the frame's _pixels_ is one cheap dispatch and one cheap draw, and
+the software rasteriser — which is the tier every golden runs on — pays less for
+the better filter than it paid for the worse one.
 
 FXAA does not leave when CMAA2 arrives. **It stays as the cheap tier**, on the
 terms `RenderEffects` already gives the other pairs: a tier that is off is a
@@ -322,18 +297,22 @@ of this ladder are the CS2 shape:
    out under the refusal below. What was built, what it cost on both rasterisers
    and which of its constants are this tree's choice rather than the reference's
    are in "CMAA2 second" above; the three things this decision asked for
-   specifically all hold in the shipped passes. It **is** compute — four
-   dispatches, with the candidate list and the blend items in storage buffers a
-   work-group appends to, five buffers against
+   specifically all hold in the shipped passes. It **is** compute — two
+   dispatches over two per-pixel storage buffers, against
    `crcbl_hal::PORTABLE_STORAGE_BUFFERS_PER_STAGE`'s eight — with a fullscreen
    draw for the apply, because a swapchain image cannot be bound as a storage
-   image. The **arrival-order sum is gone**: the blend items accumulate through
+   image. The **arrival-order sum is gone**: the shares accumulate through
    integer atomics in fixed point, which is order-independent, and
    `the_same_frame_resolves_to_the_same_bytes_twice` holds it on both drivers.
-   And it is **held to SMAA's observer**, the same scene and the same two
-   claims, in `crates/crcbl/tests/mesh_e2e/cmaa2.rs`. The default tier does not
-   move with it: flipping `RenderEffects::DEFAULT_STACK`'s AA slot to CMAA2 is
-   the next commit, and that is the one that re-blesses the goldens.
+   The **append lists are gone too**, which took a second slice: they were
+   capacity-bounded and dropping, so a dense enough frame was a function of the
+   schedule after all, and
+   `a_dense_edge_frame_resolves_to_the_same_bytes_every_time` is what caught it
+   and now holds the shape that replaced them. And it is **held to SMAA's
+   observer**, the same scene and the same two claims, in
+   `crates/crcbl/tests/mesh_e2e/cmaa2.rs`. The default tier does not move with
+   it: flipping `RenderEffects::DEFAULT_STACK`'s AA slot to CMAA2 is the next
+   commit, and that is the one that re-blesses the goldens.
 3. **MSAA 2×, 4× and 8×** as the rungs above CMAA2, on the price the seventh
    decision above put on it: the depth prepass goes multisampled, and one
    **depth resolve** pass writes the single-sample image `ssao.slang`,
