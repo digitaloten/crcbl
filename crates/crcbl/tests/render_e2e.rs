@@ -3792,6 +3792,213 @@ fn the_resolve_is_what_puts_the_soft_pixels_there() {
     );
 }
 
+/// How many times finer than [`EXTENT`] the supersampled reference is drawn.
+///
+/// Four is sixteen samples per pixel, which is what the industry's own filter
+/// comparisons hold a morphological pass against; a coarser reference would
+/// leave its own staircase in the truth, and a finer one costs a frame nobody
+/// needs.
+const AA_REFERENCE_SCALE: u32 = 4;
+
+/// How far the resolved silhouette may still sit from the supersampled one, as
+/// a share of the unresolved silhouette's distance.
+///
+/// **Measured, not chosen.** Over [`silhouette_band`], the unresolved frame's
+/// mean luma error against the reference is the staircase's whole height and
+/// counts as one. CMAA2 with its shares on the right side of the boundary
+/// measures 0.745 on radv; a pass that copies its input measures exactly one;
+/// and the wrong-side blend `cmaa2_shapes.slang` carried until 2026-09-07
+/// measured 1.65 — further from the truth than no resolve at all, because it
+/// darkens a fully covered pixel at every step. Nine tenths rejects both of the
+/// last two with room for a rasteriser that draws the staircase a little
+/// differently, and leaves none for a filter that is not moving the edge.
+const AA_MAX_RESIDUAL_SHARE: f32 = 0.9;
+
+/// Rec. 601 luma of one pixel, out of 255 — [`soft_pixels`]' formula, shared.
+fn pixel_luma(pixel: [u8; 4]) -> f32 {
+    0.299 * f32::from(pixel[0]) + 0.587 * f32::from(pixel[1]) + 0.114 * f32::from(pixel[2])
+}
+
+/// A frame's luma plane, row-major.
+fn luma_plane(image: &Image) -> Vec<f32> {
+    let mut plane = Vec::with_capacity((image.width() * image.height()) as usize);
+    for y in 0..image.height() {
+        for x in 0..image.width() {
+            plane.push(pixel_luma(image.pixel(x, y).expect("inside the frame")));
+        }
+    }
+    plane
+}
+
+/// A frame drawn `scale` times finer than [`EXTENT`], box-filtered down to it.
+///
+/// Every reference pixel is the mean of a `scale × scale` block, which is the
+/// coverage an ideal edge filter reconstructs; nothing finer than a box is
+/// wanted, because the question is where the edge is and not how the slab is
+/// shaded.
+fn box_downsampled_luma(image: &Image, scale: u32) -> Vec<f32> {
+    assert_eq!(
+        (image.width(), image.height()),
+        (EXTENT.0 * scale, EXTENT.1 * scale),
+        "the reference is drawn at exactly {scale}× the fixture's extent"
+    );
+    let block = (scale * scale) as f32;
+    let mut plane = Vec::with_capacity((EXTENT.0 * EXTENT.1) as usize);
+    for y in 0..EXTENT.1 {
+        for x in 0..EXTENT.0 {
+            let mut total = 0.0;
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    let pixel = image
+                        .pixel(x * scale + dx, y * scale + dy)
+                        .expect("inside the reference");
+                    total += pixel_luma(pixel);
+                }
+            }
+            plane.push(total / block);
+        }
+    }
+    plane
+}
+
+/// The pixels the silhouette is judged over: every pixel the reference puts
+/// between [`AA_DARK_CEILING`] and [`AA_BRIGHT_FLOOR`], and the eight around
+/// each of them.
+///
+/// **The ring is the half that catches a blend on the wrong side.** A filter
+/// that hands each share to the pixel across the boundary from the one it
+/// belonged to leaves the truth's soft pixels roughly as unresolved does and
+/// spends its blend on the fully covered pixel beside them — which is outside
+/// the soft set, so a band of the soft pixels alone scored that filter *better*
+/// than the right one. One pixel of ring is where every share a morphological
+/// pass can place lands, and it is fixed by the reference rather than by either
+/// frame, so neither frame can move the goalposts.
+fn silhouette_band(reference: &[f32]) -> Vec<usize> {
+    let width = EXTENT.0 as usize;
+    let height = EXTENT.1 as usize;
+    let mut inside = vec![false; width * height];
+    for (index, &truth) in reference.iter().enumerate() {
+        if truth > AA_DARK_CEILING && truth < AA_BRIGHT_FLOOR {
+            let (x, y) = (index % width, index / width);
+            for ny in y.saturating_sub(1)..(y + 2).min(height) {
+                for nx in x.saturating_sub(1)..(x + 2).min(width) {
+                    inside[ny * width + nx] = true;
+                }
+            }
+        }
+    }
+    inside
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, hit)| hit.then_some(index))
+        .collect()
+}
+
+/// Mean absolute luma difference between a frame and the reference over
+/// `band`.
+fn band_error(frame: &[f32], reference: &[f32], band: &[usize]) -> f32 {
+    let total: f32 = band
+        .iter()
+        .map(|&index| (frame[index] - reference[index]).abs())
+        .sum();
+    total / band.len().max(1) as f32
+}
+
+/// **The resolve brings the silhouette closer to a supersampled one, not merely
+/// somewhere else.**
+///
+/// [`the_resolve_is_what_puts_the_soft_pixels_there`] counts the pixels a filter
+/// touched, and a count cannot tell a filter that blends the right pixel toward
+/// the right neighbour from one that blends the wrong pixel toward the wrong
+/// one: both touch the same silhouette pixels, and on 2026-09-06 both put 532 of
+/// them between the two levels. The second is what `cmaa2_shapes.slang` did
+/// until 2026-09-07 — each share handed to the pixel across the boundary from
+/// the one it belonged to — and every golden re-blessed under it carried a
+/// staircase with one darkened corner per step. This is the assertion that
+/// would have gone red.
+///
+/// The truth is the same scene drawn [`AA_REFERENCE_SCALE`] times finer with no
+/// resolve at all and box-filtered down: the coverage an ideal edge filter
+/// reconstructs, and the yardstick the field measures morphological filters
+/// against. Over [`silhouette_band`] — the truth's soft pixels and one pixel
+/// around them — the unresolved frame's error is the staircase's full height
+/// and the resolved frame's must be under [`AA_MAX_RESIDUAL_SHARE`] of it. A
+/// pass that does nothing scores one; the wrong-side blend scored 1.65; only a
+/// filter that moves the edge the right way scores well under.
+#[test]
+#[ignore = "needs a real GPU and a backend pin; run tests/run-render-e2e.sh"]
+fn the_resolve_moves_the_silhouette_toward_a_supersampled_reference() {
+    crcbl_core::log::init_logging();
+
+    let frame = |effects, extent: (u32, u32)| {
+        let setup =
+            OffscreenSetup::open_forward(extent.0, extent.1, move |device, queue, format| {
+                crcbl::screenshot::aa_forward(device, queue, format, effects).map(scene_referred)
+            })
+            .unwrap_or_else(|why| panic!("a GPU backend opens for the aa scene: {why}"));
+        let mut setup = Offscreen::guard(SUITE, setup);
+        let format = setup.format();
+        let ((width, height), pixels) = setup.draw_and_readback().expect("the frame renders");
+        setup.finish();
+        Image::from_readback(width, height, &pixels, channel_order(format))
+            .expect("the readback is exactly one image")
+    };
+
+    let unresolved = RenderEffects::DEFAULT_STACK.difference(Antialiasing::SLOT);
+    let reference_image = frame(
+        unresolved,
+        (EXTENT.0 * AA_REFERENCE_SCALE, EXTENT.1 * AA_REFERENCE_SCALE),
+    );
+    let resolved_image = frame(RenderEffects::DEFAULT_STACK, EXTENT);
+    let control_image = frame(unresolved, EXTENT);
+    // The three frames, written out on request: what the next investigation
+    // of this filter starts from rather than re-deriving.
+    if let Ok(dir) = std::env::var("CRCBL_AA_DUMP") {
+        for (name, image) in [
+            ("reference", &reference_image),
+            ("resolved", &resolved_image),
+            ("control", &control_image),
+        ] {
+            image
+                .save_png(format!("{dir}/aa-{name}.png"))
+                .unwrap_or_else(|why| panic!("CRCBL_AA_DUMP={dir} takes aa-{name}.png: {why}"));
+        }
+    }
+    let reference = box_downsampled_luma(&reference_image, AA_REFERENCE_SCALE);
+    let resolved = luma_plane(&resolved_image);
+    let control = luma_plane(&control_image);
+
+    let band = silhouette_band(&reference);
+    let resolved_error = band_error(&resolved, &reference, &band);
+    let control_error = band_error(&control, &reference, &band);
+    let share = resolved_error / control_error;
+    eprintln!(
+        "crcbl render e2e: aa — silhouette band of {} pixel(s): resolved error \
+         {resolved_error:.2}, unresolved {control_error:.2}, share {share:.3} against the \
+         {AA_MAX_RESIDUAL_SHARE} allowed",
+        band.len()
+    );
+    assert!(
+        band.len() >= AA_MIN_SOFT_PIXELS,
+        "the supersampled reference puts {} pixel(s) in the silhouette band, under the \
+         {AA_MIN_SOFT_PIXELS} the silhouette is known to span — the reference is not the \
+         fixture's edge",
+        band.len()
+    );
+    assert!(
+        control_error > 0.0,
+        "the unresolved frame already matches the reference along the silhouette, so \
+         there is no staircase for the resolve to remove and this measures nothing"
+    );
+    assert!(
+        share <= AA_MAX_RESIDUAL_SHARE,
+        "the resolved silhouette sits {resolved_error:.2} from the supersampled one where \
+         the unresolved sits {control_error:.2} — a share of {share:.3}, over the \
+         {AA_MAX_RESIDUAL_SHARE} allowed; the resolve is not moving the edge toward \
+         where it is"
+    );
+}
+
 /// The anti-vacuity floor for [`Scene::Probes`].
 ///
 /// The fixture deliberately has broad flat regions, so colour count only rejects

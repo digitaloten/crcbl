@@ -337,10 +337,16 @@ void blend_line(uint first, uint stride, uint len, uint offset, int start, int e
         }
 
         uint pixel = first + i * stride;
-        // `below` is area this pixel should have had from the other side of the
-        // boundary, and `above` the same for the pixel across it.
-        accumulate(pixel, pixel - offset, below);
-        accumulate(pixel - offset, pixel, above);
+        // A negative height puts the reconstructed boundary on the `-offset`
+        // side of the aliased one, so `below` is area the pixel across the
+        // boundary holds that belongs to this side: that pixel takes this one's
+        // colour by that share. `above` is the mirror — area this pixel holds
+        // that belongs across — and this pixel takes the colour from across.
+        // Handing each share to the other pixel blends the one that was right
+        // and leaves the one that was wrong, which is one darkened corner per
+        // step and a staircase that stays a staircase.
+        accumulate(pixel - offset, pixel, below);
+        accumulate(pixel, pixel - offset, above);
     }
 }
 

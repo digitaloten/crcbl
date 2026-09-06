@@ -2671,3 +2671,54 @@ are arithmetic, not runs; whether the graph can import an image (it imports
 buffers) is unread; per-backend `Rgba16Float` storage-image support is unread;
 Slang has never lowered an `RWTexture` in this tree; the striped march's lag
 behind a moving sun is unmeasured and the host answer doubles it.
+
+## CMAA2 blended the wrong side of every edge for a day (2026-09-07)
+
+The user reported the web demos drawing with no antialiasing. They were right,
+and it was not the browser: `apps/sundial` drawn headless on radv at the demo
+canvas's 959×463 was stair-stepped too, and so were the goldens themselves — the
+`plaza-*` set the CMAA2 default flip re-blessed on 2026-09-06 is a staircase
+next to the FXAA-era set it replaced, and `crates/crcbl/tests/golden/aa.png` had
+lost its ramp in the same commit. Twenty-nine goldens were blessed with a broken
+filter and nothing in the tree said so.
+
+**The mechanism.** `cmaa2_shapes.slang`'s `blend_line` integrates the
+reconstructed boundary's height across each element of a run into two shares —
+`below`, the area on the `-offset` side of the aliased boundary, and `above`,
+the area on the other side — and then handed `below` to _this_ pixel and `above`
+to the pixel across. A negative height means the reconstruction sits inside the
+`-offset` pixel, so that pixel holds area that belongs to this side and is the
+one that must take this side's colour; the code did the reverse. On a `Z` of
+length `n` the shares ramp from about 0.44 at one end to 0.44 at the other, so
+the wrong side received a strong blend exactly where the right side needed one:
+the fully covered pixel at the top of the run was darkened, the uncovered pixel
+at the bottom was brightened, and the step between them stayed. A Python
+transliteration of the three shaders reproduced the GPU frame to within 0.6 of a
+level and, with the two `accumulate` targets swapped, drew a clean ramp on a
+synthetic 1:8 and 1:2 edge — which is the fix, and it is the whole fix.
+
+**Why the guard did not fire.** `the_resolve_is_what_puts_the_soft_pixels_there`
+counts pixels strictly between the frame's two levels and holds the count over
+256; both the right blend and the wrong one touch the same silhouette pixels,
+and both put exactly 532 there. A count of touched pixels cannot see which way
+they moved. `the_resolve_moves_the_silhouette_toward_a_supersampled_reference`
+is the assertion that would have gone red: the same scene at four times the
+extent with no resolve, box-filtered down, is the coverage an ideal edge filter
+reconstructs; over the truth's soft pixels and one pixel of ring around them,
+the unresolved frame's mean luma error is the staircase's whole height and the
+resolved frame must sit under `AA_MAX_RESIDUAL_SHARE` of it. Measured on radv:
+the corrected CMAA2 0.747, the wrong-side blend 1.650, no resolve 1.000 by
+construction. **The ring is load-bearing:** scored over the truth's soft pixels
+alone the wrong-side blend measured 0.578 against the right one's 0.680 — it
+spends its blend on the fully covered pixel beside the silhouette, which that
+band did not look at — so a band the frames cannot move was the first thing the
+test needed. `CRCBL_AA_DUMP=<dir>` writes the three frames the test compared,
+which is where this investigation's numbers came from.
+
+**What moved.** Every golden the flip re-blessed moves back to a resolved edge —
+twenty-eight are re-blessed, and `probes.png` moves under
+`Tolerance::RASTERISER` on both adapters — and the sets are re-blessed where
+each is compared: `crcbl`, `lantern` and `quarry` on radv, `alcove` and
+`sundial` on lavapipe, with the other adapter holding each within
+`Tolerance::RASTERISER`. The browser gate compares the same files, so the demo
+site draws the corrected filter as soon as the Pages run after this lands.

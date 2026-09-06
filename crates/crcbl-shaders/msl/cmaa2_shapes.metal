@@ -436,14 +436,14 @@ void blend_line_0(uint first_0, uint stride_0, uint len_0, uint offset_0, int st
 #line 339
         uint pixel_0 = first_0 + i_0 * stride_0;
 
-
+#line 348
         uint _S26 = pixel_0 - offset_0;
 
-#line 342
-        accumulate_0(pixel_0, _S26, below_1, kernelContext_4);
+#line 348
+        accumulate_0(_S26, pixel_0, below_1, kernelContext_4);
 
-#line 342
-        accumulate_0(_S26, pixel_0, above_1, kernelContext_4);
+#line 348
+        accumulate_0(pixel_0, _S26, above_1, kernelContext_4);
 
 #line 307
         i_0 = _S19;
@@ -451,7 +451,7 @@ void blend_line_0(uint first_0, uint stride_0, uint len_0, uint offset_0, int st
 #line 307
     }
 
-#line 345
+#line 351
     return;
 }
 
@@ -537,29 +537,29 @@ int vertical_turn_0(uint column_1, uint row_1, KernelContext_0 thread* kernelCon
 }
 
 
-#line 357
+#line 363
 [[kernel]] void shapesMain(uint3 thread_0 [[thread_position_in_grid]], Cmaa2Params_0 constant* params_1 [[buffer(0)]], uint device* edges_1 [[buffer(1)]], texture2d<float, access::sample> source_1 [[texture(0)]], atomic<uint> device* accum_1 [[buffer(2)]])
 {
 
-#line 357
+#line 363
     bool _S30;
 
-#line 357
+#line 363
     bool _S31;
 
-#line 357
+#line 363
     thread KernelContext_0 kernelContext_6;
 
-#line 357
+#line 363
     (&kernelContext_6)->params_0 = params_1;
 
-#line 357
+#line 363
     (&kernelContext_6)->edges_0 = edges_1;
 
-#line 357
+#line 363
     (&kernelContext_6)->source_0 = source_1;
 
-#line 357
+#line 363
     (&kernelContext_6)->accum_0 = accum_1;
 
     uint index_0 = thread_0.x;
@@ -572,7 +572,7 @@ int vertical_turn_0(uint column_1, uint row_1, KernelContext_0 thread* kernelCon
 
     uint device* _S32 = (&kernelContext_6)->edges_0+index_0;
 
-#line 367
+#line 373
     uint own_0 = *_S32;
     if((*_S32) == 0U)
     {
@@ -582,7 +582,7 @@ int vertical_turn_0(uint column_1, uint row_1, KernelContext_0 thread* kernelCon
     uint x_2 = index_0 % width_1;
     uint y_2 = index_0 / width_1;
 
-#line 374
+#line 380
     bool _S33;
 
 
@@ -590,79 +590,79 @@ int vertical_turn_0(uint column_1, uint row_1, KernelContext_0 thread* kernelCon
     if((own_0 & 2U) != 0U)
     {
 
-#line 378
+#line 384
         uint _S34 = edge_at_0(x_2 - 1U, y_2, &kernelContext_6);
 
-#line 378
+#line 384
         _S33 = (_S34 & 2U) == 0U;
 
-#line 378
+#line 384
     }
     else
     {
 
-#line 378
+#line 384
         _S33 = false;
 
-#line 378
+#line 384
     }
 
-#line 378
+#line 384
     uint len_1;
 
-#line 378
+#line 384
     if(_S33)
     {
 
-#line 378
+#line 384
         len_1 = 1U;
 
 
         for(;;)
         {
 
-#line 381
+#line 387
             bool _S35 = len_1 <= 64U;
 
-#line 381
+#line 387
             _S30 = _S35;
 
-#line 381
+#line 387
             if(_S35)
             {
 
-#line 381
+#line 387
                 uint _S36 = edge_at_0(x_2 + len_1, y_2, &kernelContext_6);
 
-#line 381
+#line 387
                 _S33 = (_S36 & 2U) != 0U;
 
-#line 381
+#line 387
             }
             else
             {
 
-#line 381
+#line 387
                 _S33 = false;
 
-#line 381
+#line 387
             }
 
-#line 381
+#line 387
             if(_S33)
             {
             }
             else
             {
 
-#line 381
+#line 387
                 break;
             }
 
-#line 381
+#line 387
             len_1 = len_1 + 1U;
 
-#line 381
+#line 387
         }
 
 
@@ -670,95 +670,95 @@ int vertical_turn_0(uint column_1, uint row_1, KernelContext_0 thread* kernelCon
         if(_S30)
         {
 
-#line 385
+#line 391
             int _S37 = horizontal_turn_0(x_2, y_2, &kernelContext_6);
 
-#line 385
+#line 391
             int _S38 = horizontal_turn_0(x_2 + len_1, y_2, &kernelContext_6);
 
-#line 385
+#line 391
             blend_line_0(index_0, 1U, len_1, width_1, _S37, _S38, &kernelContext_6);
 
-#line 385
+#line 391
         }
 
-#line 378
+#line 384
     }
 
-#line 393
+#line 399
     if((own_0 & 1U) != 0U)
     {
 
-#line 393
+#line 399
         uint _S39 = edge_at_0(x_2, y_2 - 1U, &kernelContext_6);
 
-#line 393
+#line 399
         _S33 = (_S39 & 1U) == 0U;
 
-#line 393
+#line 399
     }
     else
     {
 
-#line 393
+#line 399
         _S33 = false;
 
-#line 393
+#line 399
     }
 
-#line 393
+#line 399
     if(_S33)
     {
 
-#line 393
+#line 399
         len_1 = 1U;
 
 
         for(;;)
         {
 
-#line 396
+#line 402
             bool _S40 = len_1 <= 64U;
 
-#line 396
+#line 402
             _S31 = _S40;
 
-#line 396
+#line 402
             if(_S40)
             {
 
-#line 396
+#line 402
                 uint _S41 = edge_at_0(x_2, y_2 + len_1, &kernelContext_6);
 
-#line 396
+#line 402
                 _S33 = (_S41 & 1U) != 0U;
 
-#line 396
+#line 402
             }
             else
             {
 
-#line 396
+#line 402
                 _S33 = false;
 
-#line 396
+#line 402
             }
 
-#line 396
+#line 402
             if(_S33)
             {
             }
             else
             {
 
-#line 396
+#line 402
                 break;
             }
 
-#line 396
+#line 402
             len_1 = len_1 + 1U;
 
-#line 396
+#line 402
         }
 
 
@@ -766,22 +766,22 @@ int vertical_turn_0(uint column_1, uint row_1, KernelContext_0 thread* kernelCon
         if(_S31)
         {
 
-#line 400
+#line 406
             int _S42 = vertical_turn_0(x_2, y_2, &kernelContext_6);
 
-#line 400
+#line 406
             int _S43 = vertical_turn_0(x_2, y_2 + len_1, &kernelContext_6);
 
-#line 400
+#line 406
             blend_line_0(index_0, width_1, len_1, 1U, _S42, _S43, &kernelContext_6);
 
-#line 400
+#line 406
         }
 
-#line 393
+#line 399
     }
 
-#line 405
+#line 411
     return;
 }
 

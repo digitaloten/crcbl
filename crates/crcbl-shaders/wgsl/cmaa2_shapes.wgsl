@@ -205,8 +205,8 @@ fn blend_line_0( first_0 : u32,  stride_0 : u32,  len_0 : u32,  offset_0 : u32, 
         }
         var pixel_0 : u32 = first_0 + i_0 * stride_0;
         var _S23 : u32 = pixel_0 - offset_0;
-        accumulate_0(pixel_0, _S23, below_1);
-        accumulate_0(_S23, pixel_0, above_1);
+        accumulate_0(_S23, pixel_0, below_1);
+        accumulate_0(pixel_0, _S23, above_1);
         i_0 = _S16;
     }
     return;

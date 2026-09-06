@@ -127,6 +127,11 @@ What it cost, item by item, because none of it was hypothetical:
 geometry** — not TAA, and not a wider FXAA preset. `crcbl_render::Cmaa2`, its
 three `cmaa2_*.slang` sources, `RenderEffects::CMAA2` and `Antialiasing::Cmaa2`,
 with `cmaa2_changes_a_band_along_the_edges_and_nothing_else` as its observer.
+That observer counts touched pixels, and it stayed green while
+`cmaa2_shapes.slang` blended the wrong side of every edge from the flip until
+2026-09-07; `the_resolve_moves_the_silhouette_toward_a_supersampled_reference`
+holds the resolved frame against a supersampled, unresolved reference and is the
+one that sees it — `docs/notes/rendering.md` has the record.
 
 **It replaced SMAA 1x rather than joining it**, which the eighth decision below
 argues and "What is refused" states as a refusal: one morphological tier at a

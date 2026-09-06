@@ -953,6 +953,23 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Fixed
 
+- **CMAA2 antialiases again.** `cmaa2_shapes.slang` handed each blend share to
+  the pixel across the boundary from the one it belonged to, so every `Z`-shape
+  darkened the fully covered pixel at one end of a run and brightened the
+  uncovered one at the other, and left the staircase between them standing. The
+  default resolve slot moved onto CMAA2 on 2026-09-06, so every 3D view — the
+  samples on the demo site included — has drawn with no working antialiasing
+  since; the twenty-nine goldens that flip re-blessed carried the staircase, and
+  twenty-eight are re-blessed on the working filter here (`probes.png` stays
+  within tolerance). What let it through was
+  `crates/crcbl/tests/render_e2e.rs`'s soft-pixel count, which cannot tell a
+  blend on the wrong side from one on the right: both touch the same silhouette
+  pixels. The suite now also draws [`Scene::Aa`](crates/crcbl/src/screenshot.rs)
+  four times finer with no resolve and box-filters it down, and holds the
+  resolved frame's error against that reference over the silhouette and one
+  pixel around it to under `AA_MAX_RESIDUAL_SHARE` of the unresolved frame's —
+  the wrong-side blend scored 1.65, further from the truth than no filter at
+  all.
 - **Losing the pointer lock pauses a demo in a browser.** A browser reserves
   Escape while a page holds Pointer Lock — it spends the key on releasing the
   lock and delivers no `keydown` anywhere — so the samples that ask for
