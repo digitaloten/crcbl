@@ -1624,7 +1624,10 @@ impl CommandEncoder for MetalCommandEncoder {
             let depth = descriptor.depthAttachment();
             depth.setTexture(Some(&view));
             depth.setLoadAction(conv::load_action(attachment.depth_load));
-            depth.setStoreAction(conv::store_action(attachment.depth_store));
+            depth.setStoreAction(conv::depth_store_action(
+                attachment.read_only,
+                attachment.depth_store,
+            ));
             // Reversed-Z: the seam's default is `depth::CLEAR`, which is 0.0,
             // and this backend widens it and passes it on. Clearing to 1.0 with
             // the engine's `Greater` depth test renders nothing at all.
@@ -1637,14 +1640,20 @@ impl CommandEncoder for MetalCommandEncoder {
                 let stencil = descriptor.stencilAttachment();
                 stencil.setTexture(Some(&view));
                 stencil.setLoadAction(conv::load_action(attachment.stencil_load));
-                stencil.setStoreAction(conv::store_action(attachment.stencil_store));
+                stencil.setStoreAction(conv::depth_store_action(
+                    attachment.read_only,
+                    attachment.stencil_store,
+                ));
                 stencil.setClearStencil(attachment.clear.stencil);
             }
             // `DepthStencilAttachment::read_only` selects an image *layout* on
             // Vulkan and DX12 and has no Metal counterpart — Metal has no
-            // layouts, and whether the pass writes depth is already carried by
-            // the store action and by the pipeline's depth-write flag. So it is
-            // read and deliberately not acted on here.
+            // layouts. What it does decide here is the store action:
+            // `conv::depth_store_action` keeps the contents of an attachment
+            // the pass only tested, however the caller filled `depth_store`,
+            // because Metal's `DontCare` would discard an image nothing wrote.
+            // Whether the pass writes depth is otherwise carried by the
+            // pipeline's own depth-write flag.
         }
 
         // The blit encoder a preceding upload left open, which Metal will not

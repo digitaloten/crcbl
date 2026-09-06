@@ -573,6 +573,37 @@ pub(crate) const fn store_action(store: StoreOp) -> MTLStoreAction {
     }
 }
 
+/// The store action for a **depth-stencil** attachment, which depends on more
+/// than the seam's [`StoreOp`].
+///
+/// A pass that only *tests* depth/stencil writes nothing back, and the seam
+/// says so through
+/// [`DepthStencilAttachment::read_only`](crcbl_hal::DepthStencilAttachment::read_only)
+/// rather than through the store op — those are different questions, since a
+/// pass may read depth and store nothing, or write depth and discard it.
+///
+/// **Metal cannot express it, so this answers [`MTLStoreAction::Store`].**
+/// `MTLStoreAction` has no no-op action the way Vulkan has
+/// `VK_ATTACHMENT_STORE_OP_NONE`, so the texture is written back either way and
+/// the only choice is between storing contents the pass did not change and
+/// discarding them. Storing is the one that keeps the depth buffer, and because
+/// the contents are unchanged it is a write of the same bytes: the seam's
+/// [`ResourceState::DepthStencilRead`](crcbl_hal::ResourceState::DepthStencilRead)
+/// declaring no write still holds, because there is nothing for a later reader
+/// to miss. wgpu-hal's Metal backend answers `Store` under `depthReadOnly` for
+/// the same reason.
+///
+/// Discarding would not be equivalent: `MTLStoreAction::DontCare` leaves the
+/// texture undefined, and a depth prepass whose consumers are all read-only
+/// would lose the image the first such pass ended.
+pub(crate) const fn depth_store_action(read_only: bool, store: StoreOp) -> MTLStoreAction {
+    if read_only {
+        MTLStoreAction::Store
+    } else {
+        store_action(store)
+    }
+}
+
 /// The same, for a colour attachment that also resolves into a second texture.
 ///
 /// Metal folds "resolve" into the *store* action rather than carrying it
@@ -1049,12 +1080,25 @@ mod tests {
 
         assert_eq!(store_action(StoreOp::Store), MTLStoreAction::Store);
         assert_eq!(store_action(StoreOp::Discard), MTLStoreAction::DontCare);
+        // A read-only depth attachment keeps its contents whichever store op
+        // the caller passed: Metal has no no-op action, so `DontCare` there
+        // would discard an image the pass never touched.
+        assert_eq!(
+            depth_store_action(true, StoreOp::Store),
+            MTLStoreAction::Store
+        );
+        assert_eq!(
+            depth_store_action(true, StoreOp::Discard),
+            MTLStoreAction::Store
+        );
         for store in [StoreOp::Store, StoreOp::Discard] {
             assert_ne!(
                 store_action(store),
                 MTLStoreAction::Unknown,
                 "an encoder that ends on Unknown raises: {store:?}"
             );
+            // A written depth attachment is the plain mapping, both ways.
+            assert_eq!(depth_store_action(false, store), store_action(store));
             // A resolving attachment must still resolve whichever store op it
             // was given; only whether the multisampled texture survives differs.
             let resolving = resolve_store_action(store);

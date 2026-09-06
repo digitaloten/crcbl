@@ -706,25 +706,26 @@ pub fn state_masks(state: ResourceState) -> StateMasks {
         // resource: harmless over-sync, and wrong the day P7 samples the depth
         // buffer, because the *right* answer then is `ShaderRead`, not a
         // depth-attachment state with a shader stage bolted on.
-        // **The write bit is conservatism now, not a description of this
-        // backend.** It was a description: an attachment in this state
-        // performed its store op at `vkCmdEndRendering`, which syncval accounts
-        // as `SYNC_LATE_FRAGMENT_TESTS_DEPTH_STENCIL_ATTACHMENT_WRITE`, and
-        // without the bit the next barrier over the image had a read-only
+        // **`DEPTH_STENCIL_ATTACHMENT_WRITE` used to be here too, and is not a
+        // description of this backend.** It was one: an attachment in this
+        // state performed its store op at `vkCmdEndRendering`, which syncval
+        // accounts as `SYNC_LATE_FRAGMENT_TESTS_DEPTH_STENCIL_ATTACHMENT_WRITE`,
+        // and without the bit the next barrier over the image had a read-only
         // source scope and could not order against that store. Since
         // [`depth_store_op`] answers `VK_ATTACHMENT_STORE_OP_NONE` there is no
-        // store and Vulkan writes nothing — measured, and
-        // `docs/backlog.md` carries the four-cell run.
+        // store and Vulkan writes nothing, so the bit only bought barrier
+        // strength on every depth-test-only pass — `docs/notes/backends.md`
+        // carries the run that measured it.
         //
-        // It stays because `write_states_expand_to_write_accesses` requires
-        // this mask to agree with the seam's `ResourceState::is_write`, and
-        // that answers for every backend: Metal's `MTLStoreAction` has no
-        // no-op store action, so a read-only depth attachment there really does
-        // write itself back. Narrowing both together is a seam change that
-        // needs a Metal answer; the backlog holds it.
+        // It could not go alone: `write_states_expand_to_write_accesses`
+        // requires this mask to agree with the seam's `ResourceState::is_write`,
+        // which answers for every backend. Both moved together, with an
+        // explicit read-only arm in `crcbl-mtl`'s `conv::depth_store_action` —
+        // Metal's `MTLStoreAction` has no no-op action, so it stores contents
+        // the pass did not change.
         ResourceState::DepthStencilRead => (
             S::EARLY_FRAGMENT_TESTS | S::LATE_FRAGMENT_TESTS,
-            A::DEPTH_STENCIL_ATTACHMENT_READ | A::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            A::DEPTH_STENCIL_ATTACHMENT_READ,
             L::DEPTH_STENCIL_READ_ONLY_OPTIMAL,
         ),
         ResourceState::TransferSrc => (S::ALL_TRANSFER, A::TRANSFER_READ, L::TRANSFER_SRC_OPTIMAL),
@@ -1116,16 +1117,15 @@ mod tests {
         raw.sort_unstable();
         assert!(raw.windows(2).all(|pair| pair[0] != pair[1]));
 
-        // The access mask is deliberately *not* narrowed to match — see
-        // `state_masks`. This asserts that on purpose, so the day it is
-        // narrowed the reader is sent to the comment that says what else has to
-        // move with it.
+        // The access mask agrees: an attachment that stores nothing declares no
+        // attachment write, and a barrier out of the state therefore has a
+        // read-only source scope. `write_states_expand_to_write_accesses` pins
+        // the same equality from the seam's side.
         assert!(
-            state_masks(ResourceState::DepthStencilRead)
+            !state_masks(ResourceState::DepthStencilRead)
                 .access
                 .contains(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE),
-            "still declared, because the seam's is_write answers for every \
-             backend and Metal has no no-op store action"
+            "STORE_OP_NONE writes nothing, so no write access may be declared"
         );
     }
 

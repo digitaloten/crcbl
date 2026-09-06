@@ -3,22 +3,75 @@
 Records kept so they are not re-derived: measurements, investigations, ideas
 considered and declined, and lessons. Open work lives in `docs/backlog.md`.
 
-### DECIDED — a read-only depth state that says it writes
+### SHIPPED — a read-only depth state that said it writes
 
-Decision record; the decision is in `docs/backlog.md`.
+Record of the decision and of what landed. Both narrowings were taken on
+2026-09-06 and built the same day.
 
-`crcbl-vk` no longer stores a read-only depth attachment: `conv::depth_store_op`
-answers `VK_ATTACHMENT_STORE_OP_NONE` — Vulkan 1.3 core, no extension and no
-feature — whenever `crcbl_hal::DepthStencilAttachment::read_only` is set. **No
-seam change was needed**: the flag already existed and `crcbl-render`'s
+**What is in the tree now.** `crcbl_hal::ResourceState::is_write` answers
+`false` for `DepthStencilRead`, and `crcbl-vk`'s `conv::state_masks` expands it
+to `DEPTH_STENCIL_ATTACHMENT_READ` alone. The two had to move together, because
+`conv`'s `write_states_expand_to_write_accesses` asserts the equality, and that
+test is now what holds the narrowing in place from the Vulkan side while
+`write_states_are_classified` holds it from the seam's.
+
+`crcbl-mtl` gained `conv::depth_store_action`, which answers
+`MTLStoreAction::Store` for a read-only attachment whatever store op the caller
+passed, and `crcbl-mtl`'s `command` uses it for both the depth and the stencil
+plane. Metal has no no-op store action, so the texture is written back either
+way and the only choice is between storing contents the pass did not change and
+discarding them; storing keeps the depth buffer, and unchanged contents are why
+declaring no write still holds. wgpu-hal's Metal backend answers `Store` under
+`depthReadOnly` for the same reason.
+
+Nothing changed in `crcbl-dx12` (`conv::resource_state` already mapped the state
+to `D3D12_RESOURCE_STATE_DEPTH_READ`), in `crcbl-webgpu` (a read-only plane
+reaches WebGPU as `depthReadOnly` with no store op at all) or in `crcbl-hal`'s
+`Null` backend, which maps no states.
+
+**The consequence at the graph.** `ResourceState::needs_barrier` now sees
+read→read in one layout between two depth-test-only passes and emits nothing;
+`crcbl-render`'s `back_to_back_read_only_depth_passes_need_no_barrier` is the
+same test that used to require the barrier, flipped. The transition out of the
+prepass is a write→read and is unchanged.
+
+**The narrowing is what makes the Vulkan store op observable on a device**,
+which it was not before — the gap the entry this replaces had to state. With the
+write bit in the mask, a barrier out of `DepthStencilRead` covered the store
+whether or not one happened, so the suites passed either way. Without it, the
+barrier's source scope is `VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT` alone
+and the layer notices. Measured 2026-09-06 by making `conv::depth_store_op`
+answer `STORE` for a read-only attachment and running
+`crates/crcbl/tests/run-render-e2e.sh` on lavapipe with
+`CRCBL_VK_SYNC_VALIDATION`, which reported
+`32/58 tests run: 12 passed, 20 failed` before the runner gave up, every failure
+reading
+
+> `SYNC-HAZARD-WRITE-AFTER-WRITE: vkCmdPipelineBarrier2(): WRITE_AFTER_WRITE hazard detected […] which was previously written at the end of the render pass instance (vkCmdEndRendering) by the attachment storeOp.`
+
+So the two halves now hold each other up on hardware, and the
+`vk e2e (lavapipe)` job is where that verdict comes from.
+
+**Coverage gap, stated plainly:** nothing observes the Metal store action on a
+device. `conv`'s `load_and_store_actions_are_not_transposed` pins the mapping,
+and it only compiles here — the cross-target clippy run for
+`aarch64-apple-darwin` is the whole local verdict on that crate, and the
+`mtl e2e (macos-latest)` job is the only one that runs it at all.
+
+The argument that produced the decision follows.
+
+`crcbl-vk` stopped storing a read-only depth attachment first:
+`conv::depth_store_op` answers `VK_ATTACHMENT_STORE_OP_NONE` — Vulkan 1.3 core,
+no extension and no feature — whenever
+`crcbl_hal::DepthStencilAttachment::read_only` is set. **No seam change was
+needed** for that half: the flag already existed and `crcbl-render`'s
 `graph.rs::attachments` already set it from the pass's own `write` flag, which
 the entry this replaces had wrong.
 
-What is left is that `ResourceState::DepthStencilRead` still declares
-`DEPTH_STENCIL_ATTACHMENT_WRITE` in `conv::state_masks`, and
-`crcbl_hal::ResourceState::is_write` still answers `true` for it. Both are now
-conservatism rather than description, and `conv`'s
-`write_states_expand_to_write_accesses` requires the two to move together.
+What was left is what this entry closes: `ResourceState::DepthStencilRead` still
+declared `DEPTH_STENCIL_ATTACHMENT_WRITE` in `conv::state_masks`, and
+`crcbl_hal::ResourceState::is_write` still answered `true` for it. Both were
+conservatism rather than description.
 
 **Measured** against CI's own layer 1.3.275 and lavapipe from Ubuntu, driving
 `cargo test -p viewer` with `CRCBL_GPU=vk` and the fatal sync gate on. The
@@ -33,14 +86,14 @@ measured and this note only retires the "only pass" clause:
 
 | store op | vk access mask | `is_write` | result                                          |
 | -------- | -------------- | ---------- | ----------------------------------------------- |
-| `STORE`  | write declared | `true`     | 75 passed (what ships today)                    |
+| `STORE`  | write declared | `true`     | 75 passed (what shipped before this)            |
 | `STORE`  | read only      | `false`    | **15 failed** — the original bug                |
 | `STORE`  | read only      | `true`     | **15 failed** — `is_write` alone never fixed it |
-| `NONE`   | read only      | `false`    | 75 passed                                       |
+| `NONE`   | read only      | `false`    | 75 passed (what ships now)                      |
 | `NONE`   | read only      | `true`     | 75 passed                                       |
 
-So on Vulkan the write declaration is now unnecessary and only costs barrier
-strength on every depth-test-only pass. **The question is the other backends**,
+So on Vulkan the write declaration was unnecessary and only cost barrier
+strength on every depth-test-only pass. **The question was the other backends**,
 because `is_write` answers for all four:
 
 - **WebGPU: does not write.** `web/engine/gpu-replay.js` omits all four
@@ -49,15 +102,16 @@ because `is_write` answers for all four:
 - **DX12: does not write.** D3D12 has no store op at all, and a depth-test-only
   pass runs with `D3D12_DEPTH_WRITE_MASK_ZERO`. Read, not measured — there is no
   D3D12 machine here.
-- **Metal: does write.** `MTLStoreAction` has no no-op action, so `crcbl-mtl`'s
-  `conv::store_action` can only answer `Store` or `DontCare` and the texture is
-  written back either way. Read, not measured, and Metal is deferred.
+- **Metal: writes, and cannot not.** `MTLStoreAction` has no no-op action, so
+  the texture is written back either way. That is what the explicit read-only
+  arm answers: the bytes are the ones the attachment already held, so no reader
+  can miss anything. Read, not measured, and Metal is deferred.
 
-Options: narrow both and accept Metal's arm being argued rather than measured;
-narrow both and give Metal's `store_action` an explicit read-only arm first; or
-leave it, at the cost of one unnecessary barrier per read-only depth pass. **Not
-decided.** Nothing is wrong today either way — the conservative answer
-over-synchronises, it does not race.
+The options were: narrow both and accept Metal's arm being argued rather than
+measured; narrow both and give Metal's `store_action` an explicit read-only arm
+first; or leave it, at the cost of one unnecessary barrier per read-only depth
+pass. **The second was taken.** Nothing was wrong before either way — the
+conservative answer over-synchronised, it did not race.
 
 ### `Features::BUFFER_DEVICE_ADDRESS` on Metal rides a query that is wrong
 

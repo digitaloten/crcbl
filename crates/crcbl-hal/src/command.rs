@@ -369,11 +369,17 @@ impl ResourceState {
     /// Read→read transitions need no barrier at all, so a graph asks this to
     /// skip emitting one.
     ///
-    /// [`Self::DepthStencilRead`] counts as a write, which its name argues
-    /// against: "read-only" there describes the depth *test*, and an
-    /// attachment in that state still stores at the end of the pass. Two such
-    /// passes in a row hazard against each other, so the barrier between them
-    /// is not the one to skip.
+    /// [`Self::DepthStencilRead`] is a read, and every backend agrees: Vulkan
+    /// ends such a pass with `VK_ATTACHMENT_STORE_OP_NONE`, which stores
+    /// nothing and declares no attachment write; D3D12 has no store op at all
+    /// and runs a depth-test-only pass with a zero depth-write mask; WebGPU
+    /// takes `depthReadOnly` and forbids the store op entirely; and Metal,
+    /// whose `MTLStoreAction` has no no-op action, stores contents the pass did
+    /// not change. Two such passes in a row therefore hazard against nothing
+    /// and the barrier between them is the one to skip.
+    ///
+    /// It answered `true` until the backends were checked one by one, which was
+    /// conservatism rather than description — see `docs/notes/backends.md`.
     #[must_use]
     pub const fn is_write(self) -> bool {
         matches!(
@@ -382,7 +388,6 @@ impl ResourceState {
                 | Self::ShaderReadWrite
                 | Self::ColorAttachment
                 | Self::DepthStencilWrite
-                | Self::DepthStencilRead
                 | Self::TransferDst
         )
     }
@@ -1000,9 +1005,10 @@ mod tests {
         assert!(ResourceState::ColorAttachment.is_write());
         assert!(ResourceState::TransferDst.is_write());
         assert!(ResourceState::ShaderReadWrite.is_write());
-        // Its name argues the other way, and the store op decides: an
-        // attachment left in this state writes the image when the pass ends.
-        assert!(ResourceState::DepthStencilRead.is_write());
+        // Its name argues for this one and so does the store op: no backend
+        // writes an attachment left in this state, so two read-only depth
+        // passes in a row need no barrier between them.
+        assert!(!ResourceState::DepthStencilRead.is_write());
         assert!(!ResourceState::ShaderRead.is_write());
         assert!(!ResourceState::IndirectArgument.is_write());
         assert!(!ResourceState::Undefined.is_write());
@@ -1019,6 +1025,11 @@ mod tests {
         assert!(S::needs_barrier(S::ShaderWrite, S::ShaderWrite));
         assert!(S::needs_barrier(S::ShaderWrite, S::IndirectArgument));
         assert!(S::needs_barrier(S::Undefined, S::ColorAttachment));
+        // Back-to-back depth-test-only passes: nothing stores, so nothing
+        // orders. The prepass that filled the image is still a write and still
+        // gets one.
+        assert!(!S::needs_barrier(S::DepthStencilRead, S::DepthStencilRead));
+        assert!(S::needs_barrier(S::DepthStencilWrite, S::DepthStencilRead));
     }
 
     #[test]

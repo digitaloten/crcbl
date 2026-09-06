@@ -1021,6 +1021,23 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- **A read-only depth attachment no longer declares that it writes.**
+  `crcbl_hal::ResourceState::is_write` answers `false` for `DepthStencilRead`
+  and `crcbl-vk`'s `conv::state_masks` expands it to
+  `DEPTH_STENCIL_ATTACHMENT_READ` alone; the two had to move together, and
+  `write_states_expand_to_write_accesses` is the assertion that says so. The
+  practical effect is one fewer barrier: `ResourceState::needs_barrier` now sees
+  read→read in one layout between two depth-test-only passes and emits nothing,
+  where it used to order them against a store that has not happened since
+  `conv::depth_store_op` began answering `VK_ATTACHMENT_STORE_OP_NONE`. The
+  transition out of the depth prepass is still a write→read and is unchanged.
+  `crcbl-mtl` gained `conv::depth_store_action`, used for both the depth and the
+  stencil plane, which answers `MTLStoreAction::Store` for a read-only
+  attachment whatever store op the caller passed — Metal has no no-op store
+  action, so the alternative is `DontCare` discarding an image the pass never
+  touched. `crcbl-dx12` and `crcbl-webgpu` already mapped the state to
+  `D3D12_RESOURCE_STATE_DEPTH_READ` and to `depthReadOnly`. No frame moved: the
+  render and forward goldens are byte-identical on radv and on lavapipe.
 - **Every sample's `Summary` carries the engine's `RunSummary` whole.** The
   eight fields each `apps/*/src/app.rs` re-declared and copied across one by one
   — `backend`, `frames`, `ticks`, `events`, `extent`, `exit`, `paused`, `mode` —

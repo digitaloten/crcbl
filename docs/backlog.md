@@ -6471,25 +6471,6 @@ in one of them — so the open future should resolve `Err` on it and the device
 pump should route it to `take_error`'s queue. Not done here: it changes what
 three poll paths return, and this task was the hang rather than the diagnosis.
 
-### DECIDED — a read-only depth state that says it writes
-
-The record behind this — the argument, the options and the measurements — is in
-`docs/notes/backends.md` under this heading.
-
-**DECIDED 2026-09-06 —** narrow both: `is_write` answers false for
-`DepthStencilRead` and it grants no write access, and `crcbl-mtl`'s
-`store_action` gains an explicit read-only arm answering `Store`, whose content
-is unchanged so the barrier semantics hold. wgpu-hal's Metal backend does
-exactly this under `depthReadOnly`. It schedules the two narrowings and the
-Metal arm.
-
-**Coverage gap, stated plainly:** no committed test observes the store op
-change. With the mask's write bit in place — which is what ships — the viewer
-suite passes whether the attachment stores or not, which is why the table above
-had to vary two things at once. `conv`'s
-`a_read_only_depth_attachment_does_not_store` pins the mapping so it cannot
-silently revert, and that is all it does.
-
 ### One present-path hazard is ours and one is the layer's
 
 `CRCBL_VK_SYNC_VALIDATION` is set by the `vk e2e (lavapipe)` job and by nothing

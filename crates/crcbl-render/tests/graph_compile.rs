@@ -1623,15 +1623,15 @@ fn a_read_only_depth_attachment_uses_the_read_state() {
     assert_eq!(depth_barrier.from, ResourceState::DepthStencilWrite);
 }
 
-/// Two read-only depth passes in a row still need a barrier between them.
+/// Two read-only depth passes in a row need no barrier between them.
 ///
-/// "Read-only" describes the depth *test*: an attachment in that state still
-/// performs its store op when the pass ends, so back-to-back passes write the
-/// image twice. A graph that treated `DepthStencilRead` as a pure read would
-/// see read→read, skip the barrier, and leave a write-after-write with nothing
-/// ordering it.
+/// "Read-only" describes the depth *test* and the store as well: no backend
+/// writes an attachment in that state — `crcbl-vk` ends the pass with
+/// `VK_ATTACHMENT_STORE_OP_NONE` — so the second pass reads what the first
+/// read and `ResourceState::needs_barrier` sees read→read in one layout. The
+/// transition out of the prepass is a different question and is still emitted.
 #[test]
-fn back_to_back_read_only_depth_passes_are_still_ordered() {
+fn back_to_back_read_only_depth_passes_need_no_barrier() {
     let harness = Harness::open();
     let pool = TransientPool::new();
     let mut graph = harness.graph();
@@ -1662,13 +1662,22 @@ fn back_to_back_read_only_depth_passes_are_still_ordered() {
     }
 
     let compiled = graph.compile(&pool).expect("a legal frame");
-    let second_read = compiled.passes()[2].barriers();
-    let depth_barrier = second_read
+    let first_read = compiled.passes()[1].barriers();
+    let depth_barrier = first_read
         .images
         .iter()
         .find(|barrier| barrier.to == ResourceState::DepthStencilRead)
-        .expect("a second read-only depth pass must still be ordered against the first");
-    assert_eq!(depth_barrier.from, ResourceState::DepthStencilRead);
+        .expect("the prepass wrote depth, so the first reader is ordered against it");
+    assert_eq!(depth_barrier.from, ResourceState::DepthStencilWrite);
+
+    let second_read = compiled.passes()[2].barriers();
+    assert!(
+        second_read
+            .images
+            .iter()
+            .all(|barrier| barrier.to != ResourceState::DepthStencilRead),
+        "read→read in one layout: the second depth-test-only pass needs no barrier"
+    );
 }
 
 /// Buffers are tracked exactly as images are, including the imported final
