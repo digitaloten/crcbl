@@ -471,7 +471,9 @@ mod tests {
     /// The failure this catches is a row that hands the renderer a whole fresh
     /// [`EffectRequest`]: the frame it draws is right, and a camera stack or an
     /// `[engine.video]` decision the panel was never asked about is gone. Both
-    /// layers are unwired today, so nothing else in this tree would notice.
+    /// layers are wired now — the camera one reads
+    /// `apps/lantern/assets/camera.ron` — so this is the run's own room going
+    /// back to a default nobody asked for.
     #[test]
     fn an_effect_row_writes_only_the_layer_the_menu_owns() {
         let device = RenderEffects::all();

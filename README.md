@@ -100,6 +100,7 @@ cargo run -p sandbox -- --headless        # needs neither; what CI runs
 # A game.
 cargo run -p breakout
 cargo run -p lantern                        # one room, every lighting effect
+cargo run -p lantern -- --stack my.ron      # ...the same room, your own render stack
 cargo run -p alcove                         # one room, every ambient-occlusion knob
 cargo run -p sundial                        # one plaza, a sun on a clock, every shadow filter
 

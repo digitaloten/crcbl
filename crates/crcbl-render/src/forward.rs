@@ -195,6 +195,7 @@ use crate::sky_pass::SkyPass;
 use crate::smaa::Smaa;
 use crate::ssao::{Ssao, cached_group};
 use crate::ssr::{Ssr, SsrEnvironment, SsrImages};
+use crate::stack::CameraStack;
 use crate::texture::{
     UploadedTexture, upload_texture, upload_texture_layers, upload_texture_mip_layers,
 };
@@ -12210,6 +12211,24 @@ impl ForwardRenderer {
     /// would dispatch a cull against numbers nothing zeroed.
     pub const fn set_effect_request(&mut self, request: EffectRequest) {
         self.effect_request = request;
+    }
+
+    /// Replaces the **camera** layer with what `stack` asks for, and leaves the
+    /// other three where they are.
+    ///
+    /// The file half of [`crate::stack`] reaching the renderer: a view that has
+    /// a render stack writes it here, and the player's `[engine.video]` clamp,
+    /// the antialiasing rung they picked and any programmatic override are
+    /// untouched — which is the property that makes the four layers four rather
+    /// than one. A caller that wants to move more than this layer builds an
+    /// [`EffectRequest`] and uses
+    /// [`set_effect_request`](Self::set_effect_request).
+    ///
+    /// **The frame in flight does not move**, on `set_effect_request`'s terms
+    /// and for its reason: this writes the request and
+    /// [`begin_frame`](Self::begin_frame) is what resolves it.
+    pub const fn set_camera_stack(&mut self, stack: &CameraStack) {
+        self.effect_request.camera = stack.compile();
     }
 
     /// What the frame the last [`begin_frame`](Self::begin_frame) opened draws.

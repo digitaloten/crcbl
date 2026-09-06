@@ -47,6 +47,12 @@ crcbl-ui = { workspace = true }
 bitflags = { workspace = true }
 bytemuck = { workspace = true }
 thiserror = { workspace = true }
+# The per-camera render stack's file format — see [`crate::stack`]. `serde`'s
+# derive is what `CameraStack` is written in and `ron` is the syntax it is
+# spelled with, so the two arrive together and neither is optional: a stack that
+# could not be read from a file is the field this crate already had.
+ron = { workspace = true }
+serde = { workspace = true }
 
 # The other half, and the other feature. Cargo resolves build-dependency
 # features separately from normal ones, so `bake`'s PNG encoder reaches the

@@ -286,6 +286,7 @@ pub fn with_shell<S: Shell + ?Sized>(
         options.common.gpu(),
         options.forced,
         options.effects,
+        options.stack,
     )?;
 
     Ok(assemble(

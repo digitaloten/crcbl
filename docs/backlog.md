@@ -6286,26 +6286,31 @@ design nobody has tested.
 **What it blocks:** hot reload, sandboxed modding, and the claim that the engine
 owns all module state — none of which any sample demonstrates.
 
-### RON has no implementation, and it gates four separate things (2026-08-27)
+### RON is read and written by `crcbl_render::stack`; what still has no RON file (2026-08-27, updated 2026-09-06)
 
-**Not built, and it is a user decision.** Nothing in the workspace reads or
-writes RON: no `ron` dependency in any `Cargo.toml`, no hand-written reader, not
-one `.ron` file in the tree. The TOML half of the format rule is built
-(`crcbl-store`'s `settings.rs` through the `toml` crate).
+**The reader and the writer exist.** The `ron` crate is a workspace dependency,
+`crcbl_render::stack::CameraStack` parses a file and writes it back
+deterministically — `from_ron` names the line, the column and the offending
+field; `to_ron` pins the newline so a Windows host emits the same bytes — and
+`apps/lantern/assets/camera.ron` is the tree's first `.ron` file. That closes
+the decision this entry opened: adopting the crate rather than writing a reader,
+and the deterministic writer the scene format needs came with it rather than
+being the part that was not free. The TOML half of the format rule was already
+built (`crcbl-store`'s `settings.rs` through the `toml` crate).
 
-**Already in `docs/backlog.md`** as the `.scn/` scene format entry and the
-`crcbl sim --input script.ron` entry; this adds the count of things waiting on
-it, which the existing entries do not state together: the `.scn/` scene format,
-`crcbl save dump` / `save diff` (topic 14), `crcbl audio render`'s script input
-(topic 13), and topic 20's RON effect assets.
+**What still has no RON file**, which is what is left of this entry — four
+features across four documents, each with its own entry here:
 
-**Decision needed:** adopt the `ron` crate (a new dependency, so the user's
-call) or write a reader. The trade-off is small either way for reading; the
-deterministic _writer_ the scene format needs — stable key order, stable float
-formatting — is the part that is not free with either choice, and is what makes
-clean git diffs of scenes possible at all.
+- the `.scn/` scene format (`docs/plan/06-assets-scenes.md`),
+- `crcbl save dump` / `save diff` (topic 14),
+- `crcbl audio render`'s script input (`crcbl sim --input script.ron`, topic
+  13),
+- topic 20's RON effect assets.
 
-**What it blocks:** four features across four documents, listed above.
+None of them is blocked on a reader any more. What each still needs is its own
+schema — a set of serde types with the same "one type, one file shape" property
+`CameraStack` has — and, for the scene format, a decision about what a stable
+document order is when the thing being written is a graph rather than a struct.
 
 ### towers and arena do not exist, and exit criteria all over the plan name them (2026-08-27)
 
@@ -23169,17 +23174,18 @@ Not measured, and it would inform the first two: what `wasmtime` actually adds
 to build time and binary size in this workspace. Nobody has tried it, because
 trying it is the thing that needs approval.
 
-## Sidecar meta RON: three items now want it, and the workspace has no RON reader
+## Sidecar meta RON: three items want it, and nothing writes one yet
 
-**DECIDED 2026-08-30 — `ron` is approved.** The user's call; add it with
-`cargo add` in the slice that first reads a file (foundation (b), the render
-stack as RON, is the fourth wanter and the likely first), not before.
-`docs/plan/06-assets-scenes.md` and topic 25 both assume a `crate.glb.meta.ron`
-sidecar, and **nothing in the workspace reads or writes RON**. There is no `ron`
-crate in `[workspace.dependencies]`; what exists is the plan's
-RON-for-entity-data rule and `crcbl-shell`'s `application/x-crcbl+ron` clipboard
-mime, which names the format and moves opaque bytes without parsing them. Adding
-the crate is a new dependency and therefore the user's call.
+**DONE, the dependency half — `ron` was approved 2026-08-30 and added
+2026-09-06** by foundation (b), the render stack as RON, which was the fourth
+wanter and the first to land. `ron` is in `[workspace.dependencies]`,
+`crcbl_render::stack` reads and writes it, and `apps/lantern/assets/camera.ron`
+is the tree's first `.ron` file. `docs/plan/06-assets-scenes.md` and topic 25
+both assume a `crate.glb.meta.ron` sidecar, and **nothing writes one yet** —
+what the sidecar needs now is its own serde schema, not a reader. Beside the
+plan's RON-for-entity-data rule there is still `crcbl-shell`'s
+`application/x-crcbl+ron` clipboard mime, which names the format and moves
+opaque bytes without parsing them.
 
 Three things now want that one file, and they should land together rather than
 as competing conventions: the `AssetId` GUID this backlog already owes,
@@ -23204,6 +23210,71 @@ Also recorded from the hand-authored import slice:
   through `crcbl-cli`'s `lod_cmd`, so it is exercised — but the geometry it
   resolves never reaches a GPU pool, and wiring it to `crcbl-render` is the
   slice that would make hand LODs visible.
+
+## What the camera-stack slice left (2026-09-06)
+
+Foundation (b) — `crcbl_render::stack`, `apps/lantern/assets/camera.ron`,
+`ForwardRenderer::set_camera_stack` — landed with these gaps, deliberately.
+
+**A pass carries no parameters.** `docs/plan/18-render-features.md` asks for
+"which passes, parameters"; only the first half is built. Every pass type in
+`crcbl_render::stack` but `AntialiasingPass` is field-less, and each one's doc
+says what it would carry. What is missing is a serialized form for the types the
+renderer's own setters already take, which is a decision per type rather than
+plumbing:
+
+- `ShadowsPass` — the atlas budget, and `shadow::Cadence`
+  (`ForwardRenderer::set_shadow_cadence`).
+- `BloomPass` — the composite's scalar. There is no setter for it at all today:
+  `crcbl_render::bloom` writes `crcbl_shaders::bloom::DEFAULT_STRENGTH` into the
+  composite step's parameter block, and nothing can name another value.
+- `VolumetricFogPass` — **not** `Fog`. `Fog` is a scene property that the
+  analytic path in `mesh.slang` composites whether or not this pass runs, so it
+  belongs to the view and not to this pass; what this pass would carry is the
+  froxel sample count, which has no setter.
+- `AutoExposurePass` — `ExposureAdaptation`
+  (`ForwardRenderer::set_exposure_adaptation`), whose rates are per-second.
+- `AmbientOcclusionPass`, `ReflectionsPass`, `ContactShadowsPass` — no per-pass
+  parameter is exposed by `ForwardRenderer` at all, so there is nothing yet for
+  a file to say about them beyond present or absent.
+
+**The camera layer's two bits are one field on purpose.** `RenderEffects` has
+both `ANTIALIASING` and `SMAA`, and `CameraStack` has one `antialiasing` field
+naming an `Antialiasing` tier rather than a field per bit.
+`docs/plan/49-antialiasing.md` collapsed the two into one ladder because the
+resolve slot holds one filter, and two fields would let a file ask for both —
+the state `EffectRequest::resolve` clears before it fills the slot. A reader
+reaching for `smaa:` gets a `deny_unknown_fields` refusal naming the real
+fields, which is where they find out.
+
+**Most views still write `EffectRequest.camera` as a literal, not from a file.**
+Only `apps/lantern` (through `apps/lantern/assets/camera.ron`) and
+`crcbl::screenshot`'s `Scene::Bloom` (through `BLOOM_STACK_RON`, a string
+literal in the same file) compose the layer from RON. These still pass a
+`RenderEffects` value directly, and each is a fixture or a sample view rather
+than a gap in the mechanism:
+
+- `apps/lantern/src/room.rs` — `MONITOR_STACK`, the render-to-texture view. A
+  constant on purpose: what it says is a property of a monitor camera rather
+  than something a run tunes. It is the obvious second file if a demo ever wants
+  to tune one.
+- `apps/shard/src/gpu.rs` — `RenderEffects::DEFAULT_STACK`, written at open.
+- `crates/crcbl/src/screenshot.rs` — every fixture scene but the bloom one:
+  `Scene::Aa` (through `aa_forward`), `Scene::Atmosphere`,
+  `Scene::AtmosphereMirror`, `Scene::Ssr` and the light-leak fixtures.
+- `apps/alcove/src/menu.rs`, `apps/lantern/src/menu.rs`,
+  `apps/sundial/src/menu.rs` and `crates/crcbl/tests/seam_from_outside.rs` —
+  test fixtures rather than views the engine draws, each standing in for "a view
+  whose stack drops the reflections".
+
+**Not measured:** what parsing the file costs at open. It is one small document
+read once, and nothing in the slice timed it.
+
+**Not covered by a test that can fail here:** `to_ron`'s newline is pinned to
+`\n` so a Windows host writes the same bytes as a Linux one, and the assertion
+that no `\r` appears cannot go red on Linux — the ron default it guards against
+is `\r\n` on Windows only. CI's Windows leg runs the assertion; a local run
+proves nothing about it.
 
 ## The host-visible-write rule has now cost two devices, and the seam could enforce it
 

@@ -50,22 +50,29 @@
 //!
 //! | Layer | Source | Wired |
 //! | --- | --- | --- |
-//! | [`EffectRequest::camera`] | the view's own render stack | yes — a renderer per view, each with its own request |
+//! | [`EffectRequest::camera`] | the view's own render stack, as RON | yes — [`CameraStack`](crate::stack::CameraStack) compiles the file and [`ForwardRenderer::set_camera_stack`] writes this field |
 //! | [`EffectRequest::video`] | `[engine.video]` | yes — `crcbl`'s start-up reads it: `GpuContextDesc::settings`, `GpuContext::effect_request` |
 //! | [`EffectRequest::antialiasing`] | `[engine.video] antialiasing` | yes — the same read: `crcbl::settings::antialiasing`, `GpuContext::effect_request` |
 //! | [`EffectRequest::programmatic`] | game code | yes — [`ForwardRenderer::set_effect_request`] |
 //! | the device clamp | nothing yet — no [`crcbl_hal::DeviceCaps`] value reaches it | the clamp runs and its rule set is empty, which is a fact about these effects — see [`ForwardRenderer::device_effects`] |
 //!
-//! The camera row's source is **not** the render-stack RON topic 18 describes —
-//! nothing in this workspace reads or writes RON — it is a
-//! [`ForwardRenderer`](crate::ForwardRenderer) per view, each holding the
-//! request its own view asked for. That is enough to make the layer real,
-//! because what the layer means is "two views in one frame resolve to different
-//! effect sets", and a RON file would only be a second way to write the same
-//! field. `apps/lantern`'s in-scene monitor is the consumer: its
-//! render-to-texture camera draws the room without reflections while the frame
-//! it hangs in draws them, from one device, in one graph, through this one
-//! function.
+//! The camera row's source is the render-stack RON topic 18 describes, and it is
+//! [`crate::stack`]: a [`CameraStack`](crate::stack::CameraStack) is the file,
+//! [`compile`](crate::stack::CameraStack::compile) is what turns it into this
+//! field, and [`ForwardRenderer::set_camera_stack`] is what writes it without
+//! touching the three layers around it. `apps/lantern/assets/camera.ron` is the
+//! file a demo draws through and `crcbl::screenshot`'s bloom fixture composes
+//! one from a string literal.
+//!
+//! **A renderer per view is still what makes the layer real**, and the file did
+//! not replace it: what the layer means is "two views in one frame resolve to
+//! different effect sets", which is a property of having a request each rather
+//! than of where the request was written. `apps/lantern`'s in-scene monitor is
+//! that consumer — its render-to-texture camera draws the room without
+//! reflections while the frame it hangs in draws them, from one device, in one
+//! graph, through this one function — and its stack is a constant in the
+//! sample's source, because what it says is a fact about a render-to-texture
+//! camera rather than something a run tunes.
 //!
 //! Every row has a source now. The `[engine.video]` one arrives through the
 //! umbrella rather than through this crate, because it has to: the keys are a
@@ -85,6 +92,7 @@
 //! `EffectRequest { camera, ..ctx.effect_request() }` and keeps both.
 //!
 //! [`ForwardRenderer::set_effect_request`]: crate::ForwardRenderer::set_effect_request
+//! [`ForwardRenderer::set_camera_stack`]: crate::ForwardRenderer::set_camera_stack
 //! [`ForwardRenderer::device_effects`]: crate::ForwardRenderer::device_effects
 
 bitflags::bitflags! {
@@ -341,8 +349,16 @@ impl RenderEffects {
 /// The rungs above this one — CMAA2 in SMAA's place, then MSAA 2×, 4× and 8× —
 /// are that section's next two slices and are deliberately not here.
 ///
+/// **Serialized in snake_case, which is [`name`](Self::name)'s spelling.** A
+/// camera stack names a rung by that word — see [`crate::stack`] — and
+/// `crcbl::settings` writes the same word into `[engine.video]`, so the two
+/// seams a player's choice can arrive through spell it once.
+/// `a_tier_is_spelled_the_way_the_settings_seam_spells_it` is what holds the
+/// attribute and that function together.
+///
 /// [`ForwardRenderer::add_passes`]: crate::forward::ForwardRenderer::add_passes
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Antialiasing {
     /// Neither tier: the tonemap writes the caller's target and no resolve pass
     /// is recorded at all.
@@ -517,10 +533,13 @@ pub struct EffectRequest {
     /// reflections of their own, and that is a property of the camera rather
     /// than of the player's hardware.
     ///
-    /// **A renderer per view is what sets it**, rather than the render-stack RON
-    /// topic 18 describes — see this module's table for why that is the same
-    /// layer and not a substitute for it. `apps/lantern`'s monitor camera is the
-    /// consumer in this tree.
+    /// **A [`crate::stack::CameraStack`] is what a view writes it from**, which
+    /// is the render-stack RON topic 18 describes;
+    /// [`ForwardRenderer::set_camera_stack`](crate::ForwardRenderer::set_camera_stack)
+    /// is the one-layer setter. A renderer
+    /// per view is what makes the layer real either way — see this module's
+    /// table — and `apps/lantern`'s monitor camera is the consumer whose stack
+    /// is still a constant rather than a file.
     pub camera: RenderEffects,
     /// What the **player** allows, from `[engine.video]`.
     ///

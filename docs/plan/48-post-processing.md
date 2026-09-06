@@ -141,9 +141,18 @@ request.
   `bloom_down.slang` / `bloom_up.slang` / `bloom_composite.slang`,
   `crcbl_shaders::bloom::BloomParams`, `RenderEffects::BLOOM` and the
   `Scene::Bloom` fixture. `docs/backlog.md` carries what the slice left.
-- Stack is data-driven per camera (RON: which passes, parameters) —
-  games/samples tune without engine edits; settings UI (topic 14 P10) exposes
-  quality toggles.
+- **Stack is data-driven per camera (RON: which passes) — built 2026-09-06.**
+  `crcbl_render::stack::CameraStack` is the file: one optional pass per
+  `RenderEffects` bit, `compile` is a bit per `Some`, and
+  `ForwardRenderer::set_camera_stack` writes the camera layer with the other
+  three left alone. `apps/lantern/assets/camera.ron` is a demo tuning itself
+  without an engine edit, `--stack` points the same demo at another file, and
+  `crcbl::screenshot`'s bloom fixture composes one from a string literal. **The
+  parameters half is not built**: every pass type but the antialiasing slot is
+  field-less, because the renderer's per-pass parameters are setters (`set_fog`,
+  `set_exposure_adaptation`, `set_tonemap_curve`) whose types have no serialized
+  form yet — `docs/backlog.md` lists which. The settings UI (topic 14 P10)
+  exposing quality toggles is the `[engine.video]` layer's, and it is wired.
 
 ### Pass fusion, taken 2026-08-30: two round trips the stack does not need
 
@@ -182,10 +191,11 @@ render-to-texture camera driving a security monitor, a planar reflection, or a
 weapon-scope PiP (topic 29) does not want reflections or GI of its own, and that
 is a property of the camera rather than of the player's hardware.
 
-**One of the four layers has no source in the tree.** `crcbl_render::effects` is
-the resolution point: `RenderEffects` is the effect set, `EffectRequest` carries
-the three requested layers, and `EffectRequest::resolve` applies the whole order
-in one place. `ForwardRenderer::begin_frame` resolves once per frame and freezes
+**All four layers have a source in the tree** — the camera one since 2026-09-06,
+and it is this document's own rung above. `crcbl_render::effects` is the
+resolution point: `RenderEffects` is the effect set, `EffectRequest` carries the
+three requested layers, and `EffectRequest::resolve` applies the whole order in
+one place. `ForwardRenderer::begin_frame` resolves once per frame and freezes
 the answer, so the half of a frame that parametrises the shadow culls and the
 half that dispatches them cannot disagree.
 
@@ -205,16 +215,19 @@ half that dispatches them cannot disagree.
   says it of itself, and a device too small for the shadow atlas fails to build
   the renderer rather than degrading past it. The first real rule arrives with
   the ray-traced variants, which `LightingPath` selects.
-- **Camera stack** is a field nothing writes: there is no render-stack RON, and
-  nothing in the workspace reads or writes RON at all. **It is a foundation rung
-  (2026-08-30)**, scheduled by `43-render-standards.md`'s foundations block
-  ahead of the feature rungs that would be cheaper with it: a RON per camera
-  naming the passes and their parameters, `RenderEffects` becoming the compiled
-  form of that file, and the `[engine.video]` layer overlaying it in the order
-  `39-capabilities.md` fixes. Once it exists a quality tier, a sample's tuning
-  and an A/B measurement on `40-profiling.md`'s baseline are each a file and not
-  an engine edit — which is what makes every later rung's cost row cheap to
-  fill.
+- **Camera stack** is wired, and it is a file: `crcbl_render::stack` is the
+  reader and the deterministic writer, `CameraStack::compile` is what makes
+  `RenderEffects` the compiled form of that file, and
+  `ForwardRenderer::set_camera_stack` overlays it under the `[engine.video]`
+  layer in the order `39-capabilities.md` fixes. It was foundations block (b)
+  (2026-08-30), landed 2026-09-06, and the `ron` crate arrived with it — this
+  workspace's first RON reader of any kind. A sample's tuning and an A/B
+  measurement on `40-profiling.md`'s baseline are each a file now:
+  `apps/lantern` reads `assets/camera.ron` at open and `--stack` points it at
+  another. **What a stack cannot yet say is a pass's parameters**, which is the
+  half of topic 18's sentence still outstanding — see the rung above, and
+  `docs/backlog.md` for which passes are waiting on a serialized form. A quality
+  tier is still the `[engine.video]` layer's rather than this one's.
 - **`[engine.video]`** is wired: `GpuContext` reads the player's settings file
   while it opens — `SettingsSource::Platform` by default, so every sample and
   the `crcbl new` scaffold get it without asking — and

@@ -64,6 +64,15 @@ proptest = "1.9"
 # wasm32, which is the whole point of the seam.
 rand_chacha = { version = "0.9", default-features = false }
 rand_core = { version = "0.9", default-features = false }
+# RON, the format `docs/plan/06-assets-scenes.md` and
+# `docs/plan/18-render-features.md` write entity and render-stack data in.
+# Approved 2026-08-30 as a user decision recorded in `docs/backlog.md`, and
+# added here by the slice that first reads a file: `crcbl_render::stack`, the
+# per-camera render stack. Default features are `std` alone; what a deterministic
+# writer needs — `ron::ser::PrettyConfig` with a fixed struct order and stable
+# float formatting — is in the base crate, which is why nothing here is hand
+# rolled.
+ron = "0.12.2"
 thiserror = "2.0"
 # Storage and persistence: serde for settings/save schemas, toml for settings
 # files, dirs for platform-standard config/data paths.

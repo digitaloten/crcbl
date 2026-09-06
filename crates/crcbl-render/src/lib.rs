@@ -178,6 +178,7 @@ mod split;
 pub mod sprite_pass;
 mod ssao;
 mod ssr;
+pub mod stack;
 pub mod texture;
 pub mod timing;
 pub mod transient;
@@ -252,6 +253,10 @@ pub use skinning::{
 pub use sprite_pass::{
     CONSTANTS_SIZE, INSTANCE_STRIDE, SAMPLE_PIXEL, SAMPLE_SMOOTH, SheetDesc, SheetId, Sprite,
     SpriteConstants, SpriteInstance, SpriteRenderer, sheet_lane,
+};
+pub use stack::{
+    AmbientOcclusionPass, AntialiasingPass, AutoExposurePass, BloomPass, CameraStack,
+    ContactShadowsPass, ReflectionsPass, ShadowsPass, StackError, VolumetricFogPass,
 };
 pub use texture::{
     UploadedTexture, upload_texture, upload_texture_layers, upload_texture_mip_layers,

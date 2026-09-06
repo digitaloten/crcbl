@@ -148,17 +148,24 @@ quality logic can drive it directly.
 the device lacks is what `required` is for; it is not something a toggle can
 force.
 
-**One of the four layers still has no source in the tree, and it is not
-`[engine.video]`** — corrected 2026-08-27, this paragraph having claimed two.
-The camera stack is the one: there is no render-stack RON and nothing in the
-workspace reads RON, so `EffectRequest::camera` is written by a renderer per
-view and by nothing else. `[engine.video]` **is** wired — `GpuContext::open`
-reads the player's file through `SettingsSource`, `crcbl::settings::VIDEO_KEYS`
-is the one place a key is spelled, and `GpuContext::effect_request` hands the
-layer to a renderer built on that context, so every sample and every `crcbl new`
-scaffold gets it without asking.
-[18-render-features.md](18-render-features.md)'s "Where the toggles live"
-already said so; this document had not caught up.
+**Every one of the four layers has a source in the tree** — the camera stack was
+the last without one, and it got one on 2026-09-06. It is the render-stack RON
+this table's "Per camera" row names: `crcbl_render::stack::CameraStack` is the
+file — one optional pass per `RenderEffects` bit — `CameraStack::compile` is
+what `EffectRequest::camera` is written from, and
+`ForwardRenderer::set_camera_stack` writes that layer without disturbing the
+three around it. It was `43-render-standards.md`'s foundations block (b), and
+the `ron` crate arrived with it. `apps/lantern/assets/camera.ron` is the file a
+demo draws through, `--stack` points it at another, and a renderer per view is
+still what makes two views in one frame resolve differently. `[engine.video]`
+**is** wired too — `GpuContext::open` reads the player's file through
+`SettingsSource`, `crcbl::settings::VIDEO_KEYS` is the one place a key is
+spelled, and `GpuContext::effect_request` hands the layer to a renderer built on
+that context, so every sample and every `crcbl new` scaffold gets it without
+asking. **What a camera stack cannot say yet is a pass's parameters**: every
+pass type but the antialiasing slot is field-less, because the renderer's
+per-pass parameters are setters whose types have no serialized form —
+`docs/backlog.md` carries the list.
 
 The device layer is wired to `DeviceCaps` and currently **removes nothing**, and
 that is a statement about the three effects rather than a stub — see topic 18's

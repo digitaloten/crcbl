@@ -28,9 +28,9 @@ use crcbl::hal::{
 };
 use crcbl::prelude::*;
 use crcbl::render::{
-    Antialiasing, EffectOverride, EffectRequest, ForwardRenderer, ImportedImage, MAX_TIMED_PASSES,
-    MenuRenderer, PassTimers, RenderEffects, RenderGraph, TransientImageDesc, TransientPool,
-    UiRenderer,
+    Antialiasing, CameraStack, EffectOverride, EffectRequest, ForwardRenderer, ImportedImage,
+    MAX_TIMED_PASSES, MenuRenderer, PassTimers, RenderEffects, RenderGraph, TransientImageDesc,
+    TransientPool, UiRenderer,
 };
 use crcbl::shell::WindowId;
 use crcbl::ui::draw_list::DrawList;
@@ -61,8 +61,8 @@ const MONITOR_FORMAT: Format = Format::Rgba8UnormSrgb;
 /// which `PassTimers` reports as one warning and then lives with.
 const LANTERN_TIMED_PASSES: u32 = MAX_TIMED_PASSES + ForwardRenderer::MAX_PASSES + 1;
 
-/// The requested layers for `view`, given what the command line asked for and
-/// what the player's settings allow.
+/// The requested layers for a view whose own stack is `camera`, given what the
+/// command line asked for and what the player's settings allow.
 ///
 /// **The camera layer is the view's, the video layer is the player's and the
 /// programmatic layer is the run's**, which is the whole of
@@ -81,14 +81,19 @@ const LANTERN_TIMED_PASSES: u32 = MAX_TIMED_PASSES + ForwardRenderer::MAX_PASSES
 /// `antialiasing` is the player's too and is the one layer that is not a clamp
 /// — see [`EffectRequest::antialiasing`]. A run's `--no-*` flags still have the
 /// last word over it, because the override is applied after it.
+///
+/// **`camera` is a compiled [`CameraStack`] for the room's own view** — the
+/// file `crate::args::built_in_stack` reads, or the one `--stack` named — and
+/// [`room::MONITOR_STACK`] for the monitor's, which has no file because what it
+/// says is a property of a render-to-texture camera rather than a run's tuning.
 fn request_for(
-    view: room::View,
+    camera: RenderEffects,
     video: RenderEffects,
     antialiasing: Option<Antialiasing>,
     effects: RenderEffects,
 ) -> EffectRequest {
     EffectRequest {
-        camera: view.stack(),
+        camera,
         video,
         antialiasing,
         programmatic: EffectOverride::none()
@@ -325,6 +330,10 @@ pub struct Gpu {
     /// parameter inside `crcbl-render` rather than a renderer per camera, and
     /// `docs/backlog.md` is where that is written down.
     monitor: ForwardRenderer,
+    /// The room view's own render stack, as the file said it — the camera layer
+    /// of the resolution order, kept so a request arriving from the pause menu
+    /// can be given it back. See [`Gpu::set_effect_request`].
+    stack: CameraStack,
     pool: TransientPool,
     /// `None` on a device without timestamp queries — the report degrades, the
     /// frame does not.
@@ -375,6 +384,7 @@ pub struct PendingGpu {
     pending: PendingGpuContext,
     forced: Forced,
     effects: RenderEffects,
+    stack: CameraStack,
 }
 
 impl PendingGpu {
@@ -386,7 +396,7 @@ impl PendingGpu {
     /// device it produced.
     pub fn poll(&mut self) -> Result<Option<Gpu>, GpuError> {
         match self.pending.poll()? {
-            Some(ctx) => Gpu::from_context(ctx, self.forced, self.effects).map(Some),
+            Some(ctx) => Gpu::from_context(ctx, self.forced, self.effects, self.stack).map(Some),
             None => Ok(None),
         }
     }
@@ -414,11 +424,13 @@ impl Gpu {
         gpu: GpuOptions,
         forced: Forced,
         effects: RenderEffects,
+        stack: CameraStack,
     ) -> Result<Self, GpuError> {
         Self::from_context(
             GpuContext::open(shell, window, extent, &desc(gpu, forced))?,
             forced,
             effects,
+            stack,
         )
     }
 
@@ -436,11 +448,13 @@ impl Gpu {
         gpu: GpuOptions,
         forced: Forced,
         effects: RenderEffects,
+        stack: CameraStack,
     ) -> Result<PendingGpu, GpuError> {
         Ok(PendingGpu {
             pending: GpuContext::request_open(shell, window, extent, &desc(gpu, forced))?,
             forced,
             effects,
+            stack,
         })
     }
 
@@ -455,6 +469,7 @@ impl Gpu {
         ctx: GpuContext,
         forced: Forced,
         effects: RenderEffects,
+        stack: CameraStack,
     ) -> Result<Self, GpuError> {
         let optional_features = forced.optional_features();
         let caps = ctx.device().caps();
@@ -509,9 +524,9 @@ impl Gpu {
         // — see [`request_for`].
         let video = ctx.video_effects();
         let antialiasing = ctx.antialiasing();
-        renderer.set_effect_request(request_for(room::View::Main, video, antialiasing, effects));
+        renderer.set_effect_request(request_for(stack.compile(), video, antialiasing, effects));
         monitor.set_effect_request(request_for(
-            room::View::Monitor,
+            room::View::Monitor.stack(),
             video,
             antialiasing,
             effects,
@@ -561,6 +576,7 @@ impl Gpu {
             ctx,
             renderer,
             monitor,
+            stack,
             pool: TransientPool::new(),
             timers,
             paths,
@@ -615,7 +631,7 @@ impl Gpu {
         // that, the first menu press would hand the monitor the main view's
         // stack and the camera layer would quietly stop existing.
         self.renderer.set_effect_request(EffectRequest {
-            camera: room::View::Main.stack(),
+            camera: self.stack.compile(),
             ..request
         });
         self.monitor.set_effect_request(EffectRequest {
@@ -1060,6 +1076,7 @@ impl crcbl::engine::PolledGpu for Gpu {
             gpu,
             defaults.forced,
             defaults.effects,
+            defaults.stack,
         )
     }
 
@@ -1245,8 +1262,8 @@ mod tests {
 
         let device = RenderEffects::all();
         let all = RenderEffects::all();
-        let main = request_for(room::View::Main, all, None, all).resolve(device);
-        let monitor = request_for(room::View::Monitor, all, None, all).resolve(device);
+        let main = request_for(room::View::Main.stack(), all, None, all).resolve(device);
+        let monitor = request_for(room::View::Monitor.stack(), all, None, all).resolve(device);
         assert!(main.contains(RenderEffects::REFLECTIONS));
         assert!(
             !monitor.contains(RenderEffects::REFLECTIONS),
@@ -1292,8 +1309,8 @@ mod tests {
         let all = RenderEffects::all();
         let video = all.difference(RenderEffects::SHADOWS);
 
-        let main = request_for(room::View::Main, video, None, all).resolve(device);
-        let monitor = request_for(room::View::Monitor, video, None, all).resolve(device);
+        let main = request_for(room::View::Main.stack(), video, None, all).resolve(device);
+        let monitor = request_for(room::View::Monitor.stack(), video, None, all).resolve(device);
         assert_eq!(
             main,
             room::View::Main.stack().difference(RenderEffects::SHADOWS),
@@ -1366,8 +1383,13 @@ mod tests {
         )
         .expect("the null backend opens everywhere");
 
-        let gpu = Gpu::from_context(ctx, Forced::default(), RenderEffects::all())
-            .expect("the null device builds lantern's renderers");
+        let gpu = Gpu::from_context(
+            ctx,
+            Forced::default(),
+            RenderEffects::all(),
+            crate::args::built_in_stack(),
+        )
+        .expect("the null device builds lantern's renderers");
         let paths = gpu.paths();
         gpu.destroy().expect("teardown");
         shell.destroy_window(window).expect("the window goes away");
@@ -1453,8 +1475,10 @@ mod tests {
         let without_shadows = RenderEffects::all().difference(RenderEffects::SHADOWS);
 
         let all = RenderEffects::all();
-        let main = request_for(room::View::Main, all, None, without_shadows).resolve(device);
-        let monitor = request_for(room::View::Monitor, all, None, without_shadows).resolve(device);
+        let main =
+            request_for(room::View::Main.stack(), all, None, without_shadows).resolve(device);
+        let monitor =
+            request_for(room::View::Monitor.stack(), all, None, without_shadows).resolve(device);
         assert_eq!(
             main,
             room::View::Main.stack().difference(RenderEffects::SHADOWS)

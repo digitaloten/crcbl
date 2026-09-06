@@ -1261,6 +1261,44 @@ fn bloom_sun() -> crcbl_render::DirectionalLight {
     }
 }
 
+/// The render stack [`Scene::Bloom`] draws through, as a file would hold it.
+///
+/// **The fixture composes its camera layer from RON**, which is the shape
+/// `docs/plan/18-render-features.md` asks for and the reason
+/// `crcbl_render::stack` exists: what a view asks for is data, so the thing a
+/// golden is blessed from can be read rather than recompiled. Written out here
+/// rather than loaded from a path because a fixture that reached the filesystem
+/// would be a golden whose result depended on the working directory — the text
+/// is the file, and `bloom_stack_is_the_default_stack_plus_the_lens` is what
+/// holds it to the set this frame was blessed with.
+///
+/// **The default stack plus the lens, not every effect.** They were the same set
+/// until the antialiasing resolve joined the effects outside the default — see
+/// `RenderEffects::DEFAULT_STACK` — and every-effect here would have quietly
+/// added the higher resolve tier to this fixture, which is a halo measured
+/// through an edge filter. Each effect held out of the default gets the fixture
+/// it is about; this one is about the chain.
+const BLOOM_STACK_RON: &str = "\
+(
+    shadows: Some(()),
+    ambient_occlusion: Some(()),
+    reflections: Some(()),
+    bloom: Some(()),
+    antialiasing: Some((tier: fxaa)),
+)";
+
+/// [`BLOOM_STACK_RON`], parsed.
+///
+/// # Panics
+///
+/// If the literal above is not a camera stack, naming the line and the column.
+/// It is a `const` in this file, so that is a tree in which
+/// `bloom_stack_is_the_default_stack_plus_the_lens` is red too.
+fn bloom_stack() -> crcbl_render::CameraStack {
+    crcbl_render::CameraStack::from_ron(BLOOM_STACK_RON)
+        .unwrap_or_else(|error| panic!("BLOOM_STACK_RON: {error}"))
+}
+
 /// How far back from the slab [`Scene::Aa`]'s camera stands, in world units.
 ///
 /// Sets the scale of the picture on [`BLOOM_CAMERA_UP`]'s terms: with the 60°
@@ -6155,24 +6193,18 @@ impl SceneState {
                 // gives it.
                 let mut renderer =
                     ForwardRenderer::with_scene(device, queue, format, &bloom_scene())?;
-                // **The one fixture that asks for the lens.**
-                // `RenderEffects::DEFAULT_STACK` leaves bloom out — a view that
-                // has declared no render stack has declared no lens — so this is
-                // the camera-stack layer being exercised as topic 18 describes
-                // it, and it is what keeps every other golden in the tree
-                // untouched by this slice.
+                // **The one fixture that asks for the lens**, and the one that
+                // asks for it from a file. `RenderEffects::DEFAULT_STACK` leaves
+                // bloom out — a view that has declared no render stack has
+                // declared no lens — so this is the camera-stack layer being
+                // exercised as topic 18 describes it, RON and all, and it is
+                // what keeps every other golden in the tree untouched.
                 //
-                // **The default stack plus the lens, not `all()`.** They were
-                // the same set until the antialiasing resolve joined the effects
-                // outside the default — see `RenderEffects::DEFAULT_STACK` — and
-                // `all()` here would have quietly added that resolve to this
-                // fixture, which is a halo measured through an edge filter. Each
-                // effect held out of the default gets the fixture it is about;
-                // this one is about the chain.
-                renderer.set_effect_request(EffectRequest {
-                    camera: RenderEffects::DEFAULT_STACK.union(RenderEffects::BLOOM),
-                    ..EffectRequest::default()
-                });
+                // `set_camera_stack` moves that layer alone: the other three
+                // stay where `ForwardRenderer::new` left them, which is where
+                // the `EffectRequest::default()` this used to write put them.
+                // See `BLOOM_STACK_RON` for what the stack says and why.
+                renderer.set_camera_stack(&bloom_stack());
                 place(&mut renderer, DEMO_CUBE, DEMO_UNTINTED, spot_floor());
                 place(&mut renderer, DEMO_CUBE, BLOOM_EMITTER, bloom_emitter());
                 Self::Forward {
@@ -7480,6 +7512,23 @@ pub(crate) fn compact_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The bloom fixture's RON is the effect set its golden was blessed
+    /// from.**
+    ///
+    /// `Scene::Bloom` no longer names a `RenderEffects` literal — it parses
+    /// `BLOOM_STACK_RON` and compiles it — so the thing that could now go wrong
+    /// silently is a stack that parses and asks for a different frame. A missing
+    /// `bloom` field is a fixture with no halo in it; a missing `antialiasing`
+    /// one is the same picture through a different resolve. Both draw, and both
+    /// would need the golden re-blessed.
+    #[test]
+    fn bloom_stack_is_the_default_stack_plus_the_lens() {
+        assert_eq!(
+            bloom_stack().compile(),
+            RenderEffects::DEFAULT_STACK.union(RenderEffects::BLOOM),
+        );
+    }
 
     /// The padding is only correct if it is dropped again, and this is the
     /// arithmetic that drops it. A GPU is not needed to check it, so it is

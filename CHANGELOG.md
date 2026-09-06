@@ -35,6 +35,42 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **A camera's render stack is a RON file.**
+  `docs/plan/43-render-standards.md`'s foundations block (b), and the first
+  thing in this workspace to read or write RON — the `ron` crate is now a
+  workspace dependency, approved in `docs/backlog.md` on 2026-08-30 and added by
+  this slice. `crcbl_render::stack::CameraStack` is the type: one optional pass
+  per effect `RenderEffects` carries, so a file says which passes a view asks
+  for.
+
+  ```ron
+  CameraStack(
+      shadows: Some(ShadowsPass()),
+      ambient_occlusion: Some(AmbientOcclusionPass()),
+      reflections: Some(ReflectionsPass()),
+      antialiasing: Some(AntialiasingPass(tier: fxaa)),
+  )
+  ```
+
+  `CameraStack::compile` turns that into a `RenderEffects` — a bit per `Some` —
+  which is the **camera** layer of the four-layer resolution order and a
+  _request_, not what the frame draws: the player's `[engine.video]` clamp, the
+  programmatic override and the device still apply after it.
+  `CameraStack::from_ron` refuses an unknown field and names the line, the
+  column and the field; `CameraStack::to_ron` writes the file back
+  deterministically, newline pinned so a Windows host emits the same bytes;
+  `CameraStack::default_stack` is `RenderEffects::DEFAULT_STACK` written out.
+  The two antialiasing bits are **one** `antialiasing` field naming a tier
+  rather than two switches, on `docs/plan/49-antialiasing.md`'s terms — the
+  resolve slot holds one filter.
+
+  `ForwardRenderer::set_camera_stack` writes that one layer and leaves the other
+  three where they were. `apps/lantern` now draws its room through
+  `apps/lantern/assets/camera.ron`, and **`--stack <PATH>`** reads another file
+  at run time — refused by line and column if it does not parse. The `--no-*`
+  flags are unchanged: they are the programmatic layer and still clear passes on
+  top. No golden moved.
+
 - **The glTF importer fills the packed and emissive page columns.**
   `docs/plan/43-render-standards.md` §2's rung 3, second half:
   `crcbl_scene::gltf_import` now reads

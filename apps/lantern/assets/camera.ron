@@ -1,0 +1,12 @@
+CameraStack(
+    shadows: Some(ShadowsPass()),
+    ambient_occlusion: Some(AmbientOcclusionPass()),
+    reflections: Some(ReflectionsPass()),
+    bloom: None,
+    antialiasing: Some(AntialiasingPass(
+        tier: fxaa,
+    )),
+    volumetric_fog: Some(VolumetricFogPass()),
+    auto_exposure: None,
+    contact_shadows: None,
+)

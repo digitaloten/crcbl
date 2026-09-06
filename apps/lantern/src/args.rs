@@ -7,7 +7,7 @@
 
 use crcbl::args::{Common, Consumed};
 use crcbl::hal::{BindingModel, GeometryPath};
-use crcbl::render::RenderEffects;
+use crcbl::render::{CameraStack, RenderEffects};
 
 use crate::gpu::Forced;
 use crate::menu::CameraMode;
@@ -15,6 +15,29 @@ use crate::menu::CameraMode;
 /// The simulation rate. Nothing here integrates anything but a camera and a
 /// lamp's orbit, so it is the engine's ordinary 60.
 pub const DEFAULT_TICK_HZ: u32 = 60;
+
+/// The render stack the room's own view draws through, as it is committed.
+///
+/// `include_str!` rather than a read at run time, for the reason every other
+/// asset this sample ships is compiled in: a browser has no filesystem, and a
+/// binary that could fail to find its own camera is one whose golden depends on
+/// the working directory it was run from. `--stack` is the run-time door, and
+/// it is a door onto a *different* file.
+const BUILT_IN_STACK_RON: &str = include_str!("../assets/camera.ron");
+
+/// What `BUILT_IN_STACK_RON` — `apps/lantern/assets/camera.ron` — says, parsed.
+///
+/// # Panics
+///
+/// If the committed file is not a camera stack, naming the line, the column and
+/// the field. It is compiled into this binary, so that is a tree in which
+/// `the_committed_stack_is_the_frame_the_room_already_drew` is also red — the
+/// panic is what keeps a run from starting on a stack nobody could read.
+#[must_use]
+pub fn built_in_stack() -> CameraStack {
+    CameraStack::from_ron(BUILT_IN_STACK_RON)
+        .unwrap_or_else(|error| panic!("apps/lantern/assets/camera.ron: {error}"))
+}
 
 /// How lantern was asked to run.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,9 +53,17 @@ pub struct Options {
     /// The charter's "every effect toggles independently", reached from the
     /// command line: each `--no-*` flag clears one bit and the run drives the
     /// **programmatic** layer of the resolution order with what is left. The
-    /// other two request layers have no source in this tree — see
+    /// other three request layers have their own sources — [`Self::stack`] for
+    /// the camera one, the player's settings file for the two below it; see
     /// `crcbl::render::effects`.
     pub effects: RenderEffects,
+    /// The **camera** layer of the resolution order for the room's own view:
+    /// the render stack it asks for, read from a file.
+    ///
+    /// [`built_in_stack`] unless `--stack` named another one. The monitor's
+    /// view keeps `crate::room::MONITOR_STACK`, which is a fact about a
+    /// render-to-texture camera rather than something a run tunes.
+    pub stack: CameraStack,
 }
 
 impl Default for Options {
@@ -53,6 +84,7 @@ impl Default for Options {
             camera: CameraMode::default(),
             forced: Forced::default(),
             effects: RenderEffects::all(),
+            stack: built_in_stack(),
         }
     }
 }
@@ -104,6 +136,12 @@ OPTIONS:
                          are taken from, held still) or 'free' (fly it with
                          WASD, Space/Shift and the arrow keys). Default: fixed.
                          ENTER on the pause menu's CAMERA row swaps them.
+    --stack <PATH>       Read the room view's render stack from a RON file
+                         instead of the committed apps/lantern/assets/camera.ron.
+                         This is the camera layer: it says which passes the view
+                         asks for, and the --no-* flags below still clear them
+                         on top. A file that does not parse is refused by line
+                         and column.
     --force-geometry <P> Hold the geometry path at 'mesh-shader',
                          'indirect-count' or 'indirect-per-batch' by opening a
                          device without the features that select a better one.
@@ -171,6 +209,13 @@ pub fn parse(args: impl Iterator<Item = String>) -> Invocation {
                 }
                 None => return Invocation::BadUsage("--force-binding needs a value".into()),
             },
+            "--stack" => match args.next() {
+                Some(path) => match read_stack(&path) {
+                    Ok(stack) => options.stack = stack,
+                    Err(message) => return Invocation::BadUsage(message),
+                },
+                None => return Invocation::BadUsage("--stack needs a value".into()),
+            },
             "--no-shadows" => options.effects.remove(RenderEffects::SHADOWS),
             "--no-ao" => options.effects.remove(RenderEffects::AMBIENT_OCCLUSION),
             "--no-reflections" => options.effects.remove(RenderEffects::REFLECTIONS),
@@ -179,6 +224,16 @@ pub fn parse(args: impl Iterator<Item = String>) -> Invocation {
     }
 
     Invocation::Run(options)
+}
+
+/// The stack `--stack` names, or the message to refuse the run with.
+///
+/// Both failures read the same way — the path, then what went wrong with it —
+/// because to a person fixing it "no such file" and "line 3, column 5" are the
+/// same kind of answer about the same argument.
+fn read_stack(path: &str) -> Result<CameraStack, String> {
+    let text = std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))?;
+    CameraStack::from_ron(&text).map_err(|error| format!("{path}: {error}"))
 }
 
 /// A [`GeometryPath`] by the name `--force-geometry` takes.
@@ -229,6 +284,73 @@ mod tests {
             RenderEffects::all(),
             "a bare run is the every-effect frame the golden is blessed from"
         );
+        assert_eq!(
+            options.stack,
+            built_in_stack(),
+            "a bare run draws through the committed camera file"
+        );
+    }
+
+    /// **The committed `assets/camera.ron` is the stack the room was already
+    /// drawing**, bit for bit.
+    ///
+    /// The whole safety of turning a constant into a file: `room::View::Main`'s
+    /// stack is what every golden in `apps/lantern/tests` was blessed from, and
+    /// a file that compiled to anything else would move all of them at once
+    /// while still parsing, still opening and still drawing a plausible room.
+    /// This is what makes the file a second spelling of that constant rather
+    /// than a second opinion about it.
+    #[test]
+    fn the_committed_stack_is_the_frame_the_room_already_drew() {
+        assert_eq!(built_in_stack().compile(), crate::room::View::Main.stack());
+    }
+
+    /// **`--stack` reads a file at run time, and a file that is not a stack is
+    /// refused the way every other bad value is.**
+    ///
+    /// The refusal is the half worth asserting: a sample that fell back to the
+    /// built-in stack when the file it was pointed at did not parse would draw
+    /// the frame it always drew and report nothing, which is an A/B measurement
+    /// silently comparing a stack against itself.
+    #[test]
+    fn the_stack_flag_reads_a_file_and_refuses_one_that_is_not_a_stack() {
+        let dir = std::env::temp_dir();
+        let good = dir.join(format!("lantern-stack-{}.ron", std::process::id()));
+        let bad = dir.join(format!("lantern-stack-bad-{}.ron", std::process::id()));
+        std::fs::write(&good, "(bloom: Some(()))").expect("the temp dir is writable");
+        std::fs::write(&bad, "(\n    shadows: Some(()),\n    smaa: Some(()),\n)")
+            .expect("the temp dir is writable");
+
+        let Invocation::Run(options) = run(&["--stack", good.to_str().expect("utf-8")]) else {
+            panic!("--stack with a readable stack is a run");
+        };
+        assert_eq!(
+            options.stack.compile(),
+            crcbl::render::RenderEffects::BLOOM,
+            "the file's stack has to reach the field, not the built-in one"
+        );
+
+        let Invocation::BadUsage(message) = run(&["--stack", bad.to_str().expect("utf-8")]) else {
+            panic!("a file that is not a stack is a bad usage");
+        };
+        assert!(message.contains("line 3, column 5"), "{message}");
+        assert!(message.contains("smaa"), "{message}");
+
+        assert!(
+            matches!(run(&["--stack"]), Invocation::BadUsage(_)),
+            "--stack at the end of an argv is a run that silently kept the built-in stack"
+        );
+        let missing = dir.join(format!("lantern-stack-absent-{}.ron", std::process::id()));
+        assert!(
+            matches!(
+                run(&["--stack", missing.to_str().expect("utf-8")]),
+                Invocation::BadUsage(_)
+            ),
+            "a path that names no file is refused rather than ignored"
+        );
+
+        std::fs::remove_file(&good).expect("the file this test wrote");
+        std::fs::remove_file(&bad).expect("the file this test wrote");
     }
 
     /// **Each `--no-*` flag clears one effect and leaves the others alone**, and
