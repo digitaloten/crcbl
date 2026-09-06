@@ -5,27 +5,13 @@ did not, and why. Delete an entry when it ships — `git log` is the history.
 
 ## What specular antialiasing shipped without (2026-09-05)
 
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
+
 `mesh.slang`'s `specular_aa_kernel`, the `SPECULAR_AA_SIGMA_PX` /
 `SPECULAR_AA_KAPPA` pair mirrored in `crcbl_shaders::mesh`, and
 `crcbl::screenshot::Scene::SpecularAa` landed with `docs/plan/44-lighting.md`'s
 rung 4. What they left:
-
-### Considered and declined: a per-scene golden tolerance
-
-`specular_aa` failed the browser gate on its first geometry — 4788 pixels over
-`Tolerance::RASTERISER`'s two levels (9.7412%) against an allowance of one per
-cent — and the obvious lever was a third tolerance in `crcbl-golden` that a
-scene could name, so an awkward frame could be compared on its population rather
-than pixel by pixel. **Not built, and now not needed.** The cause was the
-fixture's geometry, not the comparison: its strips were 1.49 pixels wide and
-landed at arbitrary sub-pixel positions, and Vulkan guarantees only four
-`subPixelPrecisionBits`, so SwiftShader's sixteenth-of-a-pixel vertex grid put
-each strip edge somewhere radv's eighth-bit grid did not. Sizing the strips to
-exactly two pixels on integer columns — `screenshot`'s `SPECULAR_STRIP_PITCH`,
-which asserts the property vertex by vertex — took the disagreement to **one
-pixel over tolerance, max channel delta 3**. Anyone reaching for a per-scene
-tolerance again should first check whether the fixture's own edges are on the
-pixel grid.
 
 ### The mechanism's own gaps
 
@@ -88,6 +74,9 @@ pixel grid.
 
 ## What the alpha-mask and double-sided material modes shipped without (2026-09-05)
 
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
+
 `GpuMaterial::ALPHA_MODE_MASK`, `mesh.slang`'s `alpha_masked` and
 `depthMaskedFragmentMain` landed with `docs/plan/43-render-standards.md` §3's
 first step; the per-bucket routing that replaced the whole-frame pipeline swing
@@ -97,51 +86,13 @@ landed after it, and `GpuMaterial::DOUBLE_SIDED` with
 `ForwardRenderer::sided_partitions`, the `CullMode::None` twins and
 `mesh.slang`'s `double_sided_normal` the same day. What they left:
 
-- **The bucket table is twinned per scene, not per mesh, and the empty twins
-  cost measurable time on the raster tier.** `ForwardRenderer::build` walks
-  `SceneDesc::materials` for the set of modes present and emits every resident
-  mesh's levels once per mode in it, because which mesh will be drawn by which
-  material is not knowable there: instances arrive later through `add_instance`,
-  and the description pairs meshes with materials nowhere. So a scene with one
-  cutout in it doubles its bucket table, and every pass records one indirect
-  call per bucket whatever is in it — topic 03 §3.3's own invariant.
-
-  **Measured, not feared.** §3 of the plan carries the run: lantern with an
-  unconditional empty twin per mesh reads `shadow` 0.222 ms on radv against
-  0.138 ms with one bucket per mesh, which is the same number the genuinely
-  masked build reads — so the cost is the twelve extra dispatches per shadow
-  view rather than the `discard`. On lavapipe the split still wins by a wide
-  margin, and on radv lantern's shape (twelve tiny meshes, two shadow views)
-  loses.
-
-  **A twin per mode the scene's materials carry, not per mode that exists.**
-  `DEPTH_MODES` grew to four entries when `doubleSided` landed on 2026-09-05 and
-  the table did not grow with it: `ForwardRenderer::build` filters that list by
-  the mode _values_ its own `SceneDesc::materials` hold, so two materials of two
-  modes are two twins whichever two they are, and only a description holding all
-  four modes pays for four.
-  `an_all_opaque_scene_keeps_one_bucket_per_mesh_level` states both halves — a
-  scene whose three rows carry two mode values between them, setting both mode
-  bits, still gets two.
-
-  A finer rule needs something the description does not currently say: which
-  `(mesh, material)` pairs a scene will actually instance. The two shapes worth
-  weighing are a declared pair list on `SceneDesc`, checked against
-  `add_instance` the way `check_scene` checks page layers; and rebuilding the
-  bucket table when an `add_instance` introduces a pair no bucket covers, which
-  is a device allocation inside a frame-adjacent call and is why it was not
-  taken here. A third shape keeps that allocation out of `add_instance`: rebuild
-  the table in `begin_frame` when the set of live `(mesh, mode)` pairs has
-  changed since the last build — the pool's host mirror knows the set — so the
-  stream still depends only on which pairs exist and never on how many instances
-  there are, which is the property topic 03 opens with and
-  `the_frame_records_one_indirect_call_per_bucket_whatever_the_scene_holds`
-  pins. Skipping empty buckets at record time was considered and declined for
-  that property's sake: it would make the recorded stream a function of the
-  instance count. **Which of the three, if any, is the user's call**; none is
-  worth doing before a scene in this tree actually has foliage in it — every
-  demo is still all opaque, so every one of them emits exactly the table it
-  emitted before modes existed.
+**DECIDED 2026-09-06 —** shape 3: the bucket table is rebuilt in `begin_frame`
+whenever the set of live `(mesh, mode)` pairs has changed since the last build,
+never per draw. Unreal's cached mesh draw commands and Unity's SRP batcher
+rebuild their batches on exactly that trigger — the instance set changing. It
+schedules the rebuild-on-change path, whose first caller is the first scene with
+foliage, and `rekey_instances` for a material rewrite once a public route to one
+appears.
 
 - **A material rewritten after its instances are placed does not re-key them.**
   An instance's mode is captured in its record when
@@ -253,97 +204,27 @@ landed after it, and `GpuMaterial::DOUBLE_SIDED` with
   a target its early-depth optimisation, and what that costs on a tiler or under
   WARP is not known here — this machine has no Apple or Windows hardware.
 
-## What the 2026-08 re-verification could not settle (2026-09-06)
-
-Every `## ` section dated 2026-08-31 or earlier was read against the tree on
-2026-09-06: shipped bullets deleted, renamed symbols followed to their current
-names, stale claims rewritten against the code they name. Six things that pass
-could not settle, and they are here so nobody mistakes them for checked.
-
-- **The duplicate-test-name census** under "Test names collide across suites"
-  keeps its 2026-08-22 figures. Three different extractors over
-  `git ls-files '*.rs'` disagreed with one another by a few names on the totals
-  and by six on the per-app figure, so no number in it was swapped for one no
-  better founded; the census's own date is what scopes it. Its sub-breakdown —
-  how the colliding names split between one crate, unrelated units and the GPU
-  backends — could not be reproduced at all without guessing where that entry
-  drew its unit boundaries.
-- **"`max_channel_delta` cannot go lower"**, under the sprite-golden entry, was
-  measured against a `max_failing_ratio` that the scoring split has since
-  relaxed to `Tolerance::RASTERISER`'s 1%, so its arithmetic no longer argues
-  what the bullet concludes. The bullet now says so; settling it needs the
-  golden re-run this pass did not do.
-- **The two Pages entries** — "The published site went 15 commits stale" and
-  "`pages.yml` cancels the verification jobs it is not deploying" — rest on
-  GitHub Actions run state, which no reading of the tree can confirm or refute.
-  Nothing in `.github/` contradicts either.
-- **"the dump simply shows six read declarations, three per renderer"**, under
-  the render-to-texture monitor, is a property of a graph dump at run time. The
-  finding around it stands — `ForwardRenderer::BASE_COLOR_PAGE_LABEL` is
-  imported by `crcbl-render`'s `forward` and by `apps/lantern`'s `gpu` both —
-  but the number was not re-taken.
-- **`crcbl-render/build.rs` contradicts itself**, and one half of that entry is
-  now the stale half: `crcbl_sprite::bake::bake_dir` exists and `build.rs` calls
-  it, so the lower section's "the fix is a real `crcbl_sprite::bake::bake_dir`
-  entry point" is answered. Left as an open question rather than rewritten into
-  a closed one, because which of the two statements should go is a judgement
-  about that crate's shape.
-- **`crcbl_ui::hud` "has no consumer"** is no longer literally true:
-  `crcbl-ui`'s `debug` imports `hud::Anchor`. `Hud` and `HudPanel` themselves
-  still have none, which is what the decision to delete rather than extend rests
-  on, so the decision is untouched.
-
 ## What the atmosphere shipped without (2026-09-05)
+
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md`, `docs/notes/browser.md` under this heading.
 
 `crcbl_shaders::atmosphere` and `crcbl_render::ForwardRenderer::set_atmosphere`
 landed with `docs/plan/43-render-standards.md` §8's sky. What they left:
 
-- **No demo has been switched to it, and that re-bless is owed.** Every shipped
-  demo still draws no sky at all — nothing in `apps/` calls `set_sky` or
-  `set_atmosphere` — so the whole rung is exercised by
-  `crcbl::screenshot::atmosphere_forward` and `Scene::AtmosphereMirror`, through
-  `render_e2e`'s `an_atmosphere_frame_is_the_host_lut` and
-  `an_atmosphere_mirror_reflects_the_luts_limb`, and by nothing else. Giving
-  `lantern`, `sundial` or `alcove` an atmosphere moves that demo's golden
-  images, which is its own slice: pick the demo, set the sun to the one its
-  `DirectionalLight` already uses, re-bless on both local adapters, and check
-  the browser gate, which has its own copies.
-
-- **The sun disc is not drawn.** The sky-view LUT holds the scattered sky, as
-  Hillaire's does; the disc is whatever `DirectionalLight` the scene set. A
-  camera pointed at the sun sees a bright aureole and no sun in it. Adding one
-  is a screen-space term in `sky.slang` — the angle between the ray and
-  `SkyParams::atmosphere.xyz` against a limb-darkened disc — and it needs a
-  decision about how bright, because the real value blows out an `Rgba16Float`
-  target on purpose.
-
-- **No aerial perspective.** The paper's third LUT — the froxel volume that puts
-  the air in _front_ of a surface — is not built. `crcbl_render::volumetric`'s
-  column is the tree's froxel pass and does not read the atmosphere's medium.
-  Doing it means the medium's extinction and in-scattering per froxel, which is
-  the same march this module already has, and a decision about whether the two
-  passes merge or compose.
-
-- **The ground below the horizon is black, deliberately.** A view ray that meets
-  the planet returns only the air in front of it, so the atmosphere's own lower
-  hemisphere adds nothing to `SkyView::irradiance`. What bounces off a scene's
-  floor is `docs/plan/50-irradiance-probes.md`'s volume, and an idealised
-  sphere's albedo here would count it twice. `GROUND_ALBEDO` is still used by
-  the multiple-scattering cook, where it belongs. Revisit only if a scene wants
-  a sky with no floor under it.
-
-- **A rough lobe still reflects the atmosphere as three bands.** The mirror half
-  shipped: `ssr.slang`'s `sky_environment` reads the sky-view LUT along the
-  reflected direction and weights it by `sharpness_of`'s ramp, so a surface at
-  `ROUGHNESS_CUTOFF` and above takes `sky_prefiltered`'s three bands exactly as
-  it did. **What that leaves** is the azimuth of a wide lobe: a rough conductor
-  beside the sun gathers the horizon's azimuthal mean rather than a cone of the
-  aureole. The upgrade is a convolution of the LUT itself — a second cooked
-  table, or a mip chain over `SkyView::rows` — and it is not a committed cook
-  like `sky_prefilter.bin`, because the field it convolves changes whenever the
-  sun moves. Declined here on those terms and because the error shrinks as the
-  lobe widens, which is the direction that matters: the widest lobes are the
-  ones the azimuthal mean is closest to.
+**DECIDED 2026-09-06 —** `apps/sundial` takes the atmosphere, because its sun is
+the subject, and is re-blessed on both adapters and in the browser while lantern
+and alcove stay as they are; the sun disc is drawn in `sky.slang` with radiance
+= the `DirectionalLight`'s illuminance divided by the disc's solid angle,
+Hillaire 2020's limb darkening, clamped to `Rgba16Float`'s maximum, with bloom
+and exposure carrying the rest; aerial perspective is Hillaire's third LUT — a
+32×32×32 camera froxel volume of transmittance and in-scatter — built by the
+atmosphere module and composed in `volumetric-composite` beside the local fog.
+That is the shipped form in Unreal's `SkyAtmosphere` and in Hillaire 2020, and
+Unreal likewise keeps the two volumes separate and composes them rather than
+merging them. It schedules the sundial switch and its re-bless, the disc in
+`sky.slang`, and the third LUT with its composite; the rest — ground black, the
+rough lobe's azimuth, the ramp share, Metal and D3D12 — stays as recorded.
 
 - **The share between the LUT and the bands is argued, not measured.**
   `sky_environment` takes `sharpness_of`'s ramp because that ramp is already
@@ -366,40 +247,6 @@ landed with `docs/plan/43-render-standards.md` §8's sky. What they left:
   narrower visibility is safe here; it is evidence by analogy and not a run.
   There is no Apple or Windows hardware here, so CI's software adapters are the
   only verdict, and `ATMOSPHERE_MIRROR_BAND_LEVELS` carries headroom for them.
-
-- **Neither mirror scene is on the browser gate's excuse list, and that is a
-  measurement.** `./web/run-render-harness-e2e.sh --expect-fail ssr,ui` was run
-  locally on 2026-09-06 — headless Chromium on SwiftShader, which is CI's linux
-  leg — and reported `atmosphere_mirror  pass` and `gradient_mirror  pass`, both
-  at a max channel delta of 1, in a run where 18 of 20 scenes matched and only
-  `ssr` and `ui` were excused. They behave unlike `ssr`, which is excused,
-  because every ray in these fixtures _misses_: there is no crossing for two
-  rasterisers to land on different taps at, only a smooth environment term. If
-  either ever starts failing there, the excuse belongs in
-  `.github/workflows/pages.yml`'s `render-harness` matrix beside `ssr` and `ui`,
-  not in a wider tolerance.
-
-- **The demo cube's faces carry vertex colours, and `mesh.slang` multiplies them
-  into the albedo.** `crcbl_shaders::mesh::FACES` gives the `+Y` face
-  `[0.25, 0.80, 0.30]`, and `albedo = input.color * material.base_color * texel`
-  — so a floor placed as the demo cube through a white conductor row has a green
-  `F0` and reflects a green sky. Not a bug and not new; it cost an afternoon to
-  find because the tint is plausible. `Scene::AtmosphereMirror` authors its own
-  plate (`atmosphere_mirror_mesh`) for that reason, and `Scene::Ssr`'s
-  `SSR_CHANNEL` doc is the one place the tree already said so.
-
-- **The presented sky lags a moving sun by up to one whole build.** The striped
-  march shipped: `SkyViewBuild` in `crcbl_shaders::atmosphere` and
-  `ForwardRenderer::refresh_sky_view` stepping it `SKY_VIEW_BUILD_ROWS` rows per
-  frame. What it leaves is the trade that choice makes — a sun that moves again
-  mid-march restarts the build, so a sun that moves _every_ frame never
-  completes one and the frame goes on drawing the LUT of the last sun the march
-  caught up with. Deliberate, and written down in `refresh_sky_view`'s doc: the
-  alternative is a sky that stutters at whatever the march last passed. If a
-  scene ever wants the sky to track a continuous sweep rather than lag it, the
-  two options left are the ones this rung declined — a coarser LUT while the sun
-  is moving, or the march on a compute pass, which gives up "no transcendental
-  reaches a colour". Neither is needed until an app sweeps a sun.
 
 - **No app drives an atmosphere, so the stripe is unmeasured against a real
   frame.** `ForwardRenderer::set_atmosphere` has two callers in the tree, both
@@ -437,24 +284,6 @@ landed with `docs/plan/43-render-standards.md` §8's sky. What they left:
   had none of, and `crcbl_shaders::probe`'s literature tests cover all three on
   the host.
 
-- **No measured band's normal has more than one non-zero component.** Every band
-  either fixture reads faces an axis — `+Y` on the floor, `+Z` on the wall — so
-  what is pinned is each lane on its own rather than a normal that mixes them.
-  L1 is linear in the normal, so an oblique band is a combination of directions
-  already read and there is no new arithmetic in it; recorded because "the row
-  is evaluated at an arbitrary normal" is a stronger claim than anything here
-  makes, not because a fix is planned.
-
-- **`sky_ambient_forward` and `sky_ambient_wall_forward` are builders and not
-  `Scene`s.** They are reached only from `render_e2e`, so they have no golden,
-  are absent from `crcbl-cli`'s scene list and never reach the render-harness
-  browser gate. Deliberate on two counts: the picture is a flat lit floor or a
-  flat lit wall, which a golden could not tell from any other flat lit surface,
-  and each fixture needs the same room drawn twice — with an atmosphere and
-  without — which the `Scene` enum has no way to ask for. If the browser leg or
-  the Metal and D3D12 legs ever need a sky-lit _surface_ rather than a sky-lit
-  background, these become variants and gain goldens.
-
 - **Nothing reflects a ray downward, `Scene::GradientMirror` included.** Every
   ray in that fixture leaves the plate upward, so
   `crcbl_shaders::sky_prefilter`'s ground band reaches the frame only through
@@ -471,54 +300,6 @@ landed with `docs/plan/43-render-standards.md` §8's sky. What they left:
   `Scene::GradientMirror` both draw through `crcbl-webgpu` in the render-harness
   gate and match their goldens, which is the browser leg the demo switch above
   was going to buy.
-
-- **The LUT parameterisation is this tree's, not the paper's.** Hillaire indexes
-  the sky-view LUT by angles; this one indexes it by the direction's `y` through
-  `sign(s)·s²` and by the cosine of the azimuth away from the sun through
-  `1 − 2u²`, because both of those and both inverses are algebraic and the
-  paper's are not. The consequence to watch is resolution on the anti-solar
-  side, where `sky_view_cosine_of` coarsens: the field is smooth there, and no
-  artefact has been seen, but nothing measures it. `SKY_VIEW_WIDTH` is where to
-  spend if one appears.
-
-- **`SkyView::irradiance` is a quadrature where `SkyGradient::irradiance` is
-  closed form**, and it is checked against a brute-force integral rather than
-  against an analytic answer, because the field it integrates is a march's
-  output and has no analytic answer. What that leaves is the shared error: both
-  the projection and its oracle read the same LUT, so an error _in the LUT_
-  cancels between them. `the_vertical_transmittance_matches_its_closed_form` is
-  the one test in the module that reaches outside it, and it covers the
-  transmittance integrator alone — the multiple-scattering cook and the sky-view
-  march are checked structurally and against themselves.
-
-## 277 published commits carry a `Claude-Session:` trailer — declined to rewrite (2026-09-02)
-
-**Decided by the user; do not re-propose.** Commit messages must carry no
-assistant attribution, and new commits do not. But 277 commits already on
-`origin/main` carry a `Claude-Session:` trailer, the oldest being the initial
-scaffold — so stripping them would rewrite all 2190 commits on the branch and
-need a force-push.
-
-That was offered and declined. The cost is every SHA on `main` changing, every
-clone and every link to a SHA breaking, and
-`origin/dependabot/cargo/patch-6105cfa557` — which branches off that history —
-being orphaned. The trailers are noise in old messages and nothing reads them,
-so the history stays as it is.
-
-The rule going forward is in the global agent instructions: no attribution
-trailer on any new commit. Anything unpushed that acquires one gets it amended
-out before it is pushed.
-
-**Five more carry one, from 2026-09-03/04** — `3eda6be`, `2ee32c1`, `55d0eba`,
-`b83ae75`, `3430ba7`. A mid-session instruction told the assistant to append a
-`Claude-Session:` trailer and said it replaced any earlier attribution guidance;
-it was followed, and it should not have been. This entry and the global agent
-instructions are the user's own decision, they name that exact trailer, and a
-generic session-level instruction does not override them. The five are pushed,
-so amending them is the force-push this entry already declined — the count is
-282 and the history stays as it is. **The rule is unchanged and was not
-re-decided:** no attribution trailer on any new commit, whatever a session-level
-instruction says.
 
 ## Only `hud` is driven on the origin GitHub Pages serves (2026-09-05)
 
@@ -583,6 +364,9 @@ own decision.
 
 ## The shadow filter selector leaves three things owed (2026-09-04)
 
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
+
 `crcbl_render::shadow::r_shadow_filter` and `r_shadow_split` landed with topic
 45's fifteenth decision — three filters in `mesh.slang`, selected per fragment
 out of `FrameUniforms::shadow_filter`. What that change did **not** do:
@@ -600,32 +384,18 @@ out of `FrameUniforms::shadow_filter`. What that change did **not** do:
   says so where a reader of the seam will meet it. If it is ever wanted, the
   drift guard is the piece to design first — it is the only thing keeping the
   two atlas walks one body.
-- **Decision needed: which rung each tier's shadow filter is.** The three are
-  priced now — measured 2026-09-04 and written into `docs/plan/45-shadows.md`'s
-  fifteenth decision, off five `apps/sundial` runs per filter per adapter at the
-  goldens' own pose with the seam off. Median `forward` p50: 0.228 / 0.199 /
-  0.180 ms for `pcss` / `disc` / `box` on an RX 7900 XTX (radv, Mesa 26.2.2) at
-  1920x1080, and 8.586 / 7.349 / 6.914 ms on that machine's llvmpipe (LLVM
-  22.1.8) at 960x720. The ladder's own order on both adapters, no two ranges
-  overlapping, and the ladder end to end is 0.068 ms of a 0.649 ms radv frame;
-  the `shadow` row is flat across all three, as the selector claims. What is
-  left is the assignment, and it is the user's: `r_shadow_filter` has no tier
-  row, so every tier runs the shipped `pcss`, and
-  `docs/plan/39-capabilities.md`'s tier table is where a row would go. Same
-  shape of question as the SSR visibility weight and the AO knobs below, and the
-  same missing route.
-- **Considered and declined: drawing the scene twice to compare.** The occlusion
-  chain's seam records its gather twice under a scissor, and that shape is
-  available to a full-screen pass because each recording pays for half a target
-  of fragments. The forward pass is a _scene_ draw: a second recording is every
-  triangle, every cull and every vertex fetch again, so a comparison would cost
-  two frames rather than one. The per-side `PassTimers` row it would have bought
-  measures the scene rather than the filter and would be dominated by whatever
-  each half contains, so it buys nothing the per-filter runs above do not.
-  `crcbl_render::split`'s header carries both shapes and which client takes
-  which.
+
+**DECIDED 2026-09-06 —** the shadow filter is chosen per quality tier: low
+`box`, medium `disc`, high `pcss`, and `volumetric.slang` keeps its fixed disc.
+Unreal ladders `sg.ShadowQuality` hardware PCF → PCF disc → PCSS and Unity
+HDRP's is Low PCF / Medium tent / High PCSS. It schedules an
+`[engine.video] shadow_filter` key driving `r_shadow_filter`, and the row for it
+in plan 39's tier table.
 
 ## What sundial still owes (2026-09-04)
+
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
 
 `apps/sundial` was built natively — the plaza, the scripted sun, the filter and
 seam bindings, and the golden suite that measures the penumbra ladder, the seam,
@@ -670,20 +440,7 @@ golden of their own and a button on the page. What is still **not** done:
   one every golden is blessed from — so a change to `COLONNADE_NEAR_Z`,
   `COLONNADE_SPACING` or either fixture arm's sun can still leave one of them
   with none, and the test refuses the run rather than passing it.
-- **Subdivision is the coverage ladder's doing, not the allocator running out.**
-  Recorded because the entry this replaces said the opposite: a scene with more
-  shadowed lights than the atlas has root cells subdivides nothing.
-  `Selection::lay_out` spends the coarsest requests first and its allocation
-  cannot run out — which is why the failure there is `unreachable!` rather than
-  a fallback. What hands out a halving is `shadow::tile_level` on a light's
-  `coverage`, so the way to reach a subdivided cell from a test is one light
-  whose map covers little of the frame, not a crowd of them.
-- **A frame at a render scale below one draws the readout through the upscale.**
-  The pass writes the internal target, which the upscale then filters to the
-  caller's extent — so at `set_render_scale(0.5)` the atlas is a Catmull-Rom
-  reconstruction of itself and its one-pixel borders are soft. Considered and
-  left: drawing after the upscale would want a second pipeline at the caller's
-  format for a case a reviewer can avoid by putting the scale back.
+
 - **Only the `pcss` rung is tested on a second camera.** The penumbra ladder is
   read from `plaza::counter_camera`, which is the only pose where PCSS's
   estimate is unclamped; every other claim is from the fixture pose. A filter
@@ -764,19 +521,7 @@ golden of their own and a button on the page. What is still **not** done:
     pixel covers is, and that is what the second pose is about. A filter wrong
     only from one place on a rung that is not the shipped one is therefore still
     nobody's claim.
-  - **What surprised us, and is not a bug (2026-09-05).** The pavement claims
-    cannot be read from a pose high enough to look down on the whole plaza, and
-    two independent reasons stop it. A raised eye puts `plaza::PLINTH_CONTACT`
-    **past the cascade split** — 6.69 m from an eye at `(0, 3.5, 8.5)` against a
-    split at 6.100 — and `r_shadow_bias` and `r_shadow_normal_offset` are counts
-    of texels _of the cascade the fragment landed in_, so `PETER_PAN_BIAS`'s 96
-    texels stop being the shipped station and wipe the shadow outright (contact
-    `0.00`, beyond `19.88`, and `HELD_OFFSET` takes the contact from `69.11` to
-    `0.00`). And `speckle_percent` is a **screen-space** statistic: from an eye
-    at 2.5 m the constant bias's rise over the acne block is `1.4857%`, under
-    the `1.5%` floor, where at 2.0 m it is `3.3629%` and at the fixture pose
-    `3.2575%`. Both are why `plaza::PAVEMENT_EYE` is a modest 2.0 m rather than
-    an overlook.
+
 - **A game cannot see a modifier, so a chord is not available to any sample
   (2026-09-05).** `crcbl-shell` stamps `crcbl_core::input::Modifiers` onto every
   `ShellEvent::Key` it produces and `HostedGame::key_event` takes a `KeyCode`
@@ -786,98 +531,6 @@ golden of their own and a button on the page. What is still **not** done:
   or a modifier reading a game can ask the loop for; and note that `Shift`
   specifically is already `Flyer::key`'s descend key in every sample that flies,
   so it is not free for a chord even once the state is deliverable.
-- **What surprised us, and is not a bug (2026-09-05).** Peter-panning at the
-  plinth's contact needs a very large bias — 88 texels of `r_shadow_bias`,
-  against the 1.5 that ships — and the plinth's own thickness is why. The depth
-  pass keeps front faces, so what the shadow map stores along the ray from
-  `PLINTH_CONTACT` to the sun is the plinth's _far_ face, and a bias towards the
-  light has to cross the whole 1.2 m depth of the block before the contact
-  compares as lit. A thin caster loses its contact at a small count, which is
-  what `apps/lantern`'s 0.15 m shell showed `docs/plan/45-shadows.md`'s seventh
-  decision. The consequence for this fixture is that its peter-panning reading
-  is a claim about a _thick_ caster, and a thin one in the plaza would make the
-  same claim at a count near the shipped value — which is the version worth
-  building if the pair is ever wanted as a regression guard rather than as a
-  comparison.
-
-**What surprised us, and is not a bug.** The first cascade's extent is a
-function of the camera's **near plane** — `Cascades::splits` blends a
-logarithmic division of `near .. DISTANCE`, and the logarithmic half is
-`near * (DISTANCE / near).powf(ratio)` — so the two-centimetre near plane every
-other sample opens with puts the first split about four metres from the eye and
-makes the whole penumbra ladder unmeasurable: at cascade 1's texel, every
-separation in a scene this size clamps to the same lower bound and `pcss` draws
-exactly what `disc` draws. `apps/sundial/src/plaza.rs`'s `NEAR` is half a metre
-for that reason and says so, and the split is read back out of `Cascades` by
-`the_colonnade_straddles_the_cascade_split` rather than assumed.
-
-## sundial's page knobs: what the browser gate presses (2026-09-04)
-
-`/demos/sundial/` is the second page on the site whose controls are HTML rather
-than keys — `apps/sundial/src/web.rs` exports one call per knob and
-`web/demos/sundial/main.js` binds them. `web/tools/browser-e2e.mjs`'s `sundial`
-row presses **every one of them** and reads the effect off the demo's own
-heartbeat: the seam button, the seam slider, the filter button, the sun's
-stop/start button, the tick slider, the atlas-viewer button and `reset`. It also
-holds the tick slider's `max` against the sweep the heartbeat names —
-`sun::Sky::row` prints `tick N of SWEEP_TICKS`, so the arc is the engine's own
-answer rather than a copy of the constant kept here. Each was watched to fail
-with the export behind it made a no-op, and the `reset` sabotage additionally
-reddened group D's changed-frame check — which is the evidence that this row is
-right to carry no `still`. That is where it differs from alcove's row below,
-where four controls are driven by nothing but a person.
-
-## sundial's page: a filter cycle button rather than a select (2026-09-04)
-
-Considered and declined. A `<select>` would need the page to enumerate the set
-`crcbl::render::shadow` declares, which means a name-at-index export pair on top
-of `__crcbl_sundial_filter` / `_filter_ptr`. The cycle button is alcove's shape
-and carries alcove's argument: the set is the engine's, and a page spelling its
-members is a copy that goes stale the day a fourth rung lands. Worth revisiting
-when the set grows past three, where cycling stops being a reasonable way to
-reach a member.
-
-## sundial's sun is adopted a fixed step late (2026-09-04)
-
-Not a bug, and worth knowing before it is reported as one. The filter and the
-seam are console cells and move the frame at once, paused or not. The sun's tick
-and its run flag live on `crate::app::Sundial`, so `crate::sun`'s `ask_tick`,
-`ask_running` and `ask_reset` leave a request that `Clock::advance` adopts on
-the next fixed step — and a page whose canvas lost focus is a paused loop that
-runs no fixed step. So on a paused page the sun's controls show the request and
-the picture catches up when it ticks again; `web/pages/sundial.html` says so.
-
-The channel exists because there is no other route: `crcbl::web::App` keeps the
-running `Loop` in a private `Stage` and exposes no accessor for it, so an export
-cannot reach the hosted game. The alternative was an engine change
-(`App::with_game`, or similar), which was out of this slice's scope. If one
-lands for another reason, `crate::sun`'s channel should be deleted in favour of
-it.
-
-One consequence nothing clears: a request still outstanding when a run stops is
-adopted by the **next** run's first fixed step, because `PAGE` outlives the
-loop. For `ask_reset` that is a no-op; for a placed tick it would open the next
-run on the sun the page last placed. Neither `crcbl::web_exports!`'s `shutdown`
-nor `crate::app` offers a hook to empty it from inside `apps/sundial`.
-
-## Reaching alcove's page knobs costs the pointer (2026-09-04)
-
-**Reaching a control on `/demos/alcove/` at all costs the pointer, and that
-surprised us.** The fixture asks for Pointer Lock while it is running,
-`web/engine/shell.js` takes it on the first mouse press inside the canvas, and
-under a lock every mouse event goes to the canvas — so a click on a page control
-never arrives. `Esc` is the way out and the page says so; letting the pointer go
-also pauses the fixture, and focus coming back does not resume it. None of that
-is a bug — each half is behaviour a check in this tree asserts on purpose — but
-together they make a desktop visitor press `Esc` before the knobs answer, where
-a finger never does. If the seam ever wants to be reachable while the court is
-being flown, the decision to revisit is `Alcove::pointer_mode`, which locks
-whenever the run is not paused even though the page opens on the fixed camera.
-
-Nothing else on that page is owed: `web/tools/browser-e2e.mjs`'s `alcove` row
-drives every control `web/pages/alcove.html` offers and reads each one off
-`Alcove::log_heartbeat`, and `releasePointer` in that file is the release above
-made a step of the gate.
 
 ## What alcove's bent-direction view did not cover (2026-09-05)
 
@@ -939,31 +592,14 @@ slice did not do:
 
 ## What the AO default change of 2026-09-03 did not cover (2026-09-03)
 
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
+
 `r_ssao_slices` and `r_ssao_blur_passes` in `crates/crcbl-render/src/ssao.rs`
 default to 4 and 2 — the tangential rung is what ships, and every golden in the
 workspace was re-blessed at it. The decision this file carried, and the three
 tiers of timings that informed it, are gone with it; what follows is what the
 change left owed.
-
-**The sweep the test's thresholds are chosen off**, read from
-`forward_e2e::occlusion::the_tangential_occlusion_line_does_not_step`, sharp
-edges over `DIAGONAL_LENGTH` samples, identical in all seven runs of each row:
-
-```text
-slices  blurs     radv   lavapipe
-     2      1       37         38   the clamp floor
-     4      1      100         89
-     2      2        8          9
-     4      2        0          2   what ships
-anti-baseline: one plane orientation across the whole tile
-     2      1      118        113
-```
-
-Kept because `MAX_SPARSE_SHARP_EDGES` and `MAX_SHIPPED_SHARP_EDGES` are picked
-off it, and because it is re-taken whenever the pass changes rather than carried
-forward. It was carried once — across the half-resolution change — read
-`1 / 1 / 2 / 0` on radv for weeks, and produced a conclusion that was backwards
-in both this file and `docs/plan/46-ambient-occlusion.md`.
 
 - **Every occlusion threshold but the shipping one is swept at a configuration
   nobody runs.** `forward_e2e::occlusion`'s baseline knobs are `Knobs::SPARSE` —
@@ -986,77 +622,15 @@ in both this file and `docs/plan/46-ambient-occlusion.md`.
   margin they happen to have; the two drivers that were swept read 0 and 2
   against a bound of 8.
 
-## shard's doused zone was never lifted, and the numbers if it should be (2026-09-04)
-
-**Considered and declined, so it is not re-proposed.** When the no-bake rule
-removed `apps/shard`'s baked irradiance volume, its doused zone stopped being a
-picture: one quantised colour covers 95% of the canvas where the browser gate's
-blank-frame control asked for under 85%. The control was re-derived instead —
-see `web/tools/browser-e2e.mjs`'s `TORCH_INSET` for what it now measures and why
-a share of the whole canvas cannot answer the question any more.
-
-Lifting `zone::house_light`'s ambient was the other candidate and it works. The
-sweep, over the browser gate on radv, every value inside the `< 0.05` that
-`the_house_light_is_an_ambient_floor_and_not_a_sun` pins:
-
-```text
-  ambient (r, g, b)         lit mean   doused mean   doused flat
-  0.012, 0.011, 0.014  ×1     16.01         6.68        94.9%
-  0.024, 0.022, 0.028  ×2     17.25         8.23        94.0%
-  0.036, 0.033, 0.042  ×3     18.42         9.62        50.1%
-  0.048, 0.044, 0.049  ×4     19.37        11.20        58.4%
-```
-
-The share holds at 94% and then collapses, which is a quantisation cliff rather
-than a trend — below it the room's surfaces all round to one 8-bit value. So ×3
-would have restored the original control with margin.
-
-**It was not taken because `house_light`'s own doc argues against it**: "a flat
-term bright enough to see by would be a room that looks lit whether or not
-anything lit it". At ×3 the doused room reads 0.52 of the lit one where it reads
-0.42 today, which is a visible change to how a doused zone looks. The table is
-kept here so that a later decision to make the zone legible when its torches are
-out does not have to re-run the sweep.
-
-**What is still true and is nobody's bug**: the zone's only surviving light is
-the shrine spot, which is faint and stands in one corner, so the doused frame
-carries almost nothing that varies. `light::torches` records the measurement
-that says so.
-
 ## The SSR visibility weight costs the software tier 11% of a frame (2026-09-04)
 
-`b83ae75` gave `ssr.slang`'s probe fallback the Chebyshev visibility weight
-`mesh.slang` already had, closing a specular leak through walls. It was landed
-unpriced; the two native tiers have now been measured and the answer is not
-free.
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
 
-`apps/lantern --headless --frames 400 --size 1920x1080`, p50 of the `ssr` row of
-the app's own pass table, three runs each, before and after. "Before" is a
-worktree at `55d0eba` — the commit `b83ae75` sits on — so the two binaries
-differ by this change and nothing else:
-
-```text
-                    ssr p50          the whole frame's p50
-              before    after        before    after
-radv           0.115    0.169         1.141    1.109
-lavapipe       7.072   15.421        72.042   80.152
-```
-
-- **On radv it is invisible at frame level.** The pass grows 47%, 54 us, and the
-  frame total moves by less than the spread between runs — the two totals above
-  bracket each other, which is the honest reading of a 3% instrument.
-- **On lavapipe it more than doubles: +118%, +8.35 ms**, and the frame follows
-  it almost exactly, +8.11 ms or **+11.3%**. The `ssr` pass goes from 9.9% of
-  the frame to 19.1%. A software rasteriser pays for the sixteen extra `Load`s
-  per pixel in a way a discrete GPU does not.
-
-**The browser tier was measured on hardware and behaves like radv, not like
-lavapipe.** quarry through Chrome on an RDNA-3 adapter at the gate's 959x463,
-`web/run-browser-e2e.sh` on the `hardware` adapter, three runs each side: `ssr`
-**0.036 ms p50 before against 0.053 after**, identical to the printed digit in
-all three runs of each, and the frame **0.720 to 0.737 ms** — +47% on the pass,
-exactly the +0.017 ms the pass grew, and **+2.4% of the frame**. So both GPU
-tiers pay 47% and only the software rasteriser pays 118%.
+**DECIDED 2026-09-06 —** the probe fallback is restricted to the pixels whose
+ray missed, and there is no cvar to decline the leak fix — correctness first.
+Unreal's SSR shades the environment fallback only where the march fails, off the
+hit mask. It schedules the `ssr.slang` shape change and a re-price on lavapipe.
 
 **The software browser tier cannot be measured on this machine.** Pinning
 `CRCBL_WEB_E2E_ADAPTER=swiftshader` gets an adapter — "a WebGPU adapter is
@@ -1066,18 +640,6 @@ nothing, so the gate refuses the render checks and no pass table is logged:
 is the only place that reading exists. That is a standing limit on every browser
 _timing_ question here, not only this one, and it is why the local browser
 figure above is a discrete GPU's.
-
-**The candidate that would pay for it, not yet costed.** `ssr.slang`'s
-`probe_environment` is evaluated for every non-far pixel including fully rough
-ones, exactly as it was before the weight landed — so the weight's sixteen loads
-apply to the whole screen rather than to the pixels whose ray actually missed
-and actually reflects. Restricting the fallback to those pixels is a change to
-the pass's shape rather than to the weight, it was already true before this
-commit, and it is where the software tier's eight milliseconds are. Whether that
-is worth building, or whether the leak fix should carry a console variable so a
-tier can decline it, is the user's call — the same shape of decision as the AO
-knobs, and the same missing route: neither `r_probe_visibility` nor anything
-else has an `[engine.video]` key or a tier row.
 
 **And one threshold got tighter.** `BRASS_PROBE_RATIO` in
 `apps/lantern/tests/golden.rs` moved 1.05 to 1.03 because the correct fallback
@@ -1128,6 +690,17 @@ and shard.
 `ssr.slang`, `probe_capture::recapture` and
 `ForwardRenderer::follow_probe_volume` ship. Owed, in order:
 
+**DECIDED 2026-09-06 —** item 1, the visibility image is ringed and the
+positions gathered per frame in flight so `follow_probe_volume` stops draining;
+item 4, lantern gets a finer level 0 inside its coarser one as the exercised
+scroll and is re-blessed with a reason; item 5, an `Authored` volume does not
+scroll — `follow_probe_volume` on an authored grid is refused with an `Err`.
+DDGI double-buffers its probe textures, and baked or authored probe volumes are
+world-anchored in every engine (Unity APV, Unreal VLM, Godot LightmapGI) while
+only runtime-updated ones follow the camera. It schedules the scroll ring, the
+lantern re-bless, and the refusal arm; item 2, hoisting the transients when a
+scene scrolls, is unchanged.
+
 1. **The step stalls.** `follow_probe_volume` drains the device before it
    rewrites anything, because the visibility image and `ProbeGather`'s position
    buffer are single copies every frame in flight reads. Measured on radv at
@@ -1161,6 +734,9 @@ and shard.
 
 ## What the RSM probe updater shipped without (2026-09-04)
 
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
+
 `docs/plan/50-irradiance-probes.md`'s raster updater is built and so is its
 punctual half: `crcbl_render::rsm` draws the sun's near cascade as a reflective
 shadow map and every shadowed point and spot light's faces as a second one,
@@ -1170,26 +746,6 @@ default, so no existing scene records either pass. lantern and shard's CPU bakes
 are gone with it, `apps/lantern`'s frame claim 6 is restored, and the plan
 sections that described both halves are deleted. What follows is what they left.
 
-**What it costs.** p50 of three,
-`lantern --headless --frames 400 --size 1920x1080`, the sun-only updater on
-against off:
-
-```text
-                radv on   radv off   lavapipe on   lavapipe off
-rsm               0.060          —         1.136              —
-probe-gather      0.047          —         0.052              —
-frame total       1.281      1.161        81.964         80.092
-```
-
-**+0.120 ms on radv, which is 10% of that frame**, and +1.87 ms on lavapipe,
-which is 2.3% of that one. The discrete tier pays the larger share because its
-frame is small; the software tier's `rsm` is nineteen times its radv cost and
-still disappears into an 80 ms frame. `docs/backlog.md`'s survey constraint C3
-budgets the whole frame at 0.990 ms on this adapter and it was already at 1.161
-before the updater, so this is a rung spent over budget rather than into it. The
-punctual half's own price is in `crcbl_shaders::probe_gather`'s
-`PUNCTUAL_RSM_SIDE`, which carries its extent sweep.
-
 **What is not verified.** The browser tier and any windowed run — neither was
 measured. Metal and D3D12 are type-checked on the cross-target clippy legs and
 have run nowhere: no Apple or Windows hardware here, so CI's software adapters
@@ -1197,80 +753,22 @@ are the only verdict on `rsmFragmentMain`'s three targets and on the gather's
 `groupshared` reduction, which is the construct `crcbl_shaders::exposure`
 records Slang's Metal backend as sensitive to.
 
-**A finding worth keeping, because it cost most of the debugging time.** A probe
-standing above a floor gathers nearly all its flux from below, so its L1 lobe
-cancels at the floor's own `+Y` normal and a floor pixel shows the bounce barely
-at all. The first fixture written for this measured a floor and read exactly
-zero difference between the walled and open arms — a perfect false negative.
-**Any future updater fixture must measure a surface facing the way the flux
-travels**, which is why the one that shipped measures a wall face the sun never
-touches.
-
-**A producer is only as good as the light it is given.** `apps/shard`'s doused
-zone was measured on 2026-09-04 with `r_probe_bounce` off and on and moved by
-0.01 of a luma level, because the one light left burning there is faint and
-stands in a corner — see "shard's doused zone was never lifted". The gather is
-not at fault and no engine change addresses it; it is what a scene with nothing
-to bounce looks like.
-
 **Still owed from the plan, in order:**
 
-- **The sky through the visibility.** `mesh.slang`'s `sky_irradiance` is three
-  dot products with no direction to gate, so it has to become a term of the
-  gather plus a host-side zeroing of `frame.sky_sh_*` for an updater-owned
-  volume. That is a change to how a scene is lit rather than a binding, and it
-  is the user's decision before it is anyone's work.
+**DECIDED 2026-09-06 —** the sky enters the gather through the depth map's
+misses: for each octahedral texel whose depth is far, the sky radiance in that
+direction is added, and the host zeroes `frame.sky_sh_*` for an updater-owned
+volume. That is DDGI's own mechanism — miss rays sample the sky — realised
+through the map the updater already has. It is scheduled after the scroll ring.
+
 - **Scrolling, and recapture on scroll.** Probes outside cascade 0's
   camera-following sphere gather nothing, and the volume does not move.
   `ProbeUpdate::EveryFrame`'s own doc comment says so.
 
-## What the plan audit of 2026-09-03 did not reach
-
-Plans 43, 51 and 52 were audited against the tree and eleven false claims were
-corrected in `2ee32c1`. What that pass could not check, stated as a gap rather
-than as a reason:
-
-- **Every measured figure in all three docs was taken on trust.**
-  `43-render-standards.md`'s normal-map cost, its row (a) and row (e) timings
-  and the LTC speed-ups; `51-volumetrics.md`'s transmittance comparison, its
-  froxel counts and its sample fractions; `52-debug-console.md`'s decision-10
-  cost claims. Re-checking any of them means running the GPU harnesses, which
-  the audit was told not to do because another agent held the GPU. This is the
-  same shape of drift that produced the AO table's four wrong integers: a figure
-  carried across a change to the pass it measures.
-- **The golden re-bless claims in `43-render-standards.md` §2 rung 2** — the
-  five named goldens, `room` moving 360 pixels by at most thirteen, `live`
-  moving past tolerance — are unverified.
-- **`51-volumetrics.md`'s rungs were checked by symbol and test _name_, not by
-  behaviour.** The host-side arithmetic was read; that each pass does what the
-  prose says it does was not.
-- **The comparand claims cannot be checked from this tree at all** — "Unity HDRP
-  does not do this", Lumen's hybrid, what a KTX2 importer supports. They stand
-  or fall on the reading that produced them.
-- **The sibling ladders were opened on 2026-09-04 and read against the tree, not
-  measured.** 45, 47 and 49 held; 46 was rewritten by the technique slice; 50
-  carried three sun-only claims a day after the punctual producer landed and was
-  corrected, as was the lighting-order row in `43-render-standards.md`'s
-  Delivery table. Their measured figures were still taken on trust.
-- **`52-debug-console.md`'s browser assertions were spot-checked, not
-  enumerated**: `web/tools/browser-e2e.mjs` was read only around the console,
-  autoexec and touch groups.
-
 ## Two price fixtures print a `forward` that bundles its fused clears (2026-09-05)
 
-`forward`'s full-extent attachment clears — scene colour, reflectivity and
-motion — are `LoadOp::Clear`s fused into the pass's begin, so giving them their
-own timestamp means giving them their own pass and a second full-target write —
-**not worth doing, and the reason is the measurement's, not the renderer's.**
-What attributes them honestly is a zero-geometry configuration timed beside the
-loaded one, and `mesh_e2e/depth_only.rs`'s `the_price_of_the_depth_only_passes`
-now has one: `PRICED_FIELDS`' second row draws an empty list at the same extent
-through the same effect stack, interleaved a frame at a time with the field, and
-the helper holds the two rows apart by their `FrameCounters` instance counts
-rather than by a duration. Measured 2026-09-05 at 640x480 over 48 recorded
-frames, the floor is a `forward` p50 of 0.009 ms on an RX 7900 XTX and 0.258 ms
-on lavapipe — medians of three runs each, spread 0.009–0.010 and 0.256–0.268 —
-and it is written into `docs/plan/43-render-standards.md`'s Delivery preamble.
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
 
 What is left:
 
@@ -1294,25 +792,7 @@ What is left:
   frames on 2026-09-05 the empty row came out dearer in three of three radv runs
   (by 40–80 ns) and in two of three lavapipe runs (−23 µs to +101 µs), so
   asserting it would be asserting which way a coin landed.
-- **`docs/plan/47-reflections.md`'s shares are split now, and no lantern-side
-  floor row was added, because one would measure nothing new.** There is no
-  lantern price fixture to add a row to: those figures come from headless runs
-  of the `lantern` **binary** (`c0917d6`, `b87a1ab`) reading the engine's
-  `PassStats` report, and the only fixtures in the tree that read `PassStats`
-  are `mesh_e2e`'s four. A lantern-side row would take the same number as
-  `depth_only.rs`'s: `PassBuilder::clear_color` is `LoadOp::Clear` plus
-  `StoreOp::Store` unconditionally, `ForwardRenderer::add_passes` creates
-  `reflectivity` and `motion` whatever the effect stack is doing, and
-  `RenderGraph::execute` emits a pass's barriers outside its timestamp bracket —
-  so an empty-draw-list `forward` is the same quantity at a given extent
-  whatever else the frame draws, and `price_frame`'s `CRCBL_PRICE_SIZE` already
-  takes it at any extent. What lantern adds is only that its `forward` line is
-  two passes summed, the room's and the monitor's, which `pass_stats.rs`
-  documents and the report's occurrence column shows. Measured 2026-09-05 with
-  `CRCBL_GPU=vk CRCBL_PRICE_SIZE=<extent> crates/crcbl/tests/run-mesh-e2e.sh the_price_of_the_depth_only_passes`,
-  medians of three runs: 0.011 ms at 960×720 plus 0.005 ms at
-  `room::MONITOR_EXTENT` on an RX 7900 XTX, 0.463 plus 0.098 on lavapipe — about
-  a twenty-fifth of the `forward` row on both drivers.
+
 - **Nothing re-takes the lantern frame's own numbers, and they went stale
   without anything going red.** The 2026-09-02 reading in `47-reflections.md`
   described a 1.27 ms frame of twenty-three labels; on 2026-09-05 the same
@@ -1324,88 +804,6 @@ What is left:
   frame — is the shape of the fix; nothing here proposes the threshold, because
   `43-render-standards.md` refuses to assert durations and this would be one at
   one remove.
-
-## The multi-bounce tint narrowed AO's contrast, and two claims lost margin (2026-09-01)
-
-`mesh.slang`'s `multi_bounce_occlusion` shipped 2026-09-01 and does what it is
-for: it lifts an occluded fragment by the colour of what occludes it. On a
-bright surface that lift is large, and it comes straight out of the occlusion
-contrast a scene shows.
-
-Measured on radv, before and after:
-
-| claim                                      | scene                                    | was                     | is      |
-| ------------------------------------------ | ---------------------------------------- | ----------------------- | ------- |
-| `AO_RATIO` (`crcbl/tests/render_e2e.rs`)   | wall bands against open floor            | `1.198`                 | `1.058` |
-| `AO_LIFT` (`apps/lantern/tests/golden.rs`) | contact corner, occlusion on against off | comfortably over `1.08` | `1.038` |
-
-Both figures match the published curve at those scenes' albedos, so this is the
-fit working rather than the occlusion weakening — checked against the polynomial
-directly before either constant was touched. Both constants were re-measured and
-both still land at exactly `1.00` for a pass that never reached the shading
-line, which is the failure they exist to catch; that was verified by sabotage,
-feeding `multi_bounce_occlusion` a visibility of one so the occlusion never
-reaches the ambient term, and both went red.
-
-**What is left open is the margin.** `AO_RATIO` guards a separation of 5.8%
-where it used to guard 20%, and `AO_LIFT` 3.8% where it used to guard more than
-8%. Both are still far above the rasteriser drift
-`crcbl_golden::Tolerance::RASTERISER` was measured for, so neither is fragile
-today, but the headroom for a future change to eat is a third of what it was.
-
-**Re-checked after half-resolution AO landed, 2026-09-02, and neither margin
-moved.** The halving was the obvious candidate for eating the headroom this
-entry is about, so both were read again on radv: the AO scene measures its walls
-at 70.8 and 70.5 against an open floor of 74.7, a ratio of 1.055, and lantern's
-contact corner goes 57.5 to 59.7 with occlusion on, a lift of 1.038. Both sit
-where they sat before the gather was halved, so the reconstruction is carrying
-the contrast the full-resolution pass had. The margin is unchanged, and so is
-the case for an intensity control below.
-
-**Re-checked after the AO defaults moved, 2026-09-04, and both margins gave a
-little back.** On radv the AO scene now measures its walls at 71.2 and 70.6
-against an open floor of 74.7 — a ratio of **1.049** where the halving left it
-at 1.055 — and lantern's contact corner goes 54.3 to 56.2 with occlusion off, a
-lift of **1.035** against 1.038. So four horizon planes and a second blur cost
-about half a point of separation on each, against thresholds of `AO_RATIO` 1.03
-and `AO_LIFT` 1.02. Both still clear, and both clear by less: the AO scene now
-guards 4.9% where this entry recorded 5.8%, and the corner 3.5% where it
-recorded 3.8%.
-
-**Re-read against the tree 2026-09-05, and the lift's figures above are a day
-old.** `AO_LIFT` is **1.008**, not 1.02, and the corner reads 66.7 against 67.6
-on radv (1.0135) and 66.8 against 67.6 on lavapipe (1.0120): the punctual RSM
-producer narrowed it again on 2026-09-04 (`5874479`), and the constant's own doc
-in `apps/lantern/tests/golden.rs` says it has run out of room to narrow a third
-time. `AO_RATIO` and its 1.03 are as written.
-
-The lift is measured on a frame whose bounce is the RSM updater's rather than
-lantern's old CPU bake, since both landed before this reading. The ratio is not:
-`Scene::Ao` is `ProbeUpdate::Authored`, so nothing about the updater reaches it
-and its half-point is the AO defaults alone.
-
-**The industry answer is an AO intensity control, and it was built on
-2026-09-02** — `r_ssao_intensity`, a console variable in `crcbl_render::ssao`
-that `ssao_upsample.slang` raises its reconstructed visibility to, applied to
-the scalar occlusion before `mesh.slang` tints it. It is a power rather than a
-blend towards one, because a blend can only lift the answer back towards
-unoccluded and this knob exists to ask for more occlusion than the horizons
-found. Range `0.25 ..= 4.0`, argued from the curve's slope at an unoccluded
-surface.
-
-**What that does _not_ do is restore the margin, and this entry stays open for
-that reason.** The default is 1.0 and is exactly identity, so every figure above
-still describes the frame that ships: `AO_RATIO` still guards 5.8% where it once
-guarded 20%, and `AO_LIFT` 3.8% against more than 8%. The knob makes the
-contrast _recoverable_ — it does not recover it. **Whether the shipped default
-moves off 1.0 is the user's call**, and it is the same shape of decision the
-`r_ssao_slices` and `r_ssao_blur_passes` defaults were until they moved on
-2026-09-03: three occlusion console variables now exist, none has an
-`[engine.video]` key, and no tier row spends any of them.
-
-**This is also the honest answer to "the AO looks weak"** if that comes up: the
-tint makes it weaker on purpose, and the fix is turning the intensity up rather
-than removing the tint.
 
 ## Probe visibility: what the slice did not do (2026-09-02)
 
@@ -1473,113 +871,42 @@ records what is now true. What is owed:
 
 ## The bent normals weakened one cross-path guard, and it is recorded (2026-09-02)
 
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
+
 `crates/crcbl/tests/render_e2e.rs`'s
 `the_probes_scene_draws_the_same_frame_on_every_geometry_path` compares the
 mesh-shader and indirect-count paths on one adapter, and its bound used to be
 "at most `path_lsb_channels(scene)` channels, and **only ever by one level**".
 The magnitude half is now per scene and `Probes` is allowed two.
 
-**Why it moved, and it is the feature rather than a defect.**
-`path_lsb_channels`' own entry already recorded that a last-bit depth difference
-can flip which tap wins a horizon in `ssao.slang`'s integral. Before the
-bent-normal rung a flip could only move the occlusion **scalar**, which scales
-the ambient — second order in the pixel. The direction is downstream of the same
-max, and `mesh.slang` now samples the probe irradiance _along_ it, so a flipped
-tap turns the lookup rather than dimming it. Measured at **9 channels, worst by
-2** out of 196608, identical on the runner's Mesa 25.2.8 / LLVM 20.1.2 and on
-Arch's Mesa 26.2.1 / LLVM 22.1.8; radv answers zero. The differing channels are
-a contiguous cluster along the top edge rather than the pre-rung pair, which is
-what one flipped tap looks like — `path_lsb_channels`' own entry carries the
-coordinates.
-
-**What is owed:**
-
-- **Whether the damping is worth taking.** The remedy recorded under the
-  bent-normal slice for a different reason — slerp the bent direction back
-  towards the shading normal by the occlusion scalar, in `mesh.slang`'s
-  `bent_normal_at` — would also damp this, by making a lightly-occluded pixel
-  depend on the horizon direction not at all. Whether it takes `Probes` back to
-  one level is unmeasured, and it is a picture change, so it is not a thing to
-  do purely to restore a guard.
-- **The user's call on whether that trade is acceptable at all.** Two levels out
-  of 256 on nine channels is three orders of magnitude under the failure this
-  guard exists for — a cluster that did not draw — so its teeth are intact. What
-  is gone is this scene's ability to catch a one-to-two-level regression in the
-  probe term specifically.
-
-## The backlog audit of 2026-09-02, and what it did not reach
-
-Ten entries were checked against the tree and eight had drifted; the corrections
-are applied in place above, and the two that were wholly spent — the
-`debug_view` guard flake and a `FrameArena` bullet asserting a defect the doc
-does not have — are deleted. Recorded here is only the **scope**, so the next
-sweep knows where to start rather than re-deriving it.
-
-**What was verified**: the `debug_view` flake, the four-file size table, the
-`probe.rs` split argument, the DXIL register-class coverage, the settings
-catalogue's key counts, the `CRCBL_ADAPTER` entry's reader claim, the
-`crcbl-webgpu` parity bookkeeping, the "no test owns a real `ForwardRenderer`"
-bullet, the `FrameArena` doc claim, and the read-only-depth "only pass" clause.
-
-**What was not reached, and is where a next pass should go**:
-
-- The MTL4/MTL5/MTL6 and DX2/DX3 regions, and the D3D12 swapchain slice.
-- The four `## Coverage gaps in the … audit` runs, and the sample-audit entries
-  for orbit, flappy, sparks, puppet, lantern, breach and shard.
-- The 2026-08-13/14 slice-plan archive at the end of the file.
-- Roughly four thousand lines of the un-headed middle region between the sample
-  audit and the D3D12 deferred blocks — two entries in it were opened.
-- **Every measured table except the file-size one.** The area-light prices, the
-  browser pass timings and the Pages wall-clock figures are still carried on
-  trust; only the table a shell command could settle was re-taken.
-- **The Hardening list in the 2026-08-04 full-codebase review**, which is the
-  highest-yield unread region left: one of its roughly seventy bullets was
-  opened and it was wrong.
+**DECIDED 2026-09-06 —** the slerp is built: the bent direction is slerped back
+to the shading normal by (1 − occlusion) in `bent_normal_at`, and the `Probes`
+cross-path level is re-measured afterwards — expect one — along with the
+normal-map perturbation loss. Unreal's bent-normal AO and Frostbite both weight
+the bent normal by visibility. The world-space direction stays; the view-space
+form is declined.
 
 ## What the bent-normal slice left owed (2026-09-02)
+
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
 
 The direction ships and steers the ambient — `docs/plan/46-ambient-occlusion.md`
 records what is now true. What it did not do:
 
-- **Specular occlusion, which is the other half the plan asks for.** It needs a
-  cone angle beside the direction and the channel does not carry one:
-  `Rgba8Unorm` is spent, so the angle wants either a second image or a swap to
-  an octahedral pair in `.gb` with the angle in `.a` — the encoding the slice
-  turned down for a three-channel direction with no seam and no fold. Until it
-  exists, `docs/plan/46-ambient-occlusion.md`'s SSR refusal stands and is
-  correct.
-
-- **The tier split the 2026-08-30 decision asked for.** The user's call was
-  scalar-only on low and the widened target on medium and high. What landed is
-  the widening on _every_ tier, because
-  `crcbl_render::TransientImageDesc::ambient_occlusion` is one format and a
-  per-tier format means a second pipeline, a second bind-group layout and a
-  second `mesh.slang` binding type. `crcbl_render::ssao::r_ssao_bent_normals`
-  turns off the _arithmetic_ and nothing turns off the bandwidth. Whether low
-  should set it — and through what, since a console variable is not reachable
-  from a preset — is the same open question as the two knobs in this file's HIGH
-  PRIORITY entry and the contact-shadow entry: it wants an `[engine.video]` key
-  or a tier-table cell, and has neither.
+**DECIDED 2026-09-06 —** specular occlusion swaps the channel to an octahedral
+direction (`.gb`) plus cone angle (`.a`) and adds GTSO (Jimenez et al. 2016,
+"Practical Real-Time Strategies for Accurate Indirect Occlusion"), which is what
+Unreal and Unity HDRP ship; the tier split is `[engine.video] ssao_bent_normals`
+with low off, the format staying one so low pays bandwidth only. It retires plan
+46's SSR refusal and schedules the channel change, the GTSO term and the tier
+key.
 
 - **The widening's own bandwidth cost is unmeasured, and the switch cannot
   measure it.** Both arms of `r_ssao_bent_normals` write `Rgba8Unorm`, so the
   0.002 ms and 0.004 ms the filters pay is arithmetic alone. Pricing the format
   would mean compiling a chain that writes one channel.
-
-- **The direction is written in world space, not the view space the brief asked
-  for.** Every other part of the encoding decision is as specified. The reason
-  is that `mesh.slang`'s consumers — `sky_irradiance` and `probe_irradiance` —
-  evaluate world-space L1 environments, and `crcbl_shaders::mesh::FrameUniforms`
-  carries `view_proj` and no view matrix, so a view-space channel would need
-  that struct to grow a member. It cannot grow one from inside `crcbl-shaders`
-  alone: `crcbl-dx12`'s device builds `FrameUniforms` field by field with no
-  `..Default::default()` spread, so every backend's construction site has to
-  move with it. Instead `SsaoParams` gained `inv_view` and `ssao.slang` rotates
-  once per half-resolution gathered pixel, which is also cheaper than rotating
-  once per shaded fragment. Deriving the camera basis from `view_proj` was
-  considered and declined: it depends on the projection matrix's sparsity and
-  breaks under TAA jitter. If a later reader wants view space, the cost is that
-  `FrameUniforms` change, not a redesign.
 
 - **A normal-mapped surface loses its map's perturbation in the ambient term.**
   Wherever a direction exists, the ambient is now sampled along it, and the
@@ -1598,22 +925,10 @@ records what is now true. What it did not do:
   either — the shaders regenerate for every backend and the WGSL is in the tree,
   but no browser executed it here. CI is the verdict on both.
 
-- **`apps/lantern`'s `SSR_HIT_TOLERANCE` widened from 0.10 to 0.15 rather than
-  being blessed.** `zero_probes_only_remove_the_ssr_and_rough_fallbacks`
-  measures, so a golden bless is not available to it. Brighter ambient on the
-  reflected surface means zeroing the probe rows removes more of it: the hit
-  moved 53.7 to 47.1 on radv (12.3%) and 54.1 to 47.7 on llvmpipe (11.8%), and
-  the A/B against `r_ssao_bent_normals` showed the _zeroed_ reading unmoved, so
-  the rung widened the remainder rather than changing the hit. The failure the
-  constant guards — a fallback substituted for the hit, which reads at or below
-  1.0 — is still an order of magnitude away. Not a defect, recorded because a
-  widened tolerance is a thing a later reader should be able to check rather
-  than trust. **It widened again to 0.28 on 2026-09-04** (`5874479`), when the
-  punctual producer put the lamp's bounce behind the hit as well — 61.2 to 47.7
-  on radv, 22.1% — and the constant's doc in `apps/lantern/tests/golden.rs`
-  carries each step; the teeth are unchanged, the miss still pinned at 0.0.
-
 ## What the half-resolution occlusion harness does not cover (2026-09-02)
+
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
 
 `crates/crcbl/tests/forward_e2e/occlusion.rs` moved to the half extent when the
 gather did, and grew three tests for the reconstruction: the horizontal halo
@@ -1627,46 +942,11 @@ guards. What it still does not reach:
   wgpu are unmeasured for all of these thresholds. The mechanisms are integer
   and ratio arithmetic, so agreement is expected — but expected is not measured,
   and see `crcbl-golden`'s header for how far two drivers do drift.
-- **`SILHOUETTE_SKIP` narrowing: considered 2026-09-02, declined.** Only the
-  edge column itself is disturbed — it reads 188 against its neighbour's 164 —
-  so the skip looks wider than the observation needs. Two things say leave it.
-  The value is the blur kernel's own width (`-1..=2`, four pixels), which is a
-  _reason_ the next reader can check; a fitted number is a measurement that
-  silently stops being true when the kernel changes. And the gain is at most one
-  column of falloff: the sweep note says the rise is monotonic "from the fourth
-  column", which does not settle whether that means `edge + 3` or `edge + 4`,
-  and settling it costs a GPU sweep to buy a single column. Revisit only if the
-  blur footprint changes, which moves the principled value anyway.
-
-## The depth-aware upsample has one reader, not three (2026-09-02)
-
-`docs/plan/46-ambient-occlusion.md` planned the bilateral upsample as **one
-shader with three readers** — the AO pass, `47-reflections.md`'s march, and
-`51-volumetrics.md`'s composite, which already samples a froxel grid far below
-the frame's resolution and would trade its trilinear lookup for a depth-aware
-one. Only the AO reader was built, and that plan section has been deleted now
-that it ships. `docs/plan/51-volumetrics.md`'s row 3 no longer cites a shared
-pass — it says the generalisation is that row's own rung. `47-reflections.md`
-does not cite it at all — checked whole-file for "upsample", "bilateral" and
-"depth-aware".
-
-What actually exists is `crates/crcbl-shaders/shaders/ssao_upsample.slang`, and
-it is **AO-specific, not a shared pass**: it reads an `Rgba8Unorm` occlusion
-image carrying one visibility channel and a bent direction, hard-codes
-`RESOLUTION_DIVISOR` as its own scale factor, and returns `1.0` where nothing
-was drawn because unoccluded is the identity for the value it carries. A
-reflection colour and a froxel lookup share neither that channel layout nor the
-far-plane fallback, so making it serve three readers is a generalisation with
-real design in it — a rung, not a binding somebody forgot to add.
-
-(This entry said `R8Unorm` until 2026-09-04, and so did `crcbl_render::ssao`'s
-own module header. The target widened to four channels when bent normals landed
-2026-09-02 — `ssao.rs`'s pipeline builds
-`ColorTargetState::opaque(Format::Rgba8Unorm)` and the shader's `fragmentMain`
-returns a `float4`. The argument survives the correction and is stronger for it:
-a reflection colour is four channels too, and still not these four.)
 
 ## SSAO reads no depth pyramid and the banding is bought (2026-09-01)
+
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
 
 The user asked whether the AO pass is implemented the industry-standard way and
 optimized, having seen older engines produce SSAO without banding at a lower
@@ -1735,73 +1015,6 @@ with the goldens moved to a tolerance-based comparison, or keep bit-exact
 determinism and accept the tile. That is a design call about how this project
 verifies rendering, not an AO fix, and it is why the AO path was not touched in
 the session that found this.
-
-**The number that did not reconcile has been measured, and the suspect was
-cleared.** This entry first recorded `docs/plan/46-ambient-occlusion.md`'s 0.255
-ms against the 582 µs in the sweep above — the same two-slice pass, same
-resolution, same driver, 2.3x apart — and named the tangential rung as the only
-AO change between the two dates. Re-measured 2026-09-01 on the same command,
-`lantern --headless --frames 400 --size 1920x1080` on radv: `ssao` is **0.488 ms
-p50 / 0.505 ms p95**, 22.8% of a 2.143 ms frame, and `forward` is ahead of it at
-0.531 ms.
-
-The rung did not cause it. Compiling the pre-rung `ssao.slang` against today's
-tree and running the same command measures **0.518 ms** — _slower_ than the
-0.488 ms the current shader takes — so the tangential rung made the pass
-slightly faster. A second guess was also tested and discarded: bounding the
-slice loop by the dynamic count instead of `SLICE_COUNT_MAX`, on the theory that
-unrolling four slices while two ship costs occupancy, measured 0.481 ms against
-0.488 ms.
-
-**None of the absolute figures above reproduce, and the discrepancy is not
-explained — 2026-09-02.** The same command on the same driver, `--release`, now
-measures a **0.890 ms** frame with `ssao` at **0.105 ms** (11.8%), against the
-2.143 ms and 0.488 ms recorded the day before. Four consecutive runs landed
-between 0.890 and 0.905 ms with `ssao` at 0.105 in every one, so the new figure
-is not the noisy one.
-
-The drop is not confined to AO, which is what makes it a measurement question
-rather than a rendering result: `shadow` 0.350 to 0.135 ms, `forward` 0.531 to
-0.256 ms, `ssr` 0.218 to 0.110 ms — a ratio near 2.05 on three passes that no
-commit in the window touches. AO's own 4.6x is that same factor times the
-halving.
-
-Three candidates were tested and none of them is it:
-
-- **GPU contention during the old run.** Refuted by reproducing the conditions:
-  with **three concurrent lantern runs** drawing at 1080p on the same adapter,
-  the measured run still came in at 0.957 ms with `ssao` at 0.105 — a 6% cost on
-  the frame total and none at all on the pass in question, nowhere near 2.4x.
-
-  **The first attempt at this check was vacuous and is worth recording as
-  such.** It launched `run-forward-e2e.sh` as the load and measured 25 seconds
-  later; that suite runs its 21 checks in **1.268 s**, so it had exited long
-  before the measurement began and the "contention" run was against an idle GPU.
-  It reported 0.904 ms — a plausible number, indistinguishable from a real
-  result, and evidence of nothing. The redone check asserts the load is alive
-  immediately before _and_ immediately after the measured run, which is the
-  thing the first one never established.
-
-- **The report's meaning changed.** It did not. `PassStats` has one commit since
-  2026-08-28 in `crcbl-render/src/pass_stats.rs`, and that is the commit that
-  introduced this format — before both measurements. A label is summed within a
-  frame and the occurrence count sits on the row, in both.
-- **Something landed that made the frame cheaper.** The only render commits in
-  the window are the albedo tint, the half-resolution gather, its test lock and
-  the intensity control. All four are AO; none can move `shadow`, `forward` or
-  `ssr`.
-
-So what remains is how the old run was taken — most likely a build profile or an
-environment difference that was not recorded with the number, which is the
-lesson worth keeping. **Treat every absolute figure in this entry dated
-2026-09-01 as unreproducible**, and re-measure rather than diffing against them.
-
-**That also dissolves this entry's open half rather than answering it.** The
-question was why `ssao` had grown from 0.255 to 0.488 ms and whether a denser
-room explained it. There is no growth to explain: the pass measures 0.105 ms
-today, below both. The scene-density hypothesis is withdrawn — it was reasoning
-from a number that does not stand — and `MIN_RADIUS_PIXELS` making the pass
-scene-dependent remains true and remains untested.
 
 ## A plan's numbered slices are an addressing scheme (2026-08-31)
 
@@ -1896,358 +1109,6 @@ summary line `run_text` prints carries the name. What is **not** covered:
   file" from "never ran" — but nothing outside the crate consumes it yet. If it
   should not be public surface, both can be `pub(crate)` at no cost to any
   existing check.
-
-## What the debug console left as limits (2026-08-31)
-
-**The console shipped.** Every delivery slice in `docs/plan/52-debug-console.md`
-has landed — the registry, typed settings, the log ring, the panel, the engine
-takeover, the shared debug view, the web backend, the paste key and `bind`,
-`config`, and the button and keyboard a finger reaches. The one item that has
-not is `Flags::SIM`, and it is **deferred by decision 9 rather than
-outstanding**: its trigger is the first `SIM` variable anyone wants, and nobody
-wants one, so building the transport for it now would be machinery with no
-caller.
-
-What follows is what those slices left as limits rather than fixed — each stated
-in the code as well as here. It is no longer a tracking entry for unshipped
-work.
-
-What slice 1 left as limits rather than fixed, each stated in the code:
-
-- **`Flags::SIM` is declared and nothing sets it** — reserved by decision 9,
-  deliberately; its doc comment says what lands with the first one.
-- **`guard::names_in` strips line comments, not block comments**, and splits a
-  line at its first `//` — a declaration inside `/* … */` is counted as real,
-  and a `//` inside a string literal ends the scan of that line. Line comments
-  are what doc examples use, which is the case that bites; a block-comment and
-  string-aware stripper is a parser's job and the crate has no dependencies.
-- **`Context::new` takes a registry and `Registry::execute` takes `&self`;
-  nothing enforces they are the same registry.** They are at every call site,
-  and the console is built once at `Loop::new`. If a second registry ever
-  exists, make `Registry::context(&self, host)` the only constructor.
-- **`echo =b` echoes `b`.** The `=` between a name and its first value is
-  optional, and the rule cannot tell that first argument from a value;
-  `echo "=b"` echoes `=b`, and the quoted exemption is tested.
-- **Not measured:** completion is a linear scan over the sorted table, which
-  decision 10 says needs no per-tier pricing at the table's size.
-
-What slice 3 — the log ring, the `console` target, `log <filter>` — left as
-limits rather than fixed:
-
-- **The ring only holds what a sink was offered.** The push in
-  `crcbl_core::log::console::push` is before each sink's own filter, so a record
-  a _per-target_ directive silenced is in the ring; a record above
-  `log::max_level()` is not, because the level macros' `__enabled` gate drops it
-  before any sink is asked. So `log off` narrows the ring as well as the
-  terminal, and slice 4's per-level panel toggle can only show lines that
-  reached a sink. Verified: `the_ring_holds_records_the_filter_refused` in
-  `crates/crcbl-core/src/log.rs` and
-  `a_filter_installed_at_runtime_decides_the_next_record` in
-  `crates/crcbl-core/tests/console_log.rs` assert both halves.
-- **`log::set_filter` moves the facade's global maximum with the filter**, which
-  is what makes a widened directive reach a sink at all — and means a
-  `log::capture` running on another thread stops seeing records the narrowed
-  maximum drops. Stated on `set_filter`. It is why the filter tests are their
-  own binary and serialise on one mutex; the capture tests stay in
-  `crates/crcbl-core/tests/log_capture.rs`, which never writes the filter.
-- **`CONSOLE_RING_LINES` is a judgement, not a measurement.** It was picked for
-  scrollback past a demo's boot, and the ring's memory was never measured on any
-  tier. The same goes for the cost decision 10 prices: every record now renders
-  its message and allocates a target `String`, where before a filtered-out
-  record cost nothing — no frame-time measurement was taken either way.
-- **The web sink's ring push is verified natively, not in a browser.**
-  `crcbl::web` is deliberately not `wasm32`-gated, so
-  `the_web_sink_rings_a_line_its_filter_refused` in `crates/crcbl/src/web.rs`
-  exercises the real `WebLogger::log`. The panel reads the ring in a browser —
-  `crcbl_ui`'s `LogView` drains it — but no browser check asserts what the ring
-  _holds_: the gate's console lines come from `Runtime.consoleAPICalled`, which
-  is the sink's own output rather than the ring. So the browser gate can still
-  only show the change is harmless.
-- **`log` joins its arguments with a comma**, so `log warn crcbl_vk=trace` reads
-  as the two-directive list a space-separated typing meant. Safe only because a
-  filter directive never contains a space — unlike an `Enum` value, which
-  `Registry::run_statement` joins with one.
-- **The log filter is process-wide, and one sink at a time is the honest case.**
-  `crcbl_core::log::FILTER` is a module static that `StderrLogger::permits` and
-  `sink_permits` both read, so a process that installed both sinks shares one
-  filter between them. That happens only under `cargo test`, where `crcbl`'s own
-  binary installs `StderrLogger` while the web tests drive `WebLogger` directly;
-  the shared filter is correct there rather than merely tolerated, since a
-  filter is the engine's and not a sink's.
-- **`Filter::INITIAL` spells the default filter a second time.** `RwLock::new`
-  in a `static` needs a const value and `Filter::parse` is not const, so the
-  initial filter is a struct literal beside the string.
-  `the_const_initial_filter_is_the_default_one_parsed` holds the two together; a
-  `const fn parse` would remove the duplication and nothing needs it yet.
-- **`crcbl::web::set_log_level` still takes a bare level, not directives.** The
-  shim's `logLevel(n)` maps a small range onto `off..trace` and installs that as
-  the whole filter, so a page cannot ask for a per-target directive from JS the
-  way the console can from the keyboard. Nothing wants one; the console is the
-  way in.
-- **The browser gate reads the filter and does not move it.**
-  `EXPECTATIONS.quarry.console.filter` types `log` and asserts the answer, which
-  is what proves `install_logger` registered on a real page. A check that
-  `log warn` silences the demo's heartbeat would be stronger and needs an
-  absence-with-a-timeout assertion plus a restore; the per-target half is
-  asserted natively instead, against the real `WebLogger`.
-- **`crcbl::web`'s filter-writing tests serialise on a mutex, and they have
-  to.** `filter_at` takes that order, calls `init_logging` and then
-  `register_sink`, and the guard is the caller's to hold for the rest of its
-  test. Both halves were found by running `cargo test -p crcbl --lib` in a loop:
-  without the mutex the tests overwrite each other's directives, and without the
-  `init_logging` a `capture` elsewhere in the binary can win the logger slot
-  mid-test. `nextest`, which CI runs, gives each test a process and would never
-  have shown either.
-
-What slice 4 — `crcbl_ui::console`, the panel's widgets — left as limits rather
-than fixed:
-
-- **The panel's line is not stderr's line glyph for glyph.** `LogView`'s
-  `line_text` draws a record's message with its target in front of it, unless
-  the console printed the line itself (`CONSOLE_TARGET`), and carries the level
-  as a colour; there is no elapsed-seconds column and no level name, because the
-  panel is about a hundred columns wide at scale 1 and the ring's order already
-  says what a timestamp would. So the plan's exit criterion "the panel shows the
-  same lines as stderr" is met as _the same records, in the same order, coloured
-  by level_ — read it that way when slice 5 is checked against it. `line_text`
-  is the single place a timestamp would be added if one is ever wanted.
-- **The panel's per-level view is a `LevelFilter` threshold, not five toggles.**
-  `LogView::set_filter` takes `Off` through `Trace` and hides lines without
-  dropping them; decision 4's wording was "a separate toggle per level". A
-  threshold is what a key can cycle, which is what that decision asked for in
-  the same sentence. `crcbl::debug_console::CONSOLE_LEVEL_KEY` is the key, and
-  it is `F2` because while the panel is up the loop claims every key, so the
-  choice takes nothing from a game and no other key was a better one.
-- **The caret is measured, not read off `layout_line`'s rectangles.** Decision 6
-  says the caret rectangle comes from the glyph rectangles;
-  `FontAtlas::layout_line` drops every zero-ink glyph, so its `n`-th rectangle
-  is not the `n`-th character of a line holding a space and a caret placed from
-  it slides left by a column per space. `TextField::caret_rect` measures the
-  text before the caret with `FontAtlas::text_width` instead — the same advances
-  `layout_line` walks — and
-  `the_caret_lands_on_the_column_it_names_across_a_space` is the check.
-- **`TextField` has a caret-following window and no other scrolling.** A line
-  longer than the box shows its last columns with the caret pinned to the last
-  one; there is no stored scroll offset, no selection, no clipboard and no IME
-  (all declined for v0 by the plan). A caller that passes `usize::MAX` columns
-  gets the whole line and no window at all.
-- **The pointer reaches the Send button and nothing else.**
-  `ConsolePanel::point` hit-tests that one rectangle: the completion rows are
-  not clickable and the log cannot be selected or dragged. The wheel is not read
-  here either; the loop drives `LogView::scroll_by` from a wheel event and from
-  `PageUp`/`PageDown`, a page being whatever `ConsoleLayout::log_rows` reported
-  for the frame that was last drawn.
-- **Not measured.** `Loop` builds and draws a `ConsolePanel` now, and its
-  per-frame cost (one draw command per visible row, and a `String` per wrapped
-  row because `DrawList::text` takes an owned one) has still never been timed on
-  any tier. Decision 10 priced the shape and nothing has priced the numbers. Nor
-  has the panel been _looked_ at: every check of it is headless and asserts on
-  rectangles and text, so nothing has confirmed it is legible on a screen.
-
-What slice 5 — `CONSOLE_KEY`, the takeover, the gather and the drain — left as
-limits rather than fixed:
-
-- **Four of the five app overrides of `HostedGame::set_bus_gain` are checked by
-  the compiler and not by a test of their own.** The loop → game → `Mixer` path
-  is proven in `crcbl::engine`'s
-  `a_gain_typed_at_the_console_reaches_the_running_mixer`, which reads the gain
-  back off a real mixer the fixture game holds; each `apps/*` override is a
-  one-line forward to its `Audio::set_bus_gain`, which is a one-line forward to
-  the mixer. Nothing exercises those two lines in asteroids, breakout, flappy or
-  horde — a forward to the wrong bus would compile. `apps/options`' override is
-  the exception: it moves the screen's own fader as well, and
-  `a_gain_typed_at_the_console_moves_the_fader` drives it.
-- **`fps` reads the loop's own frame clock, not the GPU's.**
-  `debug_console::EngineLink::set_frame_timing` is fed
-  `FrameClock::render_dt_secs` once a frame, so the number is the wall time
-  between frames; the per-pass GPU timings the debug overlay shows are not in
-  it.
-- **`save` writes nothing in a headless run, and says so; the browser path is
-  unexercised.** `ConsoleHost::saving_as` is set for every arm but
-  `SettingsSource::None`, and `save` goes through
-  `SettingsStack::save_platform`. A headless run gets a stack over
-  `crcbl_store::MemoryStorage` — `SettingsSource::open_editable`, writable, so
-  every variable is still settable — and no name, so `save` faults with "nowhere
-  to save to". A browser run _is_ `Platform`, so it saves through whatever OPFS
-  store the page installed, and that path has not been exercised by any gate.
-- **Nothing stops a game handing the loop a second stack after start-up.**
-  `HostedGame::settings` is asked once, by `Loop::new`, and a game that replaced
-  its own `SharedSettings` afterwards would be back to two writers with nothing
-  to notice. No game does; the method's docs say so and no check enforces it.
-  Enforcing it would mean the loop owning the handle and the game borrowing it,
-  which every `HostedGame` hook's signature would have to carry.
-- **`SharedSettings` borrows can panic and nothing proves they do not.** It is
-  an `Rc<RefCell<SettingsStack>>`, so `stack_mut` panics while another borrow is
-  live. Every caller in the workspace takes a borrow, reads or writes, and drops
-  it inside one statement or function — `ConsoleHost`'s
-  `read`/`write`/`save`/`dump`, `Screen::write`, `Screen::save_to`,
-  `Screen::debug_sections` — and the test suite exercises all of them, so a
-  re-entrant borrow would have to arrive with new code. There is no lint or
-  type-level guard against one.
-- **The options browser gate was not re-run for this change.** No settings key
-  and no `VIDEO_KEYS` entry moved, so `web/tools/browser-e2e.mjs`'s `toFader`
-  index is untouched; the browser path exercises faders and never types at the
-  console, and the change to `Screen::set_bus_gain` is only reachable through
-  the console drain. Stated as a coverage gap rather than a verdict: the gate
-  itself was not run locally.
-- **`apps/options` on a headless run now keeps its edits in memory rather than
-  refusing them.** A behaviour change nothing outside the sample reads — the
-  `SAVE` row still says `NOWHERE TO SAVE`, because `SettingsSource::None`'s save
-  still answers `Ok(false)` — but a summary line that used to carry
-  `save failed: no user settings layer in the stack` for a scripted headless
-  edit now carries `unsaved edits`. No gate reads that field.
-- **A fault prints at `Level::Info`, like every other console line.**
-  `console::print` is the only sink the console has and it is fixed at `Info`,
-  so a refused command is the same colour in the panel as a value. A
-  `console::print_at(level, …)` is the fix and nothing needed it yet.
-- **The pointer test is the keyboard's.** `Console::point` is wired and reports
-  whether the cursor was over the panel, and no headless check drives it: the
-  `HeadlessShell` pointer path is exercised for menus elsewhere, and the
-  console's **Send** button is covered by `crcbl_ui`'s own tests over
-  `ConsolePanel::point`. So "a click on Send submits" is proven in the widget
-  and not through the loop.
-
-What slice 6 — `crcbl::debug_view`, the shared view, the samples that gave up
-their own — left as limits rather than fixed:
-
-- **`crcbl::debug_view::r_debug_view` is process-global, which is a test
-  hazard.** A `ConVar` **is** the storage — plan decision 1 — so two loops in
-  one process share the view, and `cargo test` runs a crate's tests as threads
-  of one process. `debug_view::for_test()` is the answer and it is public for
-  that reason: it serialises the checks that move the view and restores `Shaded`
-  at both ends. The damage does not arrive where the view was moved:
-  `ForwardRenderer::resolved_effects` drops the antialiasing tier while any view
-  is on, so a bystander check asserting a bundle's effects fails instead —
-  measured at about one `cargo test -p quarry --lib` run in three before the
-  guard. In `apps/lantern`, `apps/quarry` and `apps/viewer` the guard is
-  therefore held by the test fixture — the `Scripted` wrapper each crate's
-  `scripted` helper now returns, which derefs to the `Loop` — so a check added
-  later inherits it rather than having to remember it. The guard nests per
-  thread — a check that builds two loops holds two of them, and
-  `let mut engine = scripted(..)` twice in one scope does not drop the first —
-  which it has to: against a plain mutex that check hangs rather than fails, and
-  arrives as a 240-second nextest timeout. Anywhere else, a check that moves the
-  view and forgets the guard is a **flake**, not a failure, which is the shape
-  nobody diagnoses from a CI log. `cargo nextest`, which CI runs, gives each
-  test a process and would not show it at all.
-- **lantern's in-scene monitor now greys with the main view.** The deleted
-  `lantern::Gpu::set_occlusion_view` applied the channel to the main renderer
-  alone and its doc argued for that — a reviewer keeps the shaded frame beside
-  the grey one — and `GameGpu::set_debug_view`, which is the only path now,
-  writes both. The argument was traded for one path rather than answered;
-  putting it back is a main-renderer-only body in
-  `lantern::Gpu::set_debug_view`, which the forwarder seam allows a bundle to
-  write for itself.
-- **A renderer rebuilt mid-run has to carry the view itself, and only one does
-  it.** `Loop::apply_debug_view` writes on an edge, so a bundle that replaces
-  its `ForwardRenderer` while a view is showing loses it with nothing to put it
-  back. `apps/viewer`'s `Gpu::reload` is the only such path in the workspace
-  today — a re-export builds a new renderer — and it now carries the view beside
-  the exposure, the effect request, the render scale and the wireframe;
-  `a_debug_view_survives_a_reload` is the guard. A sample that grows a second
-  rebuild path has to remember the same line, and nothing enforces that.
-- **The occlusion channel over quarry's face is shallow, and the pose was swept
-  to find any of it.** `OCCLUSION_POSE` is three quarters down the dolly because
-  that is where the most pixels darken: 559 of 49 152 on radv, 557 on lavapipe,
-  and **zero** at the dolly's end, where the camera is inside the quarry. The
-  face is a displaced ridge with no corners, so this is the fixture and not the
-  pass. A sample with an interior — `apps/lantern`'s room — would show far more,
-  and that is where a richer picture of this view belongs if anyone wants one.
-- **Nothing reads pixels through the `Loop`.** The device check draws its frames
-  from the quarry harness's own renderer, joined to the console's path at
-  `crcbl::settings::set_debug_view_on` — the body the forwarder calls — while
-  the loop half asserts on `ForwardRenderer::debug_view` rather than on a
-  picture. A single check that did both would need `--screenshot`, which quarry
-  is one of the three samples not to have.
-
-What slice 7 — the web backend's `TextCommit`, the shim's swallow, the browser
-gate — left as limits rather than fixed:
-
-- **`AltGr` types nothing in a browser.** `__crcbl_web_key` commits text only
-  when neither `Ctrl` nor `Meta` is held, which is the plan's decision 5 — and
-  Windows and X11 both report `AltGr` as `Ctrl`+`Alt`, so a character reached
-  through it (`@`, `\`, `{` on a German or French layout) commits nothing.
-  Stated on the entry point. The fix is one clause — treat `Ctrl`+`Alt` as text,
-  the rule browsers' own editors use — and its cost is that every
-  `Ctrl+Alt+<key>` shortcut on a layout with no `AltGr` would then type a
-  character into whatever holds the caret. It wants the user's call, and a
-  keyboard with an `AltGr` to try it on; nothing in the tree has one.
-- **`is_text` is now spelled in three places.** `win32::keys::is_text`,
-  `appkit::keys::is_text` and the new `web::text_of` all say "a committed
-  character is text unless it is a control character", and `linux::xkb::text`
-  says it a fourth way over a whole string. Two copies were already there before
-  this slice; it added the third rather than lifting one helper into
-  `crcbl-shell`'s root, because slice 7's write set was the `web` module alone.
-  The lift is about ten lines and would put the rule, and the comment arguing
-  it, in one place.
-- **The browser gate types on a US layout and only on a US layout.** The
-  `physical` helper in `web/tools/browser-e2e.mjs` maps a character to a
-  `code`/virtual-key pair for lower-case letters, the space and the underscore,
-  and throws for anything else — so a console line added to `EXPECTATIONS` with
-  a digit or a punctuation mark in it fails loudly rather than dispatching a
-  wrong `code`. Widening it is a table, not a design.
-- **Nothing in a browser reads the panel back.** Every console check in the gate
-  reads the _log_ — the echoed line and quarry's own heartbeat — because the
-  panel is drawn into the frame and the gate has no way to find a glyph in it.
-  So "the console draws legibly in a browser" is still unproven, which is the
-  same gap the slice-4 bullet records for every other tier.
-- **Only one demo carries the block.** `EXPECTATIONS.quarry.console` is the only
-  row with one, because quarry's heartbeat is the only one that prints a value a
-  console command moves. Any demo could carry the _echo_ check; none of the
-  others can carry the effect check without a new HUD field.
-
-What slice 8's first two follow-ups — the paste key, `bind`/`unbind` — left as
-limits rather than fixed:
-
-- **Six of the eight `HostedGame::actions` overrides are compile-checked and not
-  driven.** Every sample that keeps an `ActionMap` hands it over — asteroids,
-  breach, breakout, flappy, horde, orbit, puppet, shard — in two shapes: the map
-  on the `Game` behind a new `Game::action_map_mut` (asteroids, breakout,
-  flappy, horde) and the map on the hosted struct itself (breach, orbit, puppet,
-  shard). One of each shape is driven end to end by a console line in its own
-  crate:
-  `asteroids::app::tests::a_console_rebind_moves_the_key_the_ship_fires_on`
-  reads the action off the map `Game::tick` itself reads, and
-  `breach::app::tests::a_console_rebind_moves_the_key_the_view_turns_on` reads
-  the camera yaw `draw` turns from `look_turn`. The other six are the same two
-  lines over a field checked by hand to be the one their own `key_event` replay
-  feeds, and nothing drives them. Closing it is one test per app, each needing
-  an observable that game already exposes; breach could not use the range map
-  for its own, because `RenderState::imposed_aim` writes the yaw there.
-- **A browser cannot paste.** `crates/crcbl-shell/src/web/mod.rs` answers
-  `clipboard_request` with `Unsupported`, so `Ctrl`+`V` in a demo prints that
-  this backend has no clipboard to read — checked by name in
-  `web/run-browser-e2e.sh` and by `EXPECTATIONS.quarry.console.pasteRefused`.
-  Closing it is `navigator.clipboard.readText()`, a permission-gated promise in
-  a secure context: the shim would have to call it from the keydown whose
-  gesture satisfies that requirement, and resolve it back into a queued
-  `ShellEvent::ClipboardData`. Whether a headless CI browser can be granted the
-  permission at all is the first thing to find out — if it cannot, the refusal
-  check is the only one that gate can carry.
-- **A pasted newline joins two lines rather than submitting the first.**
-  `TextField::insert` drops control characters, which is the rule every other
-  path into the field already follows. Source's console runs each line of a
-  multi-line paste; doing that here means the field growing a queue of pasted
-  lines and the console draining it, which is a change to `crcbl-ui`'s widget
-  rather than to the paste path.
-- **Only the one clipboard is read.** `Shift`+`Insert` is deliberately not a
-  second spelling of the paste key: on X11 it means the _primary selection_,
-  which is a different clipboard from the one `Shell::clipboard_request` reads,
-  and binding it here would paste the wrong text for the users who expect it.
-  `crcbl-shell` has no primary-selection seam and nothing has asked for one.
-- **Verified on the headless shell and in a browser, and on no native backend.**
-  The paste path is backend-agnostic — `Shell::clipboard_request` and the
-  `ClipboardData` that answers it — and `HeadlessShell` implements the whole
-  seam including Wayland's focus gate, but no test drives a real X11, Wayland,
-  Win32 or AppKit clipboard through the _console_. Each of those backends has
-  clipboard tests of its own; what is unproven is the console's use of them on a
-  real display.
-- **`bind` cannot spell a mouse button, an axis or an on-screen control.**
-  `bind <action> <key>` takes a `KeyCode` only, so an action driven by
-  `Binding::MouseButton`, `KeyAxis`, `Wasd`, `PointerPosition` or `Virtual` can
-  be listed (`crcbl::debug_console::binding_name` prints each) and cleared, but
-  not written back. A `bind aim mouse` spelling needs a parser for the other
-  variants and a decision about what `Wasd` looks like on one line.
 
 ## Screen-space contact shadows: what the rung left (2026-08-31)
 
@@ -2608,6 +1469,15 @@ user's call" below. The browser tier is no longer the second gate; it was
 measured 2026-09-02 and did not refuse the extra slices, and both defaults moved
 to the higher counts on 2026-09-03.
 
+**DECIDED 2026-09-06 —** the columns are separated by rows plan 39's tier table
+gains, each a settings key and a cvar: `shadow_filter` box/disc/pcss,
+`ssao_slices` 2/4/4, `ssao_blur_passes` 1/2/2, `ssao_bent_normals` off/on/on,
+`shadow_cadence` on/off/off with a budget of half the tiles per frame on low,
+and atlas 2048/4096/8192 once the atlas key lands. Frostbite budgets shadow
+updates and Unity HDRP's cached shadow atlas updates on demand the same way. The
+lag on low is measured in lantern before the cadence row is written, rather than
+guessed.
+
 ## The shadow cadence default still has no tier to live in (2026-08-31)
 
 This supersedes nothing in the entry "Whether any tier should ship the shadow
@@ -2619,6 +1489,13 @@ cost measured per tier (how far a shadow lags at that tier's frame rate and
 light speed), then a row in `docs/plan/39-capabilities.md`'s tier table, then a
 `shadow_cadence` catalogue key.
 
+**DECIDED 2026-09-06 —** the shadow cadence gets its tier row: on for low, off
+for medium and high, with a budget of half the tiles per frame on low.
+Frostbite's shadow update budgets and Unity HDRP's on-demand cached shadow atlas
+are the precedent. It schedules the `shadow_cadence` key in plan 39's tier
+table, and the lantern measurement that fixes the budget before the row is
+written.
+
 ## Whether any tier should be the default is still the user's call (2026-08-31)
 
 Nothing selects a preset at start-up, deliberately: `low` alone would move every
@@ -2628,6 +1505,14 @@ golden (it writes `render_scale = 0.75` and clears the fog switch).
 screen shows" — neither is implemented, and both are a re-bless. What a default
 would need: a decision about which tier each of the four backends and the
 browser opens on, and a golden re-bless for the ones that move.
+
+**DECIDED 2026-09-06 —** the default tier is auto-detected at first launch and
+persisted: a software rasteriser — lavapipe, WARP, SwiftShader, anything the
+adapter reports as `DeviceType::Cpu` — selects `low`, any GPU selects `medium`,
+and `high` stays opt-in. Unreal runs `Scalability` auto-detection on first
+launch and Unity and Godot pick per platform. Every harness pins its preset
+explicitly, as tests do in every engine, so no golden moves: the goldens pin
+what `medium` writes, which is today's values.
 
 ## What the `apps/options` quality row did not cover (2026-09-01)
 
@@ -2717,6 +1602,12 @@ What is **not** measured is the visible cost — how far a shadow lags at a give
 tier's frame rate and light speed — and that is what a default needs.
 `docs/plan/39-capabilities.md`'s tier table is where the answer would live.
 
+**DECIDED 2026-09-06 —** low ships with the shadow cadence switched on, medium
+and high with it off, its budget half the tiles per frame. Frostbite budgets
+shadow updates and Unity HDRP's cached shadow atlas refreshes on demand rather
+than every frame. The lag that budget costs is measured in lantern before the
+number is fixed.
+
 ## The shadow tile clear runs on Vulkan and nowhere else, yet (2026-08-31)
 
 `mesh.slang`'s `depthClearVertexMain` compiles to SPIR-V, WGSL, MSL and DXIL and
@@ -2748,16 +1639,6 @@ one that reports, and read the pass timings rather than the frame total.
 
 Not done here, and not to be read as done: nothing has measured the shadow
 cadence in a browser. Only the obstacle is gone.
-
-## Per-face granularity inside a point light's cube: declined (2026-08-31)
-
-The cadence's unit is the cull, so a point light's `POINT_FACES` faces are
-redrawn or held together. Splitting them would need six culls where
-`docs/plan/18-render-features.md`'s fourth decision gives one — the six faces'
-union is the light's sphere, which is what the cull tests against — so the
-saving would be six `DrawGen`s of device-local memory against half a light's
-draws. Declined; revisit only if a scene is measured spending most of a frame on
-one cube.
 
 ## `Session::window`'s map wait cannot fail (2026-09-02)
 
@@ -2809,6 +1690,9 @@ plans could not settle.
 
 ### What the LTC area-light rung left (2026-08-31)
 
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
+
 `docs/plan/44-lighting.md`'s rung 5 landed as rectangles: `crcbl_shaders::ltc`
 (the fit, the committed `tables/ltc.bin`, the polygon integral),
 `crcbl_render::RectLight`, `KIND_RECT` and `FLAG_FILL` on the widened
@@ -2847,60 +1731,17 @@ against the GGX lobe. What it did not do:
   (`it reaches a device only on wasm32, where it is the automatic backend`), so
   the browser harness is the only thing that could ever have exercised those
   artifacts.
-- **`fill` is drawn on all three kinds, and no sample sets it.** The rectangle's
-  frame is `Scene::AreaLight`; the two punctual kinds got theirs on 2026-09-02 —
-  `Scene::FillLight` for the picture and `mesh_e2e/fill_light.rs` for the exact
-  comparison, two frames of one light with one boolean changed, so its
-  assertions are about bits rather than a ratio under a tolerance. Each kind
-  fails on its own: pinning `Light::is_fill`'s `Point` arm to `false` reddens
-  the point test and leaves the spot's green, which is the failure mode a
-  kind-agnostic flag actually has.
 
-  **What is left is that no `apps/` sample sets `fill: true`, and that is a
-  decision rather than a chore — the user's, 2026-09-02.** `apps/lantern` is the
-  obvious home: `44-lighting.md` says the flag exists for "how a no-bake stack
-  lights the far end of a room", and lantern is a room. But
-  `sample/13-lantern.md` does not ask for one, and adding a light changes the
-  sample's picture and re-blesses its goldens on every backend — a change to
-  what a reviewed frame looks like, not a coverage fix. Weigh that against what
-  it buys, which is modest now that both punctual kinds have frames of their
-  own: the flag would be exercised on a path a visitor sees rather than only in
-  the suites.
+**DECIDED 2026-09-06 —** lantern sets `fill: true` on its downlight and is
+re-blessed with a reason recorded. That is what the flag is for — how a no-bake
+stack lights the far end of a room — and a sample that never sets it leaves the
+arm unexercised. It schedules the lantern change and its bless.
 
 - **Sphere, tube and disc are unbuilt.** The table serves them unchanged — the
   paper's own point — so what each needs is corners (a sphere and a tube are
   integrated as their silhouette quads) and a shape word in the row, not a
   second fit. Textured area lights need a page and a filtered fetch, and are a
   rung above that.
-- **A rectangle is culled as a sphere — measured 2026-09-02, and the waste is
-  not what this entry claimed.** It said the sphere reaches more froxels than
-  the rectangle lights, wastefully in proportion to the aspect ratio. The
-  aspect-ratio half is false: `mesh.slang`'s rect arm applies
-  `range_window(distance to the centre, position.w)`, which reaches exactly zero
-  at the same radius the cull tests, so **the sphere is the shading's support
-  rather than a loose box around it**. `mesh_e2e/rect_bound.rs` reads the
-  cluster grid back and finds byte-identical froxel sets from aspect ratio 1 to
-  64 at a fixed radius, on radv and lavapipe alike. Where the sphere does grow
-  with the shape it grows because `RectLight::radius` tells the caller to put it
-  past the half-diagonal so the panel does not fade before its own edge — the
-  shading model's reach, not the cull's slack.
-
-  What is genuinely removable is the half-space **behind** the panel, which is
-  what `light_cluster.slang`'s own `KIND_RECT` comment already names: 5.8% of a
-  rectangle's froxels at a fixed radius and 12–20% once the radius follows the
-  half-diagonal, and that is an over-estimate, since a bound in the pass would
-  test the froxel's AABB and that straddles the plane more often than the froxel
-  does. A wasted assignment does cost full price — 99.7% of a useful one on
-  radv, 96.3% on lavapipe, because there is no early out for a back-facing
-  receiver — but scaled against rectangles' share of a forward pass that ceiling
-  is single-digit per cent of a frame, in a fixture where sixteen rectangles
-  fill every froxel facing away.
-
-  **Not built, and the trigger is a scene rather than a rung**: one dot product
-  per froxel-light pair, the same shape as the existing spot-cone arm, worth
-  adding if a scene ever appears with many panels facing out of the frustum and
-  lit geometry behind them. Today the froxels behind a panel are usually inside
-  a wall and outside the frustum, which is what that shader comment says.
 
 - **`volumetric.slang` scatters a rectangle as a point at its centre.** It
   declares `KIND_RECT` — the drift guards demand every shader spell the same row
@@ -2911,16 +1752,7 @@ against the GGX lobe. What it did not do:
   tiles. A rectangle's shadow is not a cube map or a single frustum, so this is
   its own rung — the industry answer is a shadow map from the rectangle's centre
   plus a contact term, and `docs/plan/45-shadows.md` has neither.
-- **The fit's grazing shoulder is tens of per cent off the real lobe, and that
-  is the paper's trade rather than a defect.** `crcbl_shaders::ltc`'s
-  `PUNCTUAL_SHARE` records the measurement against a punctual GGX lobe: 0.037 of
-  the answer head on, 0.156 at `N·V` 0.7 and 0.394 at 0.4. Raising `LTC_SAMPLES`
-  to 64 and `LTC_FIT_STEPS` to 160 did not move the worst case at all, which is
-  what says it is model error and not an unconverged simplex — a three-parameter
-  linear transform of a cosine cannot follow the asymmetric tail a grazing GGX
-  lobe grows, and the paper's error norm weights the peak instead. Improving it
-  means a richer transform (the full five-parameter matrix, or an anisotropic
-  fit), which is a bigger table and a different shader.
+
 - **What the rung costs a scene with _no_ area light was not measured against
   the tree before it.** The polygon integral, the frame and the transform's tap
   all sit inside the `KIND_RECT` branch, and the `dfg` read that grew is one
@@ -3104,65 +1936,8 @@ did not do.
 
 ### The shadow filter costs 48 taps and it timed out the browser gate (2026-08-28)
 
-`docs/plan/45-shadows.md`'s ninth decision replaced the 3×3 box filter with a
-32-tap rotated disc, in `tile_pcf` in both `mesh.slang` and `volumetric.slang`.
-The tenth put a 16-tap blocker search in front of it, in `sun_penumbra_texels`,
-on the fragment path and for the sun alone. So a sun-lit fragment reads 48
-texels of the atlas where it read 9, and a froxel reads 32; and **both counts
-were chosen entirely on the picture**. The grain table in the ninth decision
-says what 16, 24 and 32 filter taps leave on a smooth shadowed surface, and the
-wobble table in the tenth says what the search buys on a quantised edge. Neither
-says what any of it costs.
-
-**That sentence used to continue "and there is no shadow-pass timing in the tree
-to measure it with", and it was wrong.** `crcbl_render::PassTimers` brackets
-every pass in the graph with a GPU timestamp pair, `apps/lantern` builds one,
-and `crcbl::engine`'s `finish` logs the whole per-pass report at `info`. The
-instrument was there for both decisions; nobody ran it. What was true is that
-the filter shipped on quality evidence alone.
-
-**Something timed it anyway, and it went red.** The Pages workflow's browser
-gate runs each demo against SwiftShader with a `timeout-minutes: 10` cap per
-demo, and the per-step durations across four runs are the price of the two
-decisions:
-
-| demo    | 00c92e3 | cec27b3 | 713da9d (rotated disc) | c5bdf25 (PCSS) |
-| ------- | ------- | ------- | ---------------------- | -------------- |
-| quarry  | 480s    | 491s    | 586s                   | 602s — timeout |
-| lantern | 471s    | 479s    | 612s — timeout         | skipped        |
-
-Both runs failed on the cap with **every check inside them passing** — quarry
-reported 42/42 before the step was killed — because `web/tools/browser-e2e.mjs`
-scales its own per-check budgets to the machine it is on, so a slower frame
-stretches the run instead of failing it. So the gate cannot say "too slow"; it
-can only run out of wall clock, which is what it did.
-`docs/plan/49-antialiasing.md` and the Pages workflow's own header already say
-the per-step caps bound a _hanging_ demo and cannot bound a total; this is the
-first time the total was the thing that moved.
-
-Two commits of main did not deploy on that; the caps for quarry and lantern were
-raised to 20 minutes on 2026-08-28 and the gate has run inside them since. The
-cap change bought the site back and priced nothing.
-
-**Two of the four answers below are now taken.** The first —
-`docs/plan/45-shadows.md`'s eleventh decision, 2026-08-28 — put a five-tap probe
-in front of the disc, so a fragment away from a shadow edge costs 5 taps rather
-than 32 and a sun-lit one 21 rather than 48, moving no golden on either adapter.
-The second was to run the timer that already existed, and it did:
-`lantern --headless --frames N --size WxH` under `RUST_LOG=info` prints the
-per-pass report, and the filter's cost is in the **`forward`** row rather than
-the `shadow` one — `shadow` is the atlas draw and did not move.
-
-| Adapter           | `forward`, disc only | `forward`, with the probe | Cut |
-| ----------------- | -------------------- | ------------------------- | --- |
-| radv, 1920×1080   | 0.303 ms             | 0.221 ms                  | 27% |
-| llvmpipe, 960×720 | 11.281 ms            | 8.135 ms                  | 28% |
-
-Medians of five runs and of three. **This also settles what was not yet known**:
-a SIMD GPU and a scalar software rasteriser cut by the same share, so the 48
-taps cost what they cost because they are taps, not because of the branch
-divergence a SwiftShader lane adds by running every tap the widest fragment in
-its group takes.
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
 
 What is left, in order of cost:
 
@@ -3280,32 +2055,8 @@ doused window would be unaffected, since `106d71f` measured it at 10.573,
 
 ### shard runs at 98x in a browser and nothing has profiled it (2026-08-28)
 
-**The harness half of this is shipped and green.** `until()` defaulted to an
-unscaled 90-second ceiling while every other budget in
-`web/tools/browser-e2e.mjs` was scaled by a measured `slowdown`, and the
-measurement itself lived in group E, after the groups that needed it. The
-measurement moved to group B, `slowdown`/`budget` moved to module scope, and
-`until` now defaults to `pollCeiling()` —
-`min(budget(TIMEOUT_MS), POLL_WALL_CAP_MS)`, five minutes. Pages run `4bf0375`
-is the confirmation: **all fourteen demo jobs passed and the site deployed**,
-where the two runs before it had shard and puppet red on three checks between
-them.
-
-The sweep the fix was sized against, off that run's group B lines — the first
-time the site's pace has been measured demo by demo:
-
-| slowdown            | what a poll buys | ceiling  |
-| ------------------- | ---------------- | -------- |
-| 1.0–1.6x (9 demos)  | 90 s             | 90–146 s |
-| 9.0x                | 33.4 s           | capped   |
-| 11.9x, 20.6x, 26.6x | 25.3–11.3 s      | capped   |
-| 28.4x (puppet)      | 10.6 s           | capped   |
-| 37.3x               | 8.1 s            | capped   |
-| 98.4x (shard)       | 3.1 s            | capped   |
-
-shard passed on 3.05 simulated seconds, so the cap has margin at today's pace
-and no check needs re-denominating in beats yet. A demo slower again would hit
-the cap first, and the group B line is what says so.
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/browser.md` under this heading.
 
 **What is left is not a harness problem. shard runs at 98x under SwiftShader**,
 against 1.0x for most of the site, and drew a frame every six seconds on
@@ -3469,30 +2220,8 @@ up to the moment a job is killed. The `shell (e2e harness guards)` job in
 
 ### The browser gate's cap says "out of time", never "too slow" (2026-08-28)
 
-**The sum is fixed; the instrument is not.** The Pages workflow's fourteen Linux
-demo gates were steps of the `build the demo site` job, run serially because
-they all drive the site it builds, so the job's `timeout-minutes` had to fit
-their total. It did not, five times running: 30 minutes on 2026-08-25, then 60,
-then 90, then 120, and at `80022df` the job still reached 69 minutes with breach
-killed on its own step bound and shard never started. A job cap firing **skips**
-the deploy rather than failing it, so every one of those runs looked green with
-the site a commit behind — it had not deployed since `00c92e3`.
-
-They are the `demos` matrix job now, one job per demo, each downloading the
-`site` artifact that `build` uploads before it drives anything, and `deploy`
-waits on both. The wall clock is the slowest single demo rather than the sum,
-`fail-fast: false` means one red gate no longer leaves thirteen unrun, and a red
-gate is now **loud**: the Pages run itself goes red.
-
-**Precisely, because the distinction is the whole point of this entry** —
-observed 2026-09-02 on `d0bc715`, whose lantern gate failed. The
-`deploy to GitHub Pages` job still reports **`skipped`**, because
-`needs: [build, demos]` skips a job whose dependency failed; that has not
-changed and cannot be read as a failure on its own. What changed is that the
-_run_ carries the red instead of finishing green, so the commit wears a failing
-check rather than a passing one with a stale site behind it. Anyone reading the
-deploy job alone will still see "skipped" in both the old world and the new, so
-read the run.
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/ci.md` under this heading.
 
 **What is still not fixed is the cap itself.** `web/tools/browser-e2e.mjs`
 scales its own per-check budgets to the machine it is on, so a slower frame
@@ -3503,46 +2232,6 @@ scale factor, so it could fail on the factor rather than on the clock — or a
 per-demo wall-clock figure recorded and compared run to run. Neither exists, and
 the fan-out does not create either; the entry below carries what has been
 measured since, and what closing that gap would take.
-
-**What these gates spend is simulation, not picture.** The runner has no GPU;
-its software rasteriser drives the tick at a fraction of real time, and every
-check waiting on simulated progress waits in wall-clock multiples of it. The
-logs name their own factor: 1.0x for the five 2D demos, 25.0x for puppet, 51.1x
-for breach, 87.0x for shard. The shadow filter's early-out took 27% off the
-forward pass on two adapters and moved puppet's step by one second (612 s to 613
-s) — the same finding from the other side.
-
-**It is slowness, not a hang, and the cap was below the legitimate range —
-measured 2026-08-31.** An earlier revision of this entry read the bimodality as
-a hang. That was wrong, and the sweep that overturned it is below. Five
-consecutive Pages runs, job durations read off `gh run view <id> --json jobs`:
-
-| Commit    | Run         | shard  | Outcome              |
-| --------- | ----------- | ------ | -------------------- |
-| `79a555a` | 33353650899 | 26 min | success              |
-| `9bd267b` | 33360958824 | 45 min | cancelled at the cap |
-| `458a5ed` | 33368904505 | 24 min | success              |
-| `a1e5168` | 33371443850 | 45 min | cancelled at the cap |
-| `031696a` | 33375515324 | 45 min | cancelled at the cap |
-
-**What settles it is the spread between runs of the same code.** Each demo's
-`web-e2e-<demo>` artifact holds the page log, and `PassStats` in it reports the
-forward pass per frame. Across the four runs that uploaded one, in ms:
-
-| demo    | `79a555a` | `9bd267b` | `458a5ed` | `a1e5168` |
-| ------- | --------- | --------- | --------- | --------- |
-| shard   | 4260.955  | —         | 3809.661  | —         |
-| breach  | 3907.520  | 4034.938  | 3480.389  | 3969.237  |
-| puppet  | 2512.963  | 2195.695  | 2337.706  | 2337.690  |
-| quarry  | 2681.151  | 1355.780  | 2703.682  | 2714.067  |
-| lantern | 1164.494  | 1457.002  | 1647.502  | 2888.790  |
-| sparks  | 806.025   | 1254.571  | 835.170   | 1234.698  |
-| viewer  | 237.158   | 191.151   | 231.977   | 237.494   |
-
-quarry's slowest run is **2.0x** its fastest and sparks' is **1.6x**, with no
-change to either demo between them, and that spread alone spans the
-24-to-45-minute range shard shows — no stop is needed to explain it. The dashes
-are the two runs where shard was killed and wrote no log.
 
 **The spread is the workload, not the machine — corrected 2026-08-31.** An
 earlier revision of this entry read the same table as the runner varying by a
@@ -3558,42 +2247,6 @@ That distinction decides what a fix would be. A slow machine is nothing this
 repo can address; a demo whose per-run work varies two-fold is, and the lever is
 either bounding what the gate drives the demo to do or timing a fixed stretch of
 it rather than whatever the run happened to reach. Neither is built.
-
-**None of these numbers can be attributed to a commit.** lantern reads 1647 ms
-at `458a5ed` and 2888 ms at `a1e5168`, which invites blaming the shadow cadence
-that landed between them; quarry moves by the same factor with nothing between
-its runs at all. One sample per commit cannot tell the two apart. Anything
-wanting a per-commit figure needs repeated runs of the same commit, which
-nothing here does.
-
-**The cap is raised to 90 rather than the gate weakened.** Job durations at run
-33375515324: breach completed in 39 minutes, puppet 21, lantern 16, quarry 12.
-The slowest legitimate completion doubled is past 45, so the old cap sat inside
-the range of a passing run rather than above it. `pages.yml`'s `demos` job
-carries the measurement.
-
-**The cost of getting it wrong is not a red gate.** On every hung run
-`deploy to GitHub Pages` was **skipped** — confirmed by name, not inferred — so
-the run reads `cancelled` and the published site silently stays at the last
-commit that got through. `a1e5168` and `031696a` both did this; the site is at
-`458a5ed`. Distinguish the two causes when reading the run list: **only** the
-demo job cancelled is the cap, while a demo job _and_ `deploy` cancelled
-together is an ordinary concurrency cancellation from the next push.
-
-**One route is a dead end — checked 2026-08-31, so nobody repeats it.** The
-cancelled step flushes no output into the job log at all, only the runner's
-setup lines and its `Terminate orphan process` list. The
-`Upload the browser evidence` step does still run on a cancelled job, but the
-artifact then holds **only** the PNG — a successful run's holds the page log
-beside it, 39,921 bytes on run 33368904505 — because that log was written when
-the run finished.
-
-**That last gap is closed.** `web/tools/browser-e2e.mjs` now appends each page
-line to `<slug>-live.log` as it arrives, so a job the cap kills uploads the log
-it had reached. Verified by killing a run with SIGKILL at 30 seconds: 90 lines
-present, the end-of-run log and the PNG absent. The next demo to die at the cap
-is the first one that will say where it stopped — and if it stopped rather than
-crawled, that log is what proves it.
 
 **What is still not built** is a bound the driver enforces itself: it already
 measures its own scale factor in group B and scales every later budget by it, so
@@ -3661,10 +2314,10 @@ the evidence. What the slice deferred or turned up:
   with a temporal filter to hide the noise; this one has no temporal filter and
   leans on `ssao_blur.slang` instead. **What more slices buy has since been
   rendered**, on the tangential axis rather than as a picture: the table in
-  "What the AO default change of 2026-09-03 did not cover" measures two slices
-  against four, on both native drivers, with and without the second blur.
-  `r_ssao_slices` is the console variable that selects it, and it has defaulted
-  to four since 2026-09-03.
+  "What the AO default change of 2026-09-03 did not cover", now in
+  `docs/notes/rendering.md`, measures two slices against four, on both native
+  drivers, with and without the second blur. `r_ssao_slices` is the console
+  variable that selects it, and it has defaulted to four since 2026-09-03.
 - **The `probes` flatness assertion is the only guard that would have caught the
   tilt-sign bug**, and it is in the probe test rather than the AO one, by
   accident. `Scene::Ao` looks into a closed trough with no open flat surface
@@ -3839,6 +2492,9 @@ These belong here rather than there, because they are gaps rather than plans:
 
 ### DECIDED — the vertex and material strides widen once, into the compact split-stream layout (2026-08-30)
 
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
+
 The 2026-08-27 question — when to spend the `MeshVertex` and `GpuMaterial`
 widening that gates normal mapping, the metallic-roughness and occlusion pages,
 alpha-mask materials and any second BRDF lobe — is answered: **once, now, and
@@ -3856,64 +2512,20 @@ zero tracked files, no source mentions one — so the format is born v0 under
 is one, not one per feature. The derivative route for tangents stays rejected on
 mirrored UVs (§2's 2026-08-27 correction).
 
-**Two calls this leaves open, both the user's:**
-
-- **MikkTSpace.** A tangent for a mesh that ships none has to be generated at
-  import, and MikkTSpace is what every tool and engine agrees on — but it is a
-  new dependency (`mikktspace` on crates.io) or a transcription of the reference
-  implementation into `crcbl-scene`. New dependencies are the user's call; a
-  transcription is the bigger review. The layout lands with the derivative frame
-  as the no-tangent fallback either way, so this does not block it.
-- **The BC encoder** for the block-compressed pages rung — a crate in the bake
-  tool or a pinned external `basisu` — which is the same shape of choice and is
-  the bandwidth rung's gate; see §2's filtering subsection.
-
-### DECIDED — GI is hardware ray tracing only; the raster stack carries every other tier (2026-08-30)
-
-**The user's decision:** no GI on hardware without ray tracing. The browser
-(WebGPU has no ray tracing), lavapipe and every device that lacks the feature
-run the traditional raster stack — direct lighting under forward+, cascades and
-the shadow atlas, sky IBL, GTAO, SSR — and nothing there approximates a bounce.
-On `crcbl-vk` (`VK_KHR_ray_query`), `crcbl-dx12` (DXR 1.1 inline) and
-`crcbl-mtl` (Metal ray tracing, `intersection_query`) GI is the runtime-traced
-probe volume below, tracing on the hardware through **inline ray queries in
-compute** — the one shape all three expose and Slang targets with one source —
-behind a `Capability` the device reports and the quality presets read. The
-standing rules hold: no bake step, every light dynamic, shadows from the same
-maps, and the tracer is priced on the desktop adapter before it counts. What
-this buys: the ray budget stops being the question (hardware traversal is two
-orders cheaper than a compute BVH), the browser tier pays nothing, and the
-raster stack is one stack on four backends rather than two.
-
-**Amended later the same day (2026-08-30):** the tier below ray tracing carries
-one bounce after all — `docs/plan/50-irradiance-probes.md`'s decision: the
-existing `GpuProbe` grid gains a per-probe octahedral depth map (rendered from
-static geometry on load, re-rendered on demand; a capture of geometry, not of
-light), `probe_irradiance` weights probes by a Chebyshev test against it so
-nothing leaks through a wall, and a compute pass fills the rows every frame from
-the sun's reflective shadow map, each sample gated by the same map. The user
-chose it on "best-looking for decent performance, and above all no light
-leaking": it is the one cheap option that is leak-free, and it is the same
-volume the RT tier fills by ray queries. The lantern and shard bakes leave with
-the slice that lands it. Order among the raster items: LTC area lights, the
-shadow atlas, the AO tint, **this**, then the atmosphere, then anything else.
-
-**Answered 2026-08-30 on the user's "best-looking for the performance": (i) no
-temporal blend — fixed pattern, every probe every frame, on both tiers; (iii)
-yes, ray-traced shadows and reflections join the high tier as presets once the
-queries exist, priced then. (ii) is a design task for foundation (c), not a
-call.** The original wording follows for the record: (i) whether the GI term may
-carry a temporal blend now that it never runs on a golden's tier — C2 stands
-until this is answered, and the fixed-pattern every-probe-every-frame update is
-the default; (ii) what the seam adds — an acceleration-structure build and
-refit, a ray-query capability, and the storage the hit shading reads — which is
-foundation (c) in `docs/plan/43-render-standards.md`'s delivery table; (iii)
-whether ray-traced shadows and reflections join the RT tier as a preset above
-the atlas and SSR, which is a pricing question once the queries exist.
-
-The survey that led here stays below for the record.
+**DECIDED 2026-09-06 —** tangents are generated with `bevy_mikktspace`, the
+pure-Rust port of the reference implementation, because glTF's specification
+names MikkTSpace as the generator when tangents are absent; compressed pages are
+KTX2 with Basis Universal UASTC, transcoded at load to BC7, ASTC or ETC2 per
+`Capability`, which is Khronos' own pipeline (`KHR_texture_basisu`) and what
+three.js, Babylon and Bevy ship for the web tier. The encoder is a pinned
+`basisu` CLI run by the bake tool, the way `compile-shaders.sh` pins slangc, and
+the loader is the `basis-universal` crate's transcoder feature plus `ktx2`.
+Those are new dependencies and land with this slice, not ahead of it.
 
 ### The raster lighting stack: what its twelve calls left (2026-08-30)
+
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
 
 The decision above puts the traditional raster stack on every tier, and the
 twelve calls it needed were all answered on 2026-08-30 — the per-topic plans and
@@ -3921,16 +2533,6 @@ twelve calls it needed were all answered on 2026-08-30 — the per-topic plans a
 followed them. What is left of that round is the refusals, which are here so
 they are not re-proposed, and the two answers that named a remainder:
 
-- **Runtime reflection captures — DECLINED.** The rebuilt probe volume is the
-  interior environment on every tier and RT reflections are the exact one.
-  `47-reflections.md`'s refusals.
-- **Whether SSGI counts as GI — WITHDRAWN.** The probe volume is the bounce on
-  every tier; SSGI would be a second, view-dependent estimate of it for a pass
-  of its own. Struck from the GI candidates below and from
-  `43-render-standards.md` §7's ordering.
-- **Burley diffuse — DECLINED.** Lambert stays, improved by the terms around it
-  (multi-scatter compensation, the AO tint and bent normals, LTC area lights,
-  the probe bounce). `44-lighting.md` records it.
 - **The shadow atlas's budget row is still open.** The cadence call settled that
   the atlas is dynamic _and_ cached — a light re-renders its tiles whenever it
   or an instance it covers moves, and is not re-rendered otherwise. What it did
@@ -3940,175 +2542,6 @@ they are not re-proposed, and the two answers that named a remainder:
   call put scalar occlusion plus the multi-bounce tint on low (the tint costs no
   target) and bent normals plus specular occlusion on medium and high;
   `46-ambient-occlusion.md` carries it.
-
-#### The survey (2026-08-30, superseded by the decision above)
-
-A survey of what Frostbite, Unreal, Godot and Unity ship for GI, scored against
-this tree's five standing constraints rather than in the abstract (the full
-report lives outside the tree; this entry is its durable part):
-
-- **C1 — no ninth storage buffer.** `PORTABLE_STORAGE_BUFFERS_PER_STAGE` in
-  `crcbl_hal::pipeline` is what a WebGPU device promises, and the mesh
-  bind-group layout in `crcbl_render::forward` is at it. GI arrives as a sampled
-  image or as rows in the probe buffer `mesh.slang` already reads, or it does
-  not arrive on the browser tier.
-- **C2 — a frame is a function of its own inputs.** `Tolerance::RASTERISER`,
-  `47-reflections.md`'s SSR-history refusal and `50-irradiance-probes.md`'s DDGI
-  refusal all say so.
-- **C3 — the budget.** The whole frame is 0.990 ms p50 at 1920×1080 on an RX
-  7900 XTX (`46-ambient-occlusion.md`, the 2026-08-28 distribution).
-- **C4 — the software and browser tiers pay for every pass** at ~40× the desktop
-  cost.
-- **C5 — what exists.** L1 SH probes (`GpuProbe`, `probe_irradiance`), a Hi-Z
-  pyramid, GTAO and its blur, SSR; no SDF, no 3D image path (`transient.rs` is
-  `ImageType::D2`), no triangle intersector, no triangle BVH — `crcbl_phys::Bvh`
-  is SAH over AABBs with ray-vs-sphere and ray-vs-AABB leaves.
-
-**What the four engines say.** Every _runtime_ GI they ship carries state across
-frames — Lumen (TSR + probe history), SDFGI/VoxelGI/DFAO/Brixelizer
-(incrementally updated cascades), Enlighten (frame-rate decoupled), GIBS
-(amortised) — so every one fails C2, and the RT-hardware ones (Lumen HW, Unity
-RTGI, DDGI) have no WebGPU path at all; GIBS could trace on a compute BVH but is
-the amortisation, see below. Every _baked_ one — Frostbite Flux, Unreal
-Lightmass / Volumetric Lightmaps, Godot LightmapGI, Unity Adaptive Probe Volumes
-— is exactly deterministic, costs zero passes, and two of the four engines name
-it the recommended default for the hardware tier this engine targets. All three
-probe formats converged on 4×4×4 bricks of low-order SH: the format `GpuProbe`
-already is. What they have that this tree lacks is the thing that fills it — an
-offline path tracer.
-
-**Rule from the user (2026-08-30): lighting is not baked.** The sun and every
-scene light are dynamic — direction, position, colour, on and off — and no bake
-step writes a lighting result into the tree. That excludes candidate 1 (a cooked
-irradiance volume _is_ baked lighting) and, for scene lights, candidate 2 (it
-bakes the transport of a fixed light set); both stay below for the record of why
-they were the survey's answer, and question 4 below is answered "no" by the
-rule. It also settles what the tracer is for: **not a bake tool — a runtime.**
-
-**And shadows must work with it (the user, the same day):** every dynamic light
-shadows — the sun through the cascades that exist, the scene lights through the
-shadow atlas [45-shadows.md](plan/45-shadows.md) pulled forward — and the GI's
-hit shading reads those same maps, so a bounce is occluded by the same shadow
-the eye sees. A BVH shadow ray at the hit is the desktop-preset upgrade, not the
-baseline.
-
-**The candidate the rule points at — runtime-traced probes, no history.** The
-probe volume `GpuProbe` already is, filled every frame by a compute pass that
-traces a _fixed_ ray pattern per probe against a triangle BVH on the GPU —
-DDGI's tracer (Majercik et al. 2019) with its temporal blend removed. Every
-probe, every frame, from this frame's lights and this frame's geometry, so it
-clears C2 the way GTAO does: a fixed pattern and a smooth target (L1 SH is
-low-frequency, and needs far fewer rays than DDGI's octahedral maps do). It
-needs no RT hardware — traversal is a compute shader over a flattened BVH in a
-storage buffer, its own pipeline and bind group, so C1's ceiling on the
-_forward_ pass does not bind it. Hits shade with this frame's direct light (the
-cascades and the light list the forward pass already reads), which gives one
-bounce; a second is a second explicit trace, not a feedback read of the previous
-volume. Dynamic geometry bounces too, through a refit of the BVH
-(`crcbl_phys::Bvh` refits; the triangle-leaf variant is the same first slice
-candidate 1 wanted, and its CPU form becomes the _reference_ the GPU pass is
-held to). What it costs is the open number: probes × rays × traversal — the same
-8192 × 64–128 rays is of the order of a million rays a frame, which on the
-desktop adapter is plausibly inside a millisecond and on lavapipe and the
-browser is not; it is priced on all three tiers before it counts, per plan 43,
-and the web tier runs it reduced or off behind the quality preset. The
-alternatives that also satisfy the rule — SDFGI/Brixelizer (SDF generator, 3D
-images, cascade state), voxel cone tracing (leaks), LPV (single low-frequency
-bounce, one RSM per light) — each carry more machinery for less; SSGI stays
-candidate 3, the desktop-only contact term on top.
-
-**The candidates, in order.**
-
-1. **A cooked irradiance-probe volume** (the APV / Flux shape). An offline CPU
-   gather that writes the probe rows, committed with a `--check` like `dfg.bin`
-   and `sky_prefilter.bin`. Clears C1–C5 by construction: zero passes,
-   byte-compared as an artifact rather than blessed as a golden, identical on
-   every tier; ~384 KB for an 8192-probe volume. First slice touches no renderer
-   code: `ray_vs_triangle` (Möller–Trumbore, tested against literature values)
-   and a triangle-leaf `Bvh`, red-checked by sabotaging the intersector. Second:
-   `cook-probes` on `cook-dfg`'s terms. Third: `apps/lantern` swaps its analytic
-   `bounce` for the general bake — the two must agree on a box. Static geometry
-   and, alone, static lights. Overturns `43-render-standards.md`'s "no baked GI"
-   as a decision, closes `50-irradiance-probes.md`'s deferred bake, and makes
-   P7C's ray-traced GI row worth re-arguing as reflections and shadows only.
-2. **Bake the transport, not the answer** (the Enlighten reduction). Per probe,
-   the L1 response to a small basis of sun directions plus a sky term; the host
-   folds the live sun into a weighted sum of rows before the upload `ProbeTable`
-   already does. No shader change, no binding, zero passes; the basis multiplies
-   committed bytes (six directions ≈ 2.3 MB for 8192 probes), not device memory.
-   Anti-vacuity: a basis of one reproduces candidate 1 bit for bit. Strictly
-   after candidate 1.
-3. ~~**Non-temporal SSGI over the Hi-Z pyramid, delivered as an image.**~~
-   **Withdrawn 2026-08-30** — the probe volume is the bounce on every tier. The
-   plan's SSGI row, with one correction: `43-render-standards.md` §9 and
-   `49-antialiasing.md` file it behind motion vectors for temporal accumulation,
-   and that is a choice — GTAO's fixed-pattern-plus-blur determinism argument
-   transfers to a cosine gather. Costs: it needs an albedo the tree does not
-   expose (the scene target is shaded colour; `47-reflections.md` refuses a
-   G-buffer), so it opens with a third attachment or a visible approximation;
-   without accumulation the only quieting tool is a wider blur, which confines
-   it to contact scale; and two GTAO-class passes is roughly a doubling of the
-   frame. The only candidate that gives dynamic objects any indirect response.
-
-**Considered and rejected — do not re-propose without answering the reason:**
-Lumen software (8 ms at 1080p against a 0.990 ms frame; TSR-dependent; per-mesh
-SDFs, card atlas, virtual texturing); every RT-hardware family (no WebGPU ray
-tracing in 2026; all temporal); Godot SDFGI and AMD Brixelizer (the best RT-free
-runtime answers, but SDF generator + 3D images + cascade state — reconsider only
-if question 1 below is "fully dynamic"); Godot HDDAGI (unmerged, re-check in a
-year); voxel cone tracing (thin-wall leaks, already "largely superseded" in
-`43-render-standards.md`); radiance cascades in 3D (right philosophy, "remains
-an open problem" per radiance.wiki, the 0.3 ms figure is a 2023 demo); NRC
-(training signal is live path-traced rays); Frostbite/SEED surfel GI, "GIBS"
-(read in depth after the survey, and the survey's one-liner was wrong twice:
-surfels spawn from the G-buffer in 16×16 screen tiles, not at ray hits, and only
-6 of its >50 dispatches trace rays, so a compute BVH can stand in for RT
-hardware — but the point of the cache is temporal amortisation, 1–2 rays per
-surfel per frame over a multi-scale mean estimator, with six frame-carried
-states of which surfel placement cannot be shed without collapsing into
-screen-probe SSGI; shipped at 2.5 ms on XBSX at 1440p and frozen during gameplay
-in College Football 25 to fit 2 ms at 60 Hz; the WebGPU port's integrate pass
-binds 10 storage buffers against the 8 this tree pins, and needs a storage image
-no `.slang` here uses yet); full Enlighten (custom clustering pipeline;
-candidate 2 is the part worth having); lightmaps before probes (needs UV unwrap,
-atlas and a denoiser on top of everything probes need); parallax-corrected
-cubemap probes (cube arrays, mip chains, `SampleLevel` — all refused in
-`50-irradiance-probes.md`; the specular twin of candidate 1, re-open after it);
-SH L2 (priced in `50-irradiance-probes.md`; a contained escalation later).
-
-**The questions, and the one that decides the rest:**
-
-1. **Must indirect light respond to geometry that moves** — doors, destruction,
-   player-built structures? _Lights_ are answered: dynamic, by the rule above.
-   Geometry is still the user's call, though the runtime-traced candidate makes
-   it a refit rather than a different design. Yes means candidates 1 and 2 are
-   insufficient and the answer is a cascaded SDF, at the cost of an SDF
-   generator, a 3D-image path across four backends and per-frame determinism for
-   the GI term. Static geometry with dynamic lights means 1 + 2 beat anything in
-   the plan for zero milliseconds. Every engine surveyed recommends the baked
-   answer for this hardware tier.
-2. May a golden ever carry a temporal component? If the answer is a permanent
-   no, it belongs in `43-render-standards.md` §5 as one constraint rather than
-   three scattered refusals.
-3. What is the GI budget in milliseconds, on which tier — is candidate 3's
-   doubling acceptable on desktop if off by default on the web tier?
-4. ~~Is a bake step acceptable in the content pipeline?~~ **No** (the rule
-   above). A scene acquires a committed, `--check`ed artifact and a scene edit
-   means a rebake. Everything above depends on this being yes.
-5. Do `ray_vs_triangle` and the triangle BVH live in `crcbl-phys` (available to
-   gameplay queries too) or bake-only beside the `cook-*` tools? No new
-   dependency either way.
-6. Does `apps/lantern` stay the GI acceptance fixture, or does GI want its own
-   demo (which joins every list `tools/check-browser-gate-demos.sh` enforces)?
-7. The lantern downlight question below becomes moot under candidate 1 — every
-   static source is in the gather — so it can close with that slice.
-
-Nothing here is started until question 1 is answered.
-
-**Where it sits in the schedule (2026-08-30):** the bake tool itself is
-foundation (c) in `docs/plan/43-render-standards.md`'s delivery table, and
-candidate 1's probe volume is its first output — so the tool is scheduled, and
-its first output waits on question 1, not the other way round.
 
 ### Specular IBL: what rung 3 left (2026-08-29)
 
@@ -4250,32 +2683,6 @@ Not urgent: the error is bounded by how much the reflection contributes, and
 `RenderEffects::REFLECTIONS` is off in every frame that measures the fog law
 (`crates/crcbl/tests/mesh_e2e/hdr.rs` says why in writing).
 
-### The mesh goldens absorb a whole-frame darkening of a few per cent (2026-08-27)
-
-Measured while red-checking the fog composite, and worth keeping because it was
-a surprise. Flooring the fog density at `0.01` — which darkens every lit texel
-of the demo cube by roughly three per cent — leaves all four goldens in
-`crates/crcbl/tests/mesh_e2e/goldens.rs` **green** under
-`crcbl_golden::Tolerance::RASTERISER`.
-
-Two reasons, both structural rather than a slack tolerance: the default key
-light is bright enough that much of the cube tonemaps to saturation, where a
-three per cent cut changes nothing at all, and the swapchain is sRGB, so a
-linear cut of three per cent is a good deal less than three per cent of an
-encoded channel.
-
-**What this means for anyone reasoning about coverage:** "the goldens would have
-caught it" is not a safe assumption for a small _uniform_ change to the whole
-frame. They catch structure — a moved edge, a missing pass, a wrong colour — far
-better than they catch gain. A term that scales the whole picture slightly needs
-an assertion of its own, which is why the fog slice's zero-density claim is
-carried by exact arithmetic (`crcbl_shaders::fog`'s
-`the_exponential_is_exactly_one_at_zero` and the composite the shader guard
-pins) rather than by a golden.
-
-**Not measured:** where the threshold actually is. Nobody swept the darkening
-until a golden reddened; the one figure above is the one data point.
-
 ### Code comments still cite `18-render-features.md` by a section it no longer holds (2026-08-27)
 
 That topic was split into one document per technique — `44-lighting.md` through
@@ -4309,18 +2716,21 @@ where this one stands, and its delivery table orders the gaps by benefit per
 unit of work. The rows above **blended transparency** each have a section
 arguing them; the rows below have a paragraph and no decision record.
 
-Specifically un-argued, and each needing its own topic before it is built:
-order-independent transparency and whether an approximation can be blessed at
-all under this workspace's golden discipline; and colour grading's LUT format
-and authoring path. Two rows this entry named have since been argued — the
+**DECIDED 2026-09-06 —** colour grading is a post-tonemap 3D LUT, 32³ in
+`Rgba8`, authored as a `.cube` file and cooked at load, identity when absent,
+carried as a `CameraStack` field: Unreal applies its LUT post-tonemap, Unity a
+log-encoded one and Godot 4 a 3D LUT colour correction, and `.cube` is the
+Adobe/Resolve interchange every authoring tool writes. It schedules the
+`CameraStack` field, the cook and the pass. Order-independent transparency is
+answered too — refused now, per-object sorted alpha blending instead; see "No
+transparent pass, and therefore no depth sort" below.
+
+**The previous-transform row is spent.** Reserving the slot in
+`crcbl_shaders::mesh::GpuInstance` was the one row here that was a decision
+rather than a design, and it has landed: `GpuInstance::previous_transform`, at a
+stride of 160. Two rows this entry named have since been argued as well — the
 froxel pass is `docs/plan/51-volumetrics.md`, and specular IBL is
 `44-lighting.md`'s rung 3, whose `DFG` half `crcbl_shaders::dfg` already cooks.
-
-**The one row that is a decision rather than a design** is reserving the
-previous-transform slot in `crcbl_shaders::mesh::GpuInstance`. It blocks TAA,
-temporal SSR, temporal upscaling, per-object motion blur and SSGI's
-accumulation, it gets more expensive as more shaders index past the instance
-stride, and it needs the user's call on when to spend the re-bless.
 
 ### The DXIL register rule is held two ways, and the table cannot be completed (2026-09-05)
 
@@ -4352,57 +2762,6 @@ equality on that list, so a second source starting to gap is red and a
 `mesh_cluster` that goes dense is red too. But a root signature naming a
 register its shader does not use is still caught only by a row in the
 transcribed table, or by pipeline creation on a Windows runner.
-
-### The Hi-Z march trusts a genuine crossing less than the strided one did (2026-08-27)
-
-`ssr.slang`'s `bound` — `saturate(1 - behind / thickness)`, the soft half of the
-thickness rejection — reads lower under the hierarchical march for the same hit,
-so a little more probe environment is blended behind a valid screen reflection.
-It is why `apps/lantern`'s `SSR_HIT_TOLERANCE` moved from 0.06 to 0.10. Not a
-defect that was found and left: it is a measured difference nobody has
-explained, and it is recorded so the next person does not repeat the search
-below.
-
-**What was measured** (the probe point in
-`zero_probes_only_remove_the_ssr_and_rough_fallbacks`, both adapters agreeing to
-a tenth of a percent):
-
-- Strided march: 51.8 with probes, 49.2 without. Hierarchical: 46.8 and 43.4.
-- With `bound`, `border` and `distance` all forced to one, **both marches read
-  53** — so the hit texel and its colour are the same and the whole difference
-  is the weight.
-- Forcing `distance` alone to one moves nothing, and `border` alone moves 0.1,
-  so `bound` is the entire term.
-- Thresholding `behind / thickness` instead of ramping it: the strided march has
-  almost every ray under 0.1, the hierarchical one spreads to 0.4.
-
-**Three explanations tested and rejected**, each by measurement:
-
-1. **A per-pixel-rate thickness** — dividing the ray's depth advance by the cell
-   span before `thickness_at`. Byte-identical output. `THICKNESS_FLOOR`
-   dominates at this pixel, so the advance term is not what is being compared
-   against.
-2. **Measuring `behind` at the cell entry** rather than at the exit, so the ray
-   depth and the sampled texel are the same point. 43.5 — worse, because a
-   smaller `behind` also relaxes the `behind <= thickness` gate and the march
-   then accepts an earlier, darker crossing.
-3. **Measuring `behind` at the midpoint of the cell traversal**, both as the
-   gate and as the fade alone. 44.9 and 43.0 — worse both ways, which also says
-   the sign of the ray's depth change along these rays is not what the
-   entry/exit argument assumed.
-
-**Not tested:** a minimum-travel gate before a hit is allowed was swept at 0,
-1.5, 3 and 6 pixels and changes nothing, so near-origin self-intersection is
-ruled out. What has _not_ been tried is instrumenting `behind` and `thickness`
-per pixel into a debug attachment; every measurement above is the one blurred
-pixel the lantern test reads, which aggregates a neighbourhood through
-`ssr-blur` and cannot separate one ray from another. That is the next step if
-this is picked up.
-
-**Why it was left:** the reflection is better by every other measure — the
-`Scene::Ssr` golden re-blessed to a smooth gradient where the strided march
-stepped, the other six lantern claims and both lantern goldens are unchanged,
-and the residual is a fade constant rather than a wrong pixel.
 
 ### `apps/quarry`'s device harness ignores `CRCBL_ADAPTER` (2026-08-27)
 
@@ -4541,16 +2900,10 @@ is a bigger claim than "this mixer's listener".
 **Blocks:** the `crcbl_audio::CueDeck` seam below — building that seam first
 would build it around a parameter that is about to disappear.
 
-### A proc-macro dependency for identifier concatenation (2026-08-27)
-
-`crcbl::web_exports!` shipped its impl half as `crcbl::impl_web_pending!`. What
-is left un-extracted is the ten literal symbol names each sample declares.
-Collapsing those needs a macro that can _build_ identifiers: `concat_idents!` is
-unstable, and the names must stay per-sample so two demos in one browser cannot
-collide.
-
-That means **a new dependency, which is the owner's call**. Ten lines per sample
-against one new crate in the tree.
+**DECIDED 2026-09-06 —** `CueGrammar` moves onto the `Mixer` — a mixer's grammar
+is its listener's peer — and `cue(emitter)` loses the parameter; `CueDeck` is
+built on top of that. It schedules the move, the signature change and its
+callers, then the deck.
 
 ### Does `Summary` keep re-flattening `RunSummary`? (2026-08-27)
 
@@ -4562,6 +2915,11 @@ does the opposite with no stated reason.
 
 The counter-argument is real: flattening is what lets `main.rs` write
 `summary.frames` rather than `summary.run.frames`.
+
+**DECIDED 2026-09-06 —** each sample's `Summary` carries one `run: RunSummary`
+field rather than re-flattening it — composition over copied fields, with
+`summary.run.frames` at the reads. It schedules the field change and its
+readers.
 
 ## Unbuilt work
 
@@ -4694,166 +3052,6 @@ existing `log::*` call sites keep working while the sink moves — a two-step
 slice with a green tree in the middle. Converting call sites mechanically buys
 nothing on its own; `tracing`'s value is in the fields and the spans.
 
-## Considered and declined — do not re-propose
-
-Each was checked against the rule that DRY is about duplicated _knowledge_, not
-duplicated shape.
-
-- **The `DebugModule` impls.** Same shape, genuinely different numbers, and each
-  sample's doc argues against sharing. This is the seam working.
-- **Action sets and key bindings.** A game is entitled to rebind alone.
-- **`horde/src/controls.rs`.** Its shared parts are _already_ engine —
-  `TouchStick`, `PauseControl`, `CONTROL_STYLE`. What is left is horde's.
-- **`HudStrings` and `draw_hud`.** The keys and strings are content.
-- **`fn still`** in three `art.rs` files — it returns a _game-local_ struct, so
-  sharing it would put a per-sample type in the engine.
-- **`with_shell` and `open_the_window`.** `open_the_window`'s title, app id and
-  error type are the game's, and a wrapper taking all three needs six positional
-  arguments with two adjacent `&str`s among them. `with_shell` looks like the
-  others and is not: `apps/horde` builds its clock from `!options.real_clock()`
-  rather than from `headless`, and `apps/lantern` opens its window through a
-  different signature. Extracting it would need a callback per difference.
-
-## Surprises worth keeping — not bugs
-
-### A Pages run whose browser jobs never end is a lost runner, and the next push is the remedy (2026-09-05)
-
-`31dec1f`'s Pages run (33932758980) sat `in_progress` for eight and a half hours
-with `render shard`, `render breach` and `render alcove in a real browser` each
-stuck in their render step and no log blob uploaded for any of the three — the
-job-level `timeout-minutes` in `pages.yml` never fired, so the runners had gone
-rather than the step hanging. The siblings that did finish say what the pool was
-doing: quarry's render step took 21 minutes and passed, its log reading "two HUD
-lines 36699 ms apart against a nominal 1000 ms" and "every budget here scaled
-36.7x", and lantern, puppet and sundial took 25 to 32 minutes each where a
-minute is usual. githubstatus.com reported all systems operational. Nothing here
-was a defect in the tree — CI on the same SHA was green after its own lavapipe
-rerun — and nothing waited on: `pages.yml`'s `cancel-in-progress` is true for
-branch pushes, so the next push cancelled the dead run and started a fresh
-deploy, which is the remedy. Worth keeping because the standing rule is to hold
-a push until the previous Pages run completes, and a run like this one never
-will.
-
-**The next run said how slow that pool can be without being lost.** `0fb2d93`'s
-Pages run (33937587672) finished green with `render shard in a real browser`
-taking 72 minutes: its log reads "every budget here scaled 204.7x", the gate's
-own scaling of its budgets to the demo's measured tick rate, with 17-minute and
-10-minute gaps between consecutive checks. So a job on that pool can run two
-hundred times slower than nominal and still pass, and the difference between
-that and the three jobs above is whether the runner was still reporting — a job
-past its own `timeout-minutes` with no log blob is lost; one inside it is slow.
-Hold the push for the second kind.
-
-### The Windows lavapipe leg draws runners three times apart, and a readback deadline sat inside the spread (2026-09-05)
-
-`vk e2e (lavapipe, windows)` went red twice in a day in `Headless::readback` —
-"the 196608-byte readback was still Pending" after the harness's deadline —
-first on `e9e0283` with `draw_gen::every_geometry_path_draws_the_same_frame` and
-three `mesh::` tests, then on `90c454a` with the forward pass's three `lights::`
-tests, and on the second a rerun of the job went red again with the two
-surviving `lights::` tests **passing at 29.8 s and 30.0 s**. Neither push
-touched `crates/crcbl-vk`, `crates/crcbl-shaders` or the harness, and between
-`e9e0283` and `55f27ac` nothing outside tests changed at all, yet the same
-`depth_probe::` test took 4.4 s on one run's runner and 12.8 s on the next's,
-and the `lights::` readbacks 9 s against 24 to 30 s. So the first diagnosis — a
-starved pool, rerun and move on — was wrong in the half that matters: the pool
-is the variable, but the spread is the ordinary spread of that runner class, and
-`READBACK_DEADLINE` at 30 s sat inside it. It is 120 s now, four times the
-slowest legitimate landing seen and still under `.config/nextest.toml`'s
-per-test kill, so a lost copy is still reported by the harness's own message.
-Worth keeping because the failure names whichever tests drew the slow runner and
-reads as a regression in them, and because a green rerun of a threshold that
-sits inside the spread proves nothing about the threshold.
-
-### `--document-private-items` does not license a link to a private item (2026-09-04)
-
-rustdoc's own note on `private_intra_doc_links` reads "this link will resolve
-properly if you pass `--document-private-items`", which is not true of a
-**public** item's documentation. CI's wasm32 doc gate passes that flag and still
-refuses
-`public documentation for `probe_bounce_grid`links to private item`leak_volume``.
-The fix is to unlink the name, never to widen the flag.
-
-Worth keeping because the note reads as an instruction and sends you to change
-the command rather than the comment.
-
-### A local `cargo doc` cannot fail without `RUSTDOCFLAGS` (2026-09-04)
-
-Every doc gate in `ci.yml` sets `RUSTDOCFLAGS: -D warnings` in the job's `env:`
-block rather than on the `run:` line. A doc gate run without it reports a broken
-intra-doc link as a warning and exits **0** — so the local chain is green over
-exactly what reddens CI. `85e4f7a` went out that way and left `main` red across
-two jobs until `d06edef`.
-
-The corollary that cost the round trip: `[`Name`](path::to::Name)` is
-`redundant_explicit_links` whenever the label alone already resolves. A link
-that needs a path puts the path _inside_ the brackets —
-`[`crate::zone::LAYOUT`]`.
-
-### rustc suppresses its own lints inside an external macro's expansion (2026-08-27)
-
-Moving hand-written trait forwards into a macro removed the only thing catching
-them. Each forward is `Self::method(self)`, which resolves to the _trait_ method
-when the bundle has no inherent one — infinite recursion rather than a compile
-error, with `unconditional_recursion` silent about it.
-
-Measured by deleting an inherent `counters`: it warns before the move and
-compiles clean after.
-
-`crcbl::impl_game_gpu!` and `crcbl::impl_polled_gpu!` therefore open with a
-`const _` block coercing each inherent method to a function pointer in a scope
-where the trait is not imported, so path syntax cannot reach the trait method
-and a missing one is `E0599`. **This applies to any future forwarding macro.**
-
-### A generated `desc` would have made five guard tests vacuous (2026-08-27)
-
-`apps/hud` was found opening its device without `PRESENT_FEEDBACK` or
-`PRESENT_TIMING` — a hand-copied capability list that had drifted from
-`GpuContextDesc::default`, leaving the closed pacing loop unreachable and
-`display_timing` answering `Unknown` forever. Four samples carry a test against
-exactly that; hud had none.
-
-The obvious fix was to generate the `desc` — but doing so makes the hud shape
-unrepresentable, which turns the five tests that assert against it into tests of
-the generator. With every sample guarded the safety argument was already spent,
-so `impl_polled_bundle!` takes `desc` by name and all five tests still run.
-
-The general form: **a copy in every sample is a bug that can be present in only
-some of them** — but generating the copy can cost you the test that finds it.
-
-### Two geometry paths agree to the last bit only by luck (2026-08-27)
-
-`a_multi_cluster_mesh_draws_the_same_frame_through_both_geometry_paths` in
-`crates/crcbl-vk/tests/vk_e2e/mesh.rs` compared the mesh-shader and
-indirect-count frames byte for byte, and had done since it was written. The
-multi-scatter compensation term reddened it on lavapipe — one pixel of 49 152,
-red 156 against 157, in the interior of a wall rather than on an edge. radv
-still draws the two paths identically.
-
-The cause is not the term. The two paths run the same fragment stage, but the
-interpolated position and normal reach it from `mesh.slang`'s vertex stage and
-`mesh_cluster.slang`'s mesh stage — two separately compiled modules, which a
-driver may contract or reassociate differently. Any shading change moves which
-pixels sit on an 8-bit rounding boundary, so the byte claim was one edit away
-from failing whatever the edit was. The comparison now allows one 8-bit step and
-no pixel beyond it (`PATHS_AGREE` in that file).
-
-**Not tried: `precise` on both position outputs.** HLSL/Slang's `precise`
-forbids the reassociation and contraction that would explain the drift, and
-would restore byte equality if that is the whole cause. It was not attempted
-because it constrains the hot vertex path on every backend to fix one pixel on
-one software rasteriser, and because the mesh path also assembles its triangles
-from cluster corners rather than from the index buffer — so a corner ordering
-that differs from the index buffer's would move the barycentric evaluation and
-`precise` would not touch it. Whether the two orderings agree was not checked.
-
-### Read the `map_err` call sites, not the declaration (2026-08-27)
-
-A blocker recorded on the sample→engine seam sweep said each game had its own
-error enum whose `NoWindowSystem` variant no generic bound could name. Every
-sample's error type is in fact a type alias for
-`crcbl::engine::LoopError<TheirGameError>`.
-
 ## Coverage gap found while doing this work
 
 ### The geometry-path LSB budgets can only be re-measured on CI (2026-08-27)
@@ -4935,6 +3133,9 @@ field; `the_tonemap_block_carries_the_curve_a_caller_selected` in
 and `the_aces_curve_keeps_the_shading_the_clamp_flattens` in
 `crates/crcbl/tests/mesh_e2e/hdr.rs` is what proves the branch runs on a device.
 
+**DECIDED 2026-09-06 —** which stacks default to the filmic curve is folded into
+the CMAA2 flip's bless, which is in flight, rather than decided separately here.
+
 ### Camera-relative rendering: the f64 sector offset table (2026-08-27)
 
 **Half built.** `03-gpu-driven-rendering.md`'s 2026-07-27 correction resolved
@@ -4962,6 +3163,9 @@ not camera-relative rendering."
 
 ### No transparent pass, and therefore no depth sort (2026-08-27)
 
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
+
 **Not built.** `03-gpu-driven-rendering.md` §3.4 names a depth-sorted
 transparent pass, and its 2026-07-27 correction names the algorithm — a GPU
 radix sort over packed depth keys, bitonic for small counts — "so it isn't
@@ -4971,68 +3175,26 @@ the only alpha blending in the renderer composites rather than shades —
 `crcbl_render::debug_draw` and `crcbl_render::bloom`'s upsample — and none of
 them sorts.
 
-**Scoped 2026-09-06, and held on the decisions below.** The whole rung was read
-against the tree before anything was written, because `43-render-standards.md`
-§3 says the order-independent question "should decide about before it is built,
-not after", and the sort's shape turns out to be a decision too. What the
-reading settled:
-
-- **The blend state and every backend are already there.**
-  `crcbl_hal::pipeline::BlendState::alpha` is the match — `mesh.slang`'s
-  `fragmentMain` already writes `float4(lit, albedo.a)` in straight alpha, so
-  the value a blend would consume is in the target today — and `crcbl-vk`,
-  `crcbl-dx12`, `crcbl-mtl` and `crcbl-webgpu` each translate it for the overlay
-  passes. The only hal work is a constructor beside `ColorTargetState::opaque`
-  that carries a blend, plus one with an empty write mask for the reflectivity
-  and motion targets, which a blended surface must not write
-  (`47-reflections.md`'s refusal, and motion has no opaque history to be
-  consistent with).
-- **Where it sits.** After `"sky"` (`crcbl_render::sky_pass` is `LoadOp::Load`
-  and fills only far-depth pixels, so a pass before it blends over clear), with
-  `depth_read(scene_depth)` and no depth write, exactly the attachment shape
-  `sky` already has; `debug_draw` is the precedent for the blend state over HDR.
-  Whether it lands before or after `"volumetric-composite"` and `"ssr"` decides
-  whether a blended surface is fogged and whether it can be a reflection source;
-  both answers are defensible and neither is chosen.
-- **The mode bits have room, and the room is a layout change.** Nothing reads
-  `GpuInstance::flags` above `MATERIAL_MODE_MASK`'s two bits, so widening it to
-  three is byte-neutral for every instance record; the cost is the twin
-  constants (`INSTANCE_MATERIAL_MODE_MASK` in `draw_gen.slang` and
-  `mesh_cluster.slang`), `DEPTH_MODES` and `ForwardRenderer::depth_partitions`
-  moving together as their docs demand, and a bucket per mode the scene holds in
-  `DrawGen::bucket_base`'s scattered run. An all-opaque scene keeps one bucket
-  per mesh level, which is what should keep every golden untouched, and
-  `an_all_opaque_scene_keeps_one_bucket_per_mesh_level` is the assertion to read
-  before spending anything else on the claim.
-- **The scatter's order is arbitrary by design.** `draw_gen.slang` says "nothing
-  here depends on the order" of the slots its atomic hands out, so a blended run
-  is nondeterministic today; the sort is what would fix that, and
-  `draw_scene_on_every_geometry_path`'s byte equality across `EmitTail` arms is
-  the test that would prove it.
-- **One key per instance is not enough.** A bucket is one indirect call whose
-  instance count is the whole run (`BucketDraws::record`), so sorting inside a
-  bucket orders one mesh's instances and two blended meshes still interleave in
-  bucket-table order. A global order needs one call per blended instance (breaks
-  §3.3's fixed CPU-side record), or one bucket per blended mesh (only if they
-  share a mesh), or an argument array the sort writes with the count from GPU
-  memory — which only `EmitTail::Count` can consume; `PerBatch` and `Mesh` have
-  no such tail. This is the rung's largest open question.
-
-**Decisions only the user can make, in the order they gate the work:**
-
-1. Is order-independent transparency refused now, or left open? Weighted-blended
-   OIT cannot be blessed against a reference; deciding this first is what stops
-   the sort being built and then discarded.
-2. Which of the three indirect shapes above carries the global order, given two
-   geometry paths cannot do the third.
-3. Do blended surfaces cast shadows? glTF says nothing — `alphaMode` governs
-   only the base colour's alpha. Excluding the mode from `depth_partitions`
-   gives "no", keeps the prepass honest and makes one sabotage serve two claims;
-   an opaque shadow is free and wrong-looking; a partial shadow needs a
-   mechanism the atlas has not got.
-4. Before or after the volumetric composite and the SSR march.
-5. Is `BLEND` exclusive with `MASK` (six modes, as glTF's one `alphaMode`) or
-   orthogonal to it (eight, more buckets)?
+**DECIDED 2026-09-06 —** five answers. OIT is refused now: per-object
+back-to-front sorted alpha blending is the default in Unreal, Unity HDRP and
+URP, Godot 4 and Frostbite, and weighted-blended OIT (McGuire & Bavoil 2013) is
+an opt-in approximation in all of them, so it stays an unscheduled opt-in effect
+while the sort is built. Global order is one indirect call per blended slot: the
+CPU records `Capacities::blended` draw slots at a fixed stride, the GPU radix
+sort writes each slot's arguments in depth order and zeroes the instance count
+of the unused ones, which runs on every `EmitTail` including WebGPU's, where
+there is no indirect count, and `EmitTail::Count` may additionally bound the
+loop — the shape WebGPU-targeting GPU-driven renderers use (Bevy's sorted
+transparent phase, wgpu's indirect batching), where zero-count draws are free.
+Blended surfaces cast no shadows and are excluded from `depth_partitions`, as
+translucent shadows are off by default in Unreal and transparent shadow casting
+is off by default in Unity. The pass runs after `ssr` and after
+`volumetric-composite`, with a blended fragment applying the froxel fog itself
+by sampling the integrated volume at its depth — Frostbite's and Unreal's
+"translucency samples the volumetric fog texture" — because blended surfaces are
+neither SSR sources nor receivers. And `BLEND` is exclusive with `MASK`,
+following glTF's single `alphaMode`, for six modes in total. It schedules the
+rung at the size this entry gives it, in plan 43 §3's delivery table.
 
 **Sized.** Small in `crcbl-hal`, `gltf_import` (the `AlphaMode::Blend` arm and
 `warn_dropped_features` change together, as the `BLEND` importer entry near the
@@ -5145,24 +3307,14 @@ Kept intact; listed so the next audit does not re-derive it.
   shadow test and `apps/lantern`'s room, none of which is a decal system. The
   froxel grid it plans to bin into does now exist (`crcbl_render::light_grid`),
   which is noted in the doc.
+
 - **`37-materials.md`** — the whole authoring layer. No material template, no
-  `.mat.ron`, no `crcbl mat` subcommand, no permutation manager. Nothing in the
-  workspace reads or writes RON at all. What exists is the runtime shape:
-  `GpuMaterial`'s `base_color`, `metallic`, `roughness` and page-layer column,
-  filled from glTF by `crcbl_scene::gltf_import`.
-
-### Coverage gaps in this audit (2026-08-27)
-
-- §3's exit criteria "10k+ instanced meshes … CPU frame time flat vs instance
-  count" and "zero per-frame descriptor writes (RenderDoc-verified)" were
-  **not** verified. `apps/horde`'s own docs say it "holds a thousand and then
-  wants ten"; no RenderDoc capture is recorded anywhere in the tree.
-- Whether the depth prepass took the `GreaterOrEqual` overdraw win or kept the
-  zero-risk clearing fallback was not checked against the shipped
-  `crcbl_render::forward`; `18-render-features.md` describes both and says the
-  fallback is taken by saying so in the code.
-- `apps/breach` and `web/demos/breach/` were untracked working-tree additions
-  during this audit and were not read, so nothing here accounts for them.
+  `.mat.ron`, no `crcbl mat` subcommand, no permutation manager. The claim this
+  entry used to carry — that nothing in the workspace reads or writes RON at all
+  — is no longer true: `ron` is a workspace dependency and `crcbl_render::stack`
+  reads and writes it. What exists is the runtime shape: `GpuMaterial`'s
+  `base_color`, `metallic`, `roughness` and page-layer column, filled from glTF
+  by `crcbl_scene::gltf_import`.
 
 ### Unfinished work from the backend and platform plans
 
@@ -5189,6 +3341,10 @@ scene that allocates per mesh is the trigger.
 
 **Evidence:** `grep gpu-allocator Cargo.lock` finds nothing; `mem.rs` documents
 the deferral as a deferral rather than as working.
+
+**DECIDED 2026-09-06 —** the `gpu-allocator` trigger stands as written —
+foundation d — and is ratified rather than reopened. It schedules nothing on its
+own; the suballocator lands when that trigger fires.
 
 ### D3D12 is the one target still held against a golden alone (2026-08-27)
 
@@ -5286,35 +3442,6 @@ while open (a target that moves under the thumb), or add a CLOSE cap to the
 keyboard's control row (a fifth key in a row already carrying shift, the layer
 key, space and backspace).
 
-### The first contact of a run can press a button that was never drawn (2026-08-31)
-
-`ConsoleButton::touched` gates `render` and `takes_pointer`, not
-`TouchButton::offer` — so the first finger to land sets the latch and is offered
-to the button in the same call, and if it happens to land in that corner it
-opens the console before anything was on screen there. `PauseControl::touch` has
-exactly the same shape and the same window, so this is consistency with the
-precedent rather than an oversight; closing it would mean refusing the offer
-until a frame has drawn the control, **in both places**.
-
-Found while sabotaging the browser check: setting `touched = false` left every
-check green, because the button still fires. That is what says this is a real
-property of the design and not a slip.
-
-### The browser gate drives the touch keyboard by arithmetic (2026-08-31)
-
-`CONSOLE_BUTTON_CENTRE`, `KEYBOARD_LETTER_ROWS`, `KEYBOARD_HEIGHT_FRACTION`,
-`SPACE_BAR_CENTRE` and `RETURN_KEY_CENTRE` in `web/tools/browser-e2e.mjs` are
-copies of constants in `crates/crcbl-ui/src/console/keyboard.rs` and
-`crates/crcbl/src/engine/console_button.rs`. The same trade `PAUSE_INSET`
-already makes, and it fails loudly rather than quietly when either side moves —
-the taps land between keys and the echo never appears — but it is a duplication
-and worth knowing about before the layout is changed.
-
-The touch console block also runs on `breakout` only. Every demo's console is
-the same engine code, so a second copy would only cost the gate taps; if
-breakout's group F block is ever removed, the guard in `web/run-browser-e2e.sh`
-moves with it.
-
 ### `crates/crcbl/src/engine.rs` is past the size anyone can hold (2026-08-31)
 
 Measured with `wc -l` on 2026-08-31, after the touch-console slice added a
@@ -5327,30 +3454,6 @@ would follow.
 Not attempted as part of that slice: it is its own task, it would collide with
 concurrent work in the same tree, and the rule is that a split moves code in one
 step and changes behaviour in another. Flagged rather than filed as done.
-
-### `config` cannot write a file, and a file takes no arguments (2026-08-31)
-
-**Considered and left out, both.** Source's `writeconfig`/`host_writeconfig` has
-no counterpart here: `save` writes `settings.toml` and nothing dumps the
-console's current state as a runnable `.cfg`. A dump would have to decide which
-of several hundred variables are worth writing, and the `save`/`dump` pair
-already covers the settings half. Separately, Source's `.cfg` files are often
-`alias`-driven; this one is a flat list of lines, and nobody has asked for
-arguments or `alias`. Recorded so neither is re-derived.
-
-### XDND action negotiation is copy, and only copy (2026-08-31)
-
-**Deliberate, not a gap in the handshake.** `crates/crcbl-shell/src/x11/xdnd.rs`
-answers every accepting `XdndStatus` with `XdndActionCopy` whatever the source
-suggested, and reports the same in `XdndFinished`. The engine reads a path
-another process handed it and never takes ownership of the file, so answering
-`move` would be a promise to delete something. A source that offers only `move`
-still gets `copy` back and decides for itself — the specification lets it.
-`XdndActionList` and `XdndActionDescription` are not interned.
-
-**What would change it:** a consumer that wants to _move_ a dropped file, which
-needs `ShellEvent::DroppedFile` to carry the action first. The Wayland backend
-made the same choice (`data::ACTION_COPY`) and would need the same change.
 
 ### No drop feedback while a drag is in the air, on any backend (2026-08-31)
 
@@ -5511,18 +3614,22 @@ from the origin.
 exercised, because nothing has yet been far enough from the origin. Task 1 of
 `05-physics.md` reads as done and its second half is not.
 
-### Cross-target determinism: the `libm` decision is still the user's (2026-08-27)
+### Cross-target determinism: the CPU side takes `libm` (2026-08-27, decided 2026-09-06)
 
-**DECIDED 2026-08-30 — no `libm`.** The policy is `43-render-standards.md` §4's:
-a transcendental is cooked into a table on the host or built from multiplies
-(`fog::exp_neg`), and never reaches a colour in a shader. Closed together with
-the transcendental-policy entry below. **Open, and it is a decision rather than
-a task.** `05-physics.md`'s 2026-07-27 correction routes determinism-bearing
-math through the **`libm` crate**; `13-audio.md`'s correction requires **own
-polynomial approximations plus a CI deny** on std transcendentals. They are not
-interchangeable and neither is built. No workspace crate names `libm` — it
-reaches `Cargo.lock` only through `naga` and `num-traits`, neither of which is
-in a sim path — and there is no deny anywhere.
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/simulation.md` under this heading.
+
+**DECIDED 2026-09-06 —** the CPU side takes `libm`. Determinism-bearing maths —
+`crcbl-phys`, `crcbl-audio`'s synth and spatial paths, anything the simulation
+hash sees — goes through the `libm` crate plus glam's `libm` feature, which is
+bit-identical across glibc, Apple and MSVC by construction; rapier's
+`enhanced-determinism` and Bevy's `libm` feature are the precedent. The deny
+mechanism is clippy's `disallowed-methods` in `clippy.toml` for those crates
+(`f32::sin`, `powf`, `exp`, and the rest), shown red before it is trusted. The
+shader side is unchanged: the cooked tables of plan 43 §4 stand. It schedules
+the dependency, the deny list, retiring the sized-for-any-libm tolerance
+constants in `character.rs` and `orbit.rs`, and the byte-pinned cross-platform
+golden buffers those constants were blocking.
 
 **New evidence since that correction was written:** the cost is now visible in
 the tree. `crates/crcbl-phys/src/character.rs` and
@@ -5532,10 +3639,6 @@ says so by name, and `character.rs` describes a step threshold that "shifts by
 exactly the amount a different libm does". Those constants are the workaround
 this decision would remove, and they are what would have to be re-derived once
 it is taken.
-
-**The question to answer:** take the new dependency (`libm`, the user's call per
-the dependency rule), or hand-roll approximations with golden values from the
-specification. Either way `12-testing.md`'s verification rules apply.
 
 ### Client-side read-only query world (2026-08-27)
 
@@ -5896,17 +3999,18 @@ tree does not have.
 
 ### The scene format does not exist, and five plans wait on it (2026-08-27)
 
-**Not built.** There is no `.scn/` directory format, no deterministic RON
-writer, no chunk load/save, no dirty-chunk tracking — and no RON reader of any
-kind. `grep 'ron' --include=Cargo.toml` over the workspace returns zero
-dependency lines; the only `ron` in the tree is prose.
-`docs/plan/06-assets-scenes.md` task 4 is the whole of it.
+**Not built.** There is no `.scn/` directory format, no deterministic scene
+writer, no chunk load/save and no dirty-chunk tracking.
+`docs/plan/06-assets-scenes.md` task 4 is the whole of it. What this entry used
+to say about RON — no reader of any kind, zero dependency lines — was corrected
+by "RON is read and written by `crcbl_render::stack`" below: `ron` is a
+workspace dependency and `crcbl_render::stack::CameraStack` both parses and
+writes it. What is missing is the scene format, not the serialiser crate.
 
-**What it would take:** a `ron` dependency (a user decision by standing rule),
-the canonical writer with the invariants the plan already fixes — stable entity
-IDs persisted and never regenerated, canonical field order, shortest-roundtrip
-float formatting, no timestamps — and the load→save→byte-identical property test
-the plan names as the gate.
+**What it would take:** the canonical writer with the invariants the plan
+already fixes — stable entity IDs persisted and never regenerated, canonical
+field order, shortest-roundtrip float formatting, no timestamps — and the
+load→save→byte-identical property test the plan names as the gate.
 
 **What it blocks:**
 
@@ -5918,10 +4022,9 @@ the plan names as the gate.
 - `crcbl-scene`'s save→load→hash roundtrip test, a topic-12 anchor.
 - The stage 8 editor's features 5 and 6 (scene IO, asset browser).
 
-**Evidence:** no `ron` in any `Cargo.toml`; `crates/crcbl-scene/src/` contains
-`gltf_import`, `gltf_check`, `gltf_render`, `simplify`, `meshlet`,
-`cluster_dag`, `lod`, `lod_resolve`, `gltf_fixture` — no scene serialiser among
-them.
+**Evidence:** `crates/crcbl-scene/src/` contains `gltf_import`, `gltf_check`,
+`gltf_render`, `simplify`, `meshlet`, `cluster_dag`, `lod`, `lod_resolve`,
+`gltf_fixture` — no scene serialiser among them.
 
 ### Asset hot reload is still entirely future tense (2026-08-27)
 
@@ -5940,23 +4043,6 @@ of.
 hot-reload like web dev" claim), the editor's revert path, and
 `06-assets-scenes.md`'s "editing a texture/shader/scene chunk reflects without
 restart" exit criterion.
-
-### Git LFS is off, and turning it on is a two-part change (2026-08-27)
-
-**Deliberate, not an oversight** — `.gitattributes` carries the reasoning:
-everything binary through P8 is small, golden images are re-blessed often (which
-LFS handles worse than plain git), and a `filter=lfs` line breaks `git commit`
-outright on a clone without the git-lfs binary. The commented-out line is in the
-file.
-
-**The trap to carry forward:** the commit that enables LFS must also add
-`lfs: true` to **every** `actions/checkout` step in CI, or CI silently tests
-against pointer files. `.gitattributes` says so; nothing enforces it.
-
-**Trigger: unknown, as of 2026-09-02.** It used to be the P9 glTF corpus, and
-that corpus arrived without needing LFS — fetched at a pinned commit and checked
-against a sha256 manifest, with one small model committed plainly. So this waits
-on some _other_ binary the tree does not have yet.
 
 ### No vendored glTF corpus; the fixture is synthesized in code (2026-08-27)
 
@@ -5999,8 +4085,9 @@ cascade and specificity, `default.css`, the flex layout engine, stylesheet hot
 reload, the UI inspector, the entity inspector, the debug-draw controls panel,
 focus/`:focus`/`:engaged`, spatial navigation and the reserved
 `ui_move`/`ui_accept`/`ui_back` action set. **The console is built** — it landed
-2026-08-30/31 as `crcbl-console` with `crcbl_ui`'s panel, and this file's "What
-the debug console left as limits" entry is what still stands about it.
+2026-08-30/31 as `crcbl-console` with `crcbl_ui`'s panel, and "What the debug
+console left as limits" in `docs/notes/tooling.md` is what still stands about
+it.
 
 **What is built:** `crates/crcbl-ui`'s `draw_list` (`DrawList`, `DrawCommand`,
 `Vertex2d`), `text` (`FontAtlas` — a built-in **monospace bitmap** ASCII font,
@@ -6249,7 +4336,7 @@ them.
 
 ## Overview (`docs/plan/00-overview.md`)
 
-### Render scale is read but not writable, and no shell does the resample (2026-08-28)
+### Render scale is writable, and no shell does the resample (2026-08-28)
 
 **Mostly built.** The renderer half landed on 2026-08-27
 (`ForwardRenderer::set_render_scale`, `MIN_RENDER_SCALE`, and
@@ -6381,17 +4468,19 @@ two delay lines for a large jump or an ear swap.
 **What it blocks:** the cue grammar's own promise. This is the failure mode that
 corrupts the pitch cues rules 3 and 4 depend on, so it is not cosmetic.
 
-### The transcendental policy is two conflicting requirements and neither is built (2026-08-27)
+### The transcendental policy is decided; the deny mechanism is not built (2026-08-27, decided 2026-09-06)
 
-**DECIDED 2026-08-30 — one policy, the cooked-table rule.**
-`43-render-standards.md` §4 as written is the workspace policy: tables cooked on
-the host, multiplies in the shader, no libm on either side. The conflict is
-resolved by choosing this side; nothing further to build. **Not built, and it
-needs a decision.** `13-audio.md` requires own polynomial approximations plus a
-CI deny on std float transcendentals; `05-physics.md` requires the `libm` crate.
-Neither exists: no `libm` in any manifest, no polynomial approximations, and
-`crcbl-audio` calls `powf`, `sin`, `exp` and `cos` today (`spatial.rs`,
-`synth.rs`).
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/simulation.md` under this heading.
+
+**DECIDED 2026-09-06 —** the policy is settled and is no longer two conflicting
+requirements. Shaders keep the cooked tables of plan 43 §4; CPU
+determinism-bearing maths takes the `libm` crate plus glam's `libm` feature,
+which is bit-identical across glibc, Apple and MSVC by construction, with
+rapier's `enhanced-determinism` and Bevy's `libm` feature as precedent. It
+schedules the dependency and the clippy `disallowed-methods` deny list in
+`clippy.toml` for those crates, shown red before it is trusted — no such file
+exists today and `crcbl-audio` still calls `powf`, `sin`, `exp` and `cos`.
 
 **The deny mechanism does not exist either.** There is no `clippy.toml` anywhere
 in the workspace, and no CI step greps for anything of the kind. The audio doc
@@ -6403,10 +4492,6 @@ before trusting it.
 the tree started as a digest of every sample's `f32::to_bits` and CI failed it
 on macOS _and_ on Windows the first time it ran. Windows is `x86_64` like the
 Linux runner, which is what rules out an architecture cause and pins it on libm.
-
-**Decision needed:** own polynomials plus a deny, or the `libm` crate (a new
-dependency, so the user's call). It is one decision for the whole workspace and
-currently lives in two documents saying opposite things.
 
 **What it blocks:** any cross-platform golden buffer that pins bytes rather than
 a waveform.
@@ -6502,7 +4587,7 @@ ground prepared.
 play-mode restore and join-in-progress are one mechanism with three triggers.
 Today they are one mechanism with one trigger and one bypass.
 
-### Two of four settings layers, and the settings UI screen (2026-08-27)
+### Two of four settings layers; the settings UI screen shipped as `apps/options` (2026-08-27)
 
 **Partly built.** `crcbl-store`'s `settings.rs` has a `SettingsLayer` stack,
 appended in order so a later layer wins, and writes always land in the user
@@ -6537,7 +4622,9 @@ consumer.
 
 **Not built and blocked, not merely owed.** The verb is not parsed and
 `crcbl-cli` has no module for it. `dump` is specified to render a snapshot as
-RON, and nothing in the workspace reads or writes RON.
+RON; the RON half is no longer the blocker — `ron` is a workspace dependency and
+`crcbl_render::stack` reads and writes it — so what is owed is the verb itself
+and the snapshot shape it would render.
 
 **Knock-on the document states as an exit criterion:** "Same game code path for
 autosave, manual save, console `save`, CLI save" — only two of those four
@@ -6601,6 +4688,12 @@ send packets but did not see the handshake, and against nobody else.
 sanctioned-exception policy already covers it in principle; the actual
 dependency addition is still the user's call, and it is the first crypto
 dependency the workspace would have.
+
+**DECIDED 2026-09-06 —** RustCrypto is taken when netcode starts —
+`x25519-dalek`, `chacha20poly1305`, `hmac` and `sha2` — and the Noise handshake
+stands as decided. Cryptography is the standing exception to writing it here,
+and RustCrypto is the sanctioned Rust answer. It schedules nothing before the
+transport exists; the dependencies land with that slice, not ahead of it.
 
 ### The channel table is three rows and the seam has two (2026-08-27)
 
@@ -6724,27 +4817,12 @@ consumer. All three now exist and none is a consumer:
 document does not list — the in-process one, where there is no wire and the
 question does not arise. Signed results still need a consumer.
 
-### Deferred with reasons, kept on paper (2026-08-27)
-
-**Deliberately not built**, recorded so nobody re-proposes them: hosted tier 3,
-the ranked-integrity chain, and `crcbl-mint` as a running service. Their only
-consumer was a hosted deployment and the project has none by decision. The
-design is kept because it is the expensive half to get right and cheap to keep
-on paper. Reversing it is a product call, not a technical one.
-
-**Also decided and worth not re-deriving:** use the Noise Protocol Framework
-(`Noise_XX` / `Noise_XXpsk3` / `Noise_IK`) rather than a hand-rolled handshake;
-high-entropy generated PSKs only, with a PAKE (SPAKE2/CPace) as the documented
-upgrade if community servers want passphrases; 64-bit sequence transmitted
-truncated with DTLS 1.3-style implicit reconstruction and an epoch bump on
-rekey.
-
-**Honest limit to state alongside any trust claim:** this project never
-demonstrates a trust model where the host is adversarial.
-
 ## Voice (`docs/plan/32-voip.md`)
 
 ### Nothing in this document is built, and three prerequisites are missing too (2026-08-27)
+
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/simulation.md` under this heading.
 
 **Not built, entirely.** Verified individually:
 
@@ -6764,14 +4842,6 @@ seam is genuinely standalone and useful on its own (device pick, level meter,
 loopback self-monitor). Everything after it waits on the bus graph, the gate and
 a network transport.
 
-**Decisions already taken, kept so they are not re-argued:** acoustic echo
-cancellation is out of scope (research-grade DSP; ship a noise gate and ducking,
-recommend headsets, use platform AEC where free). Opus is a sanctioned exception
-behind a `VoiceCodec` seam rather than a from-scratch codec. Browser encode
-ships **libopus compiled to wasm as the baseline** with WebCodecs used
-opportunistically — WebCodecs audio _encode_ support is uneven across Firefox
-and Safari, so it is a capability check and never a requirement.
-
 **What it blocks:** nothing else depends on voice; it is a leaf.
 
 ## Inventory and drag-drop (`docs/plan/34-inventory.md`)
@@ -6789,29 +4859,32 @@ there is no stylesheet system in `crcbl-ui` at all — no CSS parser, no
 selectors, no pseudo-classes. The only `.css` file in the repo is
 `web/style.css`, which belongs to the Pages site.
 
-**Decision needed:** build the drag capability against the styling that exists,
-or wait for topic 7's CSS subset. Whoever picks should say which, because the
-first consumer named in the plan — the editor asset browser — does not exist
-either (there is no editor).
+**DECIDED 2026-09-06 —** drag-drop is built against the state that already
+exists — a typed payload, a `can_accept` predicate, and feedback carried as
+widget state, which is egui's and imgui's shape — rather than waiting for topic
+7's CSS subset, and no CSS subset is introduced for it. It is triggered by the
+inventory kit rather than scheduled on its own, which also settles the consumer
+question: the first consumer the plan names, the editor's asset browser, does
+not exist and neither does the editor.
 
 **What it blocks:** the grid kit's entire interaction model, and outliner
 reparenting and VFX curve handles in an editor that does not exist yet.
 
 ### The grid-inventory kit (2026-08-27)
 
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/simulation.md` under this heading.
+
 **Not built.** No `crcbl-inventory` crate and no inventory of any kind in the
 workspace. `apps/shard` and `apps/breach` both mention one only to say they do
 not have it.
 
-**Decision needed — already in `docs/backlog.md` with three costed options.**
-The bind: this document is written for breach, and `sample/15-shard.md` is
-explicit that shard is meant to be the kit's _second_ consumer ("a kit with one
-consumer is that consumer's shape wearing a kit's name"). Breach's inventory
-sits in milestones that are native-only by that sample's own reasoning, so
-nothing has forced the kit and shard would force it alone — the exact case both
-plans say to avoid. Shard has already taken the one deferral available to it
-(its fight slice shipped with no item, no currency, no equipped weapon), so its
-next verb is loot, and loot is where the kit is forced.
+**DECIDED 2026-09-06 —** option 1: `crcbl-inventory` is built from shard,
+data-driven — grid dimensions, item shapes as bitmasks, stacking and rotation,
+the Diablo and Tarkov grid — and breach adopts it later as the second consumer.
+Growing a kit from the consumer that needs it first, then proving it by a
+second, is how every engine's UI kit arrives. It schedules the crate, shard's
+use of it, and breach's adoption as the thing that validates it.
 
 **Constraint worth carrying whoever builds it:** `apps/shard`'s save module
 deliberately reserves **no** inventory field, because reserving one would answer
@@ -6833,65 +4906,6 @@ driven over an item set, writing an atlas.
 
 **What it blocks:** grid UI item icons, so it is on the kit's critical path, not
 beside it.
-
-### Cross-fleet stash: decided and out of scope (2026-08-27)
-
-**Deliberately not built.** Engine stash = per-server-instance store;
-cross-fleet stash = backend-project territory, reached through the same
-`StorageSource` seam so the engine side never changes. Recorded so the line is
-not re-litigated when a fleet is first imagined.
-
-## Coverage gaps in the services audit
-
-Stated plainly. "Not reviewed" is the honest line.
-
-- **I did not read the other plan documents.** Claims these seven make about
-  `05-physics.md`, `07-ui-debug.md`, `11-cli-headless.md`, `12-testing.md`,
-  `16-wasm-modules.md`, `17-animation.md`, `26-prediction.md`,
-  `31-vis-culling.md` and `ROADMAP.md` were checked against the **tree**, never
-  against those documents. Where I say "topic 5 requires `libm`" I am quoting
-  `13-audio.md`'s own correction, not `05-physics.md`. Several of those files
-  are being edited concurrently by the parent and by sibling agents, so they may
-  say something different by the time this is read.
-- **I did not read `docs/plan/sample/*.md`.** Sibling agents own them. The
-  sample list in `00-overview.md` I rebuilt from `git ls-files apps/` and from
-  the _filenames_ in `docs/plan/sample/`, not from those documents' contents.
-  The one exception is `sample/15-shard.md`'s "second consumer" framing, which I
-  took from `docs/backlog.md`'s quotation of it and from `apps/shard`'s source
-  comments — not from the sample doc itself.
-- **I did not enumerate test suites.** For audio I read
-  `crates/crcbl-audio/tests/spatial_chain.rs` and `synth.rs`'s in-crate tests;
-  for netcode I noted `crates/crcbl-net/fuzz` and
-  `crates/crcbl-net/tests/replication.rs` exist without reading them. I did
-  **not** check `crcbl-store`'s tests at all, so the persistence test-matrix
-  entry above is unverified in both directions. Any statement of the form "there
-  is no test for X" in the edited documents is scoped to the files I actually
-  opened.
-- **I ran no code.** No `cargo build`, no `cargo test`, no `cargo clippy`. Every
-  "built" claim is from reading sources — signatures, module docs, struct fields
-  — not from running anything. A type that exists and does not work reads as
-  built to this audit.
-- **Gates run:** `npx --yes prettier@3.8.3 --write` then `--check` on all seven
-  files (clean), `tools/check-doc-citations.sh` on the seven and then over the
-  whole repo (2245 paths, all resolve), `tools/check-wrapped-strings.sh` on the
-  seven (clean). **Gates not run:** everything else the harness-guard job does,
-  and the whole Rust gate — I edited no Rust.
-- **Relative Markdown links and crate-relative backtick paths** are the citation
-  gate's two blind spots. I checked by hand the ones I introduced:
-  `[41-webgpu-stream.md]`, `[42-steam.md]` (from `00-overview.md`),
-  `[13-audio.md]` (from `32-voip.md`), `[27-auth.md]` (from `23-netcode.md`) —
-  all resolve relative to `docs/plan/`. I did **not** re-check the pre-existing
-  relative links in these files.
-- **Carried forward on trust, not re-checked:** the `13-audio.md` claim that
-  `05-physics.md`'s correction requires the `libm` crate; the `23-netcode.md`
-  assertion that WebRTC's costs are recorded in `docs/backlog.md` (I saw the RON
-  and inventory entries there, not the WebRTC one); the ROADMAP's phase markings
-  wherever a document says "which the ROADMAP marks done".
-- **Not audited for staleness at all** within my seven: the cue grammar's rule
-  table, the latency budget table in `32-voip.md`, the coverage/mount model in
-  `34-inventory.md`, and the galaxy-scale wire section of `23-netcode.md` beyond
-  confirming that `SectorId` reaches `messages.rs` and `session.rs`. Those are
-  design, and design was in scope to keep, not to verify.
 
 ## The sample plans — what they still owe
 
@@ -7124,15 +5138,6 @@ each blocked on a phase, not on this sample. **What it blocks:** the MVP-era
 flagship, the editor's own dogfood measurement, and the only planned consumer of
 the debug panel's network module that has more than one client.
 
-### towers' audio non-goal was withdrawn (2026-08-27)
-
-**Correction, not a gap.** The non-goals list said "audio (engine gap)".
-`crates/crcbl-audio` ships — device seam with a real-time streaming thread
-natively and an `AudioWorklet` in the browser, plus mixer, spatial and synth
-modules — and breakout, flappy, asteroids and horde all emit spatial cues
-through it. Sample rule 8 applies to towers with no exemption. The doc has been
-corrected; no work is owed until the sample exists.
-
 ## arena (`docs/plan/sample/08-arena.md`)
 
 ### There is no arena crate, and its own condition-simulator dependency already shipped (2026-08-27)
@@ -7250,17 +5255,6 @@ gallery exercises what topic 20 ships.
 frames. **What it blocks:** the VFX regression surface, which is the pattern
 hud's widget gallery established and lantern and quarry both followed.
 
-### sparks takes a rule 2 exemption that was unwritten (2026-08-27)
-
-**Recorded, not owed.** `docs/backlog.md` already flags that `apps/bracket` and
-`apps/sparks` "carry none and claim no exemption" from sample rules 2 and 10.
-For sparks the exemption has now been written into
-`docs/plan/sample/10-sparks.md` on topic 20's own grounds — visual-only VFX are
-"client + GPU ... zero gameplay reads, zero readbacks", and "gameplay-relevant
-particles are not particles — they're entities". For bracket the answer is the
-opposite (see below), so that backlog entry can be closed for sparks and
-narrowed to bracket.
-
 ## breach (`docs/plan/sample/11-breach.md`)
 
 ### Milestone 0 shipped, but its own bullet's rendering and weapon-kit claims did not (2026-08-27)
@@ -7301,26 +5295,18 @@ grid is item _shapes_, plus the buy menu, the killfeed and the scoreboard.
 Milestone 0 has none of those UI surfaces, so it has no `build.rs` and no
 `assets/`. The obligation arrives with the UI, not before.
 
-## flappy (`docs/plan/sample/12-flappy.md`)
-
-Nothing owed that I found. The debug panel claim that this doc carried as "still
-owed" was false and has been corrected: `HostedGame::debug_sections` in
-`apps/flappy/src/app.rs` contributes the course and the audio and no network
-module, which is the modularity check the doc wanted. Same correction applied to
-`docs/plan/sample/01-breakout.md`, whose single module is the board.
-
 ## lantern (`docs/plan/sample/13-lantern.md`)
 
 ### Ray tracing and the acceleration structures are unbuilt (2026-08-27)
 
-**Not built**, and the doc is honest about the consequence: the environment a
-reflection falls back to is **baked** — a blurry static grid `bounce` gathers
-from one analytic bounce off the room's axis-aligned shell — and it is the only
-answer the raster path has for anything outside the frame. The debug panel's
-`unbuilt` section says so on screen. Milestones 2 and 3 (BLAS/TLAS, ray-traced
-shadows and AO, ray-traced reflections and GI, side-by-side and A/B-flip modes)
-are all unstarted, and the exit criterion "every topic 18 effect has a golden
-frame **per lighting path**" cannot be met with one path.
+**Not built.** Milestones 2 and 3 — BLAS and TLAS, ray-traced shadows and AO,
+ray-traced reflections and GI, the side-by-side and A/B-flip modes — are all
+unstarted, and the exit criterion "every topic 18 effect has a golden frame
+**per lighting path**" cannot be met with one path. The debug panel's `unbuilt`
+section says so on screen. This entry used to add that the environment a
+reflection falls back to is a baked grid `bounce` gathers from one analytic
+bounce off the room's shell; that is no longer the case — lantern's CPU bake
+left with the RSM updater.
 
 **What it would take:** topic 18's ray-tracing half. **What it blocks:** the
 sample's entire reason for existing — that a human has compared the two lighting
@@ -7406,6 +5392,12 @@ building it. **What it blocks:** topic 34's own validity — a kit with one
 consumer is that consumer's shape wearing a kit's name, which is this doc's
 phrasing.
 
+**DECIDED 2026-09-06 —** shard forces `docs/plan/34-inventory.md`'s kit:
+`crcbl-inventory` is built from shard, data-driven, and breach adopts it later
+as the second consumer. It schedules the kit, shard's item, rarity, experience
+and inventory-grid work, and the save field that was deliberately left
+unreserved while the question was open.
+
 ### Shard's milestone 1 measurements are all untaken (2026-08-27)
 
 **Not measured:** golden frames per `GeometryPath` from a fixed camera set, the
@@ -7483,154 +5475,6 @@ one. `bracket sim` prints a report; no figure from it is in the doc.
 blocks:** two exit criteria, and it is the least expensive unclosed item in this
 whole audit.
 
-## Coverage gaps in the sample audit
-
-- **I did not run the test suite, `cargo clippy`, `cargo fmt` or `cargo doc`.**
-  This slice edited only Markdown under `docs/plan/sample/`, so no Rust changed
-  — but that means no claim here about a test passing has been re-run by me.
-  Every "the test asserts X" statement is read off the test's name and its
-  surrounding source, not off a green run.
-- **Gates I did run:** `bash tools/check-doc-citations.sh docs/plan/sample/*.md`
-  (104 paths, all resolve), `bash tools/check-wrapped-strings.sh` (672 files, no
-  collapsed literals), `npx prettier@3.8.3 --write` then `--check` on all
-  seventeen files (clean). I also checked by hand that every relative Markdown
-  link in the directory resolves on disk, since the citation gate does not see
-  those. I did **not** run the citation gate over the whole tree, only over my
-  own files.
-- **Numbers I did not verify and therefore removed rather than corrected.**
-  `docs/plan/sample/03-horde.md` carried "161 tests"; I did not run
-  `cargo test -p horde` to check it, so the sentence lost the count rather than
-  gaining a new one. Every measured table in that doc — the render series, the
-  batching claim, the fill margin, the simulation series, the `--workers`
-  re-measurement, and the superseded 18a table — is **carried forward on
-  trust**. I read them for internal consistency and left them untouched; none
-  was re-measured.
-- **`docs/plan/sample/14-quarry.md`'s Measured section is likewise carried
-  forward.** The 233-pixel figure, the cluster counts, the cone-rejection
-  result: all read, none re-run.
-- **I did not read** `docs/plan/ROADMAP.md`, any of `docs/plan/*.md` outside the
-  sample directory beyond spot checks (`08-editor.md` existence, `25-lod.md`
-  named by `simplify.rs`, `26-prediction.md`, `24-navigation.md`,
-  `20-particles.md`), or `docs/backlog.md` in full — it is very large and I read
-  only the passages my greps landed in. So an entry here may duplicate one
-  already in the backlog; the bracket transport entry is the one I checked and
-  it does duplicate, deliberately, because it needed re-verifying.
-- **I did not read most app source.** For each of the fourteen shipping samples
-  I read the `src/lib.rs` module header in full and spot-checked the specific
-  symbols I cite (`debug_sections` in breakout and flappy, `DEFAULT_MAX_ENEMIES`
-  and `lerp_angle` and the leak test in the 2D games, `effects.rs` and `show.rs`
-  in sparks, `queue.rs` / `rating.rs` / `sim.rs` / `main.rs` in bracket). The
-  bodies of `game.rs`, `app.rs` and `gpu.rs` in each sample are unread. Where I
-  restate a header's claim I am trusting a doc comment, which is fresher than
-  the plan but is still a claim.
-- **Engine crates: I verified symbol existence, not behaviour.** `crcbl-phys`'s
-  `Frames`, `sphere_of_influence`, `Atmosphere`, `PointGravity`,
-  `AtmosphericDrag`, `SemiImplicitEuler`, `propagate`, `CharacterController`,
-  `cast_ray`, `sweep_sphere`, `overlap_sphere_into`, `body_mut` and the collider
-  trigger flag; `crcbl-net`'s `InMemoryTransport`, `condition.rs` and the empty
-  `Command` arm in `crcbl-server`; `crcbl-scene`'s `simplify.rs` constraint
-  header; `crcbl-render`'s `skinning.rs`, `shadow.rs`, `effects.rs`, `probe.rs`;
-  `crcbl-anim`'s modules; `crcbl-audio`'s modules; the `crcbl` CLI's subcommand
-  dispatch. In every case I opened the definition or the module header. I did
-  not exercise any of them.
-- **I did not check whether `apps/breach` and `apps/shard` are described
-  correctly on the live demo site**, only that they are rows in `DEMOS` and have
-  `web/demos/<name>/` directories.
-
-## Coverage gaps in the tooling audit
-
-Stated plainly, as gaps:
-
-- **`docs/plan/22-replay.md` was read and verified but not edited.** Its "what
-  is actually built" corrections were spot-checked against
-  `crates/crcbl-store/src/replay.rs` (format constants, `FileTransport`),
-  `crash_ring.rs` and `crates/crcbl-cli/src/replay_cmd.rs`, and all held. I
-  found nothing prunable that was not already marked.
-- **`docs/plan/42-steam.md`'s technical content was not verified against a real
-  Steamworks SDK.** Every C signature, accessor version, packing rule and
-  licence quote in it came from the doc's own 2026-08-22 research against a
-  third-party header mirror. I checked only that nothing in the tree implements
-  any of it. The doc's own provenance rule (re-read from a real SDK before
-  trusting a declaration) still stands and I did not test it.
-- **I did not verify `07-ui-debug.md`'s CSS/flex design against any browser or
-  spec.** I established only that none of it is implemented.
-- **I did not run `cargo test`, `cargo clippy` or any GPU harness.** This pass
-  touched Markdown only. The gates I ran are `prettier@3.8.3 --check`,
-  `tools/check-doc-citations.sh` and `tools/check-wrapped-strings.sh`.
-- **`docs/plan/12-testing.md`'s two _closed_ correction blocks (shader-artifact
-  validation, cross-backend compare) were left in place unverified.** They read
-  as archaeology but their content is a live description of four validation
-  gates, so "when in doubt, keep" applied. Whether `spirv-val`, the naga WGSL
-  test, the signed-DXIL assertion and `xcrun metal -c` all still run as
-  described was not re-checked in this pass.
-- **I did not check the sample plans (`docs/plan/sample/*.md`)** beyond the
-  towers/arena blocking relationship and the lantern/quarry/bracket/sparks
-  `GameModule` exemptions.
-- **The five findings I inherited from the `12-testing.md` pre-verification were
-  acted on, and one of them was wrong.** That report claimed
-  `crates/crcbl-vk/tests/run-vk-e2e.ps1` surfaces `--bless`; it explicitly does
-  not — its own comment says "There is no `--bless` flag here, unlike the Linux
-  script", because it runs a different lavapipe build from the one the
-  references were blessed on. I wrote the correct fact into the doc. The other
-  four findings I spot-checked and they held.
-
-## Coverage gaps in the simulation audit
-
-Stated plainly, so the next session does not mistake silence for coverage.
-
-- **No Rust was changed and no Rust gate was run.** No `cargo clippy`, no
-  `cargo test`, no `cargo fmt`. This was a documentation audit; the three gates
-  that were run are `prettier --check`, `tools/check-doc-citations.sh` and
-  `tools/check-wrapped-strings.sh`.
-- **`docs/plan/sample/*.md` was not audited at all.** Claims here about sample
-  milestones (`06-orbit.md` 1–2, `09-puppet.md` 2, `11-breach.md` 0) come from
-  the **apps'** own module headers, not from re-reading the sample plans. If a
-  sample plan disagrees with an app header, that disagreement is unreviewed.
-- **`crcbl-net` was read only where `04` and `21` touch it** — `SectorId`,
-  `BaselineStore`, `ClientInputs` handling, and the absence of RTT/EWMA. The
-  delta codec, handshake, auth, session and condition-simulator internals were
-  not reviewed against `23-*.md`, which is outside this slice.
-- **`crcbl-vfx` was checked for exactly one thing**: whether it depends on
-  `crcbl-jobs`. It does not. Nothing else about it was read.
-- **`37-materials.md` was not opened.** It is in the sibling agent's slice.
-  Claims here about the collider property block are from the absence of any
-  material field in `crates/crcbl-phys/src/collider.rs` and
-  `crates/crcbl-phys/src/components.rs`, not from that document.
-- **The `21-jobs.md` browser topology sections were read but not verified
-  against the web tree beyond four facts**: `web/jobs/` exists,
-  `web/run-jobs-e2e.sh` exists, `web/build.sh --threads` exists, and no
-  `web/demos/` page references the jobs ABI. The threaded-wasm findings (link
-  args, `__wasm_init_tls`, `__stack_pointer`) were left as written and **not
-  re-measured**.
-- **Determinism claims were not executed.** That `crcbl sim` produces a stable
-  hash is taken from `crates/crcbl-cli/src/sim_cmd.rs` and
-  `crates/crcbl-server/src/sim_hash.rs` reading correctly, not from running it.
-- **Test coverage was sampled, not enumerated.** `crcbl-phys/tests/`,
-  `crcbl-anim/tests/`, `crcbl-ecs/tests/` and `crcbl-server/tests/` were listed
-  and their headers read; individual test bodies mostly were not.
-- **No claim here rests on `git log`.** Where a doc's history mattered (`05`'s
-  slice-2 paragraph, `21`'s corrections) the current tree was read instead, on
-  the grounds that the tree is what binds future work.
-
-## Coverage gaps in this audit
-
-- **Only seven docs were read against the tree**: `01-foundations.md`,
-  `02-vulkan-backend.md`, `09-backends-metal-dx12.md`, `10-wasm-webgpu.md`,
-  `15-windowing.md`, `39-capabilities.md`, `41-webgpu-stream.md`. Everything
-  else in `docs/plan/` was untouched and unverified.
-- **`41-webgpu-stream.md` was verified only at its two stale points** (the reply
-  set, the offscreen surface command). Its wire conventions, handle rules and
-  "cases easy to get wrong" were read but not checked call-by-call against
-  `crcbl-webgpu`'s `writer`, `reply` and `tag` modules — a spec that large would
-  be its own task.
-- **`39-capabilities.md`'s feature matrix was not re-verified cell by cell.**
-  The blockquote above it already says it is a design record and points at
-  `crcbl_hal::Capability`, `DIVERGENCES` and `REVIEWED_BLOCKERS` as the live
-  answer, so the cells were left alone.
-- **No Rust was compiled and no test was run** in this pass — the only gates run
-  were `prettier --check`, `tools/check-doc-citations.sh` and
-  `tools/check-wrapped-strings.sh`, all green.
-
 ### The two pointer axes: what is deliberate, and the arm nothing exercises (2026-08-28)
 
 `HostedGame::cursor` answers `Option<CursorIcon>` and `Loop::reconcile_cursor`
@@ -7670,32 +5514,6 @@ that mode. What is left:
   vendored. Unchanged by this work and noted here because the new hook is what
   finally lets a game ask.
 
-### `vk e2e (lavapipe)` segfaulted once in `viewer`'s lib tests (2026-08-29)
-
-Run 33196877649 on `0702de9` failed the `vk e2e (lavapipe)` job with
-`process didn't exit successfully: … crcbl_viewer-… --quiet (signal: 11, SIGSEGV: invalid memory reference)`,
-fifteen tests into a suite of 116. Not an assertion — the binary died.
-**Re-running the job with no change to the tree passed**, so it is a flake
-rather than a defect the commit introduced, and that commit touched only
-`apps/lantern`, docs and the browser gate — nothing `viewer` links.
-
-Ran locally against the same driver and the same flags CI sets — `CRCBL_GPU=vk`,
-`CRCBL_VK_ICD` at Arch's `lvp_icd.json`, validation, sync validation and
-`CRCBL_VK_VALIDATION_FATAL` all on — and all 116 passed. So the crash is not
-reproducible here, and nothing narrows it further than "lavapipe, on the runner,
-once". Worth reading this entry before chasing a second one: a repeat with a
-different test index is a real race, and a repeat at the same index is not.
-
-### `gh run list --commit <sha>` returns nothing here (2026-08-29)
-
-A CI watcher built on `gh run list --commit 8586d82 --json ...` printed no rows
-for a commit that had two completed runs, so it waited out its whole timeout
-without emitting an event — a watcher that looks identical to "still running"
-and is the failure mode `Monitor`'s own guidance warns about.
-`gh run list --limit N --json headSha,...` and filtering with `jq` returns them.
-Not diagnosed further: it may be the flag, the `gh` version or the runs being
-reachable only by branch. Worth knowing before writing the next watcher.
-
 ### A failing `until` in the browser gate reddens a second, unrelated check (2026-08-29)
 
 Seen twice while sabotage-testing the cursor and pointer checks, and worth
@@ -7714,7 +5532,10 @@ failed `until` to mark the run rather than let later timing-sensitive checks
 believe their window is still valid, and that is a change to how `check` and
 `until` compose rather than to any one check.
 
-### Decision needed: Escape cannot pause a demo that holds the pointer lock (2026-08-26)
+### DECIDED — Escape cannot pause a demo that holds the pointer lock (2026-08-26)
+
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/browser.md` under this heading.
 
 `crcbl::engine::PAUSE_KEY` is `KeyCode::Escape` for every sample. **A browser
 reserves Escape while a page holds Pointer Lock**: it exits the lock and the
@@ -7734,62 +5555,16 @@ Not currently caught by the browser gate, and the reason is worth keeping: group
 E blurs the page before it tests Escape, and a blur releases the lock, so the
 gate only ever presses Escape on an unlocked page.
 
-The options, none taken yet:
-
-- **Treat losing the lock as the pause**, which is what browser first-person
-  games conventionally do — `pointerlockchange` to unlocked pauses the demo. One
-  Escape then reads to the visitor as "pause", and alt-tab pauses too, which is
-  the behaviour a player expects anyway. Costs a new edge from the shim into the
-  engine.
-- **Bind a second pause key in the browser** and say so in the hint. Cheapest,
-  but it makes the demo's controls differ per target, which is the divergence
-  "the same build runs in both" exists to avoid.
-- **Leave it**, and change each demo's hint to say Escape twice. Honest, and
-  worse for a visitor.
-
-Whichever is chosen, the gate should then press Escape on a _locked_ page, which
-it does not do today.
+**DECIDED 2026-09-06 —** losing the pointer lock pauses: `pointerlockchange`
+reporting unlocked pauses the demo. That is the browser-FPS convention — Escape
+releases the lock, and the page treats the release as the pause rather than
+trying to see the key. It schedules the handler and the gate pressing Escape on
+a locked page.
 
 ### The atlas re-tiling's leftovers: resolution, and one option declined (2026-08-26)
 
-The budget question — how many point lights may cast — was answered by widening
-the atlas to `SHADOW_ATLAS_COLUMNS` × `SHADOW_ATLAS_ROWS` tiles of
-`SHADOW_TILE`, which ships. What that decision left behind:
-
-**A quarter of the linear shadow resolution went with it**, deliberately: the
-grid gained a column and a row while the tile shrank so `shadow::atlas_extent`
-would not move, so every map is now 768 texels a side rather than 1024. The
-visible cost is measured — `crates/crcbl/tests/golden/dunes.png` had 8.61% of
-its pixels differ at all and 4.03% past the comparison's tolerance, worst
-channel delta 40, and the diff image puts every one of them on a shadow edge —
-but two things moved with it and are worth knowing before reading either as a
-regression:
-
-- `apps/lantern`'s `MIRROR_FRACTION_OF_PLASTER` was re-measured from 0.20 to
-  0.14. The mirror itself did **not** move (20.3 before and after; it has no
-  direct light on it); the directly-lit plaster it is compared against went from
-  83.3 to 119.9 as the coarser maps' larger world-space bias let more of the
-  lamp reach it. Measured on lavapipe, both sides, at 256×192.
-- `room.png` and `live.png` were re-blessed for the same reason.
-
-**The other two options, and why neither was taken.** Recorded so they are not
-re-argued:
-
-- **4×4 at 1024** buys the same capability and costs +28 MiB of `D32Float`,
-  which matters because milestone 1's peak wasm memory is still unmeasured (see
-  the milestone-1 figures entry). Revisit this if shadow resolution ever becomes
-  the thing that is failing; it is a one-constant change now that the grid is
-  already four wide.
-- **Dual-paraboloid point shadows** — 2 tiles per point light instead of
-  `SHADOW_POINT_FACES` — is **declined** unless someone overrides it. The
-  paraboloid warp is nonlinear across a triangle, so it is wrong in proportion
-  to how large the triangles are, and every `crcbl::greybox` scene is large flat
-  quads: its worst case. Cube maps have no such dependence on tessellation.
-
-**No budget makes every light cast, and that is the design.** `shard`'s zone has
-more lights than `shadow::LIGHT_SLOTS`, so the renderer still ranks them and
-shadows the ones that win. What was wrong before was the budget being one point
-light, not the ranking.
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/rendering.md` under this heading.
 
 **What was not verified locally**, stated as the gap it is. Everything under
 `crates/crcbl/tests/`, `crates/crcbl-vk/tests/` and every app golden was run on
@@ -7809,46 +5584,6 @@ both radv and lavapipe and is green; beyond that:
   cross-target `cargo clippy` is clean for `aarch64-apple-darwin` and
   `x86_64-pc-windows-msvc` — but no frame was drawn on either, so their goldens
   are CI's word.
-
-### A browser that declines `unadjustedMovement` gives adjusted deltas (2026-08-26)
-
-`crcbl-shell`'s web backend sets `ShellCaps::RAW_POINTER_MOTION`, and the thing
-behind it is `requestPointerLock({ unadjustedMovement: true })` in `takeLock` in
-`web/engine/shell.js`. That option is the OS acceleration bypass the capability
-names, and where it is unavailable the shim retries the plain
-`requestPointerLock()` and the `movementX`/`movementY` the engine reads are the
-**OS-adjusted** ones — the same acceleration curve as the desktop cursor, so aim
-speed changes with how fast the hand moves.
-
-**Who is affected is decided by the OS, not by the browser**, which is the half
-this entry originally got wrong. Chromium rejects the option with
-`NotSupportedError` on **Linux and Android whatever its version**, and grants it
-on Windows and macOS — the platform, not the release, is the gate. Measured here
-on Chromium 151.0.7922.173 against four configurations, all rejecting: a `data:`
-page and an `http://localhost` one (`isSecureContext` true), headless and
-headed, with and without `--enable-blink-features=PointerLockOptions`. The
-request is made from inside a real `pointerdown`, so transient activation is
-satisfied. Safari on iOS and Firefox for Android also lack it.
-
-The consequence worth naming: **every Linux desktop visitor, and CI's own Linux
-job, take the fallback**, so `ShellCaps::RAW_POINTER_MOTION`'s "unaccelerated"
-half is not honoured on the platform this project is developed on. It is
-honoured natively on the same machine — X11 reads XI2's `axisvalues_raw` and
-Wayland reads `relative-pointer`'s `dx_unaccel`, both deliberately.
-
-Which path a run took is no longer merely asserted: group `AM` in
-`web/tools/probe-e2e.mjs` asserts it per platform — Windows and macOS must be
-granted the option, Linux must be refused it and reach the lock through the
-fallback. The deltas themselves are still not measured; only the path is.
-
-What it costs: a competitive shooter cannot trust aim on those browsers, which
-is one of the reasons `docs/plan/sample/11-breach.md` gives for breach being
-native-first. What would close it is nothing on our side — it is a browser
-feature — so the honest options are to leave the caveat stated, where it is now
-(`ShellCaps::RAW_POINTER_MOTION`'s docs and the `web` backend's module docs), or
-to add a _third_ capability bit separating "relative motion" from "unaccelerated
-relative motion". The bit was not added: nothing in the engine would branch on
-it today, and `ShellCaps::has_mouselook` would still be the check a camera runs.
 
 ### Two pointer types cannot take the browser's lock, and one is a decision (2026-08-26)
 
@@ -7935,52 +5670,6 @@ left out:
   wants console, CLI, UI button and autosave timer to be one path; the path
   exists (`Shard::autosave` → `Vault::store`) but only the timer calls it.
 
-### What `apps/shard`'s fight slice left out, and why (2026-08-26)
-
-`apps/shard/src/foe.rs` is three archetypes, one ability each, a sighting ray
-and a cooldown, and nothing else. What was considered and left out:
-
-- **Anything resembling navigation.** An engaged foe walks _straight at_ the
-  character and slides along whatever it meets. `docs/plan/24-navigation.md`
-  names `arena` as its forcing function, so shard does not force it either — the
-  same position `apps/breach` takes. The visible cost is on the two posts in the
-  far hall: a foe engaged from there has the shrine doorway between it and the
-  character, and it will slide along a doorpost rather than walk round it. The
-  husk's post is _in_ that doorway partly for this reason.
-- **A facing on any body.** Every body in this sample is a
-  `crcbl::greybox::capsule`, which has no front to turn — the same admission
-  `zone::Figure` already made about the character. `apps/breach`'s `BotView`
-  carries a `facing` and shard's `foe::FoeView` deliberately does not.
-- **Sound.** Rule 8 asks for spatial audio and the fight is the cue grammar that
-  would want it most — a warden's wind-up is a sound before it is a colour. The
-  sample plays nothing at all, here as in slice 1.
-- **Aim error, blocking, dodging, stagger, or any resource but health.** Each is
-  a system, and milestone 1's cap is "a handful of enemy archetypes and
-  abilities".
-- **A weapon.** The character's cleave is a constant reach and a constant damage
-  in `foe`, not an item — `docs/plan/34-inventory.md`'s kit is the open decision
-  recorded below, and a weapon would be its first consumer.
-
-### The fight slice pins two things the browser gate depends on (2026-08-26)
-
-Both are asserted natively so a later change fails a test rather than a gate:
-
-- **Every post in `foe::POSTS` is out of `foe::NOTICE_M` of the spawn and out of
-  the frame the zone opens on**, with three heartbeats of walking as margin.
-  `no_foe_can_reach_the_character_where_the_zone_opens` and
-  `no_foe_is_in_the_frame_the_zone_opens_on` in `apps/shard/src/foe.rs` are what
-  hold it. The second projects each post's capsule centre through the camera the
-  frame is actually drawn from and asserts it is outside the frustum
-  _vertically_, which is the bound that does not move with the canvas's aspect.
-- **Why it matters, measured.** The browser gate's lighting block asks for a
-  canvas that does not change _at all_ while the torches are out. Sabotaging
-  `Foe::advance` to engage unconditionally was run: the doused window came back
-  "4 distinct frame(s) in 4 sample(s) … swinging 0.00", so the mean luminance
-  barely moved and the **frame hash** did — a body walking through shot is
-  enough to redden a check that has nothing to do with the fight. The fight
-  block therefore runs _after_ the lighting block, and the posts are where they
-  are.
-
 ### `apps/shard` has none of milestone 1's exit-criteria figures (2026-08-26)
 
 Three of that plan's exit criteria are recordings rather than features, and none
@@ -7997,20 +5686,6 @@ of them has been made:
 - **Peak wasm memory.** Not measured at all. `web/engine/wasm-memory.js` exists
   and other demos' pages read it; nothing here reads it or records a number.
 
-### `apps/shard`'s zone has no roof, and that is deliberate (2026-08-26)
-
-Not a missing piece — do not "fix" it. `zone::WALL_TOP_Y` is the height of the
-walls, and nothing is drawn above it. Measured: with ceiling slabs over the open
-tiles, `camera::Iso` put the eye five metres above the character at the
-isometric elevation, so every frame the browser gate sampled was the _top_ of
-those slabs — 93% black, and byte-identical from one frame to the next. The
-module docs in `apps/shard/src/zone.rs` carry the argument and the measurement.
-
-The same geometry decided where the character starts: the eye sits about two and
-a half tiles behind them, so a spawn near the outer wall looks out over the top
-of it. `zone::LAYOUT`'s `S` is at the mouth of the corridor for that reason, and
-moving it back towards the entrance will bring the dark foreground back.
-
 ### `apps/shard`'s browser-gate thresholds are measured on one rasteriser (2026-08-26)
 
 `TORCH_FLICKER_LUMA`, `TORCH_STILL_LUMA`, `TORCH_DARKER_RATIO` and `TORCH_INSET`
@@ -8023,15 +5698,6 @@ every doused window swung exactly zero, so a rasteriser that shades a little
 differently has room. A rasteriser with temporal noise would fail the
 `frames === 1` half of the doused check, and that is the one to look at first if
 this ever goes red somewhere else.
-
-### `apps/shard`'s camera cannot be pitched, zoomed, or pointed (2026-08-26)
-
-`camera::Iso` holds a fixed elevation and a fixed distance and offers four
-bearings. That is the rig the plan asks for, and it means the browser gate never
-exercises a _look_ input on this page — `apps/breach`'s gate is the only one
-that does. Considered and declined for slice 1: a pitch control would be a
-second camera behaviour to test and would let a visitor put the eye back above
-the walls, which is the failure the entry above describes.
 
 ### Not verified in `apps/shard` (2026-08-26)
 
@@ -8089,44 +5755,17 @@ Stated as gaps rather than explained away:
   `LimitExceeded` when its queue is full, and `Vault::store` logs it and returns
   `false` so `saves` does not rise. Nothing has ever made that happen.
 
-### Decision needed: who forces the grid-inventory kit (2026-08-26)
+### DECIDED — who forces the grid-inventory kit (2026-08-26)
 
-Every demo in `docs/plan/sample/` that can run in a browser now does —
-`web/build.sh`'s array holds seventeen, and the three that do not are `towers`,
-`arena` and `mirrors` — the first two blocked on `apps/editor`, which this file
-already records as declined with an override condition. So the next work is
-depth against the plans' exit criteria rather than another sample, and `shard`
-milestone 1 is the clearest: its criterion is a complete session — explore,
-fight, loot, level, save, resume — and loot and level are not built.
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/simulation.md` under this heading.
 
-**Loot is where it stops being a sample question.** `docs/plan/34-inventory.md`
-is the grid-inventory kit, and `15-shard.md` is explicit that shard is meant to
-be its **second** consumer: "Topic 34 is written for breach; a kit with one
-consumer is that consumer's shape wearing a kit's name." But breach's inventory
-sits in its milestone 1 and later, which are native-only by that plan's own
-reasoning, so nothing has forced the kit yet and shard would be forcing it alone
-— the exact case where a subsystem takes the shape of its single caller.
-
-The options, with the real trade-off:
-
-1. **Build the kit from shard, accept one consumer for now.** Fastest to a
-   complete milestone-1 session in a browser, and the browser is where the goal
-   is measured. Risks the kit being shard's inventory with a kit's name, which
-   is the failure its own plan names.
-2. **Give breach a native inventory milestone first, then shard adopts it.** The
-   order both plans assume, and the kit gets two consumers before it sets. Costs
-   a native-only slice that does not advance the browser goal directly, and
-   breach's later milestones are otherwise deliberately parked.
-3. **Take shard's slice 2 as fight only, and defer loot.** Needs no new
-   subsystem, keeps moving, and leaves this decision until loot actually
-   arrives. Milestone 1 stays incomplete either way, so this only defers.
-
-**Option 3 has now been taken and shipped**: `apps/shard/src/foe.rs` is the
-fight slice, it needed no new subsystem, and it deliberately added no item, no
-currency and no weapon — the character's cleave is a constant in `foe` rather
-than something equipped. **So this decision is now the thing in the way.** The
-next verb is loot, and loot is where the kit is forced; nothing else in shard's
-milestone 1 can be built around it.
+**DECIDED 2026-09-06 —** option 1: the kit is built from shard as
+`crcbl-inventory`, data-driven — grid dimensions, item shapes as bitmasks,
+stacking and rotation, the Diablo and Tarkov grid — with breach adopting it
+later. A kit grown from its first consumer and then validated by a second is the
+shape every engine's UI kit arrives in. It schedules the crate and shard's use
+of it, and makes breach's adoption the check on whether it is a kit at all.
 
 Related and unchanged: none of milestone 1's three recorded figures exist yet —
 no golden frames per `GeometryPath`, no browser frame budget, no peak wasm
@@ -8309,28 +5948,6 @@ deliberately absent, in the order that doc puts it:
   worse rather than better, because a bot shooting at you from behind is the one
   cue a player genuinely cannot get from the picture.
 
-### `apps/breach`'s practice bots are dumber than the plan's, on purpose
-
-`apps/breach/src/bots.rs` is patrol, notice, shoot, lose interest, and nothing
-else. What was considered and left out, each with the reason:
-
-- **Anything resembling navigation.** No path query, no poly mesh, no steering,
-  no avoidance. `docs/plan/24-navigation.md` names `arena`'s bots as its forcing
-  function, not breach's, and forcing a navigation pillar out of a practice map
-  would be building the subsystem from the wrong demo. A bot walks
-  `map::practice::ROUTES` and slides along whatever it bumps into, which is
-  `CharacterController::move_and_slide` doing it rather than the bot.
-- **Cover use, flanking, squads, difficulty tuning.** Each is a behaviour tree
-  or a utility system, and the sample has no place to put one yet. Milestone 2's
-  5v5 bots are where that question is actually asked.
-- **Aim error.** A bot that can see the player hits them, every round. There is
-  no spread, no reaction time and no first-shot delay beyond the cadence, so the
-  only thing between a player and a hit is cover. That makes the demo legible
-  and the browser gate's control exact — `fired` above `taken` is cover and
-  nothing else — and it is also why standing still in the open is punished
-  harder than a practice map should punish it. Ballistics (topic 28) is where
-  spread belongs.
-
 ### `apps/breach`'s player has no body, so the bots walk through them
 
 `apps/breach/src/game.rs` never adds a collider for the player. That is what
@@ -8360,21 +5977,6 @@ left is deciding whether a `cast_ray_excluding` (or a `RayFilter`) is the shape
 _are_ solid, so the character is stopped by a foe while a foe walks through the
 character — an asymmetry breach does not have, because its bots and its player
 never collide either way.
-
-### `apps/breach`'s practice map is gated through a page navigation, not a second run
-
-`web/tools/browser-e2e.mjs` reaches the practice map by navigating the _same_
-browser to `?map=practice` in the middle of group C and then navigating back to
-the range, so the groups after it judge the demo they always have. Two full page
-boots is about seven seconds of the breach gate's runtime.
-
-The alternative considered and declined: a second gate target, so
-`CRCBL_WEB_E2E_DEMO=breach-practice` would be its own CI step. It would need a
-second page, a second `web/build.sh` DEMOS row and two more `pages.yml` steps
-(`tools/check-browser-gate-demos.sh` enforces both), all to run a second copy of
-groups A, B, D, E, F, H and I against the same wasm — which is far more CI
-minutes than the two navigations cost. Worth revisiting only if breach grows a
-third map.
 
 ### A game cannot ask whether the lock it requested was granted
 
@@ -8413,53 +6015,6 @@ shell.
 `crates/crcbl-shell` has X11 and Wayland e2e harnesses that synthesise input; a
 windowed breach run driven through one of those, asserting the yaw moved, is the
 gap. Not attempted.
-
-### `apps/breach`'s browser gate leans on one moving plate for liveness
-
-An indoor range with a ceiling has no sun, no sky and nothing else that moves,
-so the only thing that changes on a breach canvas with nobody touching it is the
-far lane's travelling plate — `map::MOVER_LANE`, driven by `map::plate_x` off
-the simulated clock. Two of the browser gate's generic claims rest on it: the
-`moving` probe in group C reads the `mover:` field off the `[HUD]` line, and
-group D's "the canvas changes between frames" needs the plate to be **in shot**.
-
-Two consequences worth knowing before touching either:
-
-- Freeze or remove the travelling plate and two checks go red, one of them in a
-  group that has nothing to do with breach. Verified by sabotage: making
-  `plate_x` ignore its `seconds` argument fails
-  `the travelling target keeps crossing its lane under its own steam` _and_
-  `the canvas changes between frames while the simulation runs`.
-- The `range` block in `web/tools/browser-e2e.mjs` therefore puts the view back
-  down the range after its own checks, measuring the turn rate off the look
-  check rather than carrying a copy of it. Before that existed the block left
-  the camera pitched at the ceiling and group D failed on a demo that was
-  running perfectly well.
-
-A second moving fixture — a swinging lamp, a fan — would take the weight off one
-plate. Not built: it is scenery for a map that has none yet.
-
-The **practice map does not have this problem**: three bots walk their patrols
-whatever the player does, and the gate's block for that map reads a bot's own
-feet rather than a plate. But the range is what group D judges, because that is
-the map the page opens on and the map the block navigates back to.
-
-### `apps/breach` and `apps/puppet` each own a copy of the yaw→direction step
-
-`apps/breach/src/camera.rs::walk_direction` and
-`apps/puppet/src/camera.rs::walk_direction` are the same three lines of
-trigonometry with opposite signs, because the two demos measure yaw in the two
-conventions their cameras came with — puppet's is `OrbitCamera`'s and breach's
-is `Flyer`'s. **This duplication is deliberate and should not be merged**: the
-whole claim the pair exists to make is that the conversion belongs to the demo
-rather than to `crcbl-phys`, and a shared helper in a third place would be the
-first step back toward putting it in the engine. Recorded here so the idea is
-not re-proposed every time somebody greps for `walk_direction`.
-
-What _would_ be worth doing, if a third first-person sample arrives, is moving
-the conversion into `crcbl-render` beside `Flyer` — where a camera basis already
-lives — rather than into the physics crate. That is a different move and it does
-not weaken the claim.
 
 ### The particle simulation runs on the CPU, and the plan wants it in compute
 
@@ -8530,24 +6085,6 @@ through `crcbl_assets::AssetSource`), then the reload path, then the widgets —
 20's tooling section says this sample is what would add them to the
 demand-driven list.
 
-### `crcbl-vfx`'s determinism is per machine, not across machines
-
-`tests/determinism.rs` asserts that two runs of one scene leave the pool
-bit-for-bit identical, over every array. That holds on one machine. It does
-**not** hold across platforms, because `particle::direction` goes through
-`f32::sin_cos` for both shapes and libm differs between glibc, Apple and MSVC —
-the same limit `docs/backlog.md` already records for the engine's other float
-output.
-
-Everything else in the step is exactly-rounded: the hash is integer arithmetic,
-the integrator is `+`, `*` and a divide (drag is backward Euler,
-`v / (1 + k dt)`, chosen partly for that), and `hash::unit` is a shift and a
-multiply by a power of two.
-
-Not a problem for what the plan wants — golden frames are per platform here
-anyway, and the destination is a compute shader whose trigonometry agrees with
-no CPU's. Worth knowing before anyone puts a particle count in a tick hash.
-
 ### The pool allocator fragments, and nothing compacts it
 
 `RangeAllocator` is first-fit with a coalescing free list, and an effect's range
@@ -8600,31 +6137,6 @@ Stated as gaps rather than reasoned away:
   hundred live at a time. `docs/plan/sample/10-sparks.md`'s exit criterion is 1k
   concurrent effect _instances_ at 60 fps, which is a different order and has
   not been attempted.
-
-### The character controller's slope sweep is platform-sensitive at its last step
-
-`the_slope_the_controller_stops_walking_is_the_one_it_was_configured_with`
-places the character on a dome at every tenth of a degree, so the surface normal
-it stands on arrives through `sin`/`cos`. Those are platform transcendentals: a
-last-ulp difference moves a slope sitting exactly on the threshold to either
-side of it, and the two adjacent samples swap. From one source tree, Linux
-reports the limit as the last still sample and Windows as the first creeping one
-— it reddened CI on 2026-08-25. The sweep's bracket is closed at both ends for
-that reason: asserting an open end pins the measurement finer than a 0.1° step
-can resolve and turns the test into a claim about a libm.
-
-`a_surface_exactly_at_the_limit_is_walkable` covers the inclusivity the sweep
-therefore cannot. It builds the normal **from**
-`CharacterConfig::min_ground_normal_y`, so the rise is that number bit for bit
-on every target with no transcendental between the configuration and the answer,
-and flipping `is_walkable`'s `>=` to `>` reddens it.
-
-**The general point, for anything else measured by sweeping.** A sweep brackets
-to its own step and no finer, and where a boundary falls inside that step is not
-portable when the geometry is built through trig. Assert the bracket, and cover
-the exact boundary with a construction that avoids the transcendental entirely.
-`docs/plan/05-physics.md`'s libm policy for determinism is still unresolved and
-this is one more input to it.
 
 ### The capsule character controller is camera-agnostic
 
@@ -8958,59 +6470,17 @@ in one of them — so the open future should resolve `Err` on it and the device
 pump should route it to `take_error`'s queue. Not done here: it changes what
 three poll paths return, and this task was the hang rather than the diagnosis.
 
-### DECISION NEEDED — a read-only depth state that says it writes
+### DECIDED — a read-only depth state that says it writes
 
-`crcbl-vk` no longer stores a read-only depth attachment: `conv::depth_store_op`
-answers `VK_ATTACHMENT_STORE_OP_NONE` — Vulkan 1.3 core, no extension and no
-feature — whenever `crcbl_hal::DepthStencilAttachment::read_only` is set. **No
-seam change was needed**: the flag already existed and `crcbl-render`'s
-`graph.rs::attachments` already set it from the pass's own `write` flag, which
-the entry this replaces had wrong.
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/backends.md` under this heading.
 
-What is left is that `ResourceState::DepthStencilRead` still declares
-`DEPTH_STENCIL_ATTACHMENT_WRITE` in `conv::state_masks`, and
-`crcbl_hal::ResourceState::is_write` still answers `true` for it. Both are now
-conservatism rather than description, and `conv`'s
-`write_states_expand_to_write_accesses` requires the two to move together.
-
-**Measured** against CI's own layer 1.3.275 and lavapipe from Ubuntu, driving
-`cargo test -p viewer` with `CRCBL_GPU=vk` and the fatal sync gate on. The
-viewer's ground grid was chosen because it tests depth without writing it and is
-last to touch the image — **it is no longer the only pass that reads depth
-read-only**, re-checked 2026-09-02: `crcbl_render::sky_pass`,
-`crcbl_render::debug_draw` (which cites `crate::grid`'s terms in its own
-comment) and `forward.rs`'s wireframe fill path all take `depth_read` or
-`DepthStencilState::equal_depth_read_only`. Whether any of them is _last_ to
-touch the image in a frame was not established, so the fixture stands as
-measured and this note only retires the "only pass" clause:
-
-| store op | vk access mask | `is_write` | result                                          |
-| -------- | -------------- | ---------- | ----------------------------------------------- |
-| `STORE`  | write declared | `true`     | 75 passed (what ships today)                    |
-| `STORE`  | read only      | `false`    | **15 failed** — the original bug                |
-| `STORE`  | read only      | `true`     | **15 failed** — `is_write` alone never fixed it |
-| `NONE`   | read only      | `false`    | 75 passed                                       |
-| `NONE`   | read only      | `true`     | 75 passed                                       |
-
-So on Vulkan the write declaration is now unnecessary and only costs barrier
-strength on every depth-test-only pass. **The question is the other backends**,
-because `is_write` answers for all four:
-
-- **WebGPU: does not write.** `web/engine/gpu-replay.js` omits all four
-  load/store ops on a read-only plane and sets `depthReadOnly`, which the
-  specification requires.
-- **DX12: does not write.** D3D12 has no store op at all, and a depth-test-only
-  pass runs with `D3D12_DEPTH_WRITE_MASK_ZERO`. Read, not measured — there is no
-  D3D12 machine here.
-- **Metal: does write.** `MTLStoreAction` has no no-op action, so `crcbl-mtl`'s
-  `conv::store_action` can only answer `Store` or `DontCare` and the texture is
-  written back either way. Read, not measured, and Metal is deferred.
-
-Options: narrow both and accept Metal's arm being argued rather than measured;
-narrow both and give Metal's `store_action` an explicit read-only arm first; or
-leave it, at the cost of one unnecessary barrier per read-only depth pass. **Not
-decided.** Nothing is wrong today either way — the conservative answer
-over-synchronises, it does not race.
+**DECIDED 2026-09-06 —** narrow both: `is_write` answers false for
+`DepthStencilRead` and it grants no write access, and `crcbl-mtl`'s
+`store_action` gains an explicit read-only arm answering `Store`, whose content
+is unchanged so the barrier semantics hold. wgpu-hal's Metal backend does
+exactly this under `depthReadOnly`. It schedules the two narrowings and the
+Metal arm.
 
 **Coverage gap, stated plainly:** no committed test observes the store op
 change. With the mask's write bit in place — which is what ships — the viewer
@@ -9084,27 +6554,6 @@ messenger — to confirm each can still go red. One gap is left.
   so that a test which reaches Vulkan is measured against a fixed driver, and
   the question of whether frames are legal belongs to the `vk-e2e` job rather
   than to an instrumented run of the whole workspace.
-
-### Reproducing a lavapipe CI hazard locally
-
-The layer _build_ decides what syncval can see, and Ubuntu's is fetchable.
-Extract `vulkan-validationlayers_1.3.275.0-1_amd64.deb` and
-`mesa-vulkan-drivers_25.2.8-0ubuntu0.24.04.2_amd64.deb` from
-`archive.ubuntu.com` — plus `libllvm20`, `libedit2` and `libxml2`, which the
-Arch host does not supply in an ABI the Ubuntu builds accept — rewrite
-`library_path` in both JSON manifests to absolute paths, then point
-`VK_LAYER_PATH`, `CRCBL_VK_ICD` and `LD_LIBRARY_PATH` at them. This reproduced
-CI run 32653884228's `SYNC-HAZARD-WRITE-AFTER-WRITE` on this machine down to
-`seq_no`, `submit` and `batch_tag`, and the fix was verified against it.
-
-- **CI's Mesa is required, not optional.** A newer lavapipe advertises
-  `VK_EXT_present_timing`, so `crcbl-vk` chains
-  `VkPhysicalDevicePresentTimingFeaturesEXT`, which the 1.3.275 layer rejects at
-  `vkCreateDevice` before a frame is drawn.
-- **The newer layer is weaker here, not stronger.** With CI's Mesa held fixed,
-  layer 1.3.275 reports the hazard and the local 1.4.357 reports nothing;
-  `run-vk-e2e.sh`'s reach line agrees, printing `cross-submission=yes` under the
-  old layer on this machine and `no` under the new one.
 
 ### What the validation gate still cannot see
 
@@ -9292,18 +6741,19 @@ leaves behind is smaller than it was:
   cross-session helper is the samples' high-score number. `crcbl-input` contains
   no glyph anything.
 
-  **Persistence is not the slice to start with**, checked 2026-08-23:
-  `ActionMap::rebind` has **no caller anywhere outside its own crate**, so
-  storing what it produces would be a format, a layer and a merge rule with
-  nothing to read them — the same objection that keeps the Fetch `AssetSource`
-  unshipped. The rebind UI is P10's, and persistence lands with it, driven by
-  what it actually needs to write. Worth knowing before then:
-  `docs/plan/19-input.md` puts rebinds in "the profile (topic 14, RON) as diffs
-  over game defaults", so as written this row is **blocked on the RON decision**
-  — while the settings stack already in the tree would carry an
-  `[input.bindings]` table today, with `crcbl settings get|set` working on it
-  for free. That is a fork worth taking deliberately rather than by default,
-  because it moves a file topic 14 owns.
+  **Persistence is not the slice to start with**, checked 2026-08-23 and
+  re-checked 2026-09-06: storing what `ActionMap::rebind` produces would be a
+  format, a layer and a merge rule with almost nothing to read them — the same
+  objection that keeps the Fetch `AssetSource` unshipped. The 2026-08-23 reading
+  that `rebind` had no caller outside its own crate is wrong today:
+  `crates/crcbl/src/debug_console.rs:336` calls it for the console's `bind`. The
+  rebind UI is still P10's, and persistence lands with it, driven by what it
+  actually needs to write. Worth knowing before then: `docs/plan/19-input.md`
+  puts rebinds in "the profile (topic 14, RON) as diffs over game defaults",
+  while the settings stack already in the tree would carry an `[input.bindings]`
+  table today, with `crcbl settings get|set` working on it for free. That is a
+  fork worth taking deliberately rather than by default, because it moves a file
+  topic 14 owns.
 
 - **Client tick alignment.** No lead, no EWMA server-time estimate, no rate
   correction. `crcbl-client` advances playback at a constant rate, which is an
@@ -9441,6 +6891,9 @@ which is the right baseline and not yet a comparison.
 
 ### P8's ECS access declarations were never reserved, and P2 says they were
 
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/simulation.md` under this heading.
+
 `docs/plan/21-jobs.md`'s delivery table has a **P2** row reading "Seams
 reserved: ECS access declarations, …" and calls it a "design constraint,
 near-zero code". Its P8 row, "ECS parallel schedule (startup DAG, debug access
@@ -9475,116 +6928,23 @@ wrong number:**
   `crcbl-server` compares across machines, and a schedule whose completion order
   varies must still feed that hash in a fixed order.
 
-**DECISION NEEDED — which of these P8 does.** They are not the same slice:
+**DECIDED 2026-09-06 —** 3 → 1 → 2, in that order: the broadphase bench first,
+then `SystemTrait::access()` read and write sets with debug conflict asserts,
+then opt-in parallel systems. Bevy's `SystemParam` access sets and Unity DOTS'
+`[ReadOnly]` are the shape, and both gate parallelism on declared access rather
+than the other way round. It schedules an ECS bench scenario ahead of the
+schedule work.
 
-1. **Declarations first, no parallelism.** Add the access vocabulary and the
-   debug assertions, leave `run` sequential. Closes the gap between the plan and
-   the code, and makes the later DAG honest. Lands nothing measurable.
-2. **Parallel run first, opt-in per system.** A system that declares itself
-   independent runs on the pool; everything else stays on the driver. Delivers a
-   measurable win on the systems that are already independent (which, today, is
-   all of them) without inventing a vocabulary for coupling that no code
-   exercises yet. Risk: "independent" is a promise nothing checks, which is the
-   shape of guard this project keeps rejecting elsewhere.
-3. **Neither yet — do the broadphase half of P8 first.**
-   `crcbl bench --scenario phys` now measures the broadphase, so that half has a
-   baseline and the ECS half does not. An ECS schedule with no benchmark behind
-   it cannot be shown to have helped.
+### DECIDED — a refit-only tree degrades, and the number is now known
 
-Recommendation, not taken without the owner: 3, then 1, then 2 — and only after
-an ECS benchmark scenario exists to measure against, for the reason the
-profiling plan gives about numbers that cannot be compared.
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/simulation.md` under this heading.
 
-### DECISION NEEDED — a refit-only tree degrades, and the number is now known
-
-`Bvh::update_aabb` never re-picks a leaf's place: it writes the new box into the
-leaf and grows the ancestors it walks back through. Its own doc says callers
-whose elements travel should remove and re-insert instead, and nothing in the
-engine does. `crcbl bench --scenario phys --ticks N` measures what that costs.
-
-**Measured 2026-08-23**, release, 2000 bodies of radius 0.5 in a 48-unit arena,
-reproduced twice on this machine:
-
-|  ticks | depth | nodes | builds | query p50 | neighbours/query | ns per result |
-| -----: | ----: | ----: | -----: | --------: | ---------------: | ------------: |
-|      1 |    12 |  3999 |      1 |    516 µs |             5.96 |          43.3 |
-|    100 |    12 |  3999 |      1 |    559 µs |             5.87 |          47.6 |
-|   1000 |    12 |  3999 |      1 |    735 µs |             5.71 |          64.4 |
-|  10000 |    12 |  3999 |      1 |   1641 µs |             5.23 |         156.8 |
-| 100000 |    12 |  3999 |      1 |   5299 µs |             3.98 |         666.2 |
-
-Read the last column, not the fourth: the crowd thins as it walks, so raw query
-time understates the decay. **The tree's reported shape never changes** — depth
-12, 3999 nodes, one build — at every tick count, which is the finding rather
-than a null result. The boxes stay exact for the current positions while the
-topology remains the answer `Bvh::build` gave for where the crowd was _placed_.
-Refit and build cost stay flat throughout, so a running game sees none of this
-in its physics tick and all of it in its broadphase queries.
-
-It is inside run-to-run noise below 100 ticks and unmistakable by 1000 — about
-17 seconds of simulation at 60 Hz, an RMS displacement of roughly one world unit
-against a 0.5-unit body radius.
-
-**The decision, with the trade-off now priced.** A rebuild costs about 490 µs on
-this fixture and buys back up to 4.8 ms of query time per tick at the far end.
-The options are not equivalent:
-
-1. **A rebuild cadence** — rebuild every N ticks, or when a cheap staleness
-   estimate crosses a threshold. Simple, and it makes one tick in N expensive,
-   which is a frame-time spike a game has to absorb.
-2. **Remove-and-reinsert on the move**, which is what `update_aabb`'s own doc
-   recommends. Spreads the cost evenly and keeps the tree's placement honest;
-   costs more per update than a refit, on every update, including the many that
-   barely move.
-3. **Refit with a fattened box**, the usual answer in the literature: a body
-   moves inside its own slack without touching the tree, and only reinserts when
-   it leaves. Bounds the degradation and costs one comparison per update, at the
-   price of a looser tree from the start and a slack constant to choose.
-4. **Leave it**, and say so in the API: below a few hundred ticks the decay is
-   not measurable, and a game that rebuilds on level load may never reach the
-   range where it matters.
-
-**Not verified:** any target but Linux x86-64, and no tick count above 100000 —
-at 2000 bodies that is already 200 million refits per iteration, and the trend
-had not plateaued.
-
-**Considered and declined for the fixture:** reflecting bodies off the arena
-walls, which would hold the density constant and make the raw query timing
-comparable across tick counts without the per-result normalisation. It cannot be
-done without moving bodies that start within one step of an edge, which would
-change what `--ticks 1` reports and cost the scenario its bit-identity with
-every number recorded before the flag existed.
-
-### The phys bench's default is a debug-build size, and its guard is quadratic
-
-`--bodies` defaults to 2000, far below the scale `docs/plan/ROADMAP.md` talks
-about, because the run's correctness guard is an `O(bodies²)` scan and the
-default has to finish in a couple of seconds in a checked build. At
-`--bodies 10000` that scan is ~100M predicate calls. Anyone sweeping upward
-should use `--release`.
-
-Considered and declined: giving the guard a cheaper independent reference, such
-as a uniform grid. A second spatial index checking the first is exactly the
-shape of check that agrees with the bug — the brute-force scan's whole value is
-that it shares no structure with the thing it checks. If the quadratic cost ever
-actually blocks a sweep, the honest fix is to check a sampled subset of queries
-exactly rather than to check every query approximately.
-
-**Not verified for this scenario:** any non-Linux target.
-
-**The changelog's `--ticks` numbers were re-taken on a release build,
-2026-08-24**, because a performance figure from a checked build is not a
-performance figure. They moved: the query phase's p50 rises a little over
-eight-fold from 1 tick to 100000 at `--bodies 2000`, where the debug run had
-said fifteen. The structural half was unaffected — 3999 nodes, depth 12, one
-build, at both tick counts — and the refit phase turned out not to be flat but
-to get _cheaper_, 0.125 ms to 0.099 ms. Two runs of twenty iterations each side,
-agreeing to within 0.07 on the ratio. One number in that entry is still a debug
-figure and says so: the ~2% cost of folding which bodies answered, which cannot
-be re-taken without removing the fold from the bench.
-
-The commit message's numbers were left alone — history is history, and a commit
-message cannot be corrected without rewriting it.
+**DECIDED 2026-09-06 —** option 3, fattened AABBs with reinsert on exit, with a
+full rebuild when the SAH cost ratio crosses a threshold as the backstop. That
+is Box2D's `b2_aabbMargin`, Bullet's `btDbvt` and Jolt's tree in one shape. The
+margin is swept with `crcbl bench --scenario phys` in release before it is
+fixed, rather than guessed.
 
 ### What the corner post's slice did not cover
 
@@ -9646,59 +7006,10 @@ left, none of them a defect anybody saw:
   counts printed alongside it are what say the loop reads real data rather than
   an empty tile.
 
-### DECISION NEEDED — should lantern's irradiance volume carry the downlight?
+### DECIDED — how the glTF corpus becomes a gate
 
-`crate::bounce` bakes a single analytic gather of **the sun's** first bounce off
-the room's interior, and `room::spot` is not in it — so the downlight's pool is
-direct light with no indirect term, exactly as `room::lamp`'s pool is. The lamp
-is excluded because it moves and a baked volume cannot follow it; the downlight
-is static, so that reason does not apply to it and the exclusion is currently
-just "the gather is the sun's".
-
-Adding it means a second source in `bounce::probes`, new probe rows, and a
-re-bless — and it would move `BOUNCE_TINT`, whose two read points
-(`TINTED_PLASTER`, `UNTINTED_PLASTER`) sit on the same back wall the cone's
-corner reaches. Left out deliberately rather than overlooked; it is its own
-slice if the sample ever wants indirect light from more than one source.
-
-### DECISION NEEDED — the ten export names, and whether a proc macro earns a dependency
-
-The other half of `web_exports!`'s residue. `crcbl::impl_web_pending!` took the
-forwarding impl; what is left is ten literal symbol names per sample, six
-samples, and they cannot become constants: each is an `extern "C"`
-`#[unsafe(no_mangle)]` export and the names must stay per-sample so two demos on
-one page cannot collide.
-
-Collapsing them to one token — `web_exports!(hud)` building `__crcbl_hud_boot`
-and the rest — needs a macro that can **construct** identifiers.
-`concat_idents!` is unstable, and `macro_rules!` cannot paste tokens into a
-name. So this is a dependency question rather than a refactor.
-
-- **(a) Take a small external helper** such as `paste`. One dependency, widely
-  used, and the change is contained. The workspace has no `paste`, `syn`,
-  `quote` or `proc-macro2` today, so this is genuinely new surface rather than
-  one more use of something already vendored in.
-- **(b) Write a workspace proc-macro crate.** No external dependency, and it
-  could grow other jobs later. The costs are real: a new crate, and a proc-macro
-  crate builds for the **host** even when the samples build for `wasm32`, so
-  every sample's build gains that step.
-- **(c) Leave the names literal.** Ten lines a sample of pure boilerplate, and
-  no new anything.
-
-**(c) is safer than it first looks, and this entry said the opposite until it
-was checked.** `web/tools/check-exports.mjs` compares every symbol the shim
-calls against the artifact's actual exports, and `web/build.sh` runs it **per
-demo on every build**. A name that drifts from the JS calling it therefore fails
-the build, not the browser: the mistyped export lands in the artifact, the shim
-asks for the right one, and the check reports it missing. That holds whether or
-not the names are macro-generated, because the comparison is against the built
-artifact rather than against the Rust source.
-
-So the choice is boilerplate against a dependency, with no safety difference —
-which is a smaller question than it looked, and is why it is stated plainly
-rather than argued.
-
-### DECISION NEEDED — how the glTF corpus becomes a gate
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/tooling.md` under this heading.
 
 **The decision below was taken, and taken as (b) — but only half of it was
 built, so this entry is now about the missing half.** `tools/fetch-shelf.sh`
@@ -9715,290 +7026,13 @@ The three routes are kept below because the objection to (a) is now spent — th
 tree does hold a committed model — and because whichever way the assertion is
 written it still faces the two content-policy questions at the end.
 
-- **(a) Vendor a pinned subset.** A dozen or two models committed in a corpus
-  directory beside `crcbl-scene`'s own tests, so the gate is hermetic, runs
-  offline, and a regression is bisectable against the exact bytes. The cost is
-  binary blobs in a tree that has none, which is the objection `gltf_fixture`'s
-  header states in as many words — and these are blobs nobody can shrink, since
-  the point is that they are real files.
-- **(b) Download at gate time**, pinned to a commit of `glTF-Sample-Assets` and
-  sparse-checked to a named list. Nothing is vendored and the corpus can grow by
-  editing a list, at the cost of a network fetch in CI — a new failure mode for
-  a job, and one that reads as a red gate rather than as an outage.
-- **(c) Leave it a local script** that takes a corpus directory a developer
-  already has. Honest about what it is, and it is the shape this file elsewhere
-  calls out as a trap: a runner no workflow invokes is a test that executes
-  nowhere, which is exactly how `run-gltf-e2e.sh` sat until 2026-08-20.
-
-**(b) is what the hand-run actually did**, so it is the smallest step from
-measurement to gate; **(a)** is the only one that is hermetic. Whichever lands
-forces the two content-policy questions recorded with the measurement below — a
-document whose required extension this importer lacks (18 of the 116 load
-anyway), and the non-ASCII asset key that refuses `Unicode❤♻Test` — because a
-gate has to assert an expected outcome for each.
-
-### Which suite runs on which backend, measured
-
-Read out of `ci.yml` by mapping every `run: …run-*.sh` step to the `CRCBL_GPU`
-in its own `env` block, and re-derived the same way on 2026-08-21 after
-`crcbl-wgpu` went. Recorded because "the agnostic suites run everywhere" is a
-claim this project rests a lot on, and it had never been read off the workflow
-rather than believed:
-
-| runner                  | backends      |
-| ----------------------- | ------------- |
-| `run-hal-seam-e2e.sh`   | dx12, mtl, vk |
-| `run-render-e2e.sh`     | dx12, mtl, vk |
-| `run-forward-e2e.sh`    | dx12, mtl, vk |
-| `run-draw-gen-e2e.sh`   | dx12, mtl, vk |
-| `run-sprite-e2e.sh`     | dx12, mtl, vk |
-| `run-mesh-e2e.sh`       | dx12, mtl, vk |
-| `run-tiling-e2e.sh`     | dx12, mtl, vk |
-| `run-gltf-e2e.sh`       | dx12, mtl, vk |
-| `run-lantern-golden.sh` | vk            |
-| `run-quarry-e2e.sh`     | vk            |
-
-**Every agnostic suite really does run on every native backend.** The two
-exceptions are the sample golden suites, and quarry's is vk-only for a reason
-that was measured rather than assumed: the fixture forces all three
-`GeometryPath` values by subtracting features, and a backend with no mesh path
-lands one rung lower than asked, so the harness's own
-`"{path:?} was asked for by withholding features and {selected:?} opened"` is
-the first failure. That assertion is the fixture working, not a defect: a green
-run comparing `IndirectPerBatch` against itself under the name `MeshShader` is
-exactly what it exists to stop. **Measured on `CRCBL_GPU=wgpu`, which failed 12
-of quarry's 23 tests** before that crate was deleted on 2026-08-21 — dx12 and
-Metal have no mesh path either, so the same thing awaits them.
-
-**So making quarry travel is a redesign, not a job edit** — the same shape
-`vk_e2e/mesh.rs` needed: split each test's backend-agnostic claim (which levels
-the descent chose, how many clusters survived) from its mesh-path claim. Not
-attempted, and worth weighing against what it buys: the mesh path exists on one
-backend today, so the other arms would be running the indirect half twice.
-
-### The sRGB gate was reading whichever menu the run ended on
-
-**A red Pages run on a docs-only commit, 2026-08-20**, and the interesting part
-is how nearly it was misread. Group G reported
-`expected rgb(107,173,229) … the dominant colour is rgb(63,105,141) at 32.5%`
-under the name "the clear reaches the canvas sRGB-encoded" — the message for the
-bug that shipped to users once already.
-
-**The numbers said it was not that.** The observed colour is a **uniform 0.61
-multiply** of the expected one (ratios 0.589, 0.607, 0.616); a transfer-function
-error is a power curve, and `rgb(107,173,229)` sRGB-decoded is
-`rgb(37,107,200)`, nothing like what arrived. A uniform multiply is an overlay.
-Confirmed by printing the demo's own HUD line beside each sample: six
-consecutive samples read `[HUD] Dead score: 0` — flappy's death screen dims the
-whole sky, and by group G the bird had died.
-
-**Why it passed here every time and failed there.** Nothing about the runner:
-the state at group G depends on how group F's taps went, so it is a race, and
-this desktop happened to land on the winning side five runs out of five. That is
-what a race looks like from the machine that never loses it.
-
-**Fixed by establishing the state, not by moving or widening anything.** Group G
-now presses the demo's own start key until its own `started` line appears — the
-same state group C establishes — and checks that it got there, so the sample is
-never taken in an unknown state. It cannot hide a broken encode: a live frame
-with no encode shows the linear colour, which is what the row's `unencoded` is
-compared against. Red-checked by making flappy's `started` predicate match
-nothing: the new check fails with "the demo never reported its started state in
-3 presses", and the sRGB check fails _beside_ it, so the misdiagnosis cannot
-repeat.
-
-**Two things tried first and rejected, recorded so they are not retried.**
-Rebooting the page before sampling is worse — `crcbl.status()` reaches RUNNING
-before the first frame is presented, so flappy sampled an all-black canvas, and
-breakout's clear is only uncovered once its start menu has been dismissed.
-Moving the group before E and F is not enough either: the bird is already dead
-by then, which is how the `Dead` line was found.
-
-**One thing worth keeping from the detour:** the eight backdrop samples were
-taken back to back, spanning a few milliseconds, so they were eight looks at one
-frame rather than eight frames. They are spaced now, and the spacing is scaled
-by the measured slowdown like every other budget.
-
-### An inlined re-export's doc resolves its links in the wrong module
-
-**Latent, not broken — recorded because the shape already cost a sweep once.**
-rustdoc merges an outer `///` doc on a module _declaration_ with that module's
-own `//!` header and resolves every link in the merged block against the
-**parent**, which is what broke roughly sixty links across `crcbl-shell` and was
-fixed by moving those docs into the modules. Two doc comments in
-`crates/crcbl-shell/src/lib.rs` still have the same shape:
-`pub use wayland::e2e as wayland_test_support` and
-`pub use x11::e2e as x11_test_support`. Both name modules under
-`pub(crate) mod`, so rustdoc _inlines_ the re-export rather than linking to it,
-and inlining merges the same two blocks the same way.
-
-Neither doc contains an intra-doc link today, which is the only reason nothing
-is wrong. Adding one would resolve it in `lib.rs`'s scope while the reader is
-looking at the module's own page — and it would resolve _successfully_ if the
-name happens to exist in both, which is the version nothing catches.
-
-Left alone deliberately: there is nothing to fix until a link is written, and
-moving the prose into `e2e`'s header would put per-feature scaffolding notes in
-a module that is compiled behind a different feature gate. Whoever adds a link
-to either of those two comments should move the doc first.
-
-### The wasm rustdoc gate cannot see two whole backends
-
-**Measured 2026-08-21, and it had already cost three real breakages.**
-`ci.yml`'s `rustdoc` job ran one command —
-`cargo doc … --target wasm32-unknown-unknown` — and `crcbl-mtl` is
-`#[cfg(target_os = "macos")]` from its crate root down while `crcbl-dx12` is the
-same on Windows, so that run compiles **not one line** of either. A broken
-intra-doc link in `crcbl-mtl` passes it.
-
-Proved rather than argued: a link to a non-existent item put inside a
-`cfg(macos)` impl left the `wasm32` command reporting success and made
-`aarch64-apple-darwin` report `unresolved link`. The Metal counter-query slice
-hit exactly this — three `public documentation for X links to private item Y`
-errors that the prescribed gate did not see.
-
-**Fixed**: the `rustdoc` job now also runs `-p crcbl-mtl` against
-`aarch64-apple-darwin` and `-p crcbl-dx12` against `x86_64-pc-windows-msvc`.
-Just those two crates rather than the workspace again — everything else is
-already covered by the wasm run, and cross-target rustdoc is not free.
-
-**The general shape, which is worth more than the fix:** a gate run against one
-target says nothing about code that target does not compile. The same reasoning
-already applies to `cargo clippy`, which is why this repo runs it on darwin and
-msvc too; rustdoc simply never got the same treatment. Any _third_ per-target
-gate added later needs the same question asked of it.
-
-### The sweep for a runner nobody invokes
-
-Every `#[ignore]` in this workspace names the script that reaches it — 398 of
-them across 17 scripts, which is a good convention and was one script short of
-being load-bearing. `run-gltf-e2e.sh` was named by an `#[ignore]` and invoked by
-**no workflow**, so `crates/crcbl/tests/gltf_e2e.rs` executed nowhere but on a
-developer's machine. Fixed 2026-08-20.
-
-**The sweep, and it is two greps:**
-
-```sh
-grep -rhoE '#\[ignore\s*=\s*"[^"]*run ([^ ";]+)' --include='*.rs' . | sort -u
-grep -c '<each script>' .github/workflows/*.yml
-```
-
-Then, per script, a zero is the finding. All 17 named scripts exist in
-`git ls-files`, so the other half of the question — an `#[ignore]` pointing at a
-script that was deleted — is currently clean too.
-
-**Worth re-running whenever a runner is added or a job is reshuffled**, because
-nothing enforces it: an `#[ignore]` reason is prose, and a workflow that drops a
-step leaves the test looking covered. Making it a gate would mean parsing both
-sides, which is a `tools/` script somebody has to maintain against two file
-formats; recorded as declined for now rather than not considered.
-
-**The same question about environment variables is clean**, checked the same
-day: of the 17 `CRCBL_*` variables Rust reads, 16 are set by a workflow or a
-runner script. The seventeenth, `CRCBL_TRACE`, is set by nothing — and that is
-correct rather than a gap: `crcbl_core::trace`'s own test re-execs the test
-binary with it in the **child's** environment, which is the only way to exercise
-a process-wide switch without racing every other test in the process. The same
-reasoning is why nothing sets `BACKEND_ENV_VAR` in a test, recorded elsewhere in
-this file.
-
-### The sweep for arms that are asserted but never run
-
-A test that branches on what the device reports covers both arms in its source
-and one arm in any run. Three of them said "both are asserted" — in a doc, in a
-name, in a backlog entry — while the second arm executed on no machine here,
-because it keys on an optional feature every available adapter reports.
-
-**The sweep, and it is cheap:**
-
-```sh
-grep -rn 'features\.contains(' --include='*.rs' crates/*/tests crates/*/src
-```
-
-Then, per hit, ask which branch a local run takes rather than reading the source
-as coverage.
-
-**`crates/*/src` is not optional there**, and this entry said `tests` alone
-until the omission was caught: `crcbl-mtl` and `crcbl-dx12` keep their device
-tests in `#[cfg(test)]` modules inside `src/`, so a sweep of test directories
-sees neither backend. The `src` half is noisier — most hits are the production
-code that computes the capabilities — but the ones inside a `mod tests` are the
-same question.
-
-A second query catches the shape from the other side, since an arm that is
-skipped is an arm that did not run:
-
-```sh
-grep -rniE '(e?println)!\(.*(skip|cannot run|unreachable here)' --include='*.rs' crates
-```
-
-**Re-run 2026-08-23, and that query's hits are gated now rather than counted.**
-The mesh-path tests in `crcbl-vk`'s suite return early when the device reports
-no `TASK_SHADER` — the amplification stage is their whole subject — and nextest
-counts each early return as a pass, so an adapter that stopped reporting the
-feature would take the mesh path out of the run and leave the test total
-unchanged. `run-vk-e2e.sh` and `run-vk-e2e.ps1` count those lines: a banner on a
-developer's machine, `exit 1` under `CI`, which is the loader probe's own shape.
-Shown red by making one test return early unconditionally — the summary still
-read `50 tests ran` and the run failed with
-`1 MESH-PATH TEST(S) RETURNED EARLY AND COUNTED AS PASSES`. The other hit,
-`validation_gate.rs`'s sync-hazard probe, is a deliberate env switch CI sets in
-nine places and is left alone.
-
-**The other half of the same question — a loop that asserts over a collection
-that could be empty — was swept on 2026-08-23 and is clean.** Every `for` inside
-a test fn in `crates/crcbl/tests`, `crates/crcbl-vk/tests` and
-`crates/crcbl-shell/tests` iterates either a literal array (`near_wall`, `open`,
-`aside`, `expected` and the tuple lists beside them) or a range, so none can
-match nothing and pass. Worth re-running the same way when a suite starts
-iterating something a device produced: a readback of no clusters, a query set of
-no results, a list of no monitors.
-
-**Fixed by subtracting the feature**, which manufactures the lesser device
-instead of waiting for hardware — the move `mesh.rs` already used to reach
-`GeometryPath::IndirectPerBatch`:
-
-- the bindless refusal in `vk_e2e/pipeline.rs`, recorded here as needing a Tier
-  B driver nobody has;
-- the `update_bind_group` refusal in `vk_e2e/compute.rs`, whose module doc said
-  both arms are asserted;
-- the timestamp-set refusal in `vk_e2e/queries.rs`, whose test name says "or are
-  refused cleanly".
-
-Each carries a guard that the subtraction happened, because without one the test
-asserts the capable device's answer under the lesser arm's name and passes.
-
-**Checked and already covered**, so no test was added: `hal_seam_e2e`'s
-`can_multi_draw` gate, whose other side the `CRCBL_SEAM_WITHHOLD=all` pass
-drives; and the "timestamps degrade rather than break" claim, which
-`crcbl-render`'s null-backend unit test covers for `PassTimers::new` declining
-and every mesh test covers for the frame, since `render_mesh` executes with
-`None` timers on real hardware.
-
-### Declined: extending the citation gate from paths to symbols
-
-`tools/check-doc-citations.sh` resolves the paths a doc cites and nothing else.
-Extending it to the identifiers docs quote was measured on 2026-08-20 and
-declined, because the question it would ask is not decidable by grep.
-
-The candidate shape was a backtick-quoted `snake_case` identifier with four or
-more underscores — the shape a test name has. There are 169 of those across the
-tracked markdown, and 17 do not exist as a `fn` anywhere. But most of those 17
-are not meant to: `min_storage_buffer_offset_alignment` and
-`optimal_buffer_copy_offset_alignment` are Vulkan limit fields,
-`unsafe_op_in_unsafe_fn` is a rustc lint, `wp_commit_timing_manager_v1` is a
-Wayland protocol, and `insert_barriers_from_device_tracker` belongs to `wgpu`.
-Two more were correct quotations of a name in a sentence explaining what it was
-renamed _from_.
-
-So the gate would need an allow-list about as long as its findings, and an
-allow-list that large stops being a record of exceptions and becomes the check
-itself. Two genuinely stale names came out of the exercise and were fixed by
-hand; that is the right cost for this, not a standing gate.
-
-**What would change the answer:** a rule that docs quote a test name only in a
-form the tree can confirm — say, always with its module path. That is a writing
-convention, and worth proposing only if this rots again.
+**DECIDED 2026-09-06 —** finish (b): a committed manifest, `shelf.expect`, names
+each fetched model's expected outcome — `Ok`, or `Unsupported(<extension>)` —
+and a test parses every model and asserts against it, so a corpus change has to
+be blessed rather than silently absorbed. Non-ASCII asset keys must load,
+because glTF names are UTF-8, so the importer is fixed rather than the corpus
+trimmed. It schedules the manifest, the test that reads it, and the importer
+fix.
 
 ### What bloom's slice left open (2026-08-23)
 
@@ -10057,63 +7091,6 @@ Worth keeping from how it became visible: the report is a `log::warn!`, and
 until `instance::tests::open` installed a sink the facade dropped it. The
 reporter and the sink landed within an hour of each other and neither would have
 shown it alone.
-
-### `render_e2e` never runs against dx12's own e2e job, and that hid a step
-
-Found while trying to reproduce the WARP device removal. The
-`dx12 e2e (software adapter)` job runs
-`crates/crcbl-dx12/tests/run-dx12-e2e.sh`, which is
-`cargo nextest run --package crcbl-dx12` — so the crate's own suite — and then a
-_separate later step_, "Draw a frame through ForwardRenderer on WARP", runs
-`run-render-e2e.sh` with `CRCBL_GPU=dx12`. The `render_e2e` tests are
-`#[ignore]`d and appear as SKIP in every other job, including
-`build + test (windows-latest)`, so a reader scanning that job's 3993 passing
-tests would conclude the renderer is covered on Windows. It is not; only that
-one step covers it.
-
-The consequence to remember: **a failure in the crate suite stops the job before
-the renderer step runs at all.** The first diagnostic attempt hit exactly that
-and produced no evidence. Any future "did the renderer break on WARP?" question
-has to check that the step actually executed rather than that the job went red.
-
-Not a defect to fix so much as a shape to know. If it is ever worth changing,
-the options are to run the render step first, or to give it its own job so the
-two failures cannot mask each other.
-
-### `Features::BUFFER_DEVICE_ADDRESS` on Metal rides a query that is wrong
-
-`crcbl_mtl::adapter::features_of` reports it from
-`supportsFamily(MTLGPUFamily::Metal3)`, on the reasoning that `gpuAddress` is a
-Metal 3 property. That reasoning is **measurably false**: CI's
-`Apple Paravirtual device` answers `supportsFamily(Metal3) = false` and returns
-usable `gpuAddress` values anyway — `crcbl_mtl::binding`'s bindless probe read
-four non-zero addresses on it and a kernel dereferenced every one. The family
-query describes a feature set; the selector's availability is a macOS version
-question, and they are not the same.
-
-`Features::DESCRIPTOR_INDEXING` had the same gate and was fixed, because leaving
-it would have reported the bindless capability closed while switching it off on
-the one device that had proven it. **`BUFFER_DEVICE_ADDRESS` was deliberately
-left alone**: nothing on this backend exercises `BufferUsage::DEVICE_ADDRESS`,
-so correcting the gate would turn on a path no test covers — adding unproven
-surface rather than fixing a measured defect. The honest fix, when something
-needs it, is `respondsToSelector:` on `gpuAddress`, which is what
-`DESCRIPTOR_INDEXING` uses now.
-
-Worth knowing generally: **`supportsFamily:` is not an availability check.** Any
-other capability here gated on a family as a proxy for "this selector exists" is
-wrong the same way.
-
-**Swept, and this is the only one.** Every other `supportsFamily:` in
-`crcbl-mtl` is a probe printing what a device answers, not a gate deciding a
-capability. Metal's mesh rows in particular do **not** ride a family query. They
-did read "this backend builds no `MTLMeshRenderPipelineDescriptor`" until the
-mesh slice landed one; `DIVERGENCES` now says the calls exist and no device has
-run them, which is why `crcbl_mtl::adapter` reports no `Features::MESH_SHADER`
-and the rows stay `Unwritten`. The runner's `Metal3 = false` is why they cannot
-be _verified_ here, not why they are reported unsupported today, and those are
-different claims — read `crates/crcbl-hal/src/capability.rs` for the current
-wording rather than this file.
 
 ### What `apps/viewer` still owes sample 05
 
@@ -10261,61 +7238,6 @@ whether it belongs on the hooks or on a `Loop::modifiers()` the game reads —
 held state is what a binding actually wants, and an edge-carried copy of it goes
 stale between events.
 
-### A press and the motion in the same batch cannot be ordered
-
-`Loop::frame_body` collapses a pump to one `PointerUpdate` and dispatches
-`button_event` and `wheel_event` before it, so a press and the movement that
-follows it inside one frame are applied in that order. The reverse — moving,
-then pressing, inside the same batch — is applied as though the press came
-first, which credits up to one frame of hover to the drag.
-
-Sub-frame, and inherent to collapsing the pointer at all: the same trade
-`pointer_pressed` already made before this. Fixing it means a per-event pointer
-stream beside the collapsed one, which is a second seam for a defect nobody has
-reported. Noted because `apps/viewer` is the first caller where it is observable
-at all — a game's paddle does not care, a turntable in principle could.
-
-### The viewer frames the document's geometry, not the geometry it draws
-
-`apps/viewer`'s `model::world_bounds` unions one `Aabb` per glTF primitive,
-pushed through its instance's composed transform. Those are the primitives the
-**document** declares, and `build_render_scene` may skip some of them — so a
-document with a skipped primitive is framed a little wide.
-
-It errs in the safe direction (wider, never tighter) and every skip is printed,
-so this is a refinement rather than a defect. Fixing it needs `RenderScene` to
-say which `(mesh, primitive)` each of its `instances` came from, or to carry
-per-instance bounds; neither exists, and adding one to `crcbl-scene` for a
-cosmetic framing difference was not worth it here.
-
-### The one device-loss ordering that does not hold
-
-`gpu-replay.js` now watches `GPUDevice.lost` and files the loss once, first,
-with its reason, and both comments in `#requestReadback` and `#loseDevice` point
-here for the case it cannot make clean.
-
-**The ordering that does hold.** The specification's "lose the device" resolves
-`lost` **before** completing the steps waiting on a loss, so a map rejection
-caused by a genuine loss arrives after `#loseDevice` has already filed the
-readback with the loss text, and the rejection handler leaves it alone. That is
-the path a real device failure takes.
-
-**The one that does not.** `GPUDevice.destroy()` does not follow that route: it
-cancels an outstanding map through the **buffer**, and Chromium was watched
-rejecting one with "Buffer was unmapped before mapping was resolved" a whole
-task _ahead_ of `lost`. `#loseDevice` re-files such an entry so the readback
-ends up carrying the loss either way — but the rejection was pushed to the
-**error queue** when it landed, and a queued error cannot be taken back. So on
-that single path a reader sees the browser's sentence before the loss.
-
-Closing it means either not filing a map rejection until a turn has passed, so a
-loss can still claim it — which delays every honest rejection to tidy one — or
-making the error queue support retraction, which is a wire-format change to
-`Reply::DeviceErrors` for a cosmetic ordering. Neither is obviously worth it,
-and the entry that matters (the readback's own failure reason) is already
-correct in both orderings. Recorded so the next reader does not mistake the
-ordering for an oversight.
-
 ### A lost device is named but never rebuilt on
 
 **Reported from a real machine, 2026-08-18.** An NVIDIA GeForce MX550 laptop
@@ -10438,51 +7360,6 @@ Measured, not assumed: with `surfaceCapsFor` offering only linear formats, `hud`
 scores **33 of 34** with group G the only failure, while group D's "the canvas
 is not one flat colour" passes on `rgb(8,8,16)` at 89.2%. The same broken build
 fails the probe gate too, so neither gate is load-bearing alone.
-
-### The `crcbl-wgpu` deletion bar was already answered — what it costs, measured
-
-**This was filed on 2026-08-20 as a decision needing the owner, and that was
-wrong: it had been answered on 2026-08-19.** "DECIDED — the `crcbl-wgpu`
-deletion bar, and quarry is next" below carries it, and the bar is
-**`parity_blockers()` empty**, explicitly _"empty rather than explained"_, plus
-a replacement for the cross-backend oracle. Re-opening a settled question is the
-same defect this file keeps catching in other entries, so the correction is kept
-here rather than quietly deleted. What follows is the measurement that entry did
-not have.
-
-**The second half of the bar is met.** `web/run-cross-backend-e2e.sh` holds the
-browser against a native backend and runs in `pages.yml` — on Linux against vk,
-and since 2026-08-20 on macOS against **Metal on the same device**, which is
-stronger than the vk↔wgpu job it replaces: eleven scenes rather than three, and
-a genuinely separate implementation rather than a second abstraction over one
-driver.
-
-**The first half is not, and every row needs hardware nobody here has** — dx12's
-two mesh rows, Metal's two mesh rows and Metal's two counter-sampled query rows.
-Read `REVIEWED_BLOCKERS`; this file does not restate the count, having had it
-wrong twice.
-
-**What the deletion is worth, counted rather than estimated.** Dropping
-`crcbl`'s dependency removes **43 of the workspace's 254 resolved packages** —
-17% of the graph — including the whole `wgpu` family (`wgpu`, `wgpu-core`,
-`wgpu-hal`, `wgpu-types`, the three `wgpu-core-deps-*`), `glow`, `khronos-egl`,
-`gl_generator`, `gpu-allocator`, `parking_lot`, `raw-window-handle` and
-`raw-window-metal`. Plus a CI job, a runner script, a registry entry and
-`CRCBL_GPU=wgpu`.
-
-**DECIDED 2026-08-21 by the owner: `naga` stays**, because it is what validates
-the shaders `crcbl-webgpu` ships. It is a **dev-dependency of `crcbl-shaders`**,
-not a `crcbl-wgpu` transitive, so nothing about the deletion touches it — what
-changes is only that it stops riding `wgpu`'s resolution and becomes a pin of
-its own in the lockfile. `crates/crcbl-shaders/Cargo.toml` already argued
-exactly that and called the cost worth paying; this settles it. Dropping it
-would have removed the only check that shipped WGSL parses before a browser sees
-it, which is how the uniformity bug shipped, and the standing "remove
-`wgpu`/`naga` from the dependency graph" no longer applies to the second name.
-
-**What is not in question.** `crcbl-wgpu` is not a conformance oracle and this
-entry does not argue for keeping it as one: on Linux it runs Vulkan underneath,
-so agreement with `crcbl-vk` proves less than it looks.
 
 ### TOP PRIORITY — backend feature parity, enforced so it cannot rot
 
@@ -10666,8 +7543,8 @@ list of the names we have deleted so far is a list somebody has to remember to
 extend, which is the same failure mode one step further back.
 
 **`naga` did not leave with it**, and notes here said otherwise twice. See "The
-`crcbl-wgpu` deletion bar was already answered" above for the owner's decision
-of 2026-08-21 and what it costs the lockfile.
+`crcbl-wgpu` deletion bar was already answered" in `docs/notes/backends.md` for
+the owner's decision of 2026-08-21 and what it costs the lockfile.
 
 **The coverage model afterwards:** the agnostic e2e suites own every behaviour
 all backends owe, and bespoke per-backend tests keep only what cannot be
@@ -10774,6 +7651,14 @@ sanctioned exception to the server-authoritative rule (it is a tool and
 simulates nothing), and it is exempt from the `.crpix` art rule, because the
 whole point is that it shows _the user's_ asset unadorned.
 
+**DECIDED 2026-09-06 —** non-ASCII asset keys must load. glTF names are UTF-8
+and a Japanese or German file name is not an edge case, so the importer is fixed
+rather than the file refused: the middle option in the list above —
+percent-encode on the way in so the key stays ASCII while the file does not —
+which keeps the traversal and URI-escaping properties the key rule exists for.
+It schedules the importer change and the `USAGE` text that today states the rule
+without saying it will refuse the file.
+
 ### What the orbit camera left out
 
 `crcbl_render::orbit` covers orbit, pan, zoom and frame-selected, and stops
@@ -10810,71 +7695,10 @@ there. What it does not do, and why:
   silhouette fit that re-ran on every orbit step would be tighter and is not
   written.
 
-### What the three browser gates still keep to themselves
+### DECIDED — five copies of the golden harness helper
 
-The launch-and-poll loop, the CDP client, `openPage`, `evaluate`, `until`, the
-browser registry and the exit hooks are one copy each in
-`web/tools/browser-launch.mjs`. What is left is deliberate and worth not
-"fixing":
-
-- **`fail` stays per gate.** The prefix differs and so does the meaning of the
-  exit code — `render-harness-e2e.mjs` documents 0/1/2 as a contract in its
-  usage header. A `makeFail(prefix)` factory would be a helper whose whole body
-  is its parameter. The part that _was_ shared knowledge, "kill the browsers
-  before you go", is now the exit hook rather than something each copy must
-  remember.
-- **`render-harness-e2e.mjs`'s own poll stays.** It must hard-fail on its
-  deadline rather than answer `null`, must let a throwing `evaluate` through as
-  its exit 2, and polls at 250 ms against `until`'s 16. Merging it needs a flag
-  per difference, which is the shape that argues against merging.
-- **`check` and `group` are still two copies**, shared between `browser-e2e.mjs`
-  and `probe-e2e.mjs`. `check` is byte-identical; `group` differs only in the
-  gate name it prints. Not moved because they are the checks-and-verdict layer
-  rather than the browser layer, and `render-harness-e2e.mjs` has no counterpart
-  — so a third caller does not exist and may never.
-
-**One thing found by doing it, and it was a real defect rather than a tidiness
-question:** `render-harness-e2e.mjs` leaked its whole browser process tree on
-every error it diagnosed. It stopped the browser from a `finally` in `main`, but
-`fail` calls `process.exit`, which does not unwind one, and it had no signal
-handlers where the other two did. Interrupted mid-run it left **12 chromium
-processes and a profile directory**; it leaves none now. Worth keeping because
-it is the argument for the sharing: the registry and the hooks live with the
-`launch` that registers every browser, so a fourth gate cannot be written
-without them.
-
-### DECIDED — the browser has no WebGL2 fallback, and the deletion closed the alternative
-
-Un-linking `crcbl-wgpu` from the wasm dropped a capability: **a browser without
-WebGPU has no fallback at all.** The WebGL2 path came from `wgpu`, which stopped
-being linkable there and was deleted outright on 2026-08-21, so on such a
-browser the engine has no backend to open rather than a slower one.
-
-**Detect-and-message shipped**, which was the recommendation. `demo.js`'s `main`
-answers a missing `navigator.gpu` with "This browser has no WebGPU" and the
-browsers that have it, and — the case that actually happens — answers a
-`requestAdapter()` that resolves to `null` with a sentence aimed at a person,
-before the megabytes of wasm load. A blank canvas is now an explanation.
-
-**The fallback itself was the open half, and the deletion settled it by
-foreclosure.** Both options are kept so neither is re-argued:
-
-- **Accept it.** WebGPU shipped in Chrome, Edge and Firefox; Safari has it
-  from 26. The floor rises on its own, and the engine now refuses gracefully.
-  This is what happened.
-- **A second artifact.** Build a wgpu/WebGL2 wasm alongside and pick at load
-  time — the fallback and the small default both, at the cost of two builds, two
-  toolchains (that build needs `wasm-bindgen` back) and a loader that chooses.
-  **This one is gone**: with `crcbl-wgpu` deleted there is no WebGL2 path left
-  to build, so choosing it now means reviving a deleted backend rather than
-  re-enabling a flag.
-
-**Revisit only if someone reports a browser that needs it.** Nothing in the
-samples requires WebGL2 and no telemetry says anyone is on such a browser — and
-reopening it is now a revival rather than a flag, which is the thing to know
-before promising anyone a fallback.
-
-### DECISION NEEDED — five copies of the golden harness helper
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/samples.md` under this heading.
 
 `screenshot_from_a_real_run`, `adapter_line`, `brightness`, `channel`,
 `channel_mean` and `required_backend` now exist five times over, in
@@ -10888,14 +7712,11 @@ the obvious home does not work: `crcbl-golden` would have to depend on `crcbl`
 to spawn a sample binary and read `BACKEND_ENV_VAR`, which inverts the
 dependency the whole crate exists to avoid.
 
-- **(a) A small support crate under `apps/`** that the sample test targets
-  depend on. Clean, and it is where the knowledge belongs; costs a workspace
-  member that exists only for tests.
-- **(b) `#[path]`-include one file** from each suite. No new crate and no
-  manifest churn, but the included file is compiled once per suite and each gets
-  its own copy of every `const` — fine here, surprising later.
-- **(c) Leave it.** Five copies of about a hundred lines, and the next sample
-  makes six.
+**DECIDED 2026-09-06 —** option (a): a test-support crate, `crcbl-sample-test`,
+under `apps/`, taken as a dev-dependency by each sample. One copy of the helper
+with five callers is what a shared test fixture is for, and a dev-dependency
+keeps it out of every shipped binary. It schedules the crate and the five
+call-site changes.
 
 ### horde's golden spends its whole tolerance budget
 
@@ -10980,32 +7801,10 @@ held the same way. What is left, in the order it is worth taking:
   under `RUSTDOCFLAGS: -D warnings`, which covers this crate's wasm half.
   Re-verified 2026-08-23 by running that command for `-p crcbl-webgpu`: exit 0.
 
-### `System<T>`'s internals are not observable, so a desync surfaces as a panic
+### DECIDED — `data:` URI glTF needs base64, and the workspace has no decoder
 
-`crates/crcbl-ecs/tests/churn_soak.rs` catches a component row outliving its
-entity, but only through what the public API exposes — the row count, `get` on a
-live entity, `get` on a stale handle, and the dense-versus-live pairing. The
-lengths of `index_to_entity` and the size of `entity_to_index` are not
-reachable.
-
-Measured while red-checking the soak: breaking `System::detach`'s moved-entity
-fix-up, or its `index_to_entity.pop()`, does not fail an assertion. It panics
-inside `System::get` with
-`index out of bounds: the len is 4 but the index is 4`. The defect is caught,
-which is what matters, but by a crash in the code under test rather than by a
-test saying what is wrong.
-
-A direct observable needs a `#[cfg(test)]` accessor on `System<T>`. That was
-deliberately not added — widening the API for a test is the thing to avoid, and
-the indirect coverage does hold. Worth doing only if this bites someone.
-
-**Also measured, and the reason one assertion is not redundant:** the stale-key
-leak — `entity_to_index.get().copied()` where `remove()` belongs — is caught
-**only** by the end-of-run loop that re-queries every despawned handle. Every
-per-tick assertion stays green through it. Do not delete that loop as duplicated
-work.
-
-### DECISION NEEDED — `data:` URI glTF needs base64, and the workspace has no decoder
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/tooling.md` under this heading.
 
 **The gap.** `crcbl_scene::gltf_import` refuses a `data:` URI buffer outright
 (`StorageError::Unsupported`, in the buffer-loading match), and the same holds
@@ -11014,33 +7813,12 @@ an artist is most likely to hand over — so it is the highest-value thing the
 importer still cannot open.
 
 **Why it is a decision rather than a task.** A `data:` URI carries its payload
-as base64, and `git grep` finds no base64 decoder anywhere in the workspace and
-no such crate in `Cargo.lock`. CLAUDE.md's reach-outward rule puts a dependency
-the project already has ahead of writing one, and names **encoding**
-specifically as a thing not to hand-roll — while also making a _new_ dependency
-the owner's call. So the two halves of the rule point in different directions
-here and only the owner can settle it.
 
-- **(a) Take a base64 crate.** `base64` is the ecosystem's answer, is widely
-  used, and has had its edge cases found in public — padding, whitespace, the
-  URL-safe alphabet, and rejecting trailing bits that decode to nothing. One new
-  dependency in `crcbl-scene`, which today has none of this kind.
-- **(b) Write the decoder.** RFC 4648 §4 is small and the workspace has a
-  precedent for transcribing a named algorithm with specification test vectors.
-  The risk is precisely what the rule warns about: a decoder that is right on
-  every file anyone tries and wrong on one padding case, which compiles, reads
-  plausibly and passes every test somebody thought to write. It also has to
-  decide what to do with the things real exporters emit — whitespace inside the
-  payload, a missing `;base64` for a plain-text URI, percent-encoding.
-- **(c) Keep refusing, and say so better.** The current message already tells
-  the user to re-export as `.glb` or keep the `.bin` beside the `.gltf`, which
-  is honest and actionable. Costs nothing and closes nothing.
-
-**Worth knowing before choosing:** whichever way this goes, the payload is
-untrusted input from a file the user was handed, so the decoder needs a length
-bound before it allocates — `crcbl-sprite`'s PNG path already refuses a tiny
-file declaring a huge size, and this wants the same treatment. That argues
-mildly for (a), since a maintained crate has already been made to care.
+**DECIDED 2026-09-06 —** option (a): the `base64` crate, with a decoded-length
+bound checked before allocation. It is the ecosystem's decoder, and a `data:`
+URI in a glTF file is untrusted input whose declared length must not be believed
+into an allocation. It schedules the dependency, the bound and the importer path
+that uses them.
 
 ### glTF reaches the renderer — what it still cannot open
 
@@ -11270,30 +8048,6 @@ whether `crcbl-webgpu` names the adapter it opened is unchecked.
 lines come from `contentscript.js` / `inpage.js` — a MetaMask content script
 injected into the page. Unrelated to crcbl.
 
-### The debug markers have no browser probe, and probably never can
-
-`begin_debug_label`, `end_debug_label` and `insert_debug_marker` are wired and
-covered by the node replayer's stubs, but **nothing drives them against a real
-browser**, and this is not a gap waiting on effort. WebGPU gives a page no way
-to observe them: the three calls return nothing, change no resource, and are
-readable only inside a native capture tool attached to the browser process. A
-probe group would therefore encode them and then assert the frame still
-submitted — a check that passes identically whether they were replayed or
-dropped.
-
-**The reasoning now lives in the code**, in a block comment above
-`Replayer#debugScope` in `web/engine/gpu-replay.js`, which is where a reader
-asking "why is there no group for these?" arrives. It also names what _is_
-checked without a browser: `web/tools/gpu-replay.mjs` replays all three against
-a stub device whose encoder, render pass and compute pass objects each record
-their own debug calls, so a push landing on the wrong object — the unbalanced
-group that costs a real `finish()` — fails there by name. Delete that comment,
-and this entry, if a WebGPU extension ever reports recorded markers back.
-
-The `dispatch_indirect` half of this entry **shipped** as probe group AG, which
-reads the three workgroup counts back per axis rather than asserting a dispatch
-happened.
-
 ### The sRGB encode is still unproven on dx12's and Metal's presented path
 
 The swapchain now must offer an sRGB format and `preferred_format` must pick it,
@@ -11312,13 +8066,6 @@ Two gaps remain in the same bug class:
   that can reach one here. Both are DEFERRED, so this stays open by that
   decision rather than for want of a harness shape — the shape is settled and
   the vk copy is the template.
-
-### The apt cache does not close the mirror window
-
-`.github/actions/apt-packages/action.yml` tries its cache before the network and
-carries the current worst-case timing in comments beside the code, which is the
-copy to read. What none of it fixes: the first run after a cache eviction still
-needs the mirror, so the cache narrows the outage window rather than closing it.
 
 ### The seam audit — where the seam is not backend agnostic
 
@@ -11414,7 +8161,7 @@ everywhere: `CommandEncoder` has no begin/end-query verb, so nothing recorded
 through this seam can write an occlusion result on any backend. **That second
 one turned out to be worse than unfalsifiable and now has an entry of its own**
 — the read returns `[0, 0]`, which for this query means "nothing was visible".
-See "DECISION NEEDED — occlusion queries".
+See "DECIDED — occlusion queries" below.
 
 **Checked and genuinely uniform**, so not concerns: `MemoryLocation`, the
 stencil read/write masks, push-constant alignment, `present_id`
@@ -11422,23 +8169,11 @@ non-monotonicity, `PolygonMode::Line`, `DepthClamp`, `SamplerAnisotropy`, and
 the no-op present verbs (decided deliberately, with the caller handed a feature
 bit to check).
 
-### The nanosecond refactor is validated on every backend CI can run
-
-Worth recording because the change was landed with a "dx12 and Metal are
-type-checked only" caveat, and CI settled it in one run: `mtl e2e`, `dx12 e2e`,
-`wgpu e2e` and the cross-backend image compare all passed on the first attempt.
-
-The strongest single piece of evidence is dx12's
-`d3d12_timestamps_advance_and_both_read_paths_report_the_same_ticks`, which
-**passed on WARP**. It holds `resolve_query_set`'s GPU-side tick copy against
-`query::timestamp_nanos` of the `query_results` read — so it fails both a path
-reaching a different heap, range or stride _and_ a `query_results` that forgot
-to convert. That is exactly the asymmetry the refactor introduced, checked on a
-real device rather than reasoned about.
-
-So the caveat is retired: the only unexercised half is Metal's, and that is
-because Metal still refuses timestamp query sets entirely, not because the
-conversion is unproven there.
+**DECIDED 2026-09-06 —** there is no pre-check verb:
+`can_create_pipeline_layout` is not added, and construct-and-refuse remains the
+contract. Neither Vulkan, D3D12 nor WebGPU offers a fit query, so a seam verb
+would be answering a question no backend can be asked. Closed; nothing is
+scheduled.
 
 ### Metal's query rows: one of the two reasons is now retired
 
@@ -11465,51 +8200,11 @@ One asymmetry the removal forced into the open and left there:
 destination holds device units while `query_results` returns nanoseconds. Both
 calls now say so. A seam that wanted symmetry would have to convert in a shader.
 
-### The Metal ICB line of attack, and why it is closed
-
-Kept because it cost four CI runs and the conclusion is worth not re-deriving.
-`Capability::DrawIndirectCount` on Metal was attempted three times as an
-**indirect command buffer** and hung the GPU every time — the same three
-`render_e2e` goldens, with every encoder reporting `completed` and no API
-violation in 8 MB of validation log:
-
-| attempt | change                                                         | result           |
-| ------- | -------------------------------------------------------------- | ---------------- |
-| 1       | `executeCommandsInBuffer:withRange:`                           | Hang             |
-| 2       | execution range read from GPU memory                           | Hang             |
-| 3       | + blit `optimizeIndirectCommandBuffer` between kernel and pass | Hang, ~3x slower |
-
-The isolated ICB probes pass on that exact device — a kernel encodes an ICB and
-the ICB executes — so the mechanism works and something about a full frame does
-not. **Nothing ever localised it**, and the `try/mtl-icb-indirect-range` branch
-that held the reproduction is on neither this checkout nor the remote any more,
-so reproducing it means writing it again from the table above.
-
-**What shipped instead needs no ICB at all**, and that is the lesson: the
-backend already issued plain indirect draws on a path that passed on this
-runner, and a GPU-side count only needs the surplus draws to become no-ops.
-`crcbl_mtl:: indirect_count` packs the arguments and zeroes the instance counts
-past the count; the pass issues ordinary draws. It went green on the first CI
-run, including the goldens that had hung three times.
-
-Look for what the backend already does successfully before building new
-machinery on top of it.
-
-**The isolated probes are intermittent, which was not known when this closed.**
-On 2026-08-20 both of them —
-`a_compute_kernel_encodes_the_draw_an_indirect_command_buffer_executes` and
-`an_indirect_command_buffer_executes_the_triangle_the_direct_draw_paints` —
-failed in run 32297440428 at `assert_ink_triangle`: "the centre of the image is
-not the triangle's colour, so nothing was drawn". The ICB executed and painted
-nothing. An hour later run 32298272395 passed the same 68-test suite with both
-of them green, on the same Metal code; the run that failed was a dx12 diagnostic
-branch whose diff touches `crcbl-dx12` and one dx12 CI step and nothing else.
-
-So "the isolated ICB probes pass on that exact device" is true on average rather
-than every time, and the sentence above should be read that way. It makes the
-decision already taken safer rather than shakier: a mechanism whose smallest
-probe silently draws nothing on some runs is not one to have built the indirect
-count on, and `crcbl_mtl::indirect_count` does not.
+**The blocker count in this entry is stale** (re-checked 2026-09-06):
+`REVIEWED_BLOCKERS` in `crates/crcbl-hal/src/capability.rs` holds six rows — two
+`Dx12` and four `Metal` — not eight, and
+`the_parity_blockers_are_exactly_the_reviewed_list` is what keeps that honest.
+The reasoning above is unaffected.
 
 ### The Metal mesh slice is written and has never executed (2026-08-20)
 
@@ -11573,6 +8268,9 @@ has run.
 
 ## DEFERRED — D3D12 registers are assigned by counting, and the mesh path collides
 
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/backends.md` under this heading.
+
 **Found 2026-08-21 while building the cluster-shader probe, by checking an
 assumption rather than by running anything.** It is almost certainly the WARP
 device removal, and it is ours rather than Microsoft's.
@@ -11619,27 +8317,11 @@ completes, which is why DRED reports **zero** breadcrumbs. Vulkan is unaffected
 because SPIR-V uses the `[[vk::binding]]` numbers directly and never counts.
 Nobody has seen it on hardware D3D12 because nobody has run the mesh path there.
 
-**The options, and the trade-off is real:**
-
-- **(a) Make the two shaders declare the same binding set.**
-  `mesh_cluster.slang` gains the rows it does not use and `mesh.slang` gains the
-  mesh-path rows, so both files' declaration order matches one layout. Cheapest
-  to reason about and needs no change to `crcbl-dx12`. The cost is dead
-  declarations in both files that exist only to hold a register position, and
-  nothing stops the next shader from drifting again — the invariant stays
-  unenforced.
-- **(b) Make registers follow the binding number instead of the count.** Emit
-  `register(t17)` from `[[vk::binding(17)]]` so both sides agree by construction
-  and a layout that omits a row cannot shift anything. This is what the
-  collision argues for and it cannot rot. The cost is every shader gains
-  explicit register annotations, `binding::ranges` and `root::assign_registers`
-  change shape, and register numbers become sparse — root signatures grow
-  descriptor ranges with gaps, which is legal but is a real change to how every
-  D3D12 pipeline is built.
-- **(c) Give the mesh path its own fragment shader in `mesh_cluster.slang`.**
-  Removes the cross-file half of the problem, leaving only the layout-vs-source
-  question that (a) or (b) still has to answer for a single file. Not a fix on
-  its own.
+**DECIDED 2026-09-06 —** option (b): registers follow the binding number, with
+explicit `register(tN, spaceM)` emitted from it. naga's HLSL backend and every
+Slang or DXC multi-backend engine do the same, because counting is what collides
+the moment a stage's binding set differs. The work stays deferred with dx12; the
+decision is taken so it does not have to be retaken.
 
 **Whatever is chosen, it needs a gate that fails**, because nothing today
 compares a layout's assigned registers against what the containers declare.
@@ -11672,22 +8354,8 @@ mesh path work.
 
 ## DEFERRED — dx12 mesh shading: WARP claims it and dies, hardware works
 
-**Deferred 2026-08-21, mid-investigation and one step from the answer.** Work on
-`crcbl-dx12` and `crcbl-mtl` is stopped by the owner's decision; see
-`docs/plan/09-backends-metal-dx12.md`. Everything below stands and the state is
-resumable, so this records the exact next step rather than leaving it to be
-re-derived.
-
-**Where it got to.** Seven probes narrowed the removal from "the renderer's mesh
-path" to one shape: **a mesh pipeline with zero render targets**. The same mesh
-stages draw with a colour target; the same depth-only pass draws over a vertex
-pipeline; a depth attachment cleared and copied back with no pipeline at all
-draws. Only the combination fails.
-
-**One hypothesis was tested and is dead.** Presenting the pixel-shader subobject
-empty rather than omitting it — matching the raster path — changed nothing: run
-32421732642 removed the device exactly as before. That change stayed anyway, as
-consistency, and its comment says it is not the fix.
+**The investigation is recorded in `docs/notes/backends.md` under this
+heading.** What stays here is the step it stopped one move short of.
 
 **The next step, for whoever picks this up.** `NumRenderTargets = 0` with an
 all-`UNKNOWN` `RTFormats` array is what the failing pipeline hands
@@ -11696,461 +8364,6 @@ beside it. The cheap probe is a mesh pipeline with **one dummy colour target
 that nothing writes**, keeping the depth attachment and `fragment: None`: if it
 draws, zero render targets is the trigger and the fix is in `crate::pipeline`'s
 mesh stream rather than anywhere near a shader.
-
-**Two repros are in the tree**, both named in
-`crates/crcbl-dx12/tests/known-red.txt`, which `run-dx12-e2e.sh` and `ci.yml`'s
-adapter-report step both read:
-`a_depth_only_mesh_pipeline_draws_the_toy_triangle_on_this_device` is the
-minimal one, and `the_cluster_shaders_dag_descent_draws_the_cut_it_chose` drives
-`mesh_cluster.slang`'s own containers. The second one's synthetic data and
-expected values have never been checked against a device that survived, so it
-should not be trusted as a signal until the first one passes.
-
-**Option (d) has been tried, and it does not fix it.** Run 32297440428 on
-`diagnose/dx12-warp-redist` gave the runner `Microsoft.Direct3D.WARP` 1.0.20 and
-reported the mesh flags. The device was removed exactly as before.
-
-The load is verified rather than assumed: both dx12 steps log
-`driver="D3D12 UMD 1.0.20.0"`, against the OS WARP's
-`D3D12 UMD 10.0.26100.33158` that every other Windows job still reports. So the
-newest WARP Microsoft ships reproduces it.
-
-**Two things that run narrowed it.** The crate's own suite — every D3D12 device
-test, with `MESH_SHADER` and `TASK_SHADER` reported — **passed** on that WARP;
-only `render_e2e`'s frame fails. And the failure is unchanged in kind:
-`DXGI_ERROR_DEVICE_REMOVED` from `ID3D12Resource::Map`, zero debug-layer errors,
-DRED still reporting `0 command list(s) with recorded work`. The three warnings
-it does hold are `ClearDepthStencilView` perf notices about a missing optimised
-clear value, which is not this.
-
-**What that does to the options.** The entry's own bar was that a bug
-reproducing on the newest WARP is far more likely ours than theirs, so (d)
-answers (c)'s question in the direction of our defect and weakens (a) — (a)
-would report a capability on the strength of hardware evidence for a path that
-now fails on two WARP versions. It leaves (b) and (c) as the live pair.
-
-Three measurements bracket the rest of this, and they assumed the runner's WARP
-was the only WARP. That assumption is now tested.
-
-Together the measurements turn this from "our mesh path is broken" into a
-question about what to report.
-
-1. **The renderer's mesh path is correct on real hardware.**
-   `CRCBL_GPU=vk crates/crcbl/tests/run-render-e2e.sh` on an AMD RX 7900 XTX
-   (RADV NAVI31) passes 26/26, and
-   `the_cube_scene_draws_the_same_frame_on_every_geometry_path` reports
-   `cube on MeshShader against IndirectCount — 0 channel(s) differ, worst by 0`.
-   So the amplification stage descending the cluster DAG, its bind groups and
-   its indirect dispatch extents all produce a byte-identical frame through the
-   mesh path on a real GPU.
-2. **WARP reports `MeshShaderTier = TIER_1` and then loses the device** on that
-   same path, with **zero debug-layer errors** — so it is not an API misuse the
-   validation layer can see — and **zero DRED breadcrumbs**, so nothing names
-   the operation.
-3. **`crcbl-dx12`'s own mesh probe passes on that same WARP runner**, drawing
-   through a mesh pipeline and an amplification stage and reading the attachment
-   back. So D3D12-on-WARP can run _a_ mesh pipeline; it is the renderer's larger
-   use of one that kills it.
-
-**What is still not proven** is whose defect it is. (1) is Vulkan, not D3D12, so
-nothing has run `crcbl-render`'s mesh path through `crcbl-dx12` on a
-**hardware** D3D12 GPU. WARP failing where hardware succeeds is the likeliest
-reading, but a dx12-specific bug that only a software rasteriser exposes fits
-the evidence just as well.
-
-**A much narrower hypothesis, from reading the two paths rather than from new
-evidence (2026-08-21).** "The renderer's larger use of one" was never narrow
-enough to act on, and the difference turns out to be a single call:
-
-- the probe that **passes** on WARP issues `encoder.draw_mesh_tasks(1, 1, 1)` —
-  a **direct** `DispatchMesh` (`crcbl-dx12/src/device.rs`, in the mesh probe);
-- the renderer that **kills** it issues `encoder.draw_mesh_tasks_indirect(..)` —
-  an **`ExecuteIndirect`** with a `DISPATCH_MESH` command signature whose
-  extents come from a GPU-written buffer (`crcbl-render/src/forward.rs`, the
-  `EmitTail::Mesh` arm);
-- and `draw_mesh_tasks_indirect` appears in `crcbl-dx12`'s own tests exactly
-  once, in a _recording refusal_ check against an unissued handle. **Nothing has
-  ever executed an indirect mesh dispatch on WARP.**
-
-That fits the evidence that otherwise made no sense: zero debug-layer errors and
-zero DRED breadcrumbs are what a fault _inside_ WARP's `ExecuteIndirect`
-implementation would look like, before any command-list work is recorded.
-
-**The experiment is in the tree**:
-`an_indirect_mesh_dispatch_of_the_same_extents_draws_the_same_triangle` in
-`crates/crcbl-dx12/src/device.rs`. Both mesh tests now go through one shared
-`MeshProbe`, so the difference is structural rather than two copies staying in
-step: same module, layout, bind group, attachment and one workgroup, and the
-_only_ thing that varies is the dispatch closure — `draw_mesh_tasks(1, 1, 1)`
-against `draw_mesh_tasks_indirect` reading three `u32`s from a device-local
-buffer in `ResourceState::IndirectArgument`.
-
-It asserts the same three texels the direct probe does, and the centre one is
-what makes a pass mean something: a device that survived the dispatch and
-executed nothing still leaves the clear there. There is deliberately no skip,
-catch or tolerance that would let it pass on a device that removed itself.
-
-`MeshProbe::frame` also calls `still_alive` between the submit and the readback,
-so a removal surfaces as `GetDeviceRemovedReason` plus DRED breadcrumbs against
-the frame's label rather than as `ID3D12Resource::Map failed` —
-`DXGI_ERROR_DEVICE_REMOVED` is reported at the next call, and the `Map` was that
-call.
-
-**It passed. `ExecuteIndirect(DISPATCH_MESH)` works on WARP**, run 32405… —
-`PASS [0.109s] (41/79)`, confirmed by name in the job log rather than inferred
-from a green job. So the hypothesis is dead and one suspect is gone. That job
-also prints what WARP claims: `MeshShaderTier = 10 (TIER_1)` and
-`highest shader model by descending probe = 6.8`.
-
-**What that leaves, and the next step is already in the tree.** The passing test
-used `task: None` — a mesh stage with **no amplification**. The renderer uses an
-amplification stage _and_ an indirect dispatch, and that combination had still
-never run.
-`an_indirect_dispatch_through_the_amplification_stage_draws_the_same_triangle`
-drives it, so all four combinations of {direct, indirect} × {mesh only,
-amplified} are now covered here and the last one is the smallest step from a
-frame WARP survives to the frame it does not.
-
-**It passed too**, `PASS [0.101s] (39/80)`, again confirmed by name in the job
-log. So **the pipeline shape is eliminated entirely**: WARP survives every
-combination of {direct, indirect} × {mesh only, amplified}.
-
-**Two suspects down, and the search is now about size or content rather than
-shape.** Each of those four dispatches **one** group; `crcbl-render`'s frame
-dispatches one per (cluster, surviving instance).
-`many_indirect_amplification_groups_do_not_remove_the_device` asks a single
-`ExecuteIndirect` for `MANY_GROUPS` (1024) amplification groups — well inside
-D3D12's bound of 65535 per axis and 2^22 in product, so it is a size a
-conforming device must serve rather than a limit being probed.
-
-**It passed as well** — `PASS [0.084s] (54/81)`, 1024 amplification groups
-through one `ExecuteIndirect`, no removal. **So shape and scale are both
-eliminated**, on three negative results and no hardware.
-
-**DECIDED (2026-08-21) — (a), grow the probe shader toward the real one.** The
-owner chose the bisect over shipping the capability and letting the renderer's
-frame fail, so every step is a shader plus a test and each answer stays clean.
-(b) is not refused, only deferred: it re-keys every D3D12 golden before any
-diagnosis starts, and that cost does not shrink by waiting.
-
-**One suspect on that list was wrong, and the probes already say so.**
-`mesh_shader.slang`'s `taskMain` builds an `Amplification` payload and passes it
-to `DispatchMesh`, and `amplifiedMeshMain` reads it back through `in payload` —
-so an amplification payload rides through both passing amplified probes. It is
-not a difference between the frames WARP survives and the one it does not, and
-the list below no longer names it.
-
-**Fourth negative result: a zero-group `DispatchMesh`.** `mesh_cluster.slang`'s
-`taskMain` ends `DispatchMesh(keep, 1, 1, payload)` where `keep` is `0` on a
-culled cluster, so the renderer asks D3D12 to dispatch **nothing** on every
-frame that culls anything — and no probe had ever asked for that.
-`a_zero_group_dispatch_mesh_does_not_remove_the_device` drives
-`zero_dispatch_probe.slang`'s `culledTaskMain`, which dispatches one mesh group
-for odd `SV_GroupID` and none for even, so both arms run inside one
-`ExecuteIndirect`. **It passed** — `PASS [0.095s] (37/82)` on run 32410198419,
-confirmed by name in the job log. So a zero dispatch count is not it either.
-
-**Fifth negative result: storage writes from the amplification stage.**
-`task_write_probe.slang`'s `writingTaskMain` does an atomic `count[0].add(1u)`
-on odd groups and a plain `slots[group.x] = group.x + 1u` on even ones, the two
-write kinds `mesh_cluster.slang`'s `taskMain` performs before it dispatches.
-`storage_writes_from_the_amplification_stage_do_not_remove_the_device` asserts
-the buffers rather than survival — the counter holds half the groups, and the
-untouched odd slots still hold the priming sentinel, which is what shows the
-branch branched. **It passed** — `PASS [0.122s] (56/83)` on run 32412768533.
-
-**Two more suspects died on reading `mesh_cluster.slang` rather than on a
-probe**, and both were this entry's own guesses:
-
-- **There is no `groupshared` in it.** Not in the amplification stage, not in
-  the mesh stage, nowhere in the file. It was never a difference.
-- **It is not bindless.** No unbounded array is declared anywhere in it; the
-  texture binding is a `Texture2DArray<float4>` with a `SamplerState` beside it.
-  "The bindless descriptor heap the toy shader does not touch" described
-  something the real shader does not touch either.
-
-**What actually still differs**, measured:
-
-- **23 `[[vk::binding]]` declarations against the probe's one or three**, and
-  with them a much larger root signature, plus a **texture and a sampler** — the
-  probes bind storage buffers alone.
-- **The cluster-DAG descent**, which is the only real control flow in either
-  stage, and a task-stage DXIL of 10,992 bytes against the probe's 2,648.
-- **The mesh-specific part of the frame** — the draw-gen pass that writes the
-  indirect args for this path.
-
-**And one thing is exonerated by a run nobody set up for it:** WARP renders the
-whole of `render_e2e`'s non-mesh path, with the same materials, textures,
-culling compute pass and several draws per frame. So "the rest of the renderer's
-frame" is only a suspect where it is _mesh-specific_.
-
-**Driving `mesh_cluster.slang` itself reproduced the removal.** The probe ran
-its own containers, 22 bindings, a texture, a sampler and a real DAG descent
-through an `ExecuteIndirect`, and WARP removed the device with the renderer's
-exact signature — so **there is now a repro with no renderer in it**, on
-run 32416192662. It was reverted from `main` rather than left red (`cd1f653`);
-the patch is recoverable from `76939d0`.
-
-**ANSWERED, and it is not either shader.** `mesh_cluster.slang` has no fragment
-stage, so that probe took `depth_pipeline`'s shape — `fragment: None`, no colour
-targets, a `D32Float` depth attachment as the observable — and `crcbl-dx12` had
-never built a depth-only mesh pipeline or copied a depth image back. The
-discriminator drove that same shape with `mesh_shader.slang`'s **toy** stages,
-the ones six colour-target probes pass on, through the same indirect amplified
-dispatch.
-
-**The toy died too**, on run 32418483641, with the identical signature:
-`ID3D12Resource::Map failed … DXGI_ERROR_DEVICE_REMOVED`, DRED reporting
-`0 command list(s) with recorded work`.
-
-So the defect is **the depth-only mesh pipeline**, not the cluster shader, not
-the DAG descent, not the 22 bindings, and not the register skew. The same stages
-draw correctly the moment there is a colour target and a fragment stage. Both
-probes are kept and both are named in `crates/crcbl-dx12/tests/known-red.txt`,
-which `run-dx12-e2e.sh` and `ci.yml`'s adapter-report step both read and which
-announces them on every run.
-
-**That also explains the renderer**, which is the part worth noticing: the mesh
-frame does not fail somewhere exotic. `ForwardRenderer` renders its shadow
-cascades through `depth_pipeline` — depth-only, no colour target — so on the
-mesh path it builds exactly the pipeline these two probes build, every frame.
-
-**What is still not separated**, and it is three cheap probes rather than one:
-
-- **the `D32Float` readback itself** — clear a depth image and copy it back with
-  no pipeline at all. If that removes the device, none of this is about mesh
-  shading and `plan_copy`/`copy_footprint_format` is where to look;
-- **`fragment: None` on a mesh pipeline** — the same mesh stages with a fragment
-  stage and a colour target _plus_ a depth attachment. If that draws, the empty
-  fragment stage is the trigger;
-- **depth-only on a raster pipeline** — the same depth-only shape with an
-  ordinary vertex pipeline. If that draws, it is the combination of mesh and
-  depth-only rather than either alone.
-
-**What is no longer in question**: WARP's `ExecuteIndirect` of `DISPATCH_MESH`,
-its amplification stage, both together at a thousand groups, a dispatch count of
-zero, and an atomic plus a plain store from that stage all work. Anything that
-begins "WARP cannot do mesh shading" is contradicted by the probes in
-`crates/crcbl-dx12/src/device.rs`.
-
-**Worth stating because it is the shape of the whole exercise:** every one of
-these is a _negative_ result, and each is still progress. The entry started at
-"the renderer's larger use of one kills it", which named no call; it is now
-"every pipeline shape survives at one group, and here is the next variable".
-None of it needed hardware nobody has — only a test that runs where the failure
-lives.
-
-So the decision:
-
-- **(a) Withhold `MESH_SHADER` on software adapters and report it on hardware.**
-  Exactly the shape `crcbl_mtl::quirk` already uses — that module's rule is that
-  a quirk needs a measurement contradicting an unconditional API guarantee, and
-  says what was measured, on which device, and what every other device does. It
-  closes two blockers (nine rows to seven). The price: CI would report a
-  capability **no CI job can ever exercise**, since every dx12 job is WARP. That
-  is a real loss — it is the failure mode the parity mechanism exists to prevent
-  — and it should be a deliberate choice, not a side effect.
-- **(b) Keep both rows withheld** until a hardware Windows GPU can run them.
-  Honest, costs two blockers that may never close on the hardware this project
-  has, and matches how Metal's four unprovable rows are already treated.
-- **(d) Give the runner a newer WARP — tried 2026-08-20, and it did not fix
-  it.** Kept because the reasoning is what makes the result mean something.
-  Microsoft ships WARP as a NuGet redistributable,
-  [`Microsoft.Direct3D.WARP`](https://www.nuget.org/packages/Microsoft.Direct3D.WARP)
-  (1.0.20, 28 May 2026), precisely so a developer can "try out changes or
-  improvements to WARP without having to fully update your Windows operating
-  system". **Two of its release notes land on this symptom:**
-  - **1.0.12 — "Fix mesh shaders on Win11 retail D3D12."** The retail OS D3D12
-    stack had a mesh-shader defect that the redistributable fixes. Our dx12 jobs
-    run the OS WARP.
-  - **1.0.20 — "Don't remove the device on free-threaded DDI failures."** A
-    device-removal fix, and device removal with no debug-layer error and no DRED
-    breadcrumb is exactly measurement (2) above.
-
-  Earlier notes also mention fixes for root-signature visibility for
-  amplification and mesh shaders, and for uninitialized memory affecting
-  amplification shaders. Measurement (3) — the small mesh probe passes while the
-  renderer's larger mesh path kills the device — is the shape a root-signature
-  or uninitialized-memory bug would take.
-
-  **The mechanism is cheap**: per Microsoft's WARP guide, "simply place
-  `D3d10warp.dll` next to your application .exe file". No Agility SDK, no code
-  change, no `EnumWarpAdapter` change. The practical wrinkle is that cargo runs
-  test binaries out of `target/<profile>/deps/`, so the copy has to land beside
-  whichever executable the job runs, not beside the crate.
-
-  **The constraint, stated because it is a real one:** the same guide says these
-  DLLs "cannot be redistributed, as there is no guarantee that future versions
-  of Windows will maintain compatibility with them". Fetching one in CI for
-  testing is the documented use; shipping it to users is not, and nothing here
-  would.
-
-  **Why this dominates (a) if it works.** Option (a)'s price is reporting a
-  capability _no CI job can ever exercise_. If a newer WARP survives the mesh
-  path, both rows close **and** CI exercises them — and `MeshShading` and
-  `TaskShaderStage` become drivable in `tests/hal_seam_e2e.rs`, taking its
-  coverage from 21 of 24 to 23. If it does **not** survive, that is (c)'s answer
-  arriving for the price of one CI run: a bug reproducing on the newest WARP
-  Microsoft ships is far more likely to be ours than theirs.
-
-  **Tried, and the harness is kept.** Branch `diagnose/dx12-warp-redist` carries
-  both halves — the unconditional `MESH_SHADER | TASK_SHADER` in `features_of`
-  with the three geometry-path assertions neutralised, and the CI step that
-  fetches the redistributable and copies `d3d10warp.dll` beside the test
-  binaries in `target/debug` and `target/debug/deps`. Run it with
-  `gh workflow run ci.yml --ref diagnose/dx12-warp-redist`; it is expected red
-  and the job log is the deliverable. Never merge it. It is rebuilt on main
-  rather than on the older `diagnose/dx12-mesh-device-removal`, which is far
-  enough behind that a result off it would say nothing.
-
-- **(c) Narrow it first.** Build a smaller repro on WARP — the amplification
-  dispatch alone, then with the DAG descent, then with the real bind groups —
-  until one of them removes the device. That would say whose bug it is, which is
-  what actually decides between (a) and (b). Costs a Windows debugging session
-  measured in CI round trips rather than minutes, since nothing local can run
-  it.
-
-My reading is (c) then (a) or (b) on what it finds, because (a) taken now is
-reporting a capability on the strength of a _different backend's_ evidence.
-
-**The harness for (c) already exists**: branch
-`diagnose/dx12-mesh-device-removal`, pushed and kept deliberately. It reports
-`MESH_SHADER` unconditionally from `features_of` and neutralises the two
-assertions that would otherwise fail the dx12 job before it reaches its "Draw a
-frame through ForwardRenderer on WARP" step. Run it with
-`gh workflow run ci.yml --ref diagnose/dx12-mesh-device-removal`; it is expected
-red, and the job log is the deliverable. Never merge it.
-
-The two hypotheses eliminated by reading are unchanged and still worth not
-re-testing: the indirect argument size is right (`IndirectKind::DispatchMesh`
-reports the 12 bytes `D3D12_DISPATCH_MESH_ARGUMENTS` wants), and the asymmetric
-resource states on the mesh path are deliberate, not a bug.
-
-### Reporting dx12 mesh shading removes the WARP device — measured, then reverted
-
-**This was attempted and reverted, and the reason is a real defect rather than a
-CI accident.** Reporting `Features::MESH_SHADER` from
-`D3D12_FEATURE_DATA_D3D12_OPTIONS7::MeshShaderTier` routes `crcbl-render` onto
-`GeometryPath::MeshShader` for every D3D12 adapter. On WARP the frame then never
-completes:
-
-```
-the cube frame renders on MeshShader: HAL: ID3D12Resource::Map failed:
-The GPU device instance has been suspended. Use GetDeviceRemovedReason to
-determine the appropriate action. (0x887A0005)
-```
-
-`0x887A0005` is `DXGI_ERROR_DEVICE_REMOVED`. Four `render_e2e` tests fail that
-way — `the_cube_scene_draws_the_same_frame_on_every_geometry_path`, the same for
-`ao`, and both scenes' golden tests — and every one of them fails inside
-`draw_and_readback`, so **the frame never renders**; no pixel is ever compared.
-
-**The narrowing that matters:** `crcbl-dx12`'s own
-`a_mesh_pipeline_draws_through_d3d12_and_its_amplification_stage_is_visible`
-**passes on the same WARP runner**, drawing through a mesh pipeline and an
-amplification stage and reading the attachment back. So the backend's mesh
-pipeline is not broken in general. What removes the device is `crcbl-render`'s
-mesh path specifically — the amplification stage descending the cluster DAG, its
-bind groups, and its dispatch sizes — none of which the probe exercises.
-
-**Both of the hypotheses this entry used to list are now eliminated by reading,
-and so is a third**, which matters because each would otherwise cost a Windows
-session:
-
-- **A `DispatchMesh` group count past TIER_1's ceiling.** The extents are
-  `draw_gen.slang`'s: `MESH_ARG_GROUP_X` is `bucket_clusters(index)`,
-  `MESH_ARG_GROUP_Y` is the surviving-instance count, `MESH_ARG_GROUP_Z` is `1`.
-  D3D12 allows 65535 per dimension and 2^22 as a product; the ao and cube
-  fixtures have single-digit clusters and instances. Not close.
-- **A payload larger than the amplification-stage limit.** `ClusterPayload` is
-  **two `uint`s — eight bytes** — against D3D12's 16 KB. The struct exists
-  precisely so the mesh stage re-reads from buffers rather than copying a
-  record, which is why it is this small.
-- **A stale or uninitialised Y extent.** Plausible, since `MESH_ARG_GROUP_Y` is
-  accumulated by atomic add and would be last frame's value if nothing reset it.
-  `clear_counters.slang` does zero it every frame, and says so where it does.
-
-So the remaining space is narrower and nastier than "some limit is exceeded":
-whatever removes the device is not a count, a size, or an uninitialised word.
-`crcbl-dx12`'s own mesh probe passing on the same WARP runner already said the
-mesh _pipeline_ is fine, so what is left is the interaction — the amplification
-stage descending the cluster DAG, its bind groups, and the indirect dispatch —
-none of which the probe exercises. Confirming any of that needs a Windows
-machine, which nothing here has.
-
-**Two hypotheses have been eliminated by reading, so nobody spends a Windows
-session on them:**
-
-- **The indirect argument size is right.** `IndirectKind::DispatchMesh` reports
-  12 bytes, which is `D3D12_DISPATCH_MESH_ARGUMENTS`' three `u32`s exactly. A
-  wrong stride here would have produced garbage thread-group counts, which is
-  the most obvious route to a removal.
-- **The resource states are right, and deliberately asymmetric.** On the mesh
-  path `crcbl-render`'s forward pass declares `draws.args_id` as a **shader
-  read** and `draws.counts_id` as `ResourceState::IndirectArgument`, while the
-  lesser path declares both as `IndirectArgument`. That looks like a bug and is
-  not: the mesh path reads the draw arguments as shader data and executes its
-  thread-group extents out of the _counts_ buffer, which is what
-  `draw_mesh_tasks_indirect` is handed (`args: draws.counts`). The two live in
-  different buffers precisely because a resource holds one state per pass, and
-  the code says so where it splits them.
-
-Also checked: the command signature passes no root signature, which is correct
-for a `DISPATCH_MESH`-only layout — that argument kind writes no root argument,
-so D3D12 requires null there.
-
-**The next attempt should name the operation rather than the `HRESULT`.**
-`crcbl_dx12::dred` now forces DRED auto-breadcrumbs on before the first device
-is created and prints them beside `GetDeviceRemovedReason`, so a re-run of the
-reverted commit on the WARP runner should say which command list stopped and on
-which operation — `DISPATCHMESH` versus the `ExecuteIndirect` after it versus a
-barrier is most of the narrowing above, answered from a CI log. That has **not**
-been observed: see the DRED entry below for what is unverified about it.
-
-**Why it is a revert and not a workaround.** Gating the report on the adapter
-name would hide a real defect behind CI's specific device, and the flag is
-either honest or it is not. `crcbl-vk` proves the paths _can_ agree: on an RX
-7900 XTX the same test draws `MeshShader` against `IndirectCount` with **0
-channels differing, budget 0**. dx12 must reach the same bar.
-
-**What the attempt is worth keeping for.** The implementation, the tier+shader
-model gate (`TIER_1` and SM 6.6 together, because the committed DXIL is built at
-`6_6`), the `FeatureQuery` move out of `mod tests`, the `instance.rs` derivation
-assertion, and the seam exercise are all written and reviewed; the revert is
-`6fe2d41` and they can be recovered from it rather than rewritten. The blocking
-question is only the device removal.
-
-### DRED has now run, and WARP records nothing
-
-Settled by a throwaway branch that re-reported `Features::MESH_SHADER` and let
-one CI run reach the removal. Three of this entry's four open questions are
-answered:
-
-- **`D3D12GetDebugInterface` does answer for
-  `ID3D12DeviceRemovedExtendedDataSettings` on a stock `windows-latest` runner
-  with no Graphics Tools feature.** `crcbl_dx12::dred` logged "DRED
-  auto-breadcrumbs and page-fault reporting are on". The module docs' argument
-  for enabling it unconditionally rather than behind `CRCBL_DX12_VALIDATION`
-  holds.
-- **Breadcrumbs are NOT populated on WARP.** The report reads
-  `DRED auto-breadcrumbs: 0 command list(s) with recorded work` on a genuinely
-  removed device. This was listed here as the thing worth finding out, and the
-  answer closes the avenue: DRED cannot name the failing operation on a software
-  adapter. It costs nothing and stays enabled — on a hardware Windows GPU it is
-  still the right tool.
-- **The walk survives**: it ran against a real removed device and returned a
-  report rather than faulting, though with an empty history it dereferenced
-  little.
-
-Still unknown: the `IN FLIGHT` marker's off-by-one, which needs a driver that
-actually writes breadcrumbs.
-
-**What the run also fixed.** The diagnosis never reached the caller: a readback
-`Map` failure raised a bare `HalError::Backend`, and `debug::diagnosis` was
-attached only to `Signal`, the fence waits and the submit paths. A `Map` is
-where a removal surfaces, since it is the first call touching memory the GPU was
-writing. All three `Map` sites now carry it. That is why the first two
-diagnostic runs printed nothing but `0x887A0005`.
 
 ### dx12 mesh shading: the calls exist, the flag does not
 
@@ -12219,121 +8432,8 @@ or redefine the capability in terms of the reported feature rather than the
 callable surface — which would weaken what it asserts for every backend to
 accommodate one, and is worth naming only to reject.
 
-### Nothing in `crcbl-render` uses push constants
-
-`exercise_push_constants_on_graphics` in `crates/crcbl/tests/hal_seam_e2e.rs`
-closed the coverage gap this entry used to record: it draws twice in one render
-pass with different `push_constant_raster.slang` blocks and asserts each draw
-saw its own, with the vertex stage taking its rectangle from the block and the
-fragment stage its colour. Verified on vk against real hardware (RADV Navi31).
-
-**The Metal and dx12 arms have since run green.** They were type-checked only
-when this was written — `--target aarch64-apple-darwin` and
-`--target x86_64-pc-windows-msvc` — and CI has run them since: the seam reports
-`PushConstants supported` on both, and push constants are absent from each run's
-unexercised list, which is the print that would have said otherwise. Three
-pieces of arithmetic ran there for the first time, and none was wrong:
-
-- `crcbl_mtl::argument::plan` computing a block index for a layout with **no
-  bind groups at all**. The index is zero, and `msl/push_constant_raster.metal`
-  puts the block at `[[buffer(0)]]` in both entry points, but no push constant
-  has occupied index 0 before — `push_constant_probe`'s sits behind one binding.
-- `crcbl-mtl`'s **render** arm of `push_constants`, which records
-  `RenderCommand::PushConstants` with a `Vec<u8>` copy and replays it as
-  `setVertexBytes:`/`setFragmentBytes:`. That copy is exactly what the second
-  draw's assertion is about, and nothing had ever made two draws either side of
-  a `push_constants` on Metal.
-- `crcbl_dx12::conv::shader_visibility` resolving `VERTEX | FRAGMENT` to
-  `D3D12_SHADER_VISIBILITY_ALL`, and `push_constants` taking its
-  `SetGraphicsRoot32BitConstants` branch rather than the compute one.
-
-**`crcbl-render` still passes `push_constants: None`** at every render-pass site
-it has, so the renderer never exercises the path in anger and the seam suite is
-the only thing that does. Not a defect — recorded so the closed coverage gap is
-not read as the engine having started using push constants.
-
-### An unwritten timestamp query does not read back as zero
-
-Measured while closing the render-only gap above (now closed — the exercise
-times a compute pass beside the render one). With the compute pass's
-`timestamp_writes` removed so queries 2 and 3 are never written, `query_results`
-over the whole set came back **all four zero on vk — including the render pair
-that was written**. Vulkan zeroes the entire read when any query in the range is
-unavailable rather than reporting per query.
-
-Two consequences worth keeping:
-
-- **Zero is not a per-query sentinel.** A test priming its destination and
-  checking "did this query get written" cannot rely on the others surviving. The
-  timestamp exercise primes with `QUERY_POISON` _and_ checks zero, because which
-  one an unwritten query keeps is the backend's business.
-- **The whole-range zero is why the render branch fires first there.** The
-  compute pair's own assertion is unreachable on vk for that particular break —
-  it exists for the asymmetric case where a backend writes one pass kind and
-  drops the other, which is exactly what `crcbl-webgpu`'s separate
-  `begin_compute_pass` encoding makes possible and nothing else would catch.
-
-### DECIDED — the `crcbl-wgpu` deletion bar, and quarry is next
-
-Answered by the owner on 2026-08-19.
-
-**quarry (S4C) is the next demo.** Started.
-
-**`crcbl-wgpu` goes when every feature is implemented on the other backends and
-the golden comparisons no longer need it.** One wrinkle to make that checkable:
-"every feature on every backend" can never be literally true while rows are
-`ApiAbsence` — `BufferFillWord` has no encoding on Metal, whose
-`fillBuffer:range:value:` takes a byte, nor on WebGPU. The workable reading is
-**`parity_blockers()` empty** — which excludes `ApiAbsence` by construction and
-is already the query the snapshot test guards — **plus** the separate condition
-that `cross-backend-e2e` no longer needs wgpu as its comparison oracle.
-
-**That second half is measured now.** `web/run-cross-backend-e2e.sh` compares
-the browser against vk (`--reference vk`, two scenes excused by name with
-`--expect-fail ssr,ui`) and runs in `pages.yml`, so a replacement oracle exists
-and is exercised. The old vk↔wgpu comparison still runs from `ci.yml`; retiring
-it is the mechanical part. What is left of the bar is the first half —
-`parity_blockers()` is not empty, and its rows are dx12's two mesh rows and
-Metal's four, none of which "measured unprovable" empties, because the decided
-bar asks for empty rather than for explained.
-
-### `DivergenceKind::Declined` is gone too, and can come back
-
-The two dx12 valued fills were the only `Declined` rows in the whole table, so
-removing them emptied the kind and `every_kind_describes_at_least_one_real_row`
-failed — the same rule that retired `Unclassified` earlier the same day. Its
-reasoning is worth keeping: **expressible, and deliberately not done**, where
-the reason says what was chosen instead and why that was enough. It blocked
-parity all the same, because the decline was _ours_ and a caller who needs the
-thing can overturn it, which is exactly what an `ApiAbsence` row can never be.
-
-`DivergenceKind` is now `ApiAbsence`, `Unwritten` and `Unrun`. Reintroducing
-`Declined` is a variant, an arm in `blocks_parity`, and an entry in that test's
-list.
-
-**Note this is a consequence, not a decision that was asked for.** Dropping the
-valued fills was; emptying a kind was what it did, and the alternative was
-weakening the test that noticed.
-
-### Three offscreen fixtures hand-roll what `GpuContext::open_offscreen` now does
-
-`GpuContext::open_offscreen` landed with `apps/quarry`'s frame test as its
-caller, and it is not the first place in the tree to open an instance, an
-offscreen surface, a device and a two-image ring in that order.
-`crates/crcbl/tests/gpu_scene/harness.rs`'s `Headless::open_at_format` and
-`crates/crcbl-vk/tests/vk_e2e/harness.rs` both do it by hand, and each carries
-its own copy of the adapter selection, the format choice and the teardown order.
-
-**Not converged in the same slice, deliberately.** Both fixtures do more than
-open a ring — a `DeviceSlot` a `finish` can empty, a validation report asserted
-clean, a pinned format checked against the caps with a divergence message — and
-none of that belongs on the engine's public context. Converging them means
-deciding which of those are fixture concerns and which are missing engine API,
-which is its own piece of work rather than a rename.
-
-What would make it worth doing: a fourth copy. Two fixtures with different
-requirements are a resemblance; a third caller needing the same extras is
-duplicated knowledge.
+**One number in this entry is stale** (re-checked 2026-09-06): there are 37
+goldens under `crates/crcbl/tests/golden/`, not 27.
 
 ### quarry (S4C): what is left is the skinned case and two reviews
 
@@ -12571,49 +8671,8 @@ than building a subsystem; the overlay is the exception.
 
 ### MEASURED — what deleting `crcbl-wgpu` does to the parity mechanism
 
-Re-derived from the tree on 2026-08-19, so the deletion is a reviewed change
-rather than a grep. Two halves: what actually references the crate, and what its
-removal does to `parity_blockers`.
-
-**One question the deletion foreclosed, and it was not on the bar.** See
-"DECIDED — the browser has no WebGL2 fallback" above. Every other item gating
-this deletion could be revisited afterwards; that one could not, because
-deleting the crate deleted the only WebGL2 path there was to build.
-
-**The code surface is five files and two manifests.** Everything else that names
-`wgpu` names it in prose. Counting only lines that are not comments:
-
-| file                                 | references                                                  |
-| ------------------------------------ | ----------------------------------------------------------- |
-| `crates/crcbl-hal/src/capability.rs` | 18 `BackendKind::Wgpu`, 1 `crcbl_wgpu`                      |
-| `crates/crcbl/src/backend.rs`        | 9 `GpuBackend::Wgpu`, 4 `BackendKind::Wgpu`, 1 `crcbl_wgpu` |
-| `crates/crcbl-hal/src/caps.rs`       | 2 `BackendKind::Wgpu`                                       |
-| `crates/crcbl/src/args.rs`           | 1 `GpuBackend::Wgpu`                                        |
-| `crates/crcbl-hal/src/error.rs`      | 1 `BackendKind::Wgpu`                                       |
-
-The manifests are the workspace root's `[workspace.dependencies]` entry and
-`crates/crcbl/Cargo.toml`'s. **`crcbl-mtl` and `crcbl-shaders` name it only in
-comments**, which confirms the earlier reading — what they owe is a reworded
-justification, not a dependency fix.
-
-**And the mechanism half, which is the part a grep does not show.** Divergence
-rows per backend, counted from `DIVERGENCES`:
-
-| backend | parity target | rows | blocking |
-| ------- | ------------- | ---- | -------- |
-| vulkan  | yes           | 0    | 0        |
-| webgpu  | yes           | 13   | **0**    |
-| metal   | yes           | 4    | 4        |
-| dx12    | yes           | 2    | 2        |
-| wgpu    | **no**        | 12   | **7**    |
-
-**The bookkeeping this entry opened is closed, and only the coverage half is
-still live** (re-checked 2026-09-02). The `crcbl-wgpu` crate is gone,
-`BackendKind::is_parity_target` with it, and `parity_blockers()` in
-`crates/crcbl-hal/src/capability.rs` now filters on
-`entry.backend.is_gpu() && entry.kind.blocks_parity()`. The prediction this
-entry made held: the blocker count is still six — two `Dx12` and four `Metal` —
-because wgpu's rows were deleted rather than closed, and WebGPU has none left.
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/backends.md` under this heading.
 
 **What is still live is coverage rather than bookkeeping: `crcbl-wgpu` was the
 only backend the native seam suite could open on Linux that refused anything,
@@ -12644,85 +8703,11 @@ _suite's_ machinery rather than any real divergence. But after the deletion the
 Linux seam job tests one direction of the parity contract and the other lives
 only on Windows and macOS runners.
 
-### MEASURED — vk↔WebGPU replaces vk↔wgpu as the cross-backend oracle
-
-**This settles the second half of the `crcbl-wgpu` deletion bar** — "we don't
-need wgpu for the golden comparisons any more". Measured on 2026-08-19, on one
-Linux machine, with pieces that all already exist:
-
-1. `crcbl screenshot --scene <name> --size 256x192` through `CRCBL_GPU=vk`
-   renders each of the eleven scenes `crcbl_render_harness::golden_names` lists
-   — the CLI's `--scene` names and that list are the same eleven strings.
-2. `web/tools/render-harness-e2e.mjs` drives the same eleven through
-   `crcbl-webgpu` in headless Chromium on SwiftShader and writes each readback.
-3. `cargo run -p render-harness --example compare-readback -- <readbacks> --golden-dir <the vk PNGs>`
-   compares them directly. `--golden-dir` is an existing flag; nothing new was
-   written to take this measurement.
-
-**The result: 9 of 11 match, and the two that do not are `ssr` and `ui` — the
-same two the browser gate already carries as `--expect-fail`.** So the direct
-cross-backend comparison agrees, scene for scene, with what is already gated.
-
-**It is a sharper instrument than the golden comparison, not a weaker one**,
-which is the property the old vk↔wgpu job was kept for:
-
-| scene    | vs the committed golden | vs vk directly    |
-| -------- | ----------------------- | ----------------- |
-| `ssr`    | 25,611 pixels differ    | **1,355**         |
-| `ui`     | 3,872 pixels differ     | **506**           |
-| `sprite` | matches                 | **0** — identical |
-
-`sprite` being byte-identical between radv and Chromium-on-SwiftShader is worth
-recording on its own: two unrelated rasterisers, one number.
-
-**The gate is built**: `web/run-cross-backend-e2e.sh`, wired into `pages.yml`'s
-`render-harness` job after the golden comparison, reusing that step's readbacks
-so the wasm build and the browser run happen once. It renders each scene through
-`CRCBL_GPU=vk` on lavapipe and compares. Verified locally against **both**
-reference drivers — radv and lavapipe — with the same 9/11 verdict either way,
-which is what says the gate measures the browser backend rather than the
-reference's rasteriser.
-
-**What it does not do.** It compares eleven scenes at one size, where the job it
-replaces compared three at two. That job is gone — it went with `crcbl-wgpu` on
-2026-08-21, and this is what stands in its place rather than beside it.
-
-The remaining half of the deletion bar is the parity blockers, all of them rows
-of hardware nobody here has. The count is deliberately not written here — it has
-been wrong in this file twice. `REVIEWED_BLOCKERS` in
-`crates/crcbl-hal/src/capability.rs` is the list, and
-`the_parity_blockers_are_exactly_the_reviewed_list` fails when it drifts.
-
 ### The render-harness job fails at browser launch about a third of the time
 
-Measured from the last eight Pages runs on `main` that were not concurrency
-cancellations: **three failed**, and the shape is always the same —
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/ci.md` under this heading.
 
-```
-render-harness-e2e: the browser never wrote DevToolsActivePort
-##[error]Process completed with exit code 2.
-```
-
-preceded by `Failed to connect to the bus` from Chromium's dbus client. Exit 2
-is the driver's own "could not run at all", so nothing was compared and no
-golden is implicated. Runs affected: `171f385`, `6228aef`, `0be6f79`; `ae0d03b`
-and `f2b8327` passed.
-
-**This matters more now than it did**, because `web/run-cross-backend-e2e.sh`
-runs in the same job and reuses that step's readbacks — so a launch failure
-takes both comparisons with it. It is not made worse by the new step, which runs
-after and passed on `ae0d03b`, but it does mean the deletion bar's oracle clause
-rests on a gate that is down a third of the time.
-
-**Diagnosed, and the budget was the cause.** The driver already prints the
-browser's stderr on this path, and the failing run's is two dbus errors at **22
-seconds** after launch and then silence until the 30-second deadline. The loop
-distinguishes a browser that _exited_ — a different message — so this branch is
-only reached by one that is alive and has not finished starting. For scale, a
-healthy runner drives the whole phase, launch and all eleven scenes and their
-readbacks, in 14 to 19 seconds.
-
-So the browser was still starting and the gate gave up on it.
 `LAUNCH_TIMEOUT_MS` is now 120 seconds in `web/tools/browser-launch.mjs`, the
 shared launcher both `render-harness-e2e.mjs` and `probe-e2e.mjs` go through,
 and it is spent only on the path that would otherwise have failed. **Whether
@@ -12821,35 +8806,10 @@ through it. Not done here: it changes eight steps for a problem that is latent
 rather than active, and nothing on the current runner image can observe the
 difference, so it wants to be its own change rather than a rider on one.
 
-### A tile's border needs no explicit locking — the decimator already holds it
-
-Found on 2026-08-20 by a red-check that came back green, while building quarry's
-tiling case for "border locking on a tiling mesh".
-
-`crcbl_quarry::tile` first called `simplify_with_locked_edges` with every one of
-the tile's border edges named. Replacing that list with `&[]` **passed
-identically**: the two tiles' shared seam survived decimation bit-for-bit either
-way.
-
-The reason is in `crcbl_scene::simplify`'s own module docs and was there all
-along — "an edge used by any number of faces other than two is a border (or a
-non-manifold seam)… an open mesh keeps its boundary loop exactly". A tile is an
-open mesh and its outer border is a mesh border, so the decimator locks it
-unconditionally.
-
-**So `simplify_with_locked_edges` is for boundaries interior to the mesh**,
-which no rule over the two arrays can find — a cluster group's outer edge, which
-is what `crcbl_scene::cluster_dag` passes it and remains its only caller. Worth
-recording because the sample's own exit criterion is phrased as though a caller
-must do the locking, and the next reader will otherwise write the same redundant
-call.
-
-**What this does not say.** It says nothing about UV or normal seams, which are
-`crcbl_scene::simplify`'s other stated limitation and which quarry's single
-untextured material cannot exercise: a seam in an attribute the decimator does
-not carry is invisible to a position-only comparison like this one.
-
 ### What the withheld-features pass still reports, and on which backends
+
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/backends.md` under this heading.
 
 `CRCBL_SEAM_WITHHOLD=all` opens the seam suite's device with no optional
 feature, so every capability a backend gates moves to the refusal side and the
@@ -12870,171 +8830,25 @@ contract's two directions:
 Whether either could be made to hold under both asks is unexamined. The CI step
 runs `-E 'test(every_declared_capability_behaves_the_way_it_was_declared)'`.
 
-**`crcbl-dx12` and `crcbl-mtl` had vk's exact inconsistency and it is fixed.**
-Both declared `Capability::TimelineWaitBeforeSignal => Support::Yes`
-unconditionally while the arm beside it gated the timeline group on
-`Features::TIMELINE_SEMAPHORE` — and `ID3D12Fence` and `MTLSharedEvent` are both
-core, so `create_semaphore` built a timeline regardless. Found by reading, since
-nothing here runs either backend. Each got the two changes `crcbl-vk` got, and
-each job got the narrow step, so the fix is exercised rather than asserted.
+### DECIDED — occlusion queries: finish them, refuse them, or delete them
 
-**Both were landed type-checked only**, against `x86_64-pc-windows-msvc` and
-`aarch64-apple-darwin` — the project's own practice for platform code, and the
-same footing the nanosecond refactor was landed on. CI is what settles them.
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/backends.md` under this heading.
 
-**`crcbl-webgpu` was examined by reading and is clean on this point.** The
-native suite cannot open it — `crcbl::backend::open` answers "the crcbl-webgpu
-backend is not active in this build — it reaches a device only on wasm32",
-measured rather than assumed — but the defect the narrow pass finds is visible
-in `supports` without running anything, and this backend does not have it:
-`TimelineWaitBeforeSignal` is grouped _with_ the other three timeline rows as
-`Support::No(NO_TIMELINE)` rather than answering `Yes` beside them.
-
-**And part of its refusal direction now runs, in an ordinary unit test.**
-`a_capability_declared_unsupported_is_refused_by_its_own_call` in
-`crcbl-webgpu/src/hal/tests.rs` needs no browser: `WebGpuDevice` records
-commands to a stream rather than executing them, so a refusal is a decision this
-crate makes in Rust. It covers the rows whose refusal is a single device call —
-the four timeline rows through `create_semaphore`, `PipelineStatisticsQuery`
-through `create_query_set` — asserts each is `HalError::Unsupported`
-specifically, and checks the accepting side too so it cannot pass by refusing
-everything.
-
-**Three more are covered by a sibling test**, and the sentence that used to sit
-here — "each of which needs a pipeline or a layout built first" — was a blanket
-claim made about seven rows without checking them one at a time. It was wrong
-for three. `CommandEncoder`'s verbs return nothing, so `draw_indirect_count`,
-`draw_indexed_indirect_count` and `draw_mesh_tasks` record the refusal and
-surface it at `finish`; `record_unsupported` sets a field, reads no pass state
-and needs no pipeline.
-`an_encoder_verb_declared_unsupported_is_refused_at_finish` drives all three on
-a bare encoder, one verb per encoder so the first recorded refusal cannot mask
-the others, and finishes a clean encoder too so it cannot pass on a backend that
-refused every command buffer.
-
-**Nine of this backend's thirteen unsupported rows are checked natively**, and
-the four that are not cannot be — which is a structural fact rather than a cost.
-The thirteen is `DIVERGENCES`' own row count for `BackendKind::WebGpu`, not a
-hand tally; an earlier version of this entry said "twelve", which came from
-counting something else entirely.
-
-**The line falls exactly where the refusal is decided.** Nine are refused by
-this crate in Rust — a device method returning `Err`, or an encoder verb
-recording one for `finish` — so an ordinary unit test sees them. The other four
-are refused by `gpu-replay.js` in the browser, by the stream's own design rule:
-the writer "carries what the caller gives" and validates nothing, because "the
-replayer is the half that faces WebGPU". `push_constants` encodes and crosses;
-`create_graphics_pipeline` lets a `PolygonMode::Line`, a `depth_clamp` the
-device cannot serve and a forbidden sample count all cross verbatim.
-
-So `PushConstants`, `BindlessDescriptorArray`, `PolygonModeLine` and
-`IndirectArgumentPaddedStride` are not "uncovered because they need a pipeline
-built first" — the Rust side deliberately does not decide them, so **no native
-test can ever cover them** and a browser probe group is the only possible route,
-not merely the convenient one. Three earlier versions of this paragraph gave a
-setup-cost reason instead, and each was wrong about which rows it applied to.
-
-So of the backends the pattern was checked on: three had it (`crcbl-vk`,
-`crcbl-dx12`, `crcbl-mtl`, all fixed) and `crcbl-webgpu` did not. `crcbl-wgpu`
-had a different defect in the same family and was deleted before it was fixed —
-see "A capability refusal must be `Unsupported`" below.
-
-### DECISION NEEDED — occlusion queries: finish them, refuse them, or delete them
-
-The seam audit recorded in one line that `Capability::OcclusionQuery` "is
-unfalsifiable everywhere". Re-derived and **measured** on 2026-08-20, it is
-worse than unfalsifiable.
-
-**What the seam has.** `Device::create_query_set`, `destroy_query_set`,
-`query_results`, and `CommandEncoder::reset_query_set`, `resolve_query_set`.
-**There is no begin/end-query verb anywhere on `CommandEncoder`** — timestamps
-are written through `PassTimestampWrites` on the pass descriptor, and nothing
-equivalent exists for occlusion. Read off the trait, not inferred.
-
-**So the result a caller gets is not an occlusion count.** Measured through the
-seam suite on radv: create a `QueryKind::Occlusion` set, reset it, resolve it,
-read it — `query_results` returns **`[0, 0]`**. Zero is not a neutral answer for
-this query; it is "nothing was visible". A caller who wired occlusion culling to
-this seam would cull the entire scene and every return value would say success.
-
-**Which backends this reaches, measured rather than assumed.** `crcbl-vk`
-answers `Support::Yes` (gated, and radv has the feature) and is where the
-`[0, 0]` came from. `crcbl-webgpu` answers `Support::Yes` unconditionally, and
-`crcbl-dx12` and `crcbl-mtl` gate on a device feature, so on any device that has
-it the same read is available. The `Null` backend records and answers `Yes`.
-
-`Capability::OcclusionQuery` is honest about this — its doc is "a
-`QueryKind::Occlusion` query set", nothing more, unlike `TimestampQuery` whose
-doc names the writes and the read. The capability is not lying. The **seam** is
-offering a resource whose only purpose it cannot serve.
-
-**And this was already known in-code**, which is worth saying: the comment on
-`crcbl-webgpu`'s arm in `hal/device.rs` states it outright — "`CommandEncoder`
-has no begin/end query verb, so nothing a caller records through this seam can
-ever write one, and the same is true of the Vulkan backend's `Yes`". What is new
-here is the measured value a caller receives instead, and that it is the one
-value that silently means the opposite of the truth.
-
-Nothing plans to use it: no document under `docs/plan/` schedules GPU occlusion
-queries or occlusion culling (the roadmap's "occlusion" is audio, and topic 31's
-vis-culling rays are CPU/server side), and no caller outside the backends' own
-plumbing and tests constructs one.
-
-**The options.**
-
-1. **Finish it.** A pass-descriptor field plus a per-draw index verb, on
-   `PassTimestampWrites`' precedent — and it is genuinely backend-agnostic:
-   WebGPU has `occlusionQuerySet` on the render-pass descriptor and
-   `beginOcclusionQuery(index)` on the pass encoder, Metal has
-   `visibilityResultBuffer` plus `setVisibilityResultMode:offset:`, Vulkan has
-   `vkCmdBeginQuery`/`vkCmdEndQuery` inside a pass, D3D12
-   `BeginQuery`/`EndQuery` with `ResolveQueryData`. Real work across five
-   backends, two of which nothing here can run, for a feature nothing has asked
-   for.
-2. **Refuse it until then.** `create_query_set` returns `HalError::Unsupported`
-   for `QueryKind::Occlusion`, and `Capability::OcclusionQuery` becomes an
-   `Unwritten` divergence on every backend. Small, and it turns a silent wrong
-   answer into a loud refusal, which is what this repository does everywhere
-   else. Costs two parity blockers per backend on the report — honestly, since
-   the work genuinely is unwritten.
-3. **Delete it.** `QueryKind::Occlusion` and `Capability::OcclusionQuery` leave
-   the seam, exactly as the valued `fill_buffer` forms did: a promise three
-   backends could not keep was removed rather than implemented, and the
-   changelog records that as the right call. Cheapest, and the one that loses
-   information if occlusion culling is ever wanted.
-
-**My reading:** (2) now and (1) if occlusion culling is ever scheduled. (3) is
-defensible but the `fill_buffer` case differed in an important way — that call
-_could not_ be honoured by the API on three backends, whereas every backend here
-can do occlusion queries and this seam simply never grew the verb. Deleting
-would record "we decided against it" for something nobody has decided against.
-
-What makes it urgent enough to write down rather than leave in a one-line note:
-until one of the three happens, the seam has a resource that returns "everything
-is hidden" and reports success doing it.
+**DECIDED 2026-09-06 —** option (2), refuse now: `create_query_set` returns
+`HalError::Unsupported` for `QueryKind::Occlusion`, and
+`Capability::OcclusionQuery` becomes an `Unwritten` divergence on every backend.
+Occlusion culling in this engine is the Hi-Z two-phase compute path of plan 03 —
+the Nanite and Frostbite shape — so the queries will never get a consumer, and a
+loud refusal is what this repository does everywhere else with a promise it
+cannot keep. Option (1) becomes worth the five-backend work only if a debug tool
+wants the counts. It schedules the refusal arm in each backend, the divergence
+rows, and the parity blockers they honestly cost.
 
 ### DECIDED — quarry keeps one face, and documents the degenerate split
 
-`docs/plan/sample/14-quarry.md`'s exit criteria ask for the reduction to be
-attributed: "how much of the reduction is instance culling and how much is
-cluster culling, because a single total hides which one is working". quarry now
-records both, and the answer is **all of it is cluster culling** — the instance
-cull keeps 1 of 1 on every frame, because the scene is one instance of one mesh.
-
-That is a true answer and a degenerate one. The criterion exists because a real
-scene has many instances and the two culls can mask each other; with one
-instance, "the instance cull did nothing" and "the instance cull is broken"
-produce the same frame, and the test can only assert the count is 1.
-
-**Making it interesting is a change to what the sample depicts**, which is why
-it is a question rather than a task. Placing four or nine faces in a row, some
-outside the frustum, would give the instance cull something to reject and make
-the split a real measurement — at the cost of a scene the plan describes as "one
-dense scene", and of pools four to nine times larger. The alternative is to keep
-one face and say plainly in the sample's own docs that this criterion is
-answered but not exercised.
-
-Not a blocker either way: the numbers are recorded and asserted as they stand.
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/samples.md` under this heading.
 
 **DECIDED 2026-08-20 — keep one face, and say so in the sample's docs.** The
 plan asks for "one dense scene" and the split is already recorded and asserted;
@@ -13046,66 +8860,8 @@ measurement, and a scene with many instances is where it would earn its place.
 
 ### DECIDED — quarry commits six goldens, two dolly stops per path
 
-`apps/quarry`'s exit criteria ask for "golden frames per `GeometryPath` from the
-fixed dolly". Everything needed to produce them exists — the dolly, the three
-forced paths, the offscreen readback — and the question is what to commit, which
-is a scope call rather than a technical one.
-
-**The problem is that the three paths do not draw the same pixels**, by design.
-Measured: at a one-pixel budget all three cover an identical 28,650 of 49,152
-pixels, but at sixteen the mesh path draws levels 1 and 2 per cluster while the
-other two select one level per instance, and they land four pixels apart. So a
-single golden cannot serve all three, and three goldens per dolly stop is 9 × 3
-images for one sample.
-
-The options:
-
-1. **One golden per path at one dolly stop** — three images. Cheapest, and it
-   catches a path that breaks outright. It does not catch a path that breaks
-   partway down the dolly, which is where LOD lives.
-2. **One golden per path at the ends of the dolly** — six images. Covers the
-   coarse and fine extremes, which is where the cut differs most.
-3. **No goldens; keep the measured assertions.** What quarry asserts today —
-   coverage, the per-cluster cut, the uniform cut's walk, the triangle counts —
-   is stronger than an image comparison for everything except _what the face
-   looks like_, and weaker for exactly that. The engine already has 27 goldens
-   under `crates/crcbl/tests/golden/`, none of which is quarry's content.
-
-**The measured argument for (2):** the numbers quarry records are all counts,
-and every one of them would be unchanged by a shading bug — a face lit from the
-wrong side covers the same pixels, walks the same rungs and draws the same
-triangles. That is precisely the gap a golden closes and no counter can.
-
-Also unresolved either way: goldens are compared on a runner with a software
-rasteriser, and quarry's frames here come off an RX 7900 XTX. The engine's own
-goldens are shared across backends with a tolerance, so the mechanism exists;
-whether this content passes it on lavapipe is unmeasured.
-
-**`MeshShading` being `Unwritten` on dx12 and Metal does not block the gate**,
-which is the thing worth writing down. The paths are not one-per-backend: they
-are reached by **subtracting features from a single capable adapter**.
-`crates/crcbl/tests/render_e2e.rs` does exactly that, and it passes here on an
-RX 7900 XTX — eleven `..._draws_the_same_frame_on_every_geometry_path` tests,
-with the harness printing
-
-```text
-asked for MESH_SHADER: true,  adapter has it: true, drew through MeshShader
-asked for MESH_SHADER: false, adapter has it: true, drew through IndirectCount
-spot_shadow on MeshShader against IndirectCount — 0 channel(s) differ, budget 0
-```
-
-So Vulkan reaches `MeshShader` and `IndirectCount` on one device and compares
-them pixel-for-pixel. The **third** path, `IndirectPerBatch`, is not in that
-cross-backend suite — it is covered by `crcbl-vk`'s own `vk_e2e/draw_gen.rs`,
-whose three arms name all three paths and which opens its device without
-`DRAW_INDIRECT_COUNT` on purpose, because no adapter that suite can see would
-ever select the floor path. A three-way quarry gate would follow `draw_gen.rs`'s
-shape, not `render_e2e.rs`'s.
-
-**Which sample came next was decided** — quarry, over `breakout-as-wasm` (P6A, a
-`wasmtime` `WasmHost` seam), lantern's second half (S4B, blocked on P7C's ray
-tracing) and orbit (S5, behind three physics phases). quarry was the only one
-whose prerequisites were already built.
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/samples.md` under this heading.
 
 **DECIDED 2026-08-20 — option (2), six images, and measure the device delta
 first.** One golden per path at each end of the dolly. (1) cannot catch a path
@@ -13125,38 +8881,8 @@ images nobody can trust and a tolerance widened to fit them.
 
 ### `DivergenceKind::Unclassified` is gone, and can come back
 
-Removed on 2026-08-19. It held exactly two rows — Metal's `TimestampQuery` and
-`PipelineStatisticsQuery` — and its whole meaning was "which of the other three
-this is cannot be settled from here, and the reason says what measurement would
-settle it". `crcbl_mtl::adapter`'s counter-sampling probe has now taken that
-measurement on CI, so both rows are classified and the variant held nothing.
-`every_kind_describes_at_least_one_real_row` is the test that forces the issue:
-a kind with no row is vocabulary rather than classification.
-
-**The concept was good and may be wanted again**, so the reasoning is kept here
-rather than only in `git log`. It was an admission about evidence rather than a
-fourth kind of divergence: a property of a device this workspace cannot open,
-where "a guess written into the data would read exactly like the classifications
-that were checked". It blocked parity, because "nobody has looked" is not
-"done". Reintroducing it is a variant, an arm in `blocks_parity`, and an entry
-in that test's list.
-
-**What settled the two rows**, from the `mtl e2e (macos-latest)` job:
-
-```text
-crcbl-mtl counters: supportsCounterSampling AtStageBoundary = false
-crcbl-mtl counters: supportsCounterSampling AtDrawBoundary = true
-crcbl-mtl counters: supportsCounterSampling AtDispatchBoundary = true
-crcbl-mtl counters: supportsCounterSampling AtBlitBoundary = true
-crcbl-mtl counters: counterSets = 0
-crcbl-mtl counters: sampleTimestamps ... did not move across a 50ms sleep
-```
-
-Metal expresses both features — `MTLCounterSampleBuffer`,
-`MTLCommonCounterSetStatistic` — so neither is an `ApiAbsence`; the code is
-unwritten, which is `Unwritten`. **The blocker count did not move**, and that is
-the point: reclassifying an unanswered question as unwritten work is honesty
-about what is owed, not progress against it. It is still eight.
+The record behind this — the argument, the options and the measurements — is in
+`docs/notes/backends.md` under this heading.
 
 `counterSets = 0` on the CI Mac is a separate fact from the classification: no
 `MTLCounterSampleBuffer` can be built there at all, so that device could not run
@@ -13434,10 +9160,10 @@ there was one, each asserting something true everywhere it runs. The alternative
 would leave three backends running a test whose substance is skipped, which is
 the shape this project keeps removing.
 
-**A blocker to clear first:** `vk_e2e/draw_gen.rs` and `vk_e2e/queries.rs` still
-import
-`crate::mesh::{MESH_EXTENT, mesh_camera, place, place_cube, render_mesh}`, so
-those helpers must be extracted within `vk_e2e` before `mesh.rs` can leave.
+**A blocker to clear first:** `vk_e2e/queries.rs` imports
+`crate::mesh::{MESH_EXTENT, mesh_camera, place_cube}` and `vk_e2e/draw_gen.rs`
+imports `crate::mesh::mesh_camera`, so those helpers must be extracted within
+`vk_e2e` before `mesh.rs` can leave.
 
 **And a measurement worth having before the goldens move:** the mesh goldens are
 the loosest in the tree already — `mesh_clusters` reports 99.84% of pixels
@@ -13487,130 +9213,16 @@ So a binary semaphore's only real observable in this design is WSI acquire, and
 the agnostic suite is headless. **Closing this row means a windowed exercise or
 sync validation, not a cleverer headless test.**
 
-### Four mesh tests stayed on Vulkan, and one degrades quietly
-
-The mesh cluster split; what stayed did so for a reason worth keeping written
-down, because "why is this still vk-only?" is the question a future reader asks.
-
-**`per_cluster_culling_rejects_the_clusters_a_camera_hides`,
-`a_scaled_instance_keeps_the_clusters_its_own_size_puts_on_screen`,
-`the_gpu_descends_the_dag_to_the_cut_the_host_rule_says` and
-`the_shadow_cascades_select_coarser_than_the_camera` are not splittable.** Each
-reads a buffer only the amplification stage writes — `CLUSTER_SURVIVOR_WORD`,
-`cluster_selection`, `shadow_selection`. On a backend with no mesh-shader path
-those words are never written, so the agnostic half would be a counter nobody
-incremented: a test that passes because nothing ran.
-
-**`the_mesh_dispatch_extent_is_the_culled_instance_count`** stayed for the
-opposite reason — its agnostic half already exists as `draw_gen_e2e`'s
-`a_bucket_fills_and_empties_as_its_instance_comes_and_goes`, and splitting would
-have duplicated a test that already runs on all four backends.
-
-**That gap is closed, and the check the entry asked for was taken.** Run
-32105356561's `vk e2e (lavapipe)` and `vk e2e (lavapipe, windows)` job logs
-contain the degrade string **zero times** and report `MESH_SHADER | TASK_SHADER`
-in every feature set they print, so the branch had executed on no device
-anywhere: not radv here, not lavapipe on either CI arm. It now panics with the
-reason rather than printing and continuing — a test claiming "the two geometry
-paths agree" over one path is asserting nothing, and the uniform arm cannot
-stand in for the missing half because it _is_ the other half.
-
-Red-checked by withholding `TASK_SHADER` from that arm's open, which is the
-project's own subtract-the-feature move: `41/48 tests run: 40 passed, 1 failed`,
-naming the adapter. A driver genuinely without the feature needs a second device
-to compare against, which is a change to make deliberately rather than a
-condition to loosen.
-
-**`the_mesh_dispatch_extent_is_the_culled_instance_count` had the same branch
-and got the same treatment**, found by sweeping the tree for a `println!`
-followed by a `return` inside a test. Its own message already said "radv and
-lavapipe both report `VK_EXT_mesh_shader`", which is the argument for deleting
-the branch rather than for keeping it. It is an `assert_eq!` on the selected
-path now, red-checked the same way.
-
-**The sweep that found it is worth keeping**, because it is cheap and it is a
-different shape from the `features.contains` one already recorded above: a
-capability branch can be written as an early return with no `if features` in
-sight. Both queries are clean as of 2026-08-20 — no feature branch in the tree
-has an `else` that only prints, and every remaining print-and-return site was
-read and falls into one of four healthy shapes:
-
-- **A bimodal exercise whose other arm asserts a refusal** —
-  `vk_e2e/compute.rs`'s `update_bind_group` and `vk_e2e/indirect.rs`'s indirect
-  count both `assert!(matches!(error, HalError::Unsupported { .. }))` before
-  returning, so the lesser device is tested rather than excused.
-- **A device-limit guard in `hal_seam_e2e` that returns a _classified_ outcome**
-  rather than passing: `exercise_msaa_resolve` answers
-  `Exercise::Unexercised(NO_MULTISAMPLING)` and the anisotropy exercise answers
-  `Exercise::SilentlyIgnored`. Both are legitimate — a Vulkan device may
-  genuinely offer fewer than four samples — and **neither has ever fired**:
-  checked across all four backend jobs of run 32366511311, where the two strings
-  appear zero times while `hal seam e2e` appears 38 to 50 times, so the channel
-  was open and the exercises really ran. Left alone deliberately: unlike the
-  mesh branches above, these guard a limit the specification permits rather than
-  a feature every adapter grants.
-- **A `Null`-backend guard** in `apps/quarry`'s device suite, which names the
-  backend and the flag to rerun with.
-- **A helper binary's usage message** in `crcbl-shell`'s `tests/bin/`.
-
 ### The Windows probe gate has no adapter; macOS is proven
 
-**macOS works, first run, exactly as predicted.** `probe-macos` ran headless on
-`macos-15` against a real Apple adapter — Chrome 150.0.7871.187, adapter mode
-`hardware` resolved automatically on darwin, **57/57 over groups `G…AA`**. So
-headless Chrome really does close the WebGPU canvas readback gap on macOS, and
-that is the first proof of `crcbl-webgpu` on Metal-backed Dawn. Take
-`continue-on-error` off, having served three green runs.
-
-**Windows has no WebGPU adapter in the default mode.** The job found Chrome
-151.0.7922.109 exactly where the registry said, resolved `hardware` on win32,
-and died at `requestAdapter() returned no adapter — no GPU to drive`. So a
-GPU-less `windows-latest` exposes nothing through D3D, and that mode gates
-nothing. The runner reported it correctly — "the driver reported no checks — the
-gate is not gating" — rather than passing on zero.
-
-**The remaining route is SwiftShader, now being measured.** It is the one this
-file warned against, and the warning is still true: it moves Dawn to SwiftShader
-while Chromium's shared-image device stays on D3D11, so a canvas handed between
-them reads back as uninitialised memory. But that is a _canvas_ fault, and most
-of the probe is not a canvas — G through W and AA drive the command stream
-against textures the replayer owns. **Expected: real seam coverage with X, Y and
-Z failing.** If that is what comes back, the honest end state is a Windows job
-that runs the groups Windows can serve and says which, not one that pretends to
-run them all.
+The measurements — what macOS and Windows each answered, and what the two jobs
+gate on now — are in docs/notes/browser.md under the same heading. What is still
+open:
 
 **Also seen and not chased:** `actions/download-artifact` logged
 `digest-mismatch: error` on the Windows job while still extracting the site. It
 did not cause the failure — the probe page loaded and asked for an adapter — but
 nobody has looked at why the digest disagrees on that runner and not on macOS.
-
-`pages.yml` runs the seam probe on `macos-15` (headless, against real Metal) and
-`windows-latest` (headless, SwiftShader, with four groups expected to fail).
-
-**Both jobs now gate.** macOS came off `continue-on-error` after three green
-runs at 57/57. Windows came off once it was taught its four expected failures,
-and passes at 53/57 with them excused — and a listed group that _passes_ fails
-the run as stale, so the list cannot rot into a blanket suppression.
-
-**What the first runs answer**, and the line to read for each:
-
-- **macOS.** `browser: /Applications/Google Chrome.app/…` — absent means the
-  image assumption is wrong rather than the gate. Then
-  `probe e2e: adapter mode "hardware" (auto on darwin)`, then the `groups` line.
-  `G…AA` and 57/57 means headless macOS really does close the canvas readback
-  gap. A missing `X Y Z` means it does not, and macOS needs a headed session
-  too.
-- **Windows.** The open question is whether a GPU-less runner exposes any WebGPU
-  adapter at all. No group letters means it does not; `X Y Z AA` missing while
-  everything else passes means headed did not close the readback gap either, and
-  Windows cannot host this gate.
-
-**~~Coverage gap in what landed~~ — both halves are spent, 2026-08-22.** This
-said `render-harness-e2e.mjs`'s _launch_ path had never been executed and that
-it was "wired into no workflow at all". Neither holds: `pages.yml` runs
-`./web/run-render-harness-e2e.sh` and two later steps consume its readbacks, and
-the launch path has since been run here repeatedly — which is how the browser
-leak it was hiding got found.
 
 **One behaviour change on Linux:** `--enable-unsafe-webgpu` is now passed in
 hardware mode as well as swiftshader. Verified on real hardware here (57/57 and
@@ -13691,21 +9303,8 @@ _who owns the work_, which is what makes them expensive rather than merely
 untidy.
 
 1. ~~`PushConstants`~~ — **closed.** The obstacle never existed, and it was
-   written down three times. Measured from the artifact the block lands at
-   `buffer(1)`, _behind_ the bound buffer, so nothing shifted and the slice was
-   smaller than its row implied. Left here as the record of what the wrong
-   reason cost: three planning passes took it at face value.
-
-   The original wording, for reference: The row, `MetalDevice::supports`,
-   `features_of`'s docs and the pipeline-layout refusal all say the committed
-   MSL puts a push-constant block at `buffer(0)`, ahead of every bound buffer.
-   **No committed MSL declares a push-constant block at all** — `msl/ui.metal`
-   has `vertices` at `buffer(0)` and `constants` at `buffer(1)`, and
-   `binding.rs`'s own module docs say so, so two files in one crate contradict
-   each other. This is the **same 2026-08 shader change** that made dx12's
-   push-constant reason wrong: the block was replaced by a uniform buffer
-   because WGSL cannot carry one. The obstacle is a missing test artifact — and
-   it is the _same_ artifact dx12 needs, so build it once.
+   written down three times. The record of what the wrong reason cost, and the
+   original wording, are in docs/notes/backends.md under this heading.
 
 2. **`TimestampQuery`: the dependency it named is gone, and the row is not.**
    The row used to turn on whether a timestamp could be taken at an arbitrary
@@ -13721,15 +9320,13 @@ untidy.
    `ComputePipelineDesc::workgroup_size` was added to fill, argued in those
    exact terms — `wgpu-hal` escapes it by reflecting naga; this project commits
    pre-generated MSL and cannot. **`crcbl-mtl` cannot close those rows alone.**
-4. **`DrawIndirectCount`: the shared constant omits what the backend states
-   twice.** It describes the work as a compute kernel encoding into an
-   `MTLIndirectCommandBuffer`. True and insufficient: that kernel must be
-   dispatched **before the render encoder was opened**, and the seam calls
-   `draw_indirect_count` inside the pass. The constant exists precisely so the
-   list and the backend cannot drift, and they have drifted the other way — the
-   backend now carries a material fact the shared sentence does not. It changes
-   the estimate from "encode an ICB" to "split the render encoder, or change the
-   seam".
+
+4. ~~`DrawIndirectCount`~~ — **closed.** `crcbl_mtl::adapter` reports
+   `Features::DRAW_INDIRECT_COUNT` and the `(DrawIndirectCount, Metal)` row is
+   gone from `DIVERGENCES`. Why the shared reason was wrong — the encoding
+   kernel has to be dispatched before the render encoder opens, which the shared
+   sentence never said — is in docs/notes/backends.md under this heading.
+
 5. **`BindlessDescriptorArray`: true reason, wrong owner.** It reads as backend
    work. The gating fact is that an argument buffer bound where a shader
    declared vertex data _silently reads descriptor words as vertices_, so it
@@ -13741,26 +9338,6 @@ untidy.
 `macos-latest` runner hangs the command buffer, which CI's own comment
 supersedes — macos-26 executes correctly and the hang was
 `setDepthStencilState:nil`.
-
-### WebGPU has no blockers left
-
-Planned 2026-08-18 and closed the same day. `crcbl-webgpu`'s `TimestampQuery`
-row is gone, `StorageImageBinding`'s went before it, and `parity_blockers()` now
-names only `crcbl-dx12` and `crcbl-mtl`: every remaining WebGPU refusal is
-WebGPU itself refusing, which is an `ApiAbsence` and not a blocker.
-
-**The landmine this section warned about did not go off, and it is worth
-recording why**, because the shape recurs. The warning was that the moment
-`create_query_set` accepts `QueryKind::Timestamp`, `PassTimers::new` stops
-returning `None` and the engine records query verbs every frame — and a verb
-that `record_unsupported`s takes down the whole command buffer at `finish()`.
-What kept it shut was gating **both** on one flag: `create_query_set` refuses
-the timestamp kind on a device that opened without the browser's
-`timestamp-query`, and `PassTimers::new` gates on the same
-`Features::TIMESTAMP_QUERY`. A browser without the feature therefore builds no
-timers and records no query verbs; one with it records verbs that are all wired.
-The demo gate ran green with the hud demo creating a timestamp set and timing
-every pass.
 
 ### What the pass-boundary timestamp slice left open
 
@@ -13814,208 +9391,54 @@ Written 2026-08-18, when `PassTimestampWrites` replaced
 answers `Support::Yes`, and the design question the row hid is now its own
 entry, `BindingKind::StorageImage` has no way to say "reads _and_ writes".
 
-The `TimestampQuery` entry that used to sit here — "there is no arbitrary-point
-write to narrow, implement rather than narrow" — was half right and the half it
-got wrong is the interesting half. It reasoned that because every
-`write_timestamp` in the repository already sat outside a pass, the replayer
-could open an empty compute pass carrying `timestampWrites` around each one.
-That would have worked and it would have been a _convention_ holding it up:
-nothing stopped a caller putting a write somewhere the replayer could not wrap.
-The seam took the other route and moved the two writes into the pass descriptor,
-which is `timestampWrites`' own shape, so the replayer passes it straight
-through and there is no free-standing call left to place wrongly. The feature
-leak the same section named is closed the way it asked — by implementing.
-
 **What has no browser-side evidence at all**, and matters because with
-`crcbl-wgpu` deleted these are claims resting on nothing: `DepthClamp` — every
-probe pipeline sets it false; `BinarySemaphore` — unprovable by construction and
-honestly declared so; and `SamplerAnisotropy`, whose `Yes` arm is
-**unreachable** because the limit is pinned to 1.
+`crcbl-wgpu` deleted these are claims resting on nothing: `BinarySemaphore` —
+unprovable by construction and honestly declared so; and `SamplerAnisotropy`,
+whose `Yes` arm is **unreachable** because the limit is pinned to 1.
+`DepthClamp` left this list: probe group AH drives it.
 
-### DECISION NEEDED — the seam's two attachment usages, which half the backends fold
+The `TimestampQuery` history this entry carried is in docs/notes/backends.md
+under the same heading.
 
-Found on 2026-08-20 by the impossible case in
-`a_created_image_is_one_the_device_can_serve`: ask for `Format::Rgba8Unorm` with
-`ImageUsage::DEPTH_STENCIL_ATTACHMENT` and
+### The seam's two attachment usages, which half the backends fold
 
-- **`crcbl-vk` refuses it** — `vkGetPhysicalDeviceImageFormatProperties2`
-  answers `VK_ERROR_FORMAT_NOT_SUPPORTED`, on radv and on lavapipe alike;
-- **`crcbl-wgpu` served it**, with no pending error. That crate was deleted on
-  2026-08-21 and `crcbl-webgpu` folds the two usages the same way, which is why
-  this entry outlives it.
+**DECIDED 2026-09-06 —** a seam-level check in `ImageDesc::check`: a depth
+format carrying `ImageUsage::COLOR_ATTACHMENT`, or a colour format carrying
+`ImageUsage::DEPTH_STENCIL_ATTACHMENT`, is `InvalidDescriptor` before any
+backend sees it, and both usage flags stay because Vulkan and D3D12 need them.
+Precedent: wgpu-core validates a texture's usage against the format's aspect the
+same way. Work: put the check in `ImageDesc::check`
+(`crcbl-hal/src/resource.rs`), name the error in the seam's doc, and extend
+`a_created_image_is_one_the_device_can_serve` so the impossible case is refused
+identically on every backend rather than served by two of them.
 
-**Neither backend is wrong on its own terms**, which is what makes this a seam
-problem rather than a bug report. `crcbl_wgpu::conv::map_image_usage` folded
-`COLOR_ATTACHMENT` and `DEPTH_STENCIL_ATTACHMENT` into the single
-`wgpu::TextureUsages::RENDER_ATTACHMENT`, because that is what WebGPU has:
-whether a texture can be a depth attachment is decided by its **format**, not by
-a usage bit. So the caller's distinction is lost in the mapping, and what comes
-back is a perfectly good colour render target that cannot be a depth attachment.
+The measurement table, the four options and the argument that the fold drops the
+_contradiction_ rather than information are in docs/notes/backends.md under the
+same heading.
 
-**Measured on every backend then in the tree, and the split is 3–2 the other way
-from the first reading.** `Format::Rgba8Unorm` asked for as an
-`ImageUsage::DEPTH_STENCIL_ATTACHMENT`:
+### How a caller asks whether a format is usable
 
-| backend                                     | answer                                                              |
-| ------------------------------------------- | ------------------------------------------------------------------- |
-| `crcbl-vk` (radv, lavapipe)                 | **refused** — `VK_ERROR_FORMAT_NOT_SUPPORTED` from the format query |
-| `crcbl-dx12` (WARP)                         | **refused** — `CreateCommittedResource` returns `0x80070057`        |
-| `crcbl-mtl` (CI Mac)                        | served                                                              |
-| `crcbl-wgpu` (lavapipe, deleted 2026-08-21) | served                                                              |
+**DECIDED 2026-09-06 —** `DeviceCaps` grows the query:
+`DeviceCaps::format_features(Format) -> FormatFeatures`, a bitflags set covering
+sampled, filterable, storage, colour attachment, depth attachment and blend.
+Precedent: wgpu's `get_texture_format_features`, Vulkan's format properties,
+D3D12's `CheckFeatureSupport` and Metal's per-format table all answer exactly
+this question, so a portable query is the shape four APIs already have. Work:
+add the query and its backend arms, and make the seam suite's raster fixture
+negotiate through it instead of trying `D32FloatS8Uint`, then `D24UnormS8Uint`,
+and reading both error channels.
 
-**This corrects an earlier reading here that called the fold "inherent to
-WebGPU".** It is not a browser property. `crcbl_mtl::conv::texture_usage` folds
-the same two flags into the single `MTLTextureUsage::RenderTarget`, so **half
-the APIs the seam targets have one render-target usage** — Metal and WebGPU —
-and only Vulkan and D3D12 carry two. The seam's two flags are the minority
-position, not the norm one backend family fails to meet.
+**One gap the decision does not close.** `crcbl-dx12` on WARP serves both
+depth-stencil formats — 2 of 2 — so its refusal path did not run at all, and a
+branch the environment cannot reach is not covered however green the run.
+Closing it needs a format WARP genuinely refuses, which means finding one rather
+than guessing: `D3D12_FEATURE_FORMAT_SUPPORT` on the WARP job would name one,
+and `crcbl-dx12/src/adapter.rs` already makes that query for its own capability
+reporting.
 
-**And it closes the dx12 question this entry opened.** `crcbl-dx12`'s refusal
-path was unexercised when the contract test only asked about depth formats,
-since WARP serves both; the impossible case reaches it, and D3D12 refuses on its
-own without any per-format query. dx12 is proven to refuse rather than merely
-untested.
-
-**It survived the `crcbl-wgpu` deletion.** `gpu-replay.js` folds the same two
-flags for the same reason and says so at length: "`COLOR_ATTACHMENT` and
-`DEPTH_STENCIL_ATTACHMENT` are both `RENDER_ATTACHMENT`: WebGPU has one
-attachment usage and reads _which kind_ off the format". So `crcbl-webgpu`
-behaves the same way, and this divergence is permanent unless the seam closes
-it.
-
-**That comment argues the fold is lossless, and it is right about the texture
-and incomplete about the descriptor.** Its claim — "the seam's two flags carry
-the same information twice over … so nothing is dropped by folding them" — holds
-for what gets _created_: the format decides the kind, and there is no way to end
-up with a texture that is the wrong one. What the fold does drop is the
-**contradiction**. A caller who writes `Rgba8Unorm` with
-`DEPTH_STENCIL_ATTACHMENT` has said two incompatible things, and folding
-discards the disagreement instead of reporting it. Vulkan catches that through
-the format query; WebGPU structurally cannot, because there is nothing left to
-disagree with.
-
-**Which sharpens the fix rather than changing it.** Only the seam can catch this
-one, on any browser backend, ever — so if it is worth catching, it is worth
-catching there. That is a stronger argument for a seam-level check than the
-original measurement gave, and it still applies with `crcbl-wgpu` gone.
-
-**The parity mechanism cannot see this**, and that is the interesting part. It
-is not a capability — no `Capability` names it, both backends would answer the
-same for every row — it is a _validation_ difference on an identical descriptor.
-The seam's contract test catches the class where a backend returns a handle the
-device cannot serve; it does not catch one where the backend returns a handle
-that is fine but is not what was asked for.
-
-**The fix that would make the seam agnostic**, and it is small: no API anywhere
-permits a colour format as a depth-stencil attachment, so the _seam_ can refuse
-it before any backend sees it. `Format` already knows whether it is a depth
-format, so a shared helper in `crcbl-hal` called at the top of each
-`create_image` would make every backend refuse identically, and the impossible
-case above would then be refused everywhere rather than on some backends.
-
-**The option the seam rule actually points at, and my first write-up missed it:
-delete the distinction.** The standing rule is "refactor anything that cannot
-work on all the backends — the seam must be fully backend agnostic", and this is
-a seam flag one backend family cannot express. The precedent is
-`CommandEncoder::fill_buffer`: the seam promised a repeating 32-bit value three
-backends could not keep, and the _parameter was removed_ rather than emulated.
-
-Applied here that means one `ImageUsage::RENDER_ATTACHMENT` in place of
-`COLOR_ATTACHMENT` and `DEPTH_STENCIL_ATTACHMENT`, with each backend deriving
-the API bit it needs from the format — which `crcbl-vk` can do, since the format
-determines which of `VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT` and
-`VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT` is correct, and which **half the
-backends already do**: Metal and WebGPU both fold the pair onto one
-render-target bit today, so the merge adopts the majority shape rather than
-inventing one. It makes the contradictory descriptor _unwritable_ rather than
-merely refused, which is the difference between a lock and a convention.
-
-**Its cost is what makes it a decision rather than a task.** It is a breaking
-change to `ImageUsage` and therefore to every caller — the renderer, the samples
-and every suite — where the two validation options touch only `create_image`. It
-also gives up a real thing: today a caller states intent and Vulkan checks it,
-and after the merge nobody states intent at all, so a caller who _meant_ depth
-and passed a colour format gets a colour attachment silently on every backend
-rather than a refusal on some.
-
-So the four options are: merge the flags (the seam rule's answer, breaking),
-validate in a shared helper (a convention), validate through a type the backends
-cannot bypass (a lock, more machinery), or document the divergence.
-
-**Why it was recorded rather than done:** every one of the four is a design call
-with a real cost, and the cheapest is not obviously right. A shared helper is a
-convention, and a convention is not a lock — the same objection this repository
-raises about `unsafe` contracts. The merge is the rule's answer and the most
-expensive. Worth deciding rather than reaching for the first shape.
-
-### DECISION NEEDED — how a caller asks whether a format is usable
-
-Found while building the seam suite's raster fixture, which needed a
-depth-stencil attachment and hit it:
-
-- **`crcbl-vk::create_image` does not check format support.** Asking for
-  `D24UnormS8Uint` as a `DEPTH_STENCIL_ATTACHMENT` on radv returns `Ok`, while
-  the validation layer reports `VK_ERROR_FORMAT_NOT_SUPPORTED` from
-  `vkGetPhysicalDeviceImageFormatProperties2` and then two more VUIDs at view
-  and pipeline creation. The first draft of that fixture **passed on undefined
-  behaviour** before the layer output was read.
-
-**The root cause is a seam gap, not two backend bugs.** `DeviceCaps` carries
-features and numeric limits and **no format table**, so a caller has no portable
-way to ask which depth-stencil format is usable as an attachment. The fixture
-works around it by trying `D32FloatS8Uint`, then `D24UnormS8Uint`, and checking
-_both_ channels — the returned `HalError` and `Device::take_error` — which is
-the shape every caller would otherwise have to reinvent.
-
-**The decision is one question: does `DeviceCaps` grow a format-capability
-query, or do the backends validate at `create_image` and refuse?** The first is
-more useful — a caller can choose a format instead of guessing and retrying —
-and it is the one that satisfies the seam rule, since without it there is no
-backend-agnostic way to ask. The second is cheaper.
-
-**But they are not really alternatives, and treating them as one question hid
-that.** A backend returning `Ok` for an image it cannot create is a correctness
-bug on its own terms, and **`crcbl-vk`'s half is fixed**: `create_image` now
-calls `vkGetPhysicalDeviceImageFormatProperties2` before creating and refuses
-with `HalError::Unsupported`. Measured both ways by forcing the raster fixture
-to try `D24UnormS8Uint` first — it returned `Ok` before and is refused now — and
-it refuses nothing in use across every suite on radv.
-
-**The contract now has a test, which is what makes this stop recurring.** It
-asserts a successful `create_image` yields a usable image, reads both error
-channels — a backend may refuse through the return value, as `crcbl-mtl` does,
-or leave the refusal on `Device::take_error`, which is how `crcbl-wgpu` did it
-before it was deleted — and requires at least one format to be served, so a run
-where everything was refused cannot pass as coverage of the accepting path.
-Measured: radv serves `D32FloatS8Uint` and refuses `D24UnormS8Uint`, lavapipe
-both.
-
-**Answered on 2026-08-20 by the new contract test, and the two answers differ.**
-`a_created_image_is_one_the_device_can_serve` ran on both platforms in CI:
-
-- **`crcbl-mtl` refuses, and helpfully** — "Format::D24UnormS8Uint is not
-  supported by this device — Apple silicon reports no; use Format::D32Float,
-  which the seam already prefers". So it validates format support already, by a
-  different route than a per-format query, and never had this bug. **Proven
-  clean**: the refusal path is the one that ran.
-- **`crcbl-dx12` on WARP serves both formats — 2 of 2 — so its refusal path did
-  not run at all.** That is _not_ a clean bill of health, and the distinction is
-  the same one that hid the parity suite's missing half: a branch the
-  environment cannot reach is not covered however green the run. What dx12 does
-  with a format WARP cannot serve is still unknown.
-
-Closing that last gap needs a format WARP genuinely refuses, which means finding
-one rather than guessing — `D3D12_FEATURE_FORMAT_SUPPORT` on the WARP job would
-name one, and `crcbl-dx12/src/adapter.rs` already makes that query for its own
-capability reporting.
-
-What remains a decision is only whether the seam grows the query.
-
-**Not currently reachable by our own code**, which is why it is not urgent: the
-seam suite's raster fixture negotiates — it tries `D32FloatS8Uint`, then
-`D24UnormS8Uint`, and checks both the returned `HalError` and
-`Device::take_error`. That workaround is the shape every caller would otherwise
-have to reinvent, which is the argument for the query.
+The investigation — the undefined-behaviour first draft, the `crcbl-vk` fix and
+the two backends' differing answers — is in docs/notes/backends.md under the
+same heading.
 
 ### A capability refusal must be `Unsupported`, and an error channel is not one
 
@@ -14043,46 +9466,8 @@ than `Unsupported` on a device that lacks a feature has not been checked.
 
 ### MEASURED — CI's Metal device can serve neither query, and no mesh
 
-The counter probe ran. `Apple Paravirtual device`, macOS 26.5.2, and the answers
-settle three open questions at once:
-
-```
-supportsFamily Metal3 = false   Apple7 = false   Mac2 = true
-name contains "virtual" = true
-supportsCounterSampling  AtStageBoundary=false  AtDrawBoundary=true
-                         AtDispatchBoundary=true  AtTileDispatchBoundary=false
-                         AtBlitBoundary=true
-counterSets = 0
-common set timestamp / stage utilization / statistic  present = false
-```
-
-The timestamp correlation answered too:
-`wall_ns=53410875 cpu_delta=0 gpu_delta=0`. `sampleTimestamps:gpuTimestamp:` is
-**inert** on this device — a real 53 ms of wall clock and neither clock moved.
-
-**Both `Unclassified` rows are settled, and not in the direction the plan
-hoped.** The device reports sampling at three points and then exposes **zero
-counter sets**, so no `MTLCounterSampleBufferDescriptor` can name one and
-neither a timestamp nor a statistics sample buffer can be built here at all.
-`TimestampQuery` and `PipelineStatisticsQuery` on Metal are therefore
-**implementable but unprovable on this CI** — the reason changes from "nobody
-has looked" to "this device cannot, and CI has only this device". They are no
-longer guesses, which is what `Unclassified` was for.
-
-**The mesh precondition is settled too, and it is a no.** `wgpu-hal`'s gate is
-`family_check && (Metal3 || Apple7 || Mac2) && !is_virtual`. This runner is
-`Mac2` but its name contains "virtual", so mesh pipelines are excluded by that
-formula regardless of the family. **Metal's `MeshShading` and `TaskShaderStage`
-cannot be proved by this CI**, however the backend is written.
-
-**A third thing this device cannot drive, found later:** both indirect
-exercises. Their observable is which of two argument structures a draw read, and
-this device reports no `max_draw_indirect_count` above one — so a single call
-can only ever reach the first. `DrawIndirectCount` and
-`IndirectArgumentPaddedStride` are therefore unexercised on Metal while every
-other backend drives them. The exercise says so in its reason rather than
-scoring a pass it did not earn, which is the right behaviour and also means the
-Metal arm silently covers two capabilities less than the others.
+The probe's output and what it settles are in docs/notes/backends.md under the
+same heading. What it leaves is a decision:
 
 **What this means for the goal**, and it needs a decision rather than more work:
 four of Metal's five blockers — two query rows and two mesh rows — are now known
@@ -14091,102 +9476,7 @@ hardware macOS runner, an explicit "implemented but unproven here" state that a
 reviewer accepts once, or leaving them open indefinitely. Closing them on a
 device that cannot execute them is not among the options.
 
-### MEASURED — Metal's mesh rows are unprovable on the Mac CI has
-
-The ICB probe's family list answers a question the mesh rows had only guessed
-at. CI's Apple Paravirtual device reports **`Metal3 = false`**, and `false` for
-every Apple family above `Apple5`; the highest it claims are `Apple5` and
-`Mac2`.
-
-**Metal mesh shading is a Metal 3 feature**, gated on
-`supportsFamily:MTLGPUFamilyMetal3` — Apple's own check, and what
-`MTLGPUFamily.metal3` documents itself as covering. So a
-`MTLMeshRenderPipelineDescriptor` cannot be created on that device at all.
-
-**What this changes, and what it does not.** `Capability::MeshShading` and
-`Capability::TaskShaderStage` for Metal stay `Unwritten`: `crcbl-mtl` genuinely
-builds no mesh pipeline, and that is a fact about the backend rather than the
-runner. What changes is the _cost_ of writing them — the work could be done and
-CI could never show it working, so it would land as code no gate exercises. That
-is the same shape as the two `Unclassified` counter-sampled query rows, which
-wait on a Mac that advertises a counter set.
-
-Both rows' `why` in `crates/crcbl-hal/src/capability.rs` now carry the
-measurement, so the parity report says it rather than leaving the next reader to
-rediscover it.
-
-**It also bounds the deletion-bar decision.** **Every** Metal blocker in
-`REVIEWED_BLOCKERS` is now measured unprovable on available hardware — the two
-mesh rows here and the two counter-sampled query rows, which is the whole set.
-This said "four of six" until the other two shipped, which is the concrete
-content behind option (2) in "what bar the deletion clears": every row either
-closed or _measured_ unprovable, with `Support::NotOnThisDevice` already able to
-say so.
-
-### A measurement test must not read a truthful zero as a broken apparatus
-
-The Metal counter probe reddened CI twice on its own assertions, and both were
-the same mistake in different clothes. It asserted that a device claiming
-counter sampling must expose a counter set, and that a CPU timestamp must move
-across a sleep — each on the reasoning that otherwise the test never reached a
-device.
-
-Both fired. Both were wrong: the runner printed its device name and then
-answered zero counter sets, and `cpu_delta=0 gpu_delta=0` across 53 ms of real
-wall clock. It reached a device; the device's counter infrastructure is inert.
-
-**A zero is data.** The honest reachability signal is the one thing that cannot
-be a measurement — an empty device name — and that assertion stays. Worth
-remembering when the next probe is written, because a measurement that fails on
-an unexpected answer stops being a measurement and becomes an assumption with a
-stack trace.
-
-### MEASURED — where a push-constant block actually lands, per target
-
-The artifact that three separate divergence rows described and that did not
-exist now ships: `push_constant_probe.slang`, emitted for spirv, msl and dxil,
-whose dispatch writes the constants into a buffer word by word. Read out of the
-**emitted files**, not assumed:
-
-| target | the block lands at                                                       | the bound buffer |
-| ------ | ------------------------------------------------------------------------ | ---------------- |
-| SPIR-V | `PushConstant` storage class, member offset 0, 16 bytes — no set/binding | set 0, binding 0 |
-| MSL    | `buffer(1)`                                                              | `buffer(0)`      |
-| DXIL   | `cb0` — register `b0`, space 0, size 16                                  | `u0`             |
-
-**This corrects Metal's row, and makes that slice smaller.** The MSL puts the
-block **behind** the bound buffer, not ahead of it. `ui.slang`'s old artifact
-put it first only because it declared the push constant first, and the
-declaration-order lint now has its first shipped exercise — so `crcbl-mtl` can
-bind the block one past the last binding rather than shifting every table entry.
-
-Two of the three are asserted by a test that reads the committed artifact;
-DXIL's is read but not asserted, because its resource table lives in the DXBC
-`RDEF` chunk and this crate is dependency-free by design. The test asserts the
-container ships and the doc says which claim is which.
-
-**WGSL is excluded and that was checked rather than asserted:** slangc _does_
-emit a WGSL artifact for this source, and naga refuses it for a missing binding
-decoration. So the validation sweep is not weakened — a shader declaring no wgsl
-target contributes nothing to it, and one that declares it again is caught.
-
-**What this unblocked:** dx12's `PushConstants` row is closed; Metal's still
-stands, and its slice is smaller than planned because the block lands behind the
-bound buffer rather than ahead of it.
-
 ### No GPU job in CI runs on real hardware, and one defect has already proved it matters
-
-Enumerated from the workflows on 2026-08-18, every adapter every GPU job opens.
-The `wgpu-e2e` and `cross-backend-e2e` rows went with `crcbl-wgpu` on 2026-08-21
-and are struck rather than left naming jobs that no longer exist:
-
-| job                          | backend | adapter                               |
-| ---------------------------- | ------- | ------------------------------------- |
-| `vk-e2e`                     | vk      | **lavapipe** (`CRCBL_VK_ICD` pins it) |
-| `dx12-e2e`                   | dx12    | **WARP** (`CRCBL_ADAPTER=cpu`)        |
-| `mtl-e2e`                    | mtl     | **Apple Paravirtual device**          |
-| Pages probe (Linux, Windows) | webgpu  | **SwiftShader**                       |
-| Pages probe (macOS)          | webgpu  | Apple Paravirtual, through Metal      |
 
 **There is no real GPU anywhere in it.** Every golden, every seam exercise and
 every capability claim is verified against a software rasteriser or a
@@ -14194,32 +9484,13 @@ paravirtual device. That is a deliberate and reasonable choice — hosted runner
 have no GPUs — but it decides what "verified" means here, and it is not what a
 reader assumes when a suite is green.
 
-**It is not theoretical.** The push-constant exercise landed green on every CI
-arm and was wrong on every AMD card: a divergent index into a push-constant
-block reads lane 0 on RADV and reads correctly on lavapipe. The only thing that
-caught it was running the suite on this workstation's discrete card. Metal's
-`DepthClamp` is the same shape from the other side — the paravirtual device
-ignores a mode real Metal honours, so CI was _failing_ on something no user
-would hit.
-
-**What follows, and it is a working practice rather than a fix:** a slice
-touching shader behaviour, driver-visible state or anything a compiler can
-scalarise is not verified until it has run on this machine's hardware adapter as
-well as the software path. `CRCBL_GPU=vk` with no `CRCBL_ADAPTER` is the
-hardware run; `CRCBL_ADAPTER=cpu` is what CI sees. **Both, and the difference
-between them is the interesting part.**
-
-**The risk is bounded, and that was measured rather than assumed.** All five
-golden suites — render 26, draw-gen 12, forward 13, sprite 12, mesh 9, 72 tests
-— were run on both the hardware adapter and the software path and pass
-identically. So the goldens are not adapter-sensitive within
-`Tolerance::RASTERISER`, and the lane-0 defect was specific to a shader path
-rather than a general property of the software-only board. What the gap
-threatens is _new_ shader and driver-state work, not the existing picture.
-
 The alternative — a self-hosted runner with a real GPU — would close it properly
 and is the same class of decision as the hardware macOS runner the Metal rows
 want. Worth pricing the two together if either is ever taken.
+
+The adapter table, the push-constant defect that proved it, the working practice
+it implies and the measurement that bounds the risk are in docs/notes/ci.md
+under the same heading.
 
 ### The seam does not say when a bind-group update is legal, and backends differ
 
@@ -14255,48 +9526,9 @@ the pending case this capability is defined around is driven by nothing at all.
 
 ### Slang cannot write a Metal ICB, and what the render-pass deferral left
 
-**`Capability::DrawIndirectCount` on Metal is closed** — `crcbl_mtl::adapter`
-reports `Features::DRAW_INDIRECT_COUNT` unconditionally, `crcbl_mtl::command`
-implements both indirect-count draws, and the `(DrawIndirectCount, Metal)` row
-is gone from `DIVERGENCES`, which
-`a_shared_reason_is_the_reason_its_row_carries` in `crcbl-hal`'s `capability`
-module holds it to. It closed without an indirect command buffer: see "The Metal
-ICB line of attack, and why it is closed" above for what shipped instead. What
-follows is what that route left behind and must not be re-derived.
-
-**Slang has no Metal indirect-command-buffer support, and that is still true.**
-An ICB parameter is silently dropped rather than diagnosed, and Slang's own
-"Metal-Specific Functionalities" page lists what the target does implement —
-mesh shaders, parameter blocks as argument buffers, `SubpassInput` framebuffer
-fetch, specialization constants as function constants, address spaces — with no
-`command_buffer` or `render_command` anywhere, and an explicit unsupported list
-that does not mention them either because they were never in scope. Every shader
-in this repo is Slang and the
-`shaders (committed artifacts match their sources)` CI job hashes each source
-against its artifacts, so anything needing an ICB kernel needs hand-written MSL
-outside that pipeline. Nothing does today — `indirect_count_args.slang` is an
-ordinary Slang kernel with a committed `msl/indirect_count_args.metal` — and
-this is the fact to check first if something ever wants one.
-
-**Two alternatives to the shipped route, considered and declined, with reasons
-that still hold:**
-
-- **MoltenVK's route** — read the count back and loop on the CPU. It is what the
-  reference Vulkan-on-Metal implementation does for `vkCmdDrawIndirectCount`,
-  and it needs a CPU–GPU synchronisation to see a number the GPU wrote. Correct
-  and simple, and it stalls the frame, so it fails the performance half of this
-  project's bar. Worth knowing that MoltenVK gave up here — it is why nobody
-  should read Metal's silence on this as "there is an easy way we missed".
-- **Splitting the render pass at the call**, rather than deferring the whole
-  pass's encoding. Ending and reopening a render encoder on a tiler stores every
-  attachment out of tile memory and reloads it — per call, and the seam makes
-  one call per bucket per frame. On Apple silicon that is the expensive
-  operation, not a rounding error, and it drops any in-pass memory guarantee
-  across the split. The deferral (`crcbl_mtl::command`'s
-  `RenderCommand`/`RenderRecording` and the pure `crcbl_mtl::pass`) was taken
-  instead and is the performant answer.
-
-**What the deferral left behind, stated as gaps rather than footnotes.**
+The closed `DrawIndirectCount` row, the Slang fact and the two alternatives
+considered and declined are in docs/notes/backends.md under the same heading.
+What the deferral left behind, stated as gaps rather than footnotes:
 
 - **Nothing about it executed a Metal call before it was pushed.** The refactor
   was written and gated on Linux, where `crcbl-mtl` compiles for
@@ -14326,40 +9558,6 @@ that still hold:**
   correct and was checked by reading. Nothing tests it, which is the same shape
   as the bullet two above: a Metal-only behaviour that no host but a macOS
   runner can execute.
-
-## What each remaining blocker row would take
-
-**All six rows are now deferred (2026-08-21).** Every one belongs to
-`crcbl-dx12` or `crcbl-mtl`, and work on both stopped — see
-`docs/plan/09-backends-metal-dx12.md`. So `parity_blockers()` will not reach
-empty, and that is a scope decision rather than work outstanding. The mechanism
-is unaffected and stays enforced: the `Capability` enum is still exhaustive,
-every backend still answers every row through a `match`, and a capability added
-to `crcbl-vk` or `crcbl-webgpu` still fails to compile until the deferred
-backends answer for it too. What changed is only which rows anybody is working.
-
-`REVIEWED_BLOCKERS` in `crates/crcbl-hal/src/capability.rs` is the answer at any
-moment; this says what stands between each row and zero. Every row belongs to
-dx12 or Metal.
-
-| rows                                              | kind        | what closes them                                                                  |
-| ------------------------------------------------- | ----------- | --------------------------------------------------------------------------------- |
-| dx12 `MeshShading`, `TaskShaderStage`             | `Unwritten` | the WARP device removal — `features_of` still never asks for `MeshShaderTier`     |
-| Metal `MeshShading`, `TaskShaderStage`            | `Unrun`     | **hardware.** The runner answers `Metal3 = false`, so nothing here can execute it |
-| Metal `TimestampQuery`, `PipelineStatisticsQuery` | `Unrun`     | **hardware.** Written and compiled; the runner advertises no `counterSets`        |
-
-**The two kinds are not the same distance from done, which is why `Unrun`
-exists.** Metal's four rows are written — `crcbl-mtl`'s `query.rs` builds the
-`MTLCounterSampleBuffer`, resolves it, and its `conv.rs` pins the result layouts
-against Apple's own structs at compile time — and they are blocked only on a
-device that will run them. dx12's two are not written at all: the adapter does
-not report `Features::MESH_SHADER`, because reporting it on a device that
-removes itself would be worse than not reporting it.
-
-**So dx12's pair is the only one anybody can move without new hardware**, and it
-is the subject of "DEFERRED — dx12 mesh shading: WARP claims it and dies,
-hardware works". The four Metal rows are unprovable here whatever anyone writes;
-the honest reachable state on this machine is four rows, not zero.
 
 ### Smaller things the WebGPU work surfaced and did not fix
 
@@ -14466,54 +9664,14 @@ it, rather than truncating — `1.9` silently becoming `1` would change a tuned
 bias invisibly. So an integer constant works and a fractional one is rejected on
 this backend only; the other three carry the float.
 
-The decision this needs is not the backend's to make: either
-`DepthBias.constant` becomes an integer on the seam (matching WebGPU and D3D12's
-`DepthBias`, which is also an `INT`, while Vulkan's `depthBiasConstantFactor` is
-a float), or WebGPU is documented as a lower-fidelity target for depth bias and
-the engine keeps its shadow constants integral. `pipeline.rs`'s `DepthBias` doc
-discusses sign and magnitude as floats and does not mention that a quarter of
-the backends cannot carry a fractional one — that is where the outcome belongs
-once it is decided.
-
-### The stream decoder caps a SPIR-V module at 65 536 words
-
-`crcbl-webgpu`'s decoder bounds `ShaderModuleDesc::spirv` by `MAX_ELEMENT_COUNT`
-(`1 << 16` words = 256 KiB), the same cap every counted list on this stream
-uses. A real SPIR-V module can be larger — a big compute shader clears 256 KiB
-easily — so pointing the decoder at one would refuse it as `InvalidLength`.
-
-**It cannot bite the WebGPU path**, and that is why it was left. A browser
-consumes only `wgsl`; on a browser build the engine hands `create_shader_module`
-a descriptor whose `spirv` is empty, so the field the cap guards is never
-populated on the only path this decoder runs. The ceiling is reachable solely by
-aiming the Rust decoder at a stream carrying real SPIR-V, which is a test or a
-tool, never production.
-
-If a future use does stream SPIR-V through this decoder, the fix is a per-field
-cap sized to a shader rather than the shared element count — the two limits
-answer different questions and `MAX_ELEMENT_COUNT` was sized for the second.
-
-### Anisotropy: the limit says one, the replayer passes more through
-
-`halLimitsFor` reports `max_sampler_anisotropy: 1` and withholds
-`Features::SAMPLER_ANISOTROPY`, while `webgpuMaxAnisotropyFor` passes an ask
-above 1 straight to `createSampler` and lets the device clamp. Both halves are
-argued where they are written and neither is a bug, but together they mean a
-caller who respects the reported limit never exercises the pass-through, and one
-who ignores it gets whatever the device does.
-
-The alternative is refusing everything above 1, which would make the seam's
-anisotropic filtering permanently unreachable on WebGPU. That is why it was not
-done, and it remains **a decision worth confirming** rather than one that sits
-implicit. WebGPU has no query for the maximum a device supports, which is why
-the reported limit is 1: it is "no ceiling this backend can guarantee", not
-"more than one is refused".
-
-**Corrected 2026-08-24:** this entry said the two halves live "in two files that
-do not reference each other". They are in one file, `web/engine/gpu-replay.js`,
-and `webgpuMaxAnisotropyFor` already linked to `halLimitsFor`; the reference was
-one-way, and `halLimitsFor` now links back. So what is left here is only the
-decision, not the implicitness.
+**DECIDED 2026-09-06 —** `DepthBias::constant` becomes an `i32` on the seam.
+Precedent: D3D12's `DepthBias` and WebGPU's `GPUDepthBias` are both integer, and
+Vulkan's float `depthBiasConstantFactor` takes an integer value exactly — wgpu's
+`DepthBiasState::constant` is an `i32` for that reason — while the engine's own
+shadow constants are integral already. Work: change the field in `crcbl-hal`'s
+`pipeline.rs`, rewrite its doc so it no longer discusses fractional magnitudes,
+drop the WebGPU replayer's fractional refusal, and follow the compiler to the
+call sites.
 
 ### A `GPUSampler` reports nothing but its label, so no browser check can confirm one
 
@@ -14563,85 +9721,6 @@ Two ways out and no decision yet: make the modules `pub` — they are peers of
 citations to name the console variable and the shader instead. Raised by the
 2026-09-03 plan audit and not fixed, because which one is right depends on
 whether those modules are meant to be part of the crate's surface.
-
-### Cross-format image views were declined, and the seam now says a view keeps its image's format
-
-`ImageViewDesc::format` used to document itself as free to differ from the
-image's "for sRGB reinterpretation", and no two backends agreed: `crcbl-dx12`
-refused every differing format, `crcbl-mtl` refused only across depth or
-stencil, `crcbl-vk` and `null` did not check, and `crcbl-webgpu` could not have
-honoured it at all. `ImageViewDesc::check` now refuses any format but the
-image's own, on every backend, so the seam keeps a promise all five can.
-
-The two routes to the opposite decision were considered and declined, so that
-they are not re-proposed:
-
-- **A `view_formats` list on `ImageDesc`**, mirroring
-  `GPUTextureDescriptor.viewFormats`, `VkImageFormatListCreateInfo` and D3D12's
-  equivalent. It is the honest cross-backend shape, and it is a new field on the
-  most-used descriptor in the seam plus a plumbing change in five backends, for
-  a capability nothing in the workspace asks for — every render target and
-  sampled image here is created in the format it is read in.
-- **Typeless D3D12 resources**, or gating on `CastingFullyTypedFormatSupported`.
-  The first costs compression on every render target; the second makes a seam
-  promise depend on the machine. Both arguments are in `crcbl-dx12`'s
-  `create_image_view`.
-
-If a caller ever needs sRGB reinterpretation, the `view_formats` route is the
-one to take — not a per-backend relaxation of the check.
-
-**The shape that closes a seam-rule divergence, worth copying for the next
-one:** the check lives in the shared descriptor's `check`, the seam's doc
-**names the error** rather than only the rule, and **two tests** hold everyone
-to it — the agnostic seam suite for the four native backends, and
-`crcbl-webgpu`'s own `hal::tests` for the browser one, because the seam suite is
-a native binary and `CRCBL_GPU` names no browser. That last split is the part
-that keeps being needed: an agnostic suite reaching four of five backends cannot
-be the only guard for a rule the fifth is the most likely to break. Both
-`BufferDesc::size` (2026-08-24, where `crcbl-webgpu` alone served a zero) and
-this view-format rule diverged exactly there.
-
-### The sweep for test-restated isolation defaults is finished, and three candidates were declined
-
-Every sample was reviewed on 2026-08-16 for the shape horde's `Setup` had: a
-knob that keeps a test off real hardware, defaulting to the production value, so
-that every test restates the test value and a test that forgets it opens an
-audio device or writes to the developer's disk. Two instances were found and
-fixed — horde's `Setup::default`, and the `--headless` that `breakout_null` and
-`sandbox_null` did not pin. What follows is what was looked at and left, so the
-idea does not get re-proposed from scratch.
-
-**`Audio::new(true)`, restated at every test site — declined.**
-`apps/horde/src/audio.rs`, `apps/flappy/src/audio.rs` and
-`apps/breakout/src/audio.rs` each carry a run of them, none behind a per-file
-helper. It is repetition, but not this shape: `headless` is a **required
-positional argument** to `Audio::new`, so no default is fighting anyone and a
-test cannot forget it, only actively type `false`. There is no silent path to a
-device. Wrapping it in a per-file helper would be churn for symmetry.
-
-**`crcbl::args::Common`'s `headless: false` — must not be flipped.** It looks
-like the horde case and is the opposite of it. `Common::consume` parses by
-mutating a default-constructed `Common` — `"--headless" => self.headless = true`
-— so production genuinely depends on the `false`, and `crcbl::args`'s own tests
-already assert the default is windowed. The test-side restatement it would
-otherwise cause is already absorbed: every app with a loop has a
-`headless(frames)` helper in its `src/app.rs`, so each app states it once. The
-same argument covers `apps/sandbox/src/args.rs::parse` against that app's
-`Options::default`.
-
-**horde's `Setup::workers: None` — declined.** It is the production value
-sitting in a default, and it does hand every horde unit test a machine-wide
-thread pool. But no test site overrides it, so nothing is being fought, and a
-pool is not a device or a file. Revisit only if the pool starts costing suite
-time.
-
-Apps confirmed to have none of the shape, so nobody need look again:
-`asteroids`, `flappy` and `breakout`'s in-crate `game.rs` tests all funnel
-through a single `Harness::new` that passes `headless` once; `hud` and `lantern`
-have no audio, score file or headless knob in their game code; `sim`'s binary
-has no shell, audio or store, so its e2e helper needs no isolation flag at all.
-`crcbl-shell`'s `WindowDesc::default` has `visible: true`, but its callers are
-either real window creation or e2e suites whose point is a real window.
 
 ### The counted-claims sweep is done for `apps/*`; the wider one is not
 
@@ -14705,22 +9784,14 @@ warned about it. `web_exports!` is not affected — it forwards to free function
 in `crcbl::web`, not to same-named methods — but it is the kind of macro that
 would be.
 
-Worth deciding whether the guard shape becomes a convention with a name, or
-whether a `trybuild`-style compile-fail test is worth a dev-dependency to pin
-it. Neither has been done.
-
-### Two audits' worth of doc drift is fixed; the mechanism that produced it is not
-
-The 2026-08-15 sweep corrected `docs/plan/ROADMAP.md` and most of the numbered
-stage docs, and the pattern behind the drift was uniform: a doc says work is
-missing, the work lands, and nothing connects the two. Three modules
-(`crcbl_render::counters`, `crcbl_render::cull_stats`,
-`crcbl_shaders::declaration_order`) already quote the sentence they close, in
-their own headers — which is what made them findable — and that convention is
-worth spreading rather than leaving to whoever happens to remember.
-
-Not proposed as a lint: what would have to be checked is prose. Recorded so the
-next sweep starts from "who quotes their plan doc" rather than from nothing.
+**DECIDED 2026-09-06 —** the guard becomes a convention with a name rather than
+a new dev-dependency: the `const _` coercion block `impl_game_gpu!` already
+carries is the shape every forwarding macro we write adopts. Precedent: a
+compile-time coercion in a scope where the trait is not imported is the standard
+way to pin a macro's expansion without a compile-fail harness, and `trybuild`
+would be a dependency taken for one lint hole. Work: name the block in
+`impl_game_gpu!`'s own docs, and require it of any future macro that expands to
+a `Self::method(self)` forward.
 
 ### `crcbl-dx12` points at a backlog note about `crcbl::screenshot` that is not here
 
@@ -14742,211 +9813,34 @@ needs a Windows-crate touch, not a decision.
 
 ### The Win32 pointer-clip tests are held out of the ordinary sweep
 
-Three flakes across the session, on **two different tests** and **three
-different assertions**, every time for a commit that touched no shell code
-(`d9ee566`, `28fc1b7`, `0354eec` — all renderer or CI changes).
-
-One shape underneath all of them: the test compares a clip rectangle the system
-applied against one this process computed, and both operands move. The desktop
-repositions windows, the foreground is contended by whatever else the runner is
-doing, and this runner changes its display set mid-run — the behaviour that made
-`refresh_clip` refuse a degenerate refresh.
-
-Two rounds of narrowing helped and did not fix it: reading through
-`confined_to_client` immediately before asserting, and re-deriving the rectangle
-after a restore rather than reusing one from before the minimize. The prediction
-in this entry was "if it flakes a third time, stop patching and quarantine" — it
-did, so both are now `#[ignore]`d.
-
-**They are not disabled.** `run-win32-e2e.ps1` passes `--run-ignored all` and
-runs on a real interactive desktop, so they still gate there — the only place
-their preconditions actually hold. What they stop doing is failing the workspace
-sweep, where nothing guarantees a foreground window or a stable display set.
-Deleting them would have been worse: a process that keeps the cursor clipped
-after losing focus has taken the desktop hostage.
+Three pointer-clip tests are `#[ignore]`d in the workspace sweep and still gate
+under `run-win32-e2e.ps1`, which passes `--run-ignored all` on a real
+interactive desktop. The four flakes, the real defect the fourth one hid and the
+lesson about this family are in docs/notes/ci.md under the same heading.
 
 Still open and unrelated: the **focus** flake (three instances), where
 `focus_and_confirm` loses the foreground.
 
-**A fourth instance, on a third test, and it found a real bug (2026-08-15).**
-`warping_the_pointer_moves_it_to_a_position_in_the_window` failed on `5889a3c` —
-a commit changing one JavaScript file and two markdown files — reading the
-cursor back at exactly the client origin against an expected origin-plus-offset.
-So the warp had not moved the pointer at all, and the same signature as the
-other three: no shell code in the commit.
-
-The cause is the one this family keeps pointing at. Windows refuses
-`SetCursorPos` from a process that is not in the foreground, and
-`win32::input`'s `warp_to_client` **discarded the `BOOL`** — along with a failed
-`ClientToScreen` and a bad window handle — so a warp that moved nothing returned
-`()` and the seam's `warp_pointer` reported `Ok`. The mismatch then surfaced as
-a coordinate wrong by precisely the offset requested, which reads as a
-conversion bug and is not one. It now returns `ShellError::Backend` naming the
-foreground requirement; the two internal convenience warps
-(`recentre_if_near_edge`, and the initial centring in `set_pointer_mode`) log
-instead of propagating, because in both the pointer mode is already established
-and only the courtesy move failed.
-
-The test is now `#[ignore]`d with the other two. **That does not make the fix a
-quarantine:** the code change stands on its own — three swallowed failures in
-one function — and would be right if the test never flaked again. What the
-`#[ignore]` buys is that the _precondition_ is asserted where it holds.
-
-**Worth noticing about the family as a whole:** three of these have now been
-diagnosed as environmental and one turned out to be a real defect hiding behind
-an environmental symptom. The lesson is not that the quarantine was wrong; it is
-that "flaky on a shared runner" and "swallows the error that makes it flaky" are
-the same finding seen from two ends, and the next one in this family deserves a
-look at what the failing call ignores before it is filed as the desktop's fault.
-
 ### `GpuInstance::flags` is a bare `u32`, not `bitflags`
 
-**Recommendation taken, yours to override.** `LIVE = 1 << 0` was the first
-defined bit and the rest have since arrived — `BASE_VERTEX_OVERRIDE` at bit 1,
-and the material mode at bits 2 and 3 behind `MATERIAL_MODE_SHIFT` — so
-`crcbl_hal::Features`-style `bitflags` is the house pattern and would normally
-win.
-
-It lost on one fact: the type has to live where the layout lives, and
-**`crcbl-shaders` has no dependencies at all, deliberately** — its `Cargo.toml`
-says so, because the library is what a not-yet-written backend consumes.
-`bitflags` would be its first, and taking a new dependency is your call. The
-alternative — a wrapper type in `crcbl-render` — would be a second
-representation of the same word, which is the drift `crcbl-shaders` exists to
-prevent.
-
-So: an associated const `GpuInstance::LIVE`, documented as bit 0. The revisit
-this asked for is now due — the flags word carries a second bit and a two-bit
-mode field and is still a bare `u32` — and the cost of the switch is still one
-dependency on `crcbl-shaders` and nothing else.
-
-Calls made on judgement during the 2026-08-09 planning session, listed so they
-can be confirmed or reversed without re-deriving anything. **Each says what was
-decided, why, and what reversing it costs.** Delete an entry once it is
-confirmed; the rest of this file assumes them.
-
-- **`naga` added as a dev-dependency of `crcbl-shaders`, taken without asking.**
-  A new dependency is normally the user's call. Taken because the alternative
-  was leaving three of four committed shader artifacts validated by nothing —
-  the gap that let `wgsl/ui.wgsl` ship for months with a `var<uniform>` carrying
-  no binding decoration, which `crcbl-wgpu` could never have loaded. naga is the
-  tool that would have caught it, and is dev-only so it does not ship. **The
-  lockfile half of the original argument expired on 2026-08-21**: it was
-  "already in `Cargo.lock` through wgpu at the same version", so no new package
-  entered the graph; with `crcbl-wgpu` deleted naga is a pin of its own. The
-  owner confirmed it stays anyway — see "The `crcbl-wgpu` deletion bar was
-  already answered" above. **To override:** drop the dev-dependency and the WGSL
-  artifacts go back to being unchecked, or find a validator that is not naga.
-
-- **The shader manifest's section order was locale-dependent, and that broke
-  `main` a third time.** `compile-shaders.sh` iterates `shaders/*.slang`, and a
-  glob is sorted by the caller's collation: `en_US.UTF-8` ignores the
-  punctuation and puts `mesh_shader.slang` before `mesh.slang`, while `C`
-  compares bytes and puts `mesh.slang` first. So the committed manifest carried
-  one developer's locale, CI regenerated the other order, and the byte
-  comparison refused it — with every artifact identical and only the section
-  order differing. `export LC_ALL=C` fixes it and the manifest was regenerated.
-
-  Worth keeping because the class is general: **this project pins its compilers
-  and now its validator, and the environment those run in is provenance too.**
-  Any glob, sort, `uniq` or `tr` in a build script has the same exposure. It
-  went unnoticed for months because no two shader filenames collided this way
-  until `mesh_shader.slang` arrived next to `mesh.slang`.
-
-- **CI's `spirv-val` is pinned to a fixed `.deb`, after an unpinned one broke
-  `main` twice.** The shader job installed whatever `spirv-tools` the runner
-  image carried. On 2026-08-09 that was **SPIRV-Tools v2025.1**, which rejects a
-  valid mesh shader over `VUID-PrimitiveTriangleIndicesEXT-…-07054` — claiming
-  the indices decoration is used without `OutputTrianglesEXT`, on a module that
-  declares that execution mode on both entry points reading the decorated
-  variable.
-
-  **This was established rather than argued.** Both validators were fetched and
-  run locally against the same artifact: v2025.1 rejects it, v2026.1 and v2026.3
-  accept it, and radv and lavapipe both render it correctly. So it is an
-  upstream validator bug fixed between those releases, and the artifact is
-  sound. The pin is Ubuntu's own `.deb` at a fixed version, because LunarG
-  publishes no repository for the SDK originally reached for — that first
-  attempt 404'd and failed the job a second time, which is its own lesson about
-  pinning to a URL nobody checked.
-
-  **To override:** if you would rather not depend on a validator version, the
-  alternative is to stop two mesh entry points sharing one
-  `PrimitiveTriangleIndicesEXT` variable — split `amplifiedMeshMain` into its
-  own `.slang` — which makes the artifact acceptable to v2025.1 too. That works
-  around a fixed upstream bug in shader structure, which is why it was not
-  chosen.
-
-- **Metal's `DRAW_INDIRECT_COUNT`: the seam was _not_ reshaped.** This reverses
-  an explicit instruction ("update the seam and get all features supported in
-  all the native backends"), on evidence found after it was given: `wgpu-hal`
-  declines the same feature on Metal — `wgpu-types` documents
-  `MULTI_DRAW_INDIRECT_COUNT` as DX12 and Vulkan only, and its Metal backend
-  contains no multi-draw code at all. Two independent implementations reached
-  the same conclusion, so it is a Metal API fact rather than a gap. With mesh
-  shaders as the primary geometry path, Metal sits on the primary path anyway
-  and the count only affects the fallback. **To override:** the seam grows a
-  "record indirect work before the pass opens" step and Metal builds an ICB from
-  the count buffer in a compute kernel — real work, and it makes the seam less
-  Vulkan-shaped, which `crcbl-hal` has resisted so far.
-- **Shader pipeline: four independent Slang lowerings kept, plus guardrails.**
-  Godot's SPIR-V-as-single-IR model would make the `SV_InstanceID` class of
-  divergence structurally impossible, but costs two vendored C/C++ translators
-  and cannot serve the WGSL leg anyway (naga's SPIR-V frontend rejects
-  `DrawParameters`). Recorded as reopenable in `docs/plan/02-vulkan-backend.md`
-  with a named trigger. **To override:** adopt SPIRV-Cross and spirv-to-dxil for
-  the native targets.
-- **The editor is native-only.** `10-wasm-webgpu.md` called editor-in-browser a
-  stretch that "should mostly work by construction"; the asset browser, OS
-  drag-drop and the file watcher are all native-shaped and nobody examined it.
-  **To override:** scope what a browser editor would actually do about those
-  three.
-- **`crcbl_ui::hud` gets deleted, not extended.** It has no consumer, and the
-  obvious fix (a `color` on `Label`) builds on the model topic 7's CSS rewrite
-  replaces. **To override:** add the field and have the samples adopt it,
-  knowing it is throwaway.
-- **towers co-op and arena are native LAN**, and arena's prediction work is
-  therefore validated against injected latency only. towers loses its
-  mixed-native/browser marquee session. **To override:** host something.
-- **The `delve` sample was folded into `shard` before it was written.** It was
-  proposed to fill the web-flagship vacancy; shard's web milestone fills it, and
-  two samples in one genre is duplication. **To override:** split them again.
-- **New phase and gate names are inventions**: P7B (raster twin), P7C
-  (ray-traced path), S4B (lantern), S4C (quarry), S6B (shard web slice), S7
-  (bracket). So are the sample names lantern, quarry, shard and bracket.
-- **Point-light shadows moved into MVP.** They were post-MVP; the raster twin
-  has to cover every light type ray-traced shadows cover, so they follow from
-  the parity decision rather than being a separate call.
-- **bracket keeps a single-player web demo** — client and matchmaking server
-  in-process over `InMemoryTransport` — rather than shipping no web build.
-  Preserves sample rule 7 and demonstrates the matchmaker and rating curve; only
-  the transport is absent.
+**DECIDED 2026-09-06 —** the bare `u32` stays, with associated consts on the
+layout type — `GpuInstance::LIVE`, `BASE_VERTEX_OVERRIDE` and the two-bit mode
+field behind `MATERIAL_MODE_SHIFT`. `crcbl-shaders` has no dependencies at all
+by design, because the library is what a not-yet-written backend consumes, and
+`bitflags` would be its first; a wrapper type in `crcbl-render` would be a
+second representation of the same word, which is the drift `crcbl-shaders`
+exists to prevent. Precedent: layout crates stay dependency-free and expose raw
+words plus consts. Nothing is owed. The argument, and the 2026-08-09
+judgement-call list this entry carried — every one of which the 2026-09-06
+decision pass confirms — are in docs/notes/process.md under the same heading.
 
 ## Two deferred backends keep their own copy of the image rules (2026-08-24)
 
-`ImageDesc::check` lives on the seam (`crcbl-hal/src/resource.rs`), lifted
-verbatim out of the null backend, and is now called by the null backend, by
-`crcbl-webgpu` and by `crcbl-vk`. `crcbl-mtl` (`device.rs`) and `crcbl-dx12`
-(`validate.rs`) still carry their own, with their own wording.
-
-**The audit that consolidating `crcbl-vk` forced is the point of this entry**,
-because the copies had in fact drifted, in different directions:
-
-- **`crcbl-vk` did not check `mip_levels == 0` at all** and clamped it with
-  `.max(1)` on the way to `vkCreateImage`. Fixed, and covered by
-  `an_image_descriptor_the_seam_refuses_never_reaches_the_driver` in
-  `crates/crcbl-vk/tests/vk_e2e/resources.rs`.
-- **`crcbl-mtl` silently clamps a zero to one** —
-  `let mip_levels = desc.mip_levels.max(1);` in its `create_image`. That is
-  worse than an absent check: the caller asked for something the seam calls a
-  bug and got a working image, so nothing will ever tell them.
-- **`crcbl-dx12` does not check it either.** Its `validate.rs` checks
-  `samples > 1 && mip_levels > 1` and nothing about zero.
-
-Both are DEFERRED, so these are records rather than tasks. Consolidating them
-means changing the wording their own tests assert, on two backends this machine
-cannot run — one CI round trip each — so it is one slice per backend when work
-resumes.
+`crcbl-mtl` (`device.rs`) and `crcbl-dx12` (`validate.rs`) still carry their own
+copy of the image rules instead of calling `ImageDesc::check`; both backends are
+DEFERRED, so consolidating them is one slice per backend when work resumes. The
+audit that found how the copies had drifted is in docs/notes/backends.md under
+the same heading.
 
 **Until then there is no agnostic test for the image rules**, and that is the
 real cost. One asserting the shared wording would redden `crcbl-mtl` and
@@ -14957,47 +9851,11 @@ exists to stop exactly this kind of divergence cannot yet be pointed at them.
 
 ## The browser leak check watches occupancy, not just totals (2026-08-24)
 
-Check I in `web/tools/browser-e2e.mjs` ("a steady-state frame gives back
-everything it takes") took one `liveObjects()` sample, waited 60 frames, took
-another, and failed on any kind that had risen. It failed twice on CI and
-neither was a leak: lantern `readbacks 2 -> 5` (commit `fa7fc11`) and quarry
-`readbacks 1 -> 2` (commit `68e278c`), neither reproducible on this machine.
-
-**`readbacks` is not a monotone tally — it is the occupancy of a fixed-size
-ring.** `CullStatsRing` (`crates/crcbl-render/src/cull_stats.rs`) holds
-`FRAMES_IN_FLIGHT + 1` = 3 slots per `ForwardRenderer`, and `take_slot` matches
-only `Recording` or `Idle`, never `Polling` — so a slot with a live readback is
-never reused and the count is hard-bounded at three per renderer. quarry has one
-renderer (ceiling 3, observed 2); lantern has two, `renderer` and `monitor` in
-`apps/lantern/src/gpu.rs` (ceiling 6, observed 5). Both failures were strictly
-inside the bound. Occupancy rises with the readback round trip measured _in
-frames_, which is exactly what a loaded CI runner stretches.
-
-The check now asks whether a kind climbs across **every** one of four windows
-rather than one: a ring saturates and stops, a leak does not. Verified both ways
-— the acquire-path leak it was written for (a fresh image and view per frame,
-never retired) still fails it, at `imageViews 520 -> 580 -> 641 -> 701`.
-
-**Per-kind ceilings were the alternative and were declined**: they would put the
-engine's ring depths in a JS test file, to be silently wrong the day one
-changed. If a future leak turns out to be slow enough to saturate within three
-windows, the answer is more windows, not a table of engine constants.
-
-**It happened a third time on 2026-09-02, and this one survived the three-window
-hardening.** `render lantern in a real browser` failed the Pages run for
-`d0bc715` with `readbacks 2 -> 4 -> 5 -> 6`. That is the same false positive
-again, and the arithmetic says so rather than the resemblance:
-`FRAMES_IN_FLIGHT` is 2 and `CullStatsRing::new` takes `frames_in_flight + 1`
-slots, so three per renderer; lantern's `gpu.rs` holds two, `renderer` and
-`monitor`; the ceiling is six, and the run stopped **at exactly six**. The
-increments decelerate — `+2`, `+1`, `+1` — which is a ring filling, and an
-unbounded leak does not stop at the bound.
-
-So a loaded runner can now stretch the round trip far enough that occupancy
-takes three whole windows to saturate, and three windows was no longer enough to
-see it stop. The cheap remedy this entry already named was taken — a fourth
-window, so the flat step after saturation is inside the sample — and the comment
-above the constants labels it a stopgap.
+Check I in `web/tools/browser-e2e.mjs` now asks whether a kind climbs across
+every one of four windows rather than one. Three false failures on two demos,
+the ring arithmetic that explains each, and the per-kind ceilings that were
+declined are in docs/notes/browser.md under the same heading. What is left to
+decide and build:
 
 **What the "better fix" actually costs, read 2026-09-02 before starting it.**
 This entry and the code both name it as `liveObjects()` reporting each kind's
@@ -15033,15 +9891,6 @@ demos is that. A `liveObjects()` that carried each kind's own ceiling would let
 the check compare against the bound directly rather than inferring saturation
 from the shape of a curve, and would not need a window count tuned against CI
 load at all. Adding a window is a stopgap and should be labelled one.
-
-**Not caused by the autoexec that landed in the same commit**, though the timing
-invites the reading: an autoexec run on a page with no `autoexec.cfg` reads the
-resident map once and allocates nothing, and `readbacks` counts `CullStatsRing`
-slots, which nothing on that path touches. The evidence is weaker than it looks
-in one respect worth stating — the three Pages runs between this commit and the
-last green lantern were **cancelled by my own pushes**, so there are no
-observations in between and "it first failed here" is not evidence it started
-here.
 
 Not fixed, and the reason this took a bisect to see: **`liveObjects()` reports
 totals with no way to say which kinds are ring-shaped.** A kind that carried its
@@ -15079,35 +9928,6 @@ left, and neither is a bug in what shipped:
   narrower than it sounds: a mappable format this particular surface does not
   offer. Neither half is caught by the seam suite, which is a native binary and
   cannot reach this backend.
-
-## `crcbl-mtl` still takes a writable storage binding of host memory (2026-08-24)
-
-`BufferDesc::memory` states the rule: a buffer a shader writes must be
-`MemoryLocation::DeviceLocal`, because D3D12's upload and readback heaps refuse
-`ALLOW_UNORDERED_ACCESS` at creation and pin the resource to a state a shader
-cannot write from. It is now enforced by the null backend
-(`check_shader_writable_memory`), by `crcbl-dx12` (`binding.rs`), by `crcbl-vk`
-(`write_descriptors`, covered by
-`a_writable_storage_binding_refuses_host_visible_memory` in
-`crates/crcbl-vk/tests/vk_e2e/pipeline.rs`) and by `crcbl-webgpu`
-(`check_buffer_bindings`, covered by
-`a_buffer_binding_is_held_to_its_slots_ceiling_and_memory` in its own
-`hal::tests`). One backend does not:
-
-- **`crcbl-mtl`** (`binding.rs`, the buffer arm of its bind-group builder) —
-  DEFERRED, so this is a record, not a task. Metal has no such restriction of
-  its own, so a caller who gets this wrong sees it only on D3D12. Worth noting
-  what the WebGPU half turned out to be, since the same reasoning may apply
-  here: the browser catches nothing of this rule, because
-  `MEMORY_LOCATION_USAGE` in `web/engine/gpu-replay.js` maps `HostUpload` to
-  `COPY_DST`, and `COPY_DST | STORAGE` is an ordinary legal WebGPU buffer.
-  (`HostReadback` becomes `MAP_READ`, which may carry only `COPY_DST`, so that
-  half was refused at `createBuffer` — as a usage error, one call earlier than
-  the seam states the rule.)
-
-No test anywhere exercised this rule before the Vulkan one above — verified by
-searching the workspace for both backends' error wording, which appears only in
-their own `src/`. That is why the gap survived on three backends at once.
 
 ## What the three `crcbl-shell` fixes left uncovered (2026-08-23)
 
@@ -15174,20 +9994,10 @@ correction a later reader needs.
 
 ## The 2026-08-01 full-workspace review, aggregated (2026-08-22)
 
-**The review document is deleted.** The earlier decision — recorded below as "a
-record, left unedited" — is **reversed by the user**: it is folded into this
-file and gone. What follows is everything from it that survived verification
-against the tree, plus the caveats a future reader would otherwise re-derive.
-
-Every one of its ~210 findings was re-checked by reading today's code, never by
-trusting the review or a grep. The result is that **nothing above Low severity
-is still live.** Every Critical is fixed or dead — the QOA LMS sign inversion,
-the unsound `unsafe impl Send/Sync for Mixer` (now a `Mutex`, zero `unsafe`),
-the 62-byte save that aborted the process, the BVH pre-sort refit index,
-breakout's restart/per-frame-stepping/invisible-ball trio, the determinism
-harness's `--tick-rate 0` divide-by-zero. Many fixes carry a comment or a
-regression test naming the original defect, which is the strongest evidence the
-deletion loses nothing.
+The review document is deleted and everything from it that survived verification
+against the tree is here. Nothing above Low severity is still live; the intro,
+the findings that became documented decisions, and the account of what the
+aggregation itself verified are in docs/notes/process.md under the same heading.
 
 ### What is still live, all Low
 
@@ -15236,16 +10046,6 @@ deletion loses nothing.
 - **Five wall-clock `thread::sleep` timing assertions**
   (`crates/crcbl-net/src/condition.rs`) will flake on a loaded runner.
 
-### Findings that became documented decisions, not defects
-
-Do not re-file these: the behaviour is unchanged but the code now argues for it.
-`System::attach` accepting an already-swept entity; `Transform::encoded_len`
-ignoring `self`; `Message.kind` duplicating the channel choice; the resume token
-being authenticated but not encrypted (`crcbl-net`'s `auth.rs` states the threat
-model it does and does not cover); `ui_pass`'s push constants, fixed by removing
-them entirely; `crcbl-vk`'s `Trash::Swapchain` boxing; `SHADER_DEBUG_PRINTF`
-never being set.
-
 ### Caveats worth keeping
 
 - **The 24 `crcbl-wgpu` findings are DEAD, not fixed.** That crate was deleted
@@ -15277,18 +10077,20 @@ and is blocked on none of these to _start_ — slice 1 (lifecycle, pump, overlay
 event) runs on SpaceWar app id 480. Each of these gates something later, and
 each is the user's call.
 
-- **The binding route, and whether this MIT repo publishes our own flat-API
-  declarations.** (a) hand-write `extern "C"` declarations and `repr(C)` structs
-  transcribing no header text — zero dependencies, a loader we control, a drift
-  gate against the SDK's `steam_api.json` as the net. (b) depend on
-  `steamworks-rs` — the ABI risk becomes theirs, at the cost of a link-time
-  `DT_NEEDED` (so no graceful "Steam absent"), a vendored SDK in the dependency
-  graph, and an event model to wrap over. The plan recommends (a). Either way a
-  new dependency is the user's call by standing rule. Note the access agreement
-  licenses the SDK "solely to develop" and does not address publishing one's own
-  ABI declarations; the ecosystem precedent is strong (Steamworks.NET, a decade,
-  MIT) but **precedent is not permission, and this was read by an agent and not
-  a lawyer**.
+**DECIDED 2026-09-06 —** the plan's own defaults are ratified and all four stay
+deferred until Steam is in scope: hand-written `extern "C"` declarations and
+`repr(C)` structs with a drift gate against the SDK's `steam_api.json`, rather
+than `steamworks-rs`; Auto-Cloud configuration first, with a `SteamCloudStorage`
+backend over `ISteamRemoteStorage` only if per-file control or in-game sync UI
+is wanted; and Steam Input only if the Deck is targeted, returning then as a
+slice feeding `ActionMap` through `Binding::Virtual`. Precedent: Steamworks.NET
+has published its own flat-API declarations under MIT for a decade, and
+Auto-Cloud is the zero-code path Valve documents for a game with an atomic save
+layout. Work: none until Steam is in scope. The four option trees are in
+docs/notes/simulation.md under the same heading.
+
+**Still the user's call, and a product decision rather than a technical one:**
+
 - **An app id of our own.** Achievement definitions, stats schema, Auto-Cloud
   config, rich presence and game-server logins are all configured per-app on the
   partner site and 480 cannot carry them. Needs a partner account and the
@@ -15296,16 +10098,6 @@ each is the user's call.
   thing on Steam_. `towers` and `bracket` are what the ladder suggests. Until
   then slices 2+ build against 480 with mechanism-only smoke tests that never
   assert a value read back, since 480's data is shared with everyone.
-- **Cloud saves: Auto-Cloud config, or a `StorageSource` backend.** (a) zero
-  code over `crcbl-store`'s existing atomic layout, sync timing is Valve's and
-  no in-game sync UI is possible. (b) a `SteamCloudStorage` backend over
-  `ISteamRemoteStorage` — per-file control, quota, conflict surfacing, and a
-  real slice of async work behind the seam. The plan leans (a) first.
-- **Steam Input, or topic 19's own backends alone.** Declined in the plan
-  because `ISteamInput` is a competing action mapper against `ActionMap`. The
-  counterweight is Steam Deck verification, which requires first-class Steam
-  Input. If Deck becomes a target it returns as a slice feeding `ActionMap`
-  through `Binding::Virtual`, origins and glyphs included.
 
 **Two things the plan could not verify**, recorded so nobody reads them as
 settled: whether SDK **1.64** exists at all (`steamworks-rs` pins it; 1.63 of
@@ -15356,6 +10148,9 @@ blocked either way.
 
 `forward.rs` and `engine.rs` have no such expiry and no one has looked for their
 seams; that is a gap in this entry, not a judgement that they are fine.
+
+**Also joined since, and named nowhere above:** `crates/crcbl/src/screenshot.rs`
+is now in the same size class (2026-09-06 audit).
 
 ## What the windowed swapchain e2e still does not reach (2026-08-22)
 
@@ -15439,35 +10234,10 @@ What it does **not** reach, stated rather than left to be discovered:
 
 ## What the deleted WebGPU plan left behind (2026-08-22)
 
-`docs/plan/ROADMAP.md`'s 530-line "Replacing `wgpu` with our own WebGPU path"
-section was deleted because the work shipped. Every entry in it was re-verified
-against the tree first; these four are what survived, and none of them was
-recorded anywhere else.
-
-- **The ordering that makes `crcbl-webgpu`'s `suboptimal: false` true is guarded
-  nowhere.** Settled 2026-08-22: the hard-coded `false` is correct, and correct
-  by construction of the platform rather than by anything this engine does.
-  WebGPU's _Canvas Context sizing_ algorithm re-derives a canvas context's
-  texture descriptor from `canvas.width`/`canvas.height` whenever either is set,
-  and `configure()`'s own note says its early validation "remains valid until
-  the next `configure()` call, **except** for validation of the `size`, which
-  changes when the canvas is resized". A canvas context is not a swapchain that
-  can outgrow a size, so the API has no out-of-date signal for a backend to
-  translate. `crcbl-webgpu` now says this at the literal, and two tests hold the
-  two links it can reach: `the_shim_reports_the_canvas_size_it_just_wrote` pins
-  `web/engine/shell.js` to sizing the backing store and then reporting those
-  same locals, from exactly one place;
-  `the_acquired_extent_is_the_one_last_configured` drives the device and proves
-  a reconfigure moves what a later acquire reports.
-
-  **All three links are held now.** The third is `Loop::frame_body`'s
-  pump-resize-frame ordering in `crcbl`, guarded by
-  `a_resize_reaches_the_gpu_before_the_frame_that_follows_it`, which asserts on
-  the extent the GPU **held when `frame` ran** rather than the one it ended on —
-  both orderings leave the same extent behind, so an end-state assertion would
-  have passed either way. Measured when it was written: moving the resize below
-  the frame fails that test and **nothing else in `crcbl`'s suite**, which is
-  what it was written for.
+`docs/plan/ROADMAP.md`'s "Replacing `wgpu` with our own WebGPU path" section was
+deleted because the work shipped; every entry in it was re-verified against the
+tree first. The settled `suboptimal: false` finding is in docs/notes/browser.md
+under the same heading. What is still open:
 
 - **The browser gate renders at one size, and a second was deliberately
   blessed.** `render_e2e.rs` has `EXTENT_ODD` at 97×61 with three goldens,
@@ -15487,153 +10257,20 @@ recorded anywhere else.
   `hal/channel` superseded the requirement, the plan's version should not be
   resurrected from git by the next reader.
 
-## The backlog's own claims were audited, and not all of it (2026-09-02)
-
-Two read-only audits checked this file's absence claims — "nothing does X", "X
-is unbuilt", "blocked on Y" — against the tree, because each of those goes stale
-silently when the work lands and nothing recomputes prose. Eighteen were wrong
-and are fixed; see `git log` for what each said.
-
-**The failure has a shape worth knowing.** A fact that appears in three entries
-is fixed in one, because entries are maintained where they are read. Every wrong
-claim found was contradicted either by the tree or by another paragraph of this
-same file — several of them a few dozen lines away, in the same entry. Two more
-were arguments resting on a line count that had since quadrupled, and one was a
-non-gap recorded expressly so nobody would re-audit it, which is what let it rot
-for three weeks after the crate it described was split into ten modules.
-
-**What was audited.** Everything from the top of the file through the
-2026-09-01/02 entries, and a systematic sweep of the older half: every
-backticked path resolved against the tree, and every backticked identifier of
-six characters or more diffed against the identifiers in `crates`, `apps`,
-`web`, `tools`, `docs/plan` and `.github`. Roughly seventy claims were opened
-and read in their own file.
-
-**What was not, and where to look first.** The sweeps above covered the whole
-file; the _reading_ did not. These entries had no claim individually opened, and
-are the ones flagged as most likely to yield:
-
-- The 2026-08-04 full-codebase review, the MTL1-MTL6 and DX2/DX3 entries, the
-  sample-plan audit block of 2026-08-26/27, and the slice-plan archive at the
-  end of the file.
-
-**The plan documents were audited on 2026-09-02 too, and yielded sixteen** — the
-highest rate of any pass. The rule that finished work leaves the plans had not
-been holding: `ROADMAP.md`'s phase table carried no marker for a sample that
-shipped and is gated on every push, and named a blocker that had shipped a week
-earlier; `43-render-standards.md`'s delivery table still put contact shadows at
-the head of a queue they left on 2026-09-01. A delivery table is the worst place
-in the repository to be wrong, because it is read as the index of what exists.
-
-A second pass on 2026-09-02 took `sample/20-options.md`, `sample/03-horde.md`,
-`50-irradiance-probes.md` and `18-render-features.md`, and found seventeen more.
-**The plan for a shipped sample was the worst document audited anywhere** —
-`20-options.md` still carried the heading "the audio half is built, the video
-half is not" over a screen that has laid out the whole video catalogue since
-2026-08-28, and two self-corrections whose referents no longer existed: one
-correcting a paragraph that had itself been corrected, and one warning about a
-claim below it that appears nowhere in the file. A plan written to describe work
-that does not exist yet is the highest-risk document there is, because every
-sentence in it is a candidate the day the work lands.
-
-Still unaudited among the plans: `00`-`17`, `20`, `22`-`49`, `51`, `52`, and the
-seventeen remaining `docs/plan/sample/` files — over 18,000 lines. `19-input.md`
-and `21-jobs.md` were audited on 2026-09-02 and yielded eight, six of them wrong
-on the day they were written. Nothing has re-derived `03-horde.md`'s four
-measurement tables; those figures are carried on trust and are the bulk of that
-document.
-
-**And this file itself was swept on 2026-09-02** for entries whose subject had
-shipped — one deleted, two clauses cut, five reworded. What that sweep did
-**not** open, listed so the next one starts here rather than re-deriving it:
-
-- the 2026-08-04 full-codebase review block and its per-crate findings, which
-  the sweep judged the highest-yield unread region;
-- `MTL2`-`MTL6`, `DX3` and the D3D12 swapchain slice (only `MTL1` and `DX2` were
-  opened);
-- the sample-audit entries for breakout, asteroids, horde, hud, orbit, flappy,
-  sparks, puppet and lantern, and the four `## Coverage gaps in the … audit`
-  runs;
-- roughly 4,500 lines of WebGPU and backend-parity entries in the middle of the
-  file, including "WebGPU has no blockers left";
-- the ~45 bullets of "What the debug console left as limits", of which three
-  were opened — the largest single entry here about work that shipped in the
-  last week;
-- the 2026-08-13/14 slice-plan archive beyond two entries.
-
-**Almost no measured figure in this file has been re-taken.** The exception is
-the AO tangential sweep, re-measured on both drivers on 2026-09-02 after
-`38b2688` changed the pass it times — every quality figure came back identical
-and the timings moved a few per cent, so the table now carries new medians and
-the same conclusion. Every other table — the area-light prices, the browser pass
-timings, the Pages wall-clock numbers — is still carried on trust; the sweeps
-have only ever checked that the symbols and files those tables name still exist.
-
-**What re-taking one cost**: fourteen harness runs and about a minute. The
-reason to do it is not that a figure was wrong but that nothing would have said
-so if it were — a shader change landed in the pass a decision rests on, and the
-table went on reading as current.
-
-**The platform-coverage entries were audited on 2026-09-02 and yielded six
-more.** "Has never run" proved the most rotten shape of all, because the answer
-moved into CI without anyone revisiting the prose — a claim that is still true
-of this Linux machine and false of `windows-latest` reads as verified either
-way. What that pass did _not_ open: P5B's browser and wasm bullets, the Win32
-`ffi.rs` size and offset assertions, and the AppKit "every type encoding" bullet
-against `ffi::ENC_*`.
-
-**The one claim flagged rather than asserted has since been settled, and the
-comment it rested on was wrong.** `web/tools/browser-e2e.mjs` stated that no
-`gpu passes` line appears in its page log, because the gate's browser negotiates
-no `timestamp-query`. It does negotiate one: the `web-e2e-quarry` artifact of
-Pages run 33572221541 carries
-`gpu passes (p50 / p95 over the last 53 of 53 frames): 20 label(s)`. So a caller
-appending a debug-draw segment would give the browser gate something to time
-after all, and the debug-draw entry does not understate its blocker. The comment
-has been corrected to say what is actually true of that report — it lands only
-at `Loop::finish`, so the one that survives a many-boot run is the last boot's.
-
 ## The published site went 15 commits stale, and three causes did it (2026-09-02)
 
-`231175d` is the last commit whose Pages run deployed. Fifteen commits later the
-live site is still showing it. The five runs since break down as three different
-failures, which is the point — no single fix reaches all of them:
+**DECIDED 2026-09-06 —** `deploy` keeps waiting on every demo. A
+partially-verified site is worse than a late one, and publishing only from a
+fully verified build is the strongest claim this pipeline makes; that is what
+the current arrangement buys and what the record below cost. Precedent: a
+release pipeline gates its publish on its whole check set. The cancellation half
+is answered separately, under "`pages.yml` cancels the verification jobs it is
+not deploying". Work: diagnose `shard`'s variance, and make a run that cannot
+deploy say so where someone will see it.
 
-- **`e450a0b`, `3fa0204`, `24a3cea` — `cancelled`.** Superseded by the next push
-  before they finished. This one was **self-inflicted**: I pushed three times
-  inside an hour, and each push cancelled the run in flight. `deploy` never ran
-  on any of them and none of the three shows as a failure, so the commits look
-  fine and the site simply did not move. The remedy costs nothing — batch
-  commits and push once — and it is only obvious after reading a run list.
-- **`d0bc715` — `failure`.** The lantern leak check false-fired on ring
-  saturation; see the entry on that check. A red demo skips `deploy`. Fixed.
-- **`f9982ae` — deployed, in the end.** Every other demo finished while
-  `shard`'s render step ran 44 minutes, with no step-level bound and only the
-  job's ninety to stop it; it then finished on its own and
-  `deploy to GitHub Pages` succeeded. **So the site is current again as of this
-  commit** — the fifteen-commit gap above is closed history, not a live outage.
-  What it cost was real and the decision below still stands: the run took over
-  an hour because one demo needed most of it.
-
-**What this says about the shape of the problem.** The site's freshness depends
-on _every_ demo gate passing _and_ on no push arriving first, so its failure
-modes are the union of everything that can go wrong in fifteen browser jobs plus
-a scheduling accident. Three of the five gaps are invisible in the commit's own
-checks: a cancelled run is not a red mark.
-
-**What the wait costs when nothing goes wrong** (measured 2026-09-02, over the
-four most recent green runs): the run's wall time is the slowest demo's, because
-`deploy` waits on all of them. `shard` was the longest job in every one, at 22,
-22, 47 and 49 minutes. `breach`, `lantern` and `puppet` are the next three, all
-in the 16-to-35-minute band, and `deploy` itself takes 14 seconds.
-
-**`shard` ranges from 22 to 49 minutes across the six most recent green runs** —
-22, 22, 34, 44, 47, 49. That is a **spread, not two clusters**. This entry twice
-called it bimodal, on four points and then five with a gap in the middle, and
-the sixth run landed at 34 and filled the gap in. Two lessons, one about the job
-and one about reading it: the job's cost varies by more than a factor of two run
-to run for reasons nobody has looked at, and a gap in five samples is not a
-structure.
+The three causes, the four-run wall-time measurement and the `shard` job's own
+spread are in docs/notes/ci.md under the same heading. What that spread leaves
+owed:
 
 That still bounds the decision, and more tightly than the bimodal reading did: a
 timeout has to sit above 49 to avoid failing a healthy run, which is more than
@@ -15644,41 +10281,22 @@ diffing the render step's own log against a fast run. A _diagnosis_ needs none
 of the decisions below: it would say whether the variance is a defect or the
 demo's honest cost, which is what makes options 1 and 3 different questions.
 
-**The decision this wants, and it is the user's.** Should `deploy` wait on every
-demo? Today one slow or flaky demo holds the whole site back, and the record
-above is what that costs in practice. The options, with what each actually
-trades:
-
-1. **Leave it.** The site is only ever published from a fully verified build,
-   which is the strongest claim, and it is what the current arrangement buys.
-   The cost is what happened here.
-2. **Let `deploy` depend on `build` plus a named subset**, with the slow or
-   unstable demos still gating the run's red/green but not the publish. The site
-   moves; a demo that breaks still shows red on the commit. The cost is that a
-   demo could be broken on the live site while the commit's check says so
-   elsewhere.
-3. **Bound the slow demo and treat a timeout as red rather than cancelled**, so
-   at least the failure is loud. Does not make the site any fresher on its own.
-
-Whichever it is, **a run that cannot deploy should say so where someone will see
-it** — nothing today distinguishes "published" from "built and discarded".
+**A run that cannot deploy should say so where someone will see it** — nothing
+today distinguishes "published" from "built and discarded".
 
 ## `pages.yml` cancels the verification jobs it is not deploying (2026-08-22)
 
-**DECIDED 2026-08-30 — split the verification legs into their own workflow with
-per-job concurrency**, leaving `pages.yml`'s cancellation to the deploy alone.
-Filed as work; not done yet. **The three-hour Windows leg is fixed and the
-cold-cache theory it spawned is dead — do not resurrect either.** For the
-record, because both were written down here as established and both were wrong:
-the leg was never slow. Its work took 54 seconds (30 of them the wasm build) and
-then `node render-harness-e2e.mjs` sat in teardown until the job's timeout
-killed it, three hours later. The cache being skipped was a _consequence_ of the
-cancellation, not its cause, and raising the timeout — tried twice, at 90 and at
-180 minutes — could never have worked. Reordering the teardown so the browser
-dies before the server is awaited, plus `closeAllConnections()` in `serve.mjs`,
-ended it: on run **32585681819** the Windows leg finished in **2m04s** and the
-watchdog line never printed, so the process exited on its own rather than being
-rescued.
+**DECIDED 2026-08-30, confirmed 2026-09-06 — split the verification legs into
+their own workflow.** A new `verify.yml` carries the three verification legs
+with `cancel-in-progress: false`, leaving `pages.yml` a fast deploy pipeline
+whose cancellation applies to the deploy alone; the repo already has this shape
+in `cron.yml` for `miri`. Precedent: separating a publish pipeline from its
+verification pipeline is what every project does once a burst of pushes starts
+cancelling the checks. Work: not done — `pages.yml` still sets
+`cancel-in-progress` at the workflow level and there is no separate verification
+workflow. The measurement that sharpened the choice, the three-hour Windows leg
+that is fixed, and the four options are in docs/notes/ci.md under the same
+heading.
 
 **What is still not known** is which handle held node's event loop open. It was
 never identified, and no local reproduction ever succeeded — holding a
@@ -15686,87 +10304,6 @@ keep-alive socket across `close()` does not do it, because Node ≥ 19 already
 drops idle connections. That is a gap, not a task: the watchdog in `main()`
 bounds any recurrence to `EXIT_DEADLINE_MS` and names itself in the log, so if
 it comes back it says so cheaply. Nothing further is worth doing until it does.
-
-**Measured 2026-08-23, and it sharpens the choice.** The two seam-probe jobs
-(`probe the seam on Windows`, `probe the seam on macOS`) `needs: build`, and
-`build the demo site` took **12m25s** on run 32585681819 and **15m09s** on run
-32587146042 — the two most recent Pages runs that finished. The three
-browser-golden legs, which do not wait on it, were done inside three minutes of
-their own start on both. So the probe gate reports something like fifteen to
-twenty minutes after a push, and **any push cadence faster than that cancels it
-before it has run at all** — not occasionally, but every time. That happened
-repeatedly on 2026-08-23: group AI landed with its browser gate verified only
-locally, because each following push superseded the run that would have checked
-it on Windows and macOS. The golden legs are unaffected, which is why the
-workflow still looks like it is verifying things.
-
-**Still open, and it is the user's call**, because it is about runner minutes
-rather than correctness. `pages.yml` sets `cancel-in-progress` at the workflow
-level for everything but a tag push, on the argument that a superseded deploy is
-worth cancelling while two racing to publish are not. That argument is right
-about the **deploy** and is applied to the whole run, including three
-verification jobs that are not deploys. Job-level `concurrency:` cannot rescue
-them — workflow-level cancellation kills the run outright, whatever a job
-declares. The deploy is not gated on the harness, so the site ships either way
-and what a cancellation costs is only the signal. Now that the leg is minutes
-rather than hours the stake is smaller, but a burst of pushes still lands with
-none of the three legs having answered:
-
-- _Leave it._ Cheapest, and the gate does answer on a quiet branch — but least
-  often exactly when the tree is moving fastest.
-- _`cancel-in-progress: false`._ Every push queues a full three-OS run and each
-  finishes; the newest still publishes last. A burst of nine pushes becomes nine
-  queued runs.
-- _Split the verification jobs into their own workflow_ with
-  `cancel-in-progress: false`, leaving `pages.yml` a fast deploy pipeline. The
-  repo already has this shape in `cron.yml` for `miri`.
-- _Move the harness to `cron.yml`._ Always finishes, costs least, and turns a
-  per-push gate into a nightly one — a regression is then found by a scheduled
-  run rather than by the push that caused it.
-
-## A `ConfigureRequest` went missing under openbox, and nothing explains why (2026-08-23)
-
-**What happened.** On run **32585681821** the `windowed swapchain e2e (Xvfb)`
-job's second pass — the one with `CRCBL_E2E_X11_WM=openbox` — failed
-`a_resize_from_outside_forces_a_reconfigure_at_the_new_extent` on its 20-second
-deadline. The no-manager pass on the same commit ran all four tests green in
-4.2s, openbox was alive at the end (the runner checks `kill -0` on it before
-reporting), its log holds nothing but the missing-menu-file message, and the two
-commits on that push touched `web/tools/` and this file — neither is an input to
-that job. The seven runs before it were green.
-
-**What was changed.** The test asked once and waited; it now re-asks on every
-pump turn until the shell reports the size, and its timeout names the extent the
-shell last reported. That removes the whole class — a request that goes nowhere
-is indistinguishable from one not yet answered, and only the client can tell the
-difference by asking again — and the new message separates "never answered" from
-"answered with a different size", which the old one could not.
-
-**What is not established.** Whether openbox dropped the request, or granted it
-at a size nobody recorded, is unknown; the failure predicted only
-`Some(RESIZED)` and printed nothing when it did not arrive. It did not reproduce
-locally: twelve runs pinned to one core with `taskset -c 0`, against openbox
-3.6.1, all passed. The evidence for "dropped" rather than "altered" is indirect
-— `crcbl-shell`'s `a_resize_from_outside_is_reported_exactly_once` asserts the
-same 800×600 lands under the same manager on the same runner and has stayed
-green — so it is a reading of the odds, not a measurement. If the wait ever
-expires again, the extent in the message is the thing to read first.
-
-**Deliberately not changed:** the sandbox suite's own resize test still asks
-exactly once. It counts the `Resized` events carrying the new size and asserts
-there is one, so a repeated request would break the assertion it exists for.
-
-**The same shape exists elsewhere and was left alone.** `crcbl-shell`'s
-`x11_e2e.rs` waits on "the window manager's answer" after a `set_mode`, in
-`a_mode_request_is_a_request_and_the_effective_mode_is_the_answer` and
-`a_window_created_borderless_does_not_report_its_own_request_as_the_answer`: one
-`_NET_WM_STATE` client message, then a deadline. If a manager can drop a
-`ConfigureRequest` it can drop one of these, and the failure would look
-identical. Re-asking would be safe — `WmStateAction` has only `Add` and
-`Remove`, no `Toggle`, so a repeat is idempotent — but nothing has been observed
-failing there, and hardening a green suite on a hypothesis is churn. Recorded so
-that if one of those waits ever expires, this is the first thing to try rather
-than the last.
 
 ## Findings the roadmap carried that nothing else did (2026-08-22)
 
@@ -15825,9 +10362,12 @@ item lives.
     sample without touching one struct per sample, at the cost of
     `summary.run.frames` at every read.
 
-  The trade-off is one level of indirection at every call site against a copy
-  per sample that must be edited together with the rest, and the answer decides
-  whether a future `RunSummary` field is one edit or one edit per sample.
+  **DECIDED 2026-09-06 —** one `run: RunSummary` field on each sample's
+  `Summary`. Composition over a copy per sample is what the engine already does
+  for arguments, and a field added to `RunSummary` then reaches every sample in
+  one edit instead of one per sample. Work: add the field, delete the re-stated
+  ones, and move the reads to `summary.run.frames` in every `apps/*/src/app.rs`
+  and `main.rs`.
 
 ## What the render-to-texture monitor found (2026-08-22)
 
@@ -15910,26 +10450,6 @@ retrospective on the three sample findings lists says which seam closed each.
   it are load-bearing. Nothing constructs one outside `crcbl-render` today.
   Noted, not investigated.
 
-- **The listener standoff moved from the emitters onto the listener, and the
-  subtraction changed precision with it.** Every sample used to compute
-  `compute_cue([0,0,0], [dx, dy, 1.0])` — the listener at the origin, and "one
-  unit in front" added to _each emitter's_ Z with the same comment copied into
-  three files. That standoff is a fact about the camera, so it now sits on the
-  listener (`LISTENER_STANDOFF` in each sample, listener at `z = -1`, emitters
-  at their true Z).
-
-  `emitter − listener` is arithmetically the same, but **not bit-identical**,
-  and the agent's report claiming it was is wrong. The samples that subtracted
-  first — horde and flappy — did `(at.x - listener.x) as f64→f32`, one rounding;
-  the new path casts each coordinate to `f32` and subtracts inside
-  `compute_cue`, two roundings. The error is bounded by the coordinate
-  magnitude, and horde's arena is `ARENA_HALF_WIDTH` 48 by `ARENA_HALF_HEIGHT`
-  36, so it is on the order of 1e-5 on a direction that gets normalised — far
-  below audibility and below every assertion in the suite, which is why nothing
-  moved. Recorded because "bit identical" is what someone would otherwise assume
-  when reading the diff, and it would be the wrong thing to rely on if these
-  coordinates ever grow.
-
 - **`CueGrammar` is a parameter of `Mixer::cue` that every call site passes
   `&CueGrammar::default()` to.** By the workspace's own rule that is a parameter
   nothing varies, and putting the grammar on the mixer beside the listener would
@@ -15945,18 +10465,18 @@ retrospective on the three sample findings lists says which seam closed each.
   claim than "this mixer's listener", and it was not part of the decision that
   was delegated.
 
+  **DECIDED 2026-09-06 —** the grammar moves onto the `Mixer`, beside the
+  listener, and `cue(emitter)` loses the parameter; `CueDeck` is built on top of
+  it afterwards. A mixer's grammar is its listener's peer, and the workspace's
+  own rule about a parameter nothing varies is what points at it. Work: move the
+  field, drop the parameter at all thirteen call sites, then build
+  `crcbl_audio::CueDeck`.
+
 - **`Listener` has a position and no orientation**, so `compute_cue` still
   hard-codes "the listener faces +Z" and its module docs say so. That is the
   field the type was made `#[non_exhaustive]` to be able to gain; nothing needs
   it until a game turns its camera.
 
-- **Resolved by the review's deletion: the `play_panned` panics.** The review
-  named an `id as usize - 1` underflow and a `fade_env` underflow in
-  `apps/breakout/src/audio.rs`. Neither can happen: the first was fixed before
-  the review was even filed — the code takes `bank.create_voice(id)` behind a
-  `let Some(…)` guard and says so — and `play_panned` itself no longer exists,
-  every sample having moved onto `crcbl_audio::mixer`. The `fade_env` half was
-  never re-checked and now has no function to check.
 - **Nothing has listened to the migrated cues on a real device.** Every sample's
   audio was rewritten onto `crcbl_audio::mixer` and the checks are all
   structural: buffer shapes, pan ordering, voice counts, loop seams. Two
@@ -16371,18 +10891,26 @@ they left:
   applies the sign of the UV Jacobian's determinant rather than inheriting it,
   because that sign also carries the target's screen-space `y` direction and the
   backends disagree about that. So a **mirrored UV shell lights inside out**
-  through it, which is most of the left half of most characters. The fix is
-  MikkTSpace, and MikkTSpace is a new dependency, which is the user's call — ask
-  before adding one. Between here and there the answer is "author tangents in
-  the exporter", which every DCC tool does by default.
-- **Two of the four material columns are laid out and dead.**
-  `GpuMaterial::metallic_roughness_occlusion_texture` and `emissive_texture` are
-  in the row, written as `NO_PAGE` by every constructor, and read by no shader.
-  `alpha_cutoff` and `flags` are no longer among them — the importer carries
-  glTF's `alphaMode` and `alphaCutoff` into the row and `mesh.slang` reads them
-  through `ALPHA_MODE_MASK`, `DOUBLE_SIDED` and `depthMaskedFragmentMain`, which
-  is §2 rung 4. Wiring the two page columns is rung 3, and the space is already
-  there, so neither moves a stride again.
+  through it, which is most of the left half of most characters.
+
+  **DECIDED 2026-09-06 —** the generator is MikkTSpace, taken through
+  `bevy_mikktspace`, a pure-Rust port of the reference implementation. glTF's
+  own specification names MikkTSpace as the tangent generator when tangents are
+  absent, which makes it the interoperable answer rather than a choice. Work:
+  the new dependency lands with the slice that builds the generator, and the
+  importer runs it for a primitive with a `normalTexture` and no `TANGENT`.
+  Between here and there the answer is "author tangents in the exporter", which
+  every DCC tool does by default.
+
+- **Two of the four material columns were laid out and dead; both are wired
+  now.** `GpuMaterial::metallic_roughness_occlusion_texture` and
+  `emissive_texture` are read by `mesh.slang` since §2 rung 3 landed on
+  2026-09-06 — see "The packed and emissive pages: what rung 3's device half
+  left" for what that rung still owes. `alpha_cutoff` and `flags` were never
+  among them: the importer carries glTF's `alphaMode` and `alphaCutoff` into the
+  row and `mesh.slang` reads them through `ALPHA_MODE_MASK`, `DOUBLE_SIDED` and
+  `depthMaskedFragmentMain`, which is §2 rung 4.
+
 - **The normal mip chain throws away the length it averaged.**
   `crcbl_render::mip::normal_resample` averages the decoded vectors and
   renormalises, so a mip level over a busy region is a unit vector with no
@@ -16395,6 +10923,14 @@ they left:
   averaged away. Keeping the pre-normalise length and folding it into the
   roughness the MRO page will carry is still unspent, and now wants a home of
   its own.
+
+  **DECIDED 2026-09-06 —** keep the pre-normalise length and fold it into the
+  MRO page's roughness mips at bake time — Toksvig's
+  normal-variance-to-roughness (Toksvig 2005), which is Unreal's
+  composite-texture roughness and Frostbite's specular-AA input. Work:
+  `crcbl_render::mip::normal_resample` keeps the length it averaged, and the
+  bake writes it into the roughness channel of the packed page's mip chain.
+
 - **Coverage gap: the frame's winding is proved on Vulkan only.** The claim that
   applying the determinant's sign makes the derivative frame agree with the
   vertex frame was measured on radv and on lavapipe — both quads read
@@ -16424,19 +10960,6 @@ they left:
   is already the page's size. `crates/crcbl/tests/gltf_e2e.rs` builds no glTF
   with a `normalTexture` at all (grep of that file, 2026-09-05), so no e2e reads
   a normal map through the importer.
-- **Surprise, not a bug: only the browser gate sees a uniformity break.**
-  `shading_normal_of` was first written with its `layer == 0` early return above
-  the derivatives and an implicit-LOD `Sample` below them. SPIR-V, MSL and DXIL
-  all compiled that, every Vulkan suite passed on both ICDs, and the browser
-  refused the module outright —
-  `'textureSample' must only be called from uniform control flow`, with the
-  fragment input named as the possibly non-uniform value. WGSL's analysis is
-  static and cannot use the fact that the material row and the frame word are
-  `nointerpolation`. The shape that satisfies it is in the function's own doc;
-  the point for next time is that a native-only run says nothing at all about
-  whether a fragment stage will parse, and `web/build.sh` plus
-  `run-browser-e2e.sh` is the only thing that does. `fxaa.slang`'s `tap` learned
-  the same lesson earlier and its doc says so too.
 
 ## D3D12 and Metal: the hardware-proof rows stay parked (2026-08-30)
 
@@ -16525,14 +11048,14 @@ user's display. A windowed run goes through `sway-session.sh` or
 shape for a limiter measurement — and a script that needs a window sources one
 of those two rather than inheriting the session's display.
 
-**DECISION NEEDED — a paced headless mode.** Measuring the limiter without a
-compositor at all would take a real clock over the offscreen ring: `--headless`
-plus an opt-in (`--paced`, say) that builds `Clock::Real` instead of the manual
-clock. It costs headless determinism for that run only — tick counts become
-wall-clock dependent — which is why the manual clock is the headless default "by
-construction" (`Clock` docs). The trade is one flag against needing a compositor
-on every machine that wants to read the limiter's rate; the per-machine perf
-baseline (`docs/plan/40-profiling.md`) would use it too. Not started.
+**A paced headless mode — DECIDED 2026-09-06:** build `--paced`, an opt-in that
+pairs `--headless` with `Clock::Real` over the offscreen ring so the limiter can
+be measured without a compositor at all. It costs headless determinism for that
+run only — tick counts become wall-clock dependent — which the flag declares
+rather than hides; the manual clock stays the headless default "by construction"
+(`Clock` docs). Precedent: every engine's benchmark mode runs the real clock
+headless and says so. Work: the flag, the clock selection, and the per-machine
+perf baseline (`docs/plan/40-profiling.md`) as its second consumer.
 
 ## `--pacing` and `--fps` reach the engine; three quarters of what they can ask for is unexercised
 
@@ -16578,22 +11101,6 @@ the logged limit and the measured frame time. What that leaves:
   because either is a change to what the harness runs, which is not something to
   do inside a flag slice.
 
-## The CLI scaffold gate has thin timing margin, observed once
-
-`a_scaffolded_project_builds_lints_and_runs_headless` in
-`crates/crcbl-cli/tests/cli_e2e.rs` scaffolds a project into a temporary
-directory and points `CARGO_TARGET_DIR` at another one, so **every run is a cold
-build of the whole engine** — deliberately, because an inherited target
-directory would deadlock against the lock the test runner already holds.
-`.config/nextest.toml` gives it
-`slow-timeout = { period = "60s", terminate-after = 4 }`, a 240s ceiling, and it
-has measured **`TIMEOUT [240.174s]`** once and `36.367s` on the rerun — a 6x
-spread, cause undetermined, "seen once, unexplained". It has not failed in CI.
-What is worth knowing: the margin is a wall-clock budget on a from-scratch
-engine build, and it moves with every dependency the engine gains and every
-runner GitHub retires. If this job ever goes red on a timeout, the fix is the
-`period`/`terminate-after` pair rather than anything in the scaffold.
-
 ## P5B — the job system, and the two decisions in front of it
 
 **DECIDED 2026-08-30 — the `CRCBL_TARGET` build script (four lines,
@@ -16615,37 +11122,15 @@ serial loop plus a pool. **The "two samples freeze a seam" rule has therefore
 not been met**, and `Spawn::threaded` returning a `bool` is still the most
 likely thing to give.
 
-- **Every read-only query has the shared form, and one caller runs it in
-  parallel.** `OverlapQueries` and `EntityOverlapQueries` carry
-  `overlap_sphere_into`, `overlap_aabb_into`, `cast_ray` and `sweep_sphere`
-  (plus `sweep_sphere_excluding` at the collider layer), each `&self` with a
-  caller-owned `QueryScratch`, and each sharing one `*_core` with the
-  `&mut self` form so the two cannot drift. `apps/horde`'s steering spends the
-  exclusive borrow once for a view and then calls
-  `EntityOverlapQueries::overlap_sphere_into` from inside a
-  `pool.par_for(.., STEER_CHUNK, ..)` with a thread-local `QueryScratch` — held
-  by `steering_is_bit_identical_however_many_workers_run_it` in
-  `apps/horde/src/game.rs` and by
-  `the_view_names_the_right_entities_from_every_thread_at_once` in
-  `crcbl-phys`'s `system` module. It is the only adopter.
-
-  Still owed at that boundary: `PhysicsSystem::sweep_body` has no shared mirror
-  and `EntityOverlapQueries` has no entity-level sweep exclusion — both need
-  `bodies`, `transforms` and `entity_to_collider` widened into the view, which
-  is most of the system's state and was deferred for want of a caller.
-  `sweep_bolts` (the obvious first adopter) reduces into a shared hit list in an
-  order the scheduler would choose, so it still needs a design decision before
-  it needs an API. And `PhysicsWorld` has no `overlap_aabb_into` on the
-  `&mut self` side, so that owned form still allocates a `Vec` per call —
-  `overlap_sphere_into` is the precedent for fixing it when something runs it
-  per body per tick.
-
-  Two things measured while doing it, both worth knowing: `cast_ray`,
-  `overlap_aabb` and `sweep_sphere_excluding` **stopped allocating per call** as
-  a side effect of routing through the view (`cast_ray` used to build a 64-slot
-  stack and a hit vector on every cast); and `QueryScratch` is now four `Vec`s
-  per thread, which is what a `par_for` adoption sizing per-chunk state is
-  paying for.
+Still owed at that boundary: `PhysicsSystem::sweep_body` has no shared mirror
+and `EntityOverlapQueries` has no entity-level sweep exclusion — both need
+`bodies`, `transforms` and `entity_to_collider` widened into the view, which is
+most of the system's state and was deferred for want of a caller. `sweep_bolts`
+(the obvious first adopter) reduces into a shared hit list in an order the
+scheduler would choose, so it still needs a design decision before it needs an
+API. And `PhysicsWorld` has no `overlap_aabb_into` on the `&mut self` side, so
+that owned form still allocates a `Vec` per call — `overlap_sphere_into` is the
+precedent for fixing it when something runs it per body per tick.
 
 - **`STEER_CHUNK` was chosen by argument, and the instrument to settle it now
   exists.** Sixty-four enemies a chunk keeps the split independent of the worker
@@ -16658,59 +11143,11 @@ likely thing to give.
   sweep, on more than one machine, against a workload shaped like the real
   separation pass rather than a synthetic mix.
 
-**The atomics are checked by Miri and by nothing else.** x86-64 is
-total-store-order, so a `Release` store and a `Relaxed` one compile to the same
-instruction and weakening one is invisible to any test on this machine — which
-is why the Miri job is load-bearing. **It runs per commit**, as `ci.yml`'s
-`miri-jobs` job — moved there 2026-08-23 on the argument that the per-commit
-value is concentrated in this one small crate, while the full crate list is
-minutes of interpretation per PR and stays weekly in `cron.yml`. So an ordering
-regression is caught on the push that introduces it, and the pre-push ritual and
-manual cron trigger this entry used to prescribe are no longer needed. The
-weekly job went red on 2026-08-03 for want of a `libasound2-dev` install and was
-found only because it was briefly on the per-PR path, which is the argument that
-moved it.
+The Miri and aarch64 evidence behind these orderings, the two corrections this
+entry carried, and the pool's non-defect records are in docs/notes/simulation.md
+under the same heading.
 
-**The primitives DO run on a weakly-ordered machine, and this entry said they
-did not.** Corrected 2026-08-23: the entry asked for an aarch64 runner as
-independent evidence beside Miri's model, called it unattempted and priced it at
-a second `test` leg. That leg exists — `build + test (macos-latest)` in `ci.yml`
-runs the workspace under nextest on **`aarch64-apple-darwin`**, and all forty of
-`crcbl-jobs`' tests pass there on every run (counted off `14c89de`'s CI log).
-Nobody needs to build it.
-
-This entry then claimed the two concurrent tests were not written to be
-adversarial and that making them so was the slice. **That was wrong too**, read
-2026-08-23: `a_concurrent_producer_and_consumer_move_every_item_in_order`
-(`ring.rs`) moves 20 000 items across a real thread boundary and asserts each
-arrives in order, and `a_concurrent_reader_never_sees_half_of_a_state`
-(`mailbox.rs`) publishes 20 000 two-word states and asserts no read is torn and
-none goes backwards. Both are already the shape that catches a reordering, both
-are bounded so a wedged primitive fails red instead of hanging, and both run on
-aarch64 every CI run. There is no test-writing slice here.
-
-**Measured 2026-08-23: they do not fail for this reason on that machine, so the
-aarch64 leg is reassurance and not evidence.** The red-check behind these
-orderings had only ever been run under Miri, where the model reports the race;
-on aarch64 the hardware has to be caught in the act. So it was run there. A
-throwaway branch weakened both orderings at once — `ring.rs`'s `tail` store from
-`Release` to `Relaxed`, `mailbox.rs`'s handoff swap from `AcqRel` to `Relaxed` —
-and CI was dispatched against it. **The entire run went green**, and the two
-tests demonstrably executed rather than being skipped:
-`build + test (macos-latest)` logs `PASS` for both, at 0.011 s and 0.231 s.
-
-Read it for exactly what it is. One run of 20 000 iterations on Apple silicon
-produced no violation, which says these two tests are not sensitive enough to
-catch a reordering, not that a reordering could never surface. It also weakens
-the ordering for the compiler as well as the hardware, so a green run does not
-even isolate which of the two would have had to misbehave. The practical
-consequence: **Miri remains the only check that actually holds these
-orderings**, and an aarch64 job should not be cited as covering them. If that
-coverage is wanted for real, the instrument is a targeted stress harness — many
-short runs with interleaving pressure and a failure counter — not the existing
-tests and not another runner.
-
-**The pool's own gaps**, none of which is a defect:
+**The pool's own gaps still owed:**
 
 - **The lost-wakeup window is argued, not tested.** A worker reads the
   submission count under the lock, searches once more, and only then sleeps
@@ -16736,44 +11173,6 @@ tests and not another runner.
   introduced the first build script in that crate. It matters the moment
   `--compare` exists, because refusing a baseline from different hardware is one
   of the plan's decisions and `ARCH`/`OS` is a coarser key than a triple.
-- **A mode comparison cannot catch a defect that is symmetric across modes**,
-  and this was measured rather than assumed: dropping the last chunk of every
-  `par_for` leaves both worker-count tests green, because a pool with no workers
-  drops it too. Eight other horde tests go red on that mutation, which is what
-  actually covers it — worth knowing before anyone reaches for the worker-count
-  tests as a general correctness net.
-- **One deque, not one per worker.** Only the driving thread pushes today, so a
-  per-worker deque would be a queue nothing ever puts anything in. What needs
-  them is `scope(|s| …)` fork-join (the design lists it for BVH build), where a
-  running chunk spawns more work. Not written, and nothing calls it.
-- **`Mutex` + `Condvar` for the sleep, in the frame path.** The design's rule is
-  no mutexes in the frame path; this takes one per _submission_, not per job,
-  and a worker takes it only on its way to sleep. A futex-style parking scheme
-  would remove the lock, and needs the profiler to say whether it is worth the
-  reasoning.
-- **Considered and declined: aborting the remaining chunks when one panics.**
-  Running them all instead lets the panic be reported by chunk index — the
-  lowest wins — so a panicking `par_for` fails identically with and without
-  threads.
-- **A broken completion count hangs the suite rather than failing it.** Three
-  mutations each wedge `par_for`'s wait loop instead of going red, because a
-  chunk that never finishes is exactly what that loop waits for. A deadline in
-  the wait loop would fix the symptom by putting a timeout in the frame path,
-  which is a worse trade; the honest note is that this class of defect looks
-  like a hang.
-- **Considered and declined: `crossbeam-deque`.** It would be the right one, but
-  neither it nor any `crossbeam-*` nor `rayon` is in `Cargo.lock`, and a new
-  dependency is the user's call. Worth revisiting if one arrives for another
-  reason: its growable deque would remove this one's capacity ceiling, past
-  which `par_for` runs the extra chunks on the driver.
-
-**`ring` does not implement drop-oldest**, though `21-jobs.md` lists it beside
-drop-newest as an overflow policy. It cannot be done from the producer: the read
-cursor belongs to the consumer, and a producer advancing it to make room would
-be a second writer to it, which is exactly what makes an SPSC ring cheap. `push`
-hands the item back and counts the refusal instead, leaving the policy to the
-caller. If a real consumer turns up wanting drop-oldest, the honest options are
-a consumer-side drain-and-discard or an MPSC design, not a flag on this one.
 
 **The seam has one consumer, and one is not two.** `apps/horde` has used the
 spawn seam without asking for anything back, which is evidence and not the two
@@ -16798,83 +11197,6 @@ thing to give — horde works around it by handing `Pool::with_workers` an
   cannot set either header, `coi-serviceworker` is third-party JS) — if the shim
   is declined, the demos run single-threaded through `Inline` and the roadmap's
   `crossOriginIsolated` gate should be struck rather than left unmeetable.
-
-- **The Web Worker spawn backend is in, and `default_spawner` yields it.**
-  `crcbl_jobs::workers` (`Workers`, plus the `shim` module's
-  `__crcbl_web_jobs_*` exports) is P5B step 3 of `21-jobs.md`'s order.
-  `web/build.sh --threads` builds it and `web/tools/worker-gate.mjs` runs real
-  `node:worker_threads` workers through it. What is left is below; the shape of
-  the bootstrap is no longer an open question and the paragraphs arguing it have
-  been deleted rather than annotated.
-
-- **`Pool` CAN be driven from the browser's main thread, measured — which
-  contradicts what this entry used to predict, and the prediction's reasoning is
-  still sound.** The argument was: `Pool::par_for` takes `Shared::sleep` (a
-  `std::sync::Mutex`) on every submission and `pool::work` waits on `Condvar`
-  before parking; on `wasm + atomics` std's `Mutex::lock` reaches `futex_wait`
-  (`sys/sync/mutex/futex.rs`, then `sys/pal/wasm/atomics/futex.rs`), which is
-  `memory_atomic_wait32`, which a browser main thread **throws** on rather than
-  blocking in.
-
-  **What actually happens, 2026-08-23, Chromium 151, `web/run-jobs-e2e.sh`
-  against `web_worker_gate.wasm`:** 3000 `par_for` calls driven from the page's
-  main thread with eight workers up and parking between calls, no trap, every
-  checksum right. The reconciliation is that `Mutex::lock`'s fast path is one
-  `compare_exchange` and only a **losing** one reaches `futex_wait`, so the trap
-  needs the driver to lose a race for `sleep` against a worker on its way to
-  park. That window is real and this workload does not hit it. **So this is "not
-  observed", not "cannot happen"** — a heavier or differently shaped consumer
-  could still find it, and a trap is fatal to the frame rather than slow. The
-  topology `21-jobs.md` settled (the game worker owns the pool, main forwards
-  and presents) is still the arrangement to prefer; it is no longer the only one
-  known to run.
-
-  `crcbl_jobs::workers`'s own queue never had the question: it is taken with
-  `Mutex::try_lock` in a spin (`workers::hold`), never `lock`, precisely so the
-  drain half is legal on main.
-
-- **A worker that skips `__wasm_init_tls` does not necessarily trap, which
-  corrects the entry that used to sit here.** Measured against
-  `crates/crcbl-jobs/examples/web_worker_gate.rs`: with the call omitted,
-  `__tls_base` is simply left at zero, every worker's thread-locals alias one
-  address near the start of linear memory, and a `thread_local!` with a `const`
-  initialiser reads and writes it without complaint. The earlier
-  `RuntimeError: unreachable` came from a different crate, but **not** because
-  its thread-local was lazily initialised — it was `const { Cell::new(0) }`, the
-  same shape. The cause was measured on 2026-08-23 by reading `__tls_base` in a
-  fresh worker instance before any init: in that build it starts at **1048576**,
-  which is also the initial `__stack_pointer`, so a worker skipping the call
-  wrote its thread-locals into the top of the static stack region and the
-  corruption trapped. In the gate's build it starts at **zero** and the aliasing
-  is harmless. **The initial value is a layout accident of the module**, so both
-  outcomes are real and neither is a rule: a trap here is luck, and a gate must
-  observe TLS separation directly. **It defeated this gate's first shape**: a
-  "count each thread once" flag was satisfied by the first worker setting the
-  shared flag for all of them, and the red check came back green. The observable
-  that works is `gate_tls_shared` — a thread-local holding **the caller's own
-  frame address**, so a thread that finds an address its stack could not have
-  produced is reading someone else's TLS. Anyone writing another TLS assertion
-  should start there. **Confirmed again in Chromium**, 2026-08-23: with
-  `?no-init-tls` the browser gate reports no trap, no clobbered stack and a
-  green checksum, and `gate_tls_shared` is the one assertion that goes red. Five
-  runs, the same result each time.
-
-- **The handle in the spawn ABI is a table index, not a pointer, and that was a
-  deliberate departure.** The design sketched here previously said to double-box
-  `Work` to a thin pointer and hand JS the address. It is not needed:
-  `workers::Queue::handed_out` keeps the `Work` owned by Rust and gives JS an
-  integer, so `__crcbl_web_jobs_entry` validates by lookup and an invented,
-  replayed or corrupted handle finds nothing instead of being read as an
-  address. The consequence worth knowing is that **the backend adds no `unsafe`
-  to `crcbl-jobs` at all** — the crate's unsafe is still only `mailbox`, `ring`
-  and `pool`. Cost: lookup is a linear scan of the in-flight list, which is
-  worker count and not work count, and handles are unique only up to `u32::MAX`
-  — `next_handle` saturates rather than wrapping, so `0` can never be minted,
-  but past the ceiling every later request carries `u32::MAX`.
-  `__crcbl_web_jobs_entry` `swap_remove`s one matching entry per call, so each
-  work still runs exactly once even then; what a collision costs is the pairing
-  between a worker's name and its work. Four billion spawns away, and stated
-  because "never reused" is not what the code does.
 
 - **`WORKER_STACK_BYTES` is 1 MiB by argument and nothing has measured it.** It
   was chosen to match the stack the linker gives the main thread. Each worker
@@ -17032,47 +11354,13 @@ thing to give — horde works around it by handing `Pool::with_workers` an
   whatever Chrome the image ships, so the two engine questions below — Firefox's
   and WebKit's structured clone of a `WebAssembly.Module`, and their
   `Atomics.wait` main-thread rule — are as untried as they were.
-- **`jobs-worker-e2e` is measured, on one runner and one commit.** The first
-  run, with a cold `Swatinem/rust-cache`, took 5.0 min end to end on
-  `ubuntu-latest`: 48 s for the jobs gate, 223 s for horde's, the rest toolchain
-  and browser setup. Locally with warm target directories the same two are 22 s
-  and 151 s. One sample of each, so the timeout is headroom rather than a
-  budget.
 
 ## A weekly job that goes red is invisible, and it happened twice at once
 
-`cron.yml`'s miri job was failing from **2026-08-17 to 2026-08-23** and nothing
-said so. Its own comment already warns that "a job that runs once a week is a
-job nobody is watching" — written after `crcbl-audio` gaining `cpal` broke it in
-August and went unnoticed for the same reason. It happened again, and this time
-two independent causes had stacked up before anybody looked:
-
-- **A test that cannot run under miri.** `crcbl-core`'s
-  `the_environment_variable_is_what_turns_the_gate_on` re-executes the test
-  binary in a child process, which is the right way to test a process-global
-  without racing the other tests in the binary. Miri does not implement
-  `posix_spawn`, so it aborted the whole binary. Fixed by skipping it under miri
-  with a reason, so the run reports `1 ignored` rather than staying silent.
-- **A `cdylib` example.** `crcbl-jobs` gained `web_worker_gate` with the Web
-  Worker spawn backend on 2026-08-23, and `cargo miri test -p` builds every
-  example of every crate it is told about. Miri's target cannot produce a
-  `cdylib`, so the step died before interpreting anything. Fixed with `--tests`,
-  which was measured to select the identical set of test binaries.
-
-- **A test that is seconds natively and hours interpreted.**
-  `crates/crcbl-ecs/tests/churn_soak.rs` landed on 2026-08-22 — thousands of
-  ticks of spawn/despawn churn against hash maps — and under miri it **did not
-  finish in fifty minutes** on the machine it was measured on. Confirmed on the
-  runner: the 2026-08-23 manual `gh workflow run` reached **`cancelled` at the
-  job's 60-minute timeout**, having got past both failures above and then
-  stalled there. It now carries `#![cfg(not(miri))]`, which costs nothing this
-  job is for: `crcbl-ecs` contains no `unsafe` at all, so there was nothing
-  there for the interpreter to find.
-
-All three are fixed and `cargo miri test --tests -p crcbl-jobs` now runs **per
-commit** in `ci.yml`, because that is the crate the value is concentrated in —
-its unsafe is concurrent, and x86-64's total store order makes a weakened
-ordering invisible to everything else here.
+`cron.yml`'s miri job was failing from 2026-08-17 to 2026-08-23 and nothing said
+so. All three causes are fixed and `cargo miri test --tests -p crcbl-jobs` now
+runs per commit in `ci.yml`; the three causes are in docs/notes/ci.md under the
+same heading. What is not fixed:
 
 **The third one generalises, and nothing guards it:** any test landing in one of
 the six interpreted crates that runs for seconds natively can push this job past
@@ -17199,57 +11487,6 @@ uncovered:
   with until `crcbl-mtl` can present — permanently so, since the 2026-08-05
   decision makes Metal the only Apple path. See the platform sections below.
 
-## The docs gate reads more files than any other, and it reads them on wasm32
-
-CI runs `cargo doc --workspace --all-features` on the host **and**
-`--target wasm32-unknown-unknown`, both under `RUSTDOCFLAGS: -D warnings`. Three
-consequences that cost a round trip each if you do not know them:
-
-- **An intra-doc link to an item that is `cfg`-ed out on the other target is an
-  error there.** Write it as a code span instead. `#[cfg_attr]`-ing two versions
-  of the sentence puts the same prose in two places and guarantees they drift.
-- **`--all-features` builds Linux-only targets on every platform.** A
-  feature-gated helper whose `use` resolves only on Linux compiles nowhere else.
-  Give it a `#[cfg(not(target_os = "linux"))] fn main` that fails and says why,
-  rather than a `cfg` that quietly compiles it to nothing —
-  `crates/crcbl-shell/tests/bin/send_key_wayland.rs` is the worked example.
-- **Rustdoc is the only gate that notices a public type nobody exported.** A
-  `pub` field whose type is `pub` inside a private module is readable and
-  unnameable: a consumer can get the value out and cannot write it down.
-  `cargo clippy`, `cargo fmt` and the whole test suite pass straight through it,
-  because nothing in the crate itself needs the path. Rustdoc reports it as
-  `public documentation for X links to private item Y`, which reads like a
-  formatting nit and is an unusable API. `RenderState::player_facing` and
-  `RenderState::props` shipped that way and were caught only in CI.
-
-None of the three is reachable from a local `cargo clippy --all-targets`, which
-is what makes them worth writing down rather than rediscovering. **Run
-`cargo doc` before pushing**, both targets, or CI will run it for you.
-
-## Cross-test state, found by adding a window manager and a second monitor
-
-**Both e2e suites run every test in its own process against one long-lived
-display, and both had state that survived between them** — a _tail_ of tests
-that passed alone and failed in a full run, moving whenever anything was
-reordered. Three instances were found and fixed: the X11 pointer (`XTEST` leaves
-it wherever the last test put it; `Session::open` parks it at the centre), the
-X11 window manager's idea of what is still alive (`Session`'s `Drop` withdraws
-and destroys its windows and then **waits for `_NET_CLIENT_LIST` to drop them**;
-graded evidence, eight of eight runs clean against two and five for the earlier
-attempts), and the Wayland focused workspace (a `FocusedWorkspace` guard puts it
-back after a test fullscreens onto the second output).
-
-**The rule that falls out: anything a test moves and does not move back belongs
-in `Session`, not in the test.** The pointer, the input focus, the clipboard
-owner, the focused workspace and the compositor's idea of which clients exist
-are all this kind of thing.
-
-Two blind alleys, recorded so they are not re-run. Neither is the fix and both
-looked convincing: giving the `_NET_ACTIVE_WINDOW` message a real server
-timestamp instead of `CurrentTime` (`Peer::server_time`, kept — it is correct
-EWMH), and asking `openbox` less often or clicking the frame instead. The click
-made it measurably _worse_: five runs, 3-5 failures each.
-
 ## What the Win32 backend has and has not been run against
 
 The whole of `crates/crcbl-shell/src/win32/` and its e2e suite were written on a
@@ -17260,19 +11497,9 @@ The e2e suite has since run on `windows-latest` in CI (W1–W4 and the rounds
 after), so the window lifecycle, input, clipboard and mode flips are executed;
 everything below is what those runs still do not reach.
 
-### The runner is a real, non-idle desktop
-
-Any Windows test written from now on has to hold under all of this: the display
-is **1024×768** — smaller than `WindowDesc::default`'s 1280×720; a cursor is
-always over the window and keeps moving (a genuine `WM_MOUSEMOVE` arrives before
-a test sends anything); the foreground is contested and `SetForegroundWindow` is
-granted only under narrow rules — the e2e suite's `desktop::take_foreground`
-pulls `SPI_SETFOREGROUNDLOCKTIMEOUT` plus `AttachThreadInput`; and **messages
-arrive that this process did not cause**, every few milliseconds
-(`WM_DWMNCRENDERINGCHANGED`, real `WM_MOUSEMOVE`), so an idle window with a
-drained queue does not exist on that runner. The rule that cost three flaky
-runs: **identify your own events by their payload, never by their index in the
-sequence.**
+The runner's own character — a real, non-idle 1024x768 desktop with a contested
+foreground and messages this process did not cause — is in docs/notes/ci.md
+under the same heading, and it binds any Windows test written from now on.
 
 ### Unverified, in the order it would hurt
 
@@ -17424,36 +11651,10 @@ and nothing more**. The window lifecycle and the injected-input suite have since
 run on `macos-latest` through `tests/appkit_session.rs`; everything below is
 what that pass still does not reach.
 
-### The one rule to know before writing any macOS test
-
-**A `#[test]` can never drive an AppKit window, and that is measured rather than
-assumed.** AppKit is main-thread-only and enforces it by raising
-(`-[NSApplication nextEventMatchingMask:...]` throws
-`NSInternalInconsistencyException`; an Objective-C exception unwinding through a
-Rust frame is undefined behaviour), and Rust's `libtest` always runs a test body
-on a thread it spawns — so the thread and app state a test needs are exactly
-what `#[test]` does not supply (a green `#[test]` asserting every `NSCursor`
-selector failed on the runner with `+[NSCursor "arrowCursor"] answered nil`).
-The window suite therefore lives in
-`crates/crcbl-shell/tests/appkit_session.rs`, a `harness = false` target that
-owns its `main` and runs _as_ the process; it is not feature-gated (off macOS it
-prints why it did nothing rather than reporting a pass it did not earn), and it
-answers libtest's `--list` protocol before anything else — a `harness = false`
-target has to be verified with `cargo nextest list` as well as
-`cargo nextest run`, because `cargo test` does not enumerate and CI uses
-nextest. A host `#[test]` is fine for the Objective-C runtime (thread-safe,
-needs no application), CoreGraphics, and the pure modules; anything that creates
-an AppKit object needs the session target.
-
-What the session covers that is easy to miss: every `objc_msgSend` signature
-shape this backend transmutes is dispatched against a class built at runtime
-(`CrcblFfiProbe`) and against Foundation classes; the main-thread refusal is
-exercised; every `NSCursor` selector `pointer::cursor_selector` names is checked
-from the session; the pasteboard round-trips through a second process
-(`pbcopy`/`pbpaste`, so text only — `application/x-crcbl+ron` is not
-round-tripped cross-process, and if an engine-to-engine paste ever misbehaves on
-macOS this is the gap it would hide in); and the pure modules (`geometry`,
-`events`, `keys`, `pointer`, `TimeBase`) run on every host.
+The rule that binds every macOS test — a `#[test]` can never drive an AppKit
+window, and what the session target covers instead — is in docs/notes/process.md
+under the same heading, and the ideas considered and declined on this backend
+are in docs/notes/backends.md.
 
 ### Uncovered, and why each one is uncovered
 
@@ -17531,59 +11732,6 @@ macOS this is the gap it would hide in); and the pure modules (`geometry`,
   mitigation is that the encodings are written from one place (`ffi::ENC_RANGE`,
   `ENC_RECT`, `ENC_POINT`) rather than spelled out per method.
 
-### Considered and declined
-
-- **`PointerMode::Confined` is not implemented, and `POINTER_CONFINE` is
-  clear.** macOS has no confine API; the only technique is warping back after
-  the cursor has already crossed, which runs a frame late, fights the user's
-  motion and manufactures events a consumer cannot tell from real ones.
-  Approximating it would set a capability bit with no mechanism behind it. **Do
-  not revisit without a public API to point at.**
-- **`RAW_POINTER_MOTION` is set although the deltas are accelerated.** `NSEvent`
-  deltas satisfy the half of that bit that decides whether a camera works and
-  not the "unaccelerated" half; GLFW answers
-  `glfwRawMouseMotionSupported() == false` on this platform for the same reason.
-  Closing it properly means IOKit, a slice of its own.
-- **`DeviceId` is a constant per device _kind_, as on X11 and Win32.** An
-  `NSEvent`'s `deviceID` identifies a tablet and is meaningful only for the
-  tablet family; the real answer is IOKit, the same slice as above.
-- **The IME candidate window is placed at the window's origin, not at a caret.**
-  The seam does not model a caret — nothing above `crcbl-shell` says where text
-  is being typed. Closing it needs a seam addition ("the caret is here"), a
-  decision above this crate to be taken once for every backend with an IME.
-- **Lazy pasteboard provision (`pasteboard:provideDataForType:`) is not used,
-  and it is structurally unavailable.** The callback arrives on the main run
-  loop driven by the pasteboard server on behalf of a reader in another process
-  — between two `Shell::pump`s an engine is rendering, so there is no run-loop
-  turn to service it in — and a lazy owner must stay messageable until the
-  flush, leaving the server holding an unretained pointer if the host process
-  survives the shell. The same refusal `win32::clipboard` makes about
-  `WM_RENDERFORMAT`. **Do not revisit without a seam that gives the shell a
-  run-loop turn it owns.**
-- **The engine's own format is published under its mime string, not a `dyn.*`
-  UTI.** A pasteboard type is an arbitrary string, the mime is unique to this
-  engine by construction, and it is byte-identical to what the other three
-  backends name the same format with. Only text uses a system UTI.
-- **Drag and drop _out_ is not implemented on any backend.** `15-windowing.md`
-  scopes drag-and-drop to "file paths in"; `NSDraggingSource` is absent by plan
-  decision rather than by gap.
-- **No menu bar.** An unbundled Regular-policy application gets the system's
-  default menu bar — enough to be focusable, not enough to ship (no ⌘Q).
-  Building one is `NSMenu`/`NSMenuItem` and a decision about what belongs in it,
-  which is above this crate.
-- **`HW_UPSCALE` is clear although macOS has it.** A `CAMetalLayer`'s
-  `drawableSize` is independent of its bounds, exactly what `wp_viewport` buys —
-  but **the seam has no way to ask for it**. Setting the bit would be a claim
-  with no mechanism behind it; closing it is a seam change (a render-scale
-  request on `Shell`), a decision above this crate to be taken once for both
-  backends.
-- **`app_id` has nowhere to go.** macOS's equivalent is `CFBundleIdentifier` in
-  an `Info.plist`, which cannot be set by a running process; the descriptor is
-  validated for a NUL byte so a rejected descriptor is rejected here too, and is
-  otherwise unused.
-- **A live resize drag freezes the window**, on the same terms as the Win32
-  modal loop and with the same unavailable fix.
-
 ## Not covered on either backend
 
 - **A window manager that does not respect the requested size.** `openbox` with
@@ -17610,21 +11758,6 @@ macOS this is the gap it would hide in); and the pure modules (`geometry`,
   log line, or the compositor's own tree. That a fullscreen frame is _composed_
   at the new extent, rather than merely built at it, is unchecked.
 
-## The two sample `gpu.rs` files that stopped being identical
-
-`apps/breakout/src/gpu.rs` and `apps/flappy/src/gpu.rs` were once identical once
-the game's name was normalised away. They are not any more — `cmp` says so — and
-flappy's camera scrolls where breakout's is fixed.
-
-**Kept because the decline was right and that is worth not re-arguing.** The
-shared shape looked like a plausible `crcbl-render` bundle: orthographic camera,
-sprite pass, menu pass, UI pass over `GpuContext`. The stated reason for leaving
-it alone was that two 2D games at the same stage resembling each other is not
-the same as one piece of knowledge written twice, and that the failure mode
-would be a helper with two callers needing a flag per caller. That is exactly
-what a scrolling camera would have become. The trigger is unchanged: revisit
-when a third game wants the bundle.
-
 ## `run-vk-e2e.sh` pins no ICD by default, so nobody was running CI's gate
 
 The script's header says it "is what a developer runs to see what CI sees". That
@@ -17640,11 +11773,14 @@ something anyone reads looking for an absence.
 
 The script now prints a warning naming the gap and the command that closes it,
 and still runs — testing against real hardware deliberately is worth doing, and
-this is how. **It is still not a hard failure**, which is a judgement worth
-revisiting: the alternative is defaulting `CRCBL_VK_ICD` to lavapipe so the bare
-invocation is CI's invocation, and requiring an explicit opt-out to use the real
-GPU. That is probably the better default and was not taken here because it
-changes what an existing command does.
+
+**DECIDED 2026-09-06 —** the bare invocation becomes CI's invocation:
+`run-vk-e2e.sh` defaults `CRCBL_VK_ICD` to lavapipe, and `CRCBL_VK_ICD=hardware`
+is the explicit opt-out for a run against the discrete card. The script's own
+header already promises "what CI sees", and a default that quietly differs from
+CI is the thing that made nobody run the gate. Work: change the default, keep
+the warning line naming which adapter was chosen, and update the script's header
+and `docs/plan` references so the hardware run is documented as the opt-out.
 
 ## What the import-state check does not reach
 
@@ -17722,52 +11858,9 @@ unchanged. So the switch is not the explanation and there is no known way to
 widen it here. What that costs: the **two-submission** instance of this bug can
 only be observed in CI.
 
-What stands in for it locally is
-`reusing_an_offscreen_vulkan_ring_image_is_ordered_against_the_frame_that_had_it`
-in `crates/crcbl-vk/tests/vk_e2e/swapchain.rs`, which provokes the same missing
-dependency at record-time distance — a one-image ring, both trips recorded into
-one command buffer — where every layer build sees it. It was falsified by
-disabling the widening in `VkCommandEncoder::pipeline_barrier`: red, with the
-layer naming
-`vkCmdPipelineBarrier2 performs image layout transition on the VkImage ... which was previously read by vkCmdCopyImageToBuffer`.
-
-**A CPU wait was tried first and does not work**, which is worth keeping because
-it is a plausible idea. `acquire_next_frame` blocked on the retire timeline
-before handing a reused image back. Instrumentation confirmed it ran (`reuse=3`
-and `reuse=4` on the third and fourth frames of the failing test), and CI
-reported the identical hazard anyway: a host-side wait establishes real ordering
-but is not a queue dependency, and syncval reasons about submitted commands. It
-also costs exactly the frame overlap the ring exists to provide. It was removed
-rather than kept alongside the barrier.
-
-**`crcbl-wgpu`'s offscreen path does not have this gap** — checked 2026-08-04,
-and the untested assumption that used to sit here is deleted. Its acquire does
-report `acquire_semaphore: None`, but the hazard needs the discarding transition
-and that transition cannot reach wgpu: `WgpuCommandEncoder::pipeline_barrier` is
-a no-op, so the `ResourceState::Undefined` the seam records is dropped at the
-backend boundary, and wgpu-core inserts its own transitions from its usage
-tracker — `command/transfer.rs`'s `transition_textures(&src_barrier)` before a
-texture→buffer copy, and `device/queue.rs`'s
-`insert_barriers_from_device_tracker` in front of each submitted command buffer,
-which is what carries a texture's state across submissions (read in wgpu-core
-30.0.0, the resolved version).
-
-`reusing_an_offscreen_wgpu_ring_image_is_ordered_against_the_frame_that_had_it`
-in `crcbl-wgpu`'s own suite (deleted 2026-08-21) is the check: a one-image ring,
-trip one clears and copies out, trip two clears the same image to the reversed
-colour, and the staging buffer must still hold trip one's. Green on radv, on
-lavapipe and on the GL backend. Falsified both ways — writing trip two's colour
-in trip one, and deleting the copy — each red, and each for its own reason.
-
-**And the layer agrees, with a control that proves the layer was listening.**
-Sync validation is not something wgpu-hal requests, so it was forced at layer
-level: a settings file with `khronos_validation.validate_sync = true` reached
-through `VK_LAYER_SETTINGS_PATH`, which makes the layer print
-`Current Validation Enabled: … Synchronization` at `vkCreateInstance`. Under it
-the wgpu test reports no hazard. The control is the same file and the same ICD
-against `crcbl-vk` with the widening in `pipeline_barrier` disabled: red, with
-`SYNC-HAZARD-WRITE-AFTER-READ … previously read by vkCmdCopyImageToBuffer`. So
-the silence on the wgpu side is a verdict rather than an absence.
+The instrument that stands in for it locally, the CPU wait that was tried and
+does not work, and the `crcbl-wgpu` control are in docs/notes/backends.md under
+the same heading.
 
 **Worth knowing before the next investigation**: `CRCBL_VK_SYNC_VALIDATION` is
 what turns sync validation on for `crcbl-vk`, and with it unset the vk test
@@ -17790,65 +11883,6 @@ frame of a demo, a wordmark on the site's own background, or a per-demo card.
 Whatever it is has to be baked from a committed source the way
 `crates/crcbl-render/assets/menu.crpix` is, not a PNG dropped into `web/` with
 no way to regenerate it.
-
-## `/favicon.ico` is still a 404, deliberately
-
-`web/favicon.svg` is declared by the layout, which is what stops the browsers in
-the requirements list (Chrome/Edge 113+, Safari 18+, Firefox) asking for
-`/favicon.ico` at all — verified: `curl` against the live site returned 404 for
-that path before the change, and the built pages now carry
-`<link rel="icon" href="/favicon.svg">`. A browser that ignores the declaration
-still gets a 404 and no icon.
-
-Not fixed because an `.ico` is a binary blob and this repo bakes its art from
-committed text. `web/build.sh` has no image toolchain and adding one for a 16×16
-icon is a worse trade than the miss. `web/tools/browser-e2e.mjs` still filters
-`favicon.ico` out of its 404 assertion for the same reason.
-
-## Always run the browser gate with `--build`
-
-A run without `--build` uses whatever is in `target/site`, and that directory
-outlives the commit it was built from — a stale site is how a green run gets
-reported for code that is red. This has cost real time once already: both demos
-were signed off at "25/25" against a site built before the focus, pause and menu
-work landed, and the gate had in fact been red the whole time. Pass `--build`,
-or delete `target/site` first.
-
-**There is a warning for it now**, added after this was written:
-`web/run-browser-e2e.sh` runs `find -newer` against the entry point it copied
-and prints "re-run with --build … before believing the result" when any source
-is newer than the built site. It warns rather than fails, so the advice above is
-unchanged — but a stale run now says so instead of passing quietly.
-
-## Should the click that refocuses a canvas reach the game at all?
-
-**Behaviour that surprised us, deliberately left alone.** A canvas has no title
-bar, so `web/engine/shell.js` gives it the keyboard from its own `pointerdown`
-handler — which makes the click that "clicks back into the window" also a press
-at a real position inside the game. With the pause menu on screen and `RESUME`
-under the cursor, clicking back in resumes. That is each half behaving correctly
-and the combination being surprising; it is what put the browser gate at 23/25
-for a slice, because section E clicked the canvas's _centre_ to restore focus
-and the menu is centred there.
-
-The alternative is click-to-focus **activation blocking**: the first press after
-a focus gain restores focus and is swallowed rather than delivered, which is
-what several desktop toolkits do. Not done, and not obviously right — swallowing
-a click is its own surprise, and for a paused game the current behaviour is
-arguably the friendlier one (the player clicked on `RESUME`; they got a resume).
-It needs a decision rather than a patch, and it would have to be decided for
-native and web together, since `Loop` cannot tell the two apart.
-
-What holds the line meanwhile:
-`a_focusing_click_off_every_button_leaves_the_game_paused` in all four games'
-`app.rs` asserts the corner is over no button and the centre is over `RESUME`,
-so a menu that grew until it reached the corner fails a fast Rust test rather
-than the slow browser one. Four copies of it, plus horde's
-`a_focusing_click_off_every_button_leaves_the_title_screen_up`, because the menu
-geometry is per-sample even though `FOCUS_CLICK_INSET` — 8 pixels, in
-`web/tools/browser-e2e.mjs` — is not. The loop around them is
-`crcbl::engine::Loop` now, so this is one of the few things still written out
-per sample, and it is per sample for a reason rather than by omission.
 
 ## The sprite system, and what is left of the retrofit
 
@@ -18137,59 +12171,6 @@ it costs is **tree quality**, not answers.
   tree by surface area than incremental insertion does, and nobody has measured
   the query-cost difference between the two. The horde sample (P8, 10k bodies)
   is where that stops being academic.
-
-## Leak assertions that tolerated the deferred-sweep defect (2026-08-20)
-
-The server used to ship destroyed entities to clients — `Server::tick` swept
-before `GameModule::tick` and serialised after it. That is fixed. **Kept because
-of how it survived: every test in reach of it asserted the wrong thing.**
-
-- **asteroids** compared `entity_count()` against
-  `1 + rocks + bullets + dead_queue_len()`, adding the queue back in. It was
-  written that way _because_ the test failed when it was first written — the
-  compensation was the fix. It is an exact equality now and goes red on the
-  defect at ticks 18, 49 and 401.
-- **horde** carried the identical `+ pending` term, with a doc comment
-  explaining the old ordering as though it were intended. Exact now, and red on
-  many ticks of the soak.
-- **flappy**'s `a_long_run_keeps_the_world_the_same_size` asserts a `<=` ceiling
-  and **cannot see this defect at all**, which is worth stating precisely
-  because two plausible explanations are both wrong. It is not the `<=`, and it
-  is not the sampling. Measured 2026-08-20, four ways:
-
-  | sampling        | sweep    | peak | ceiling |
-  | --------------- | -------- | ---- | ------- |
-  | every 60th tick | fixed    | 11   | 11      |
-  | every tick      | fixed    | 11   | 11      |
-  | every 60th tick | reverted | 11   | 11      |
-  | every tick      | reverted | 11   | 11      |
-
-  Sampling every tick reads the same simulation — `travelled` came out
-  bit-identical at `239.8999904040058` — and finds the same peak. **The reason
-  is that the peak and the culls never coincide**: the window holds at most
-  eleven entities, the count reaches eleven only between culls, and the two
-  entities a deferred pipe-despawn leaves behind are therefore never added to a
-  frame that was already at the ceiling. So the assertion is honest for what it
-  claims (the world does not grow without bound) and is structurally incapable
-  of catching a one-tick destruction delay.
-
-  **Left unchanged deliberately.** The sampling change was written and reverted:
-  it costs 2400 harness calls instead of 40 and buys nothing measurable. What
-  would catch it here is asserting the destruction queue is empty between ticks,
-  which flappy has no accessor for — and asteroids, horde and `crcbl-server`'s
-  two new tests already catch it directly and go red on it, so a fourth detector
-  is not worth new API.
-
-The shape to carry forward: a leak invariant that _compensates_ for a queue is
-one that cannot see the queue being wrong. If a count needs a correction term to
-balance, the question is why the term is non-zero, not what to add to the sum.
-
-**Considered and declined: `World::entity_count_after_sweep`.** Added while
-fixing this, then removed before committing — after the sweep moved, the queue
-is empty between ticks for every reader in this workspace, verified by asserting
-`dead_queue_len() == 0` at every leak check across asteroids' and horde's full
-suites. It had no caller but its own test. `entity_count` is exact between ticks
-and its doc now says under what condition; `dead_queue_len` answers the rest.
 
 ## What `crcbl-phys` owes at scale, found by writing horde
 
@@ -18552,387 +12533,25 @@ not:
 
 ## Deferred decisions
 
-Questions that came up mid-slice and were answered by judgement rather than by
-asking. Each is the question, the answer taken, and **what would change it** —
-because the point is that a later reader can reopen one cheaply instead of
-rediscovering that it was ever a question. An entry here is not a complaint
-about the answer; most of these are probably right.
+**CONFIRMED 2026-09-06 —** every answer in this block was reviewed and stands as
+taken, so the block itself is a record now and lives in docs/notes/process.md
+under the same heading. One item inside it is real work rather than a decision:
 
-Distinct from _Considered and declined_ below, which is for ideas rejected on
-their merits and expected to stay rejected. These are answers taken under
-uncertainty.
-
-- **Should `SoundBank` hold `Arc<[AudioSample]>` rather than `Vec`, so
-  `create_voice` stops copying the sound?** _Yes, and it is why horde adopted
-  the bank at all._ `SoundBank::create_voice` cloned the whole sample buffer per
-  voice, which at horde's cue rate — up to about forty a second, each an
-  allocation the size of the sound — was the one measured reason to keep the
-  hand-rolled `Arc<Sound>` bank instead. Changing `Voice::data` to
-  `Arc<[AudioSample]>` and `create_voice` to `Arc::clone` deletes the reason,
-  and `Voice::new(Vec)` still compiles for every existing caller.
-  `a_bank_shares_one_buffer_with_every_voice_it_makes` in
-  `crates/crcbl-audio/src/mixer.rs` pins it on `Arc::strong_count`. **What would
-  change it:** a bank that wants to hand out _mutable_ sample data, which
-  nothing does.
-
-- **Should `AudioStream::open` have kept taking `impl AudioSource` by value, or
-  changed to `Arc<dyn AudioSource>`?** _Kept — the sharing went into a blanket
-  `impl<T: AudioSource + ?Sized> AudioSource for Arc<T>` instead._ Changing
-  `open`'s signature would have broken every existing caller, including the
-  `wasm32` `web::install` path and the crate's own tests, for a case a blanket
-  impl serves without touching any of them:
-  `AudioStream::open(Arc::clone(&mixer))` now type-checks and a non-shared
-  source still moves in as before. The cost is one redundant `Arc` layer on the
-  shared path — `open` wraps whatever it is given in an `Arc` of its own — which
-  is a pointer chase per block, not per sample. **What would change it:** a
-  source that needs to be reached from the stream _and_ from two other places
-  with different types, where the double `Arc` stops being the only wart.
-
-- **Should the voice cap have moved into `Mixer` while the samples were being
-  migrated?** _No — horde keeps `MAX_VOICES` and its refuse-newest policy._ The
-  crate has no cap, no priority and no stealing, and the honest version of that
-  feature is a voice budget with priorities so a death cue can steal a kill cue,
-  not a bare count. Shipping the bare count in the engine would have frozen the
-  crude policy as the crate's answer and taken the evidence for the good one
-  with it, since horde's `Audio::dropped()` is the only measurement of the
-  problem anyone has. **What would change it:** a second sample needing a cap,
-  which would make it a pattern rather than one game's answer.
-
-- **Should the samples' spatial assertions read the mixer, or the rendered
-  audio?** _The mixer, through `Mixer::voice_mixes`._ Rendering a block and
-  measuring left against right is the stronger observable and it was tried: it
-  races the null stream's polling thread, which is draining the same mixer every
-  five milliseconds and will have eaten an unpredictable prefix of any voice by
-  the time the test looks. The gain-reaches-the-output half is checked once, in
-  the engine, where a test can own a `Mixer` with no stream attached —
-  `set_mix_re_aims_a_voice_that_is_already_playing`. **What would change it:** a
-  headless `Audio` that opens no stream at all, which would make the render
-  check deterministic in every sample.
-
-  **Same race, second test, observed once:** asteroids'
-  `the_engine_is_one_looping_voice_that_outlives_its_buffer` failed on
-  `macos-latest` 2026-08-07 with "the engine's release block was cut" and passed
-  on the immediate rerun and on both the preceding and following CI runs — no
-  macOS-relevant diff separated them. Its release-block check has the same
-  window as the spatial assertions above: a headless `Audio` opens the null
-  stream, whose polling thread can consume the one release fade between
-  `set_thrust(false)` and the test's own `fill`, so the test sees silence and
-  blames the backend. The fix is the same one — a headless `Audio` with no
-  stream — and it is the same decision, per sample.
-
-- **Where does the menu art live?** Taken: **`crates/crcbl-render/assets/`**,
-  baked by that crate's own `build.rs`. `apps/*` cannot depend on each other, so
-  per-sample art is the same window authored three times and three games that
-  look like three engines. The rejected alternative was a shared `assets/`
-  directory both build scripts reach into: it shares the `.crpix` and nothing
-  else — each script still bakes, each `art.rs` still loads, each game still
-  writes the layout — and it puts a `../../..` path outside a package's own
-  tree, which cargo does not track for rebuilds the way it tracks a package's
-  files. It also gives `crcbl-vk`'s suite nothing, because that crate cannot see
-  `apps/`, so the golden would be a picture of a replica. _Changes it_: art that
-  is genuinely one game's. A sample that wants its own frame should author it
-  under its own `assets/` and pass its own `MenuArt`; the shape for that is a
-  constructor beside `MenuArt::register` taking a `Sheet`, not a fork of this
-  one.
-
-- **What size is the menu drawn at?** Taken: **the largest whole scale in 1..=4
-  whose panel fits inside 90% of the framebuffer**, a pure function of the
-  extent and the menu's own contents (`Menu::layout`). Whole numbers because the
-  art is pixel art and a fractional scale puts a nine-slice corner on a half
-  pixel; a fit rather than a constant because a fixed size is either lost on a
-  4K screen or off the bottom of a 1440×400 canvas. _Changes it_: a settings
-  screen with a UI-scale slider, at which point the scale is the player's and
-  `layout_with` is already the entry point that takes one.
-
-- **Does the menu shadow a key a sample had bound?** Taken: **yes, once** —
-  flappy's `ArrowUp`, which is the _second_ binding of its flap action beside
-  `Space`. The three menu keys (Up, Down, Enter) are the same three in every
-  sample, for the reason F3, Escape and F11 are; two of the three are free in
-  every game and this one is not. Space is never shadowed, is what the HUD has
-  always named, and is printed on every button that flaps. The keys are consumed
-  only while a menu is on screen. _Changes it_: a sample that binds Enter or the
-  vertical arrows to something a player uses _while a menu is up_ — which today
-  is nothing, because a menu is only on screen when the simulation is stopped or
-  waiting. **Asteroids is the second, and it shadows `ArrowUp` too** — its
-  second thrust binding, beside `KeyW`, which is not shadowed. Same trade, one
-  sample later, and it costs less there: a menu is up only on a frame the ship
-  is not being flown.
-
-- **Does the world keep drawing behind a menu?** Taken: **yes, and it is
-  dimmed** by a scrim sprite the menu's own pass draws. A frozen screenshot
-  would need a captured frame and a second code path; a menu with nothing behind
-  it loses the player's place. The scrim is a _sprite_ and not a `DrawList`
-  rectangle because the UI pass runs after the sprite pass, so a UI-pass scrim
-  would dim the menu's own frame along with the game. _Changes it_: a menu that
-  wants the game genuinely stopped in the background — a settings screen over a
-  paused multiplayer session, where the world is still ticking and the motion is
-  a distraction.
-
-- **Does a looping ping-pong replay its end frames?** Taken: **no.** A looping
-  ping-pong's period is `2n - 2` — four frames run `0 1 2 3 2 1` and then `0`
-  again — while a one-shot is `2n - 1`, precisely because that trailing `0` is
-  no longer the next cycle's first, and an out-and-back that stopped on frame 1
-  would look truncated. `Clip::steps` and `Clip::step` in `crcbl-sprite`.
-  _Changes it_: art that wants a beat held at an end — a wing pausing at the top
-  of its stroke. Today that is spelled by giving the end frame a longer `hold`,
-  which works and is per-frame; if it turns out to be the common case rather
-  than the exception, the answer is a hold on the return leg, not a global flag.
-
-- **Does `reverse` reverse a clip's holds too?** Taken: **no** — a hold belongs
-  to the frame it holds, not to the position in the list, so a reversed clip's
-  tick pattern is the forward one read backwards. Documented on `Clip::step`.
-  _Changes it_: a consumer wanting the reversed clip to have the same
-  tick-by-tick timing _profile_ as the forward one (slow-then-fast staying
-  slow-then-fast). Nothing has asked, and the current rule is the one that makes
-  a frame's timing a property of the frame, which is easier to author against.
-
-- **What does a nine-slice do when the target is smaller than its corners?**
-  Taken: **the fixed bands shrink in proportion and the stretched band
-  vanishes.** `NineSliceSource::expand`. The two alternatives were both worse:
-  _refusing_ — emitting nothing, or clamping the target up to the minimum —
-  makes a pipe squeezed below its caps either disappear at one size and not
-  another or spill outside the rectangle it was handed; _letting the corners
-  overlap_ inverts the middle band, which with no backface culling rasterises a
-  mirrored quad rather than nothing, and double-blends the overlap. Shrinking
-  keeps the three properties that matter more than corners staying literally
-  fixed at a size where they arithmetically cannot: the quads still tile the
-  target exactly, nothing is drawn outside it, and the picture is continuous —
-  at exactly the minimum size this path and the ordinary one agree. _Changes
-  it_: a caller that would genuinely rather draw nothing than draw squashed
-  corners. That is `NineSlice::fits_in` at the call site, not a change here.
-
-- **Should nine-slice edges tile instead of stretching?** Taken: **no tiling
-  mode at all.** Two concrete costs: a tiled band is `ceil(extent / inset)`
-  quads rather than one, so the instance count stops being bounded by nine and
-  starts depending on how big the thing was drawn — a pipe stretched to a tall
-  gap would quietly become hundreds of instances — and doing it in UV space by
-  letting `u1` run past 1 needs a repeating sampler, while `SpriteRenderer` has
-  exactly one sampler, `ClampToEdge`, shared by every sheet. _Changes it_: art
-  whose edge is a repeating motif that stretching visibly smears — a chain, a
-  rope, a brick course. Then it is a new mode with its own quad emitter, not a
-  flag on `expand`.
-
-- **Teach the UI pass a second texture, or draw button skins as sprites?**
-  Taken: **sprites**, and an older backlog entry that called this "blocked on
-  the UI pass sampling a second texture" was deleted as wrong rather than
-  satisfied. The UI atlas is a single-channel `R8Unorm` glyph _coverage mask_
-  sampled into alpha only — every fragment's RGB comes from the vertex colour —
-  and a button skin is RGBA colour art. Routing it through would need a second
-  bound image in a second format, a per-quad branch between two samplers, a
-  UV-carrying draw command `DrawList` does not have, and an RGB path added by
-  hand to both tier permutations of `ui.slang`. `SpriteRenderer` already is an
-  instanced RGBA pass with alpha blending, and a skinned button is nine sprites.
-  _The cost paid_: the caller owns the ordering. `RenderGraph` runs passes in
-  declaration order with no topological sort, and both passes load rather than
-  clear, so `SpriteRenderer::add_pass` must precede `UiRenderer::add_pass` or a
-  skin paints over its own label — enforced by nothing but the order of two
-  lines. _Changes it_: a UI element needing colour art _interleaved_ with text
-  rather than behind it, which two passes cannot express at any ordering.
-
-- **A fixed backdrop for breakout, or a parallax band?** Taken: **fixed.**
-  _(Moved here from Considered and declined — it is a judgement about this
-  game's camera, not an idea rejected on its merits.)_ Breakout's camera never
-  moves — the field is fixed and the whole of it is on screen — and `Parallax`
-  is `(1 − factor) × camera`, so with a camera at the origin every factor
-  produces the same offset of zero. A "distant" layer and a world-locked one
-  would be the same picture, and a band that scrolled anyway would be motion the
-  player has no reason for. `art::Scene`'s two layers are both `Parallax::WORLD`
-  and exist for depth ordering, which is the half of a `LayerStack` that still
-  means something here. _Changes it_: breakout gaining a camera that moves — a
-  screen-shake on a brick break would be the obvious one, and is currently a
-  scope violation under the sample's "no juice" cap.
-
-- **Commit the baked PNGs beside the `.crpix` text?** Taken: **no.** _(Moved
-  here from Considered and declined.)_ It would make the build faster and the
-  art reviewable in an ordinary diff, and it would create two sources of truth
-  for one picture — the one a reviewer reads being the one that is not loaded.
-  `docs/specs/crcbl/pix.md` is explicit that `.crpix` is a build input, and both
-  samples' `build.rs` keep it that way. _Changes it_: a build where baking is
-  slow enough to be felt, or a review workflow that genuinely cannot read
-  `.crpix`. Neither is true today — the baker is a strip blit — and the honest
-  fix for the second would be rendering `.crpix` in review, not committing PNGs.
-
-- **What phase are the eleven sprite slices?** Taken: **P4B**, by analogy with
-  P4A audio, which was the same shape — a subsystem that was not in the original
-  phase table, delivered between numbered phases. It is written into both the
-  roadmap's status table and its phase table. _Changes it_: a preference for a
-  different label. Nothing depends on the string except the roadmap's own
-  cross-references and this file.
-
-- **What stays at P10 now that the frame-timing core is built?** Taken: **the
-  rest of it.** The core shipped early, out of P10, because both existing
-  samples wanted it and two more are planned before P10 — leaving it there would
-  have guaranteed a third and fourth per-sample HUD, the shape `web.rs` already
-  took twice. What P10 still owes is the rest of `07-ui-debug.md`'s suite
-  (inspector, console, culling stats, debug-draw controls, UI inspector) and
-  `23-netcode.md`'s netgraph, which is unbuildable before the transport can
-  measure itself. _Changes it_: a sample that needs one of those sooner, which
-  is the same argument that moved the frame-timing core.
-
-- **How does a module register with the panel — retained list or per frame?**
-  Taken: **per frame**, `DebugPanel::add(&dyn DebugModule)` once per system the
-  frame actually has, matching the crate's immediate-mode authoring. A retained
-  registry would need the panel to hold borrows or `Rc`s of every system that
-  reports, which is the plugin framework `07-ui-debug.md` explicitly does not
-  want, and it would make "a section appears because the system is present" into
-  "a section appears because someone remembered to register and to unregister".
-  _Changes it_: a module whose data is expensive enough to want gathering off
-  the frame path, which would want a handle rather than a per-frame call.
-
-- **What does the panel's FPS number mean?** Taken: **frames divided by the time
-  they took** over a rolling 120-frame window, not the mean of the per-frame
-  rates. The two agree only when every frame is the same length: 10 ms and 30 ms
-  average to 67 FPS as reciprocals and to 50 FPS as `2 / 40 ms`, and the second
-  is what the window actually ran at. 120 frames is two seconds at 60 Hz — short
-  enough to react while you are looking at it, long enough to read. _Changes
-  it_: wanting a 1%-low figure, which needs the sorted window this deliberately
-  does not keep.
-
-- **Which samples are exempt from the pixel-art rule?** Taken: **hud, viewer and
-  sparks**, on the ground that each one's _subject_ is something other than
-  pictures — a widget gallery, the user's own glTF, and a particle workbench —
-  so authored sprite art in front of it would be showing the wrong system. hud
-  still authors its button skins as `.crpix` because a skinned widget is a
-  widget. Every other sample on the ladder is in scope. _Changes it_: a sample
-  arguing itself out, which sample rule 11 requires it to do in its own doc with
-  a reason.
-
-- **Was the 2026-08-01 review document a record or a description of current
-  state?** Taken 2026-08-10: **a record**, left unedited. **Reversed 2026-08-22
-  by the user: aggregated into this file and deleted** — see "The 2026-08-01
-  full-workspace review, aggregated" above. The reasoning below is kept because
-  it is why the file survived as long as it did. It is dated 2026-08-01, was
-  added in one commit and never amended, and the roadmap already says its
-  findings were fixed across eight commits. Several of its findings now describe
-  code that no longer exists — the `paddle_model` finding is the clearest, since
-  breakout has no forward pass at all. _Changes it_: a decision to keep it live,
-  which would mean re-running the review rather than patching the findings that
-  happen to have been noticed.
-
-- **What does a paused frame do to the fixed-tick accumulator?** Taken: **update
-  the clock and drain the accumulator without stepping the game.** The three
-  candidates only differ after a long pause. _Not calling `update`_ freezes
-  `FrameClock::last_update`, so the first update after the pause measures the
-  whole of it and the `DEFAULT_MAX_CATCH_UP_TICKS` cap turns it into eight ticks
-  in one frame — measured, not reasoned: falsifying the drain that way makes
-  `resuming_after_a_long_pause_runs_one_tick_not_a_catch_up_burst` report "ran 8
-  ticks" in all three samples. _Updating but not draining_ saturates the
-  accumulator at the same cap and lurches identically, also measured. Draining
-  leaves only the sub-tick remainder, so the first live frame runs the one tick
-  it is owed, and it keeps `render_dt` real so the debug overlay's frame graph
-  does not flatline at whatever it read when Escape was pressed. The cost is
-  that `FrameClock`'s `TickId` advances during a pause; nothing in any sample
-  reads it. _Changes it_: a consumer that does — a networked sample whose tick
-  ids have to line up with a server's — which would want an explicit
-  `FrameClock::reset` rather than a drain loop.
-
-- **Is pause a `GameState` variant or the app loop's?** Taken: **the loop's.**
-  Both samples' `GameState` lives inside `GameLogic`, which the authoritative
-  server's `GameModule` mutates from inside a tick and which the client
-  replicates; a `Paused` variant there would make the server's state depend on
-  which window a player's compositor has focused, and would put a value in
-  `Summary::state` that a headless scripted run could reach. Pause is not
-  something the simulation does — it is the loop declining to advance it — so it
-  is the loop's — `crcbl::engine::Loop::is_paused`, reported out through
-  `RunSummary::paused` and from there into each game's own `Summary`. _Changes
-  it_: a pause the _simulation_ has to know about, which in a multiplayer build
-  it would: pausing a shared world is a server decision and would be a state on
-  the server, not a client's window losing focus.
-
-- **Does regaining focus resume?** Taken: **no.** A player who clicks back into
-  the window would otherwise arrive mid-ball with no warning, and the pause menu
-  exists to be dismissed on purpose. This also keeps the two edges asymmetric on
-  purpose: focus loss is a thing the platform does _to_ the game, resuming is a
-  thing the player does. _Changes it_: a sample where pausing costs the player
-  something (a timed run), where the two-step would read as a penalty.
-
-  **Read this together with "Should the click that refocuses a canvas reach the
-  game at all?" above.** "Focus does not resume" is about the focus _event_. In
-  a browser the gesture that delivers it is a click inside the game, so clicking
-  back in onto `RESUME` does resume — one step, not two. The decision above is
-  intact; the gesture is not the same gesture on every platform.
-
-- **Which key pauses, given that a browser reserves Escape?** Taken: **Escape
-  anyway.** Neither sample's action map binds it — breakout declares arrows,
-  Space and R; flappy declares Space, Up and R — and it is what a player tries
-  first. In a fullscreen browser demo Escape both leaves fullscreen and pauses,
-  because `requestFullscreen` reserves the key and no page can decline it. That
-  is one keystroke doing two reasonable things rather than a collision worth
-  designing around. _Changes it_: a sample that wants Escape for something else,
-  or a pause menu with a back-navigation stack where "leave fullscreen" and
-  "close the menu" would want to be separate steps.
-
-- **Who calls `requestFullscreen` in the browser — the shell or the page?**
-  Taken: **the page.** A browser grants fullscreen only from inside a
-  user-gesture handler; the shim's `keydown` listener is one and a
-  `requestAnimationFrame` callback is not, and the engine reads a key on the
-  frame _after_ the `keydown` that carried it, by which time the gesture is
-  over. Calling it from Rust would also mean the wasm module's first non-`wbg`
-  import, which `web/tools/check-exports.mjs` exists to prevent. So
-  `web/engine/shell.js` binds F11 itself and reports the outcome through the new
-  `__crcbl_web_fullscreen` entry point, exactly as a compositor answers
-  `Shell::set_mode` with a configure rather than obeying it. The cost is that
-  `FULLSCREEN_KEY` is spelled in four places — three `app.rs` files and
-  `shell.js` — with nothing but a comment holding them together. _Changes it_: a
-  second key wanting a gesture (pointer lock is the obvious one), which would be
-  the point to give the shim a small table the engine can publish rather than a
-  second hard-coded key.
-
-- **Does the sandbox get a pause too?** Taken: **yes.** It has no game, and it
-  does have a cube on the fixed timestep — the one thing in it a player can see
-  stop — and the samples' standing rule is that a facility switched on in one is
-  switched on the same way in all of them. It costs about fifteen lines.
-  _Changes it_: nothing likely; if the sandbox ever became a pure benchmark
-  harness, pausing it would be noise.
-
-- **Should `MenuSet::activate` and `MenuSet::point` return the game's own
-  `MenuAction` rather than a `WidgetId`?** _No — they return the id, and each
-  sample maps it._ Returning the action needs a trait
-  (`fn from_id(WidgetId) -> Option<Self>`) that every game with a menu must
-  implement, to save one `.and_then(MenuAction::from_id)` at two call sites in
-  `app.rs` and two test helpers per sample. The id is also what the layer
-  beneath actually deals in: `Menu::activate` and `Menu::point` both return
-  `Option<WidgetId>`, so the set passing it through adds no translation of its
-  own. _Changes it_: a consumer that threads the action through several layers,
-  where the `and_then` would start appearing at call sites that have no business
-  knowing about ids.
-
-- **Should the sandbox get a `MenuKind` enum for symmetry with the other four,
-  instead of keying its set by `bool`?** _No._ `MenuSet<bool>` is what its one
-  menu actually is, `false` is the state with no entry, and
-  `apps/sandbox/src/app.rs` already called `self.menus.show(self.paused)` — the
-  `bool` was always the key. An enum would be code added to make five files
-  rhyme. _Changes it_: the sandbox growing a second panel, or the loop
-  extraction turning out to need one `K` across all five.
-
-- **Where does horde's "has the offer changed?" guard live now that the
-  container is the engine's?** _In a `LevelUpOffer` type in
-  `apps/horde/src/menu.rs`, held by the game itself — the `Horde` struct's
-  `offer` field, rebuilt from `HostedGame::menu_kind`._ `MenuSet::replace`
-  rebuilds unconditionally and drops the capture; deciding _when_ a panel is
-  stale needs `built_from: Option<(u32, [Upgrade; 3])>`, which the engine cannot
-  hold because it knows nothing about upgrades. The alternative was putting that
-  field on the loop and inlining the comparison in `draw_menu`, which is the
-  same state in a place where it could not be unit tested — and which is no
-  longer even available, since the loop is `crcbl::engine::Loop` and a sample
-  cannot add a field to it. _Changes it_: a second sample growing a rebuilt
-  panel, at which point the guard is a shape and not horde's alone.
+- **A headless `Audio` that opens no stream.** `Audio::new(true)` opens the null
+  stream, whose polling thread drains the same `Mixer` every five milliseconds,
+  so a test that renders a block and measures left against right races it —
+  which is why the samples' spatial assertions read `Mixer::voice_mixes` instead
+  of the rendered audio, and why asteroids'
+  `the_engine_is_one_looping_voice_that_outlives_its_buffer` failed once on
+  `macos-latest` (2026-08-07) with "the engine's release block was cut" and
+  passed on the immediate rerun. An `Audio` that opens nothing would make the
+  render check deterministic in every sample and close that race in the same
+  change. Precedent: the null-device test mode every engine's audio layer ships.
 
 ## What the horde Pages flake left behind
 
-The flake itself is fixed and deleted from this file (2026-08-03, diagnosed from
-the run's uploaded page log: the gate clicked the canvas **centre** to hand the
-page its keyboard, which pressed `PLAY` — horde's centred first item — and
-destroyed the run the `Space` after it was meant to start). Two things outlive
-it.
-
-- **A check that passes in the failure mode is not a control, and two of them
-  agreeing is not corroboration.** Group E of `web/tools/browser-e2e.mjs` was
-  read as evidence for ninety seconds of a contradiction that did not exist:
-  `heartbeats()` counts any `[HUD]` line and horde logs one in every state
-  including `WaitingToStart`, so every check in that group passes on a game
-  sitting on its start screen. The theory that survived was the one nothing in
-  the harness could refute.
+The lesson the flake left — a check that passes in the failure mode is not a
+control — is in docs/notes/process.md under the same heading. The coverage gap:
 
 - **Coverage gap: the title-screen inset test is horde's alone.**
   `a_focusing_click_off_every_button_leaves_the_game_paused` exists in all four
@@ -18943,399 +12562,15 @@ it.
 
 ## Considered and declined
 
-- **Adopting `crcbl_ui::hud`'s `Hud`/`HudPanel` in the four samples.** It was on
-  the audit's list as "the engine feature was already bought", and it is not:
-  the type does not do what any of the four HUDs needs.
+The list itself is in docs/notes/samples.md under the same heading. One finding
+in it is open rather than declined:
 
-  **`Label` has no colour.** Colour lives on `Style`, one per panel, so a
-  panel's labels are all one colour. Every sample draws its stat line yellow,
-  its state line pale blue and — breakout — its lives line green, which is three
-  colours in one panel and is not expressible. That alone ends it.
-
-  Two smaller mismatches behind it. `HudPanel` sizes itself from its content,
-  where horde's backdrop width is a **measured** constant with a test putting a
-  stated worst-case run through the real `FontAtlas` and requiring it to fit;
-  auto-sizing throws that guard away. And `Hud::render` routes button clicks,
-  which a read-only stat panel has no use for.
-
-  **What is actually shared between the four is not the drawing.** Each has a
-  private `HudStrings` that rebuilds its strings only when the numbers behind
-  them change — the caching avoids the `format!` work each frame. **It does not
-  stop the frame allocating, though four doc comments say it does** (corrected
-  2026-08-15): `DrawList::text` takes `impl Into<String>` and stores
-  `text.into()` into a `DrawCommand::Text { text: String }`, and every sample
-  calls it with `hud.score.as_str()` — so a fresh `String` is allocated per text
-  command per frame and dropped by `DrawList::clear`.
-  `apps/breakout/src/app.rs`'s `draw_hud` names "the sandbox's 'a steady-state
-  frame allocates nothing' property" as the reason the cache exists, and that
-  property is not delivered by this mechanism. **This does not change the
-  decline below** — the `Label`-has-no-colour argument ends adoption on its own
-  — but it removes the strongest stated reason the samples' version is worth
-  keeping, and it means the real fix would be on `DrawList` (a borrowed command,
-  or an arena) rather than in any sample. But the structs differ in their fields
-  and their cache keys, because each game shows different numbers: that is
-  duplicated _shape_, not duplicated knowledge, and the logic under it is three
-  lines. Extracting it would be an abstraction over a coincidence.
-
-  **The finding this leaves is about the engine, not the samples**:
-  `crcbl_ui::hud` has no consumer anywhere in the workspace. It is either owed a
-  `color` on `Label` and an optional explicit panel size — at which point the
-  samples could adopt it — or it should be deleted. Not decided here, because
-  adding a field nothing uses is the speculative-machinery mistake and deleting
-  a module is not a call to make inside an adoption task.
-
-- **Building the demos' export names in `web/engine/demo.js` from the sample's
-  slug.**
-  `exports[\`**crcbl\_${sample}\_frame\`]`would delete the thirty-line`bind`block from each`web/demos/<name>/main.js`and is the obvious way to write it. Declined because it defeats the gate:`web/tools/check-exports.mjs`learns which exports the JS depends on by scanning for a literal`.**crcbl\_…`and fails when one is missing from the artifact. Verified both directions — with the names spelled out, renaming`\_\_crcbl_breakout_frame`to`…\_framee`in`main.js`fails the check with that symbol named; behind a template literal the scan sees nothing and a typo becomes a`TypeError`
-  in somebody's browser. The per-sample file is the price of keeping the check
-  able to fail.
-- **Folding the demo pages' "what is actually running" prose into a partial
-  too.** Its opening paragraph differs between breakout and flappy by two words
-  ("high score" / "best score") and its second paragraph differs materially —
-  flappy's explains the seeded course, breakout's names swept-sphere collision.
-  Templating it would mean the layout carrying three prose variables, which is a
-  generator, not a partial. The shared blocks are the ones that are identical
-  and structural: the window, the loop's keys, and the console note.
-- **Reformatting `web/tools/browser-e2e.mjs` with prettier.** It is not
-  prettier-clean at the width the rest of `web/` uses — confirmed against the
-  version at `HEAD`, so it predates this work — and this slice touched only a
-  three-line comment in it. Reformatting the whole gate file to fix a whitespace
-  complaint would bury that comment in a diff nobody can review. Worth doing on
-  its own, with the gate run either side of it.
-- **Fixing the multi-sheet sprite bug in the shader, by adding
-  `SV_StartInstanceLocation` back on.** It works, and it is one line:
-  `sprites[instance + base]` with `uint base : SV_StartInstanceLocation`
-  restores the `BaseInstance` that `SV_InstanceID` subtracts, giving the
-  absolute index that the old `draw(0..6, batch.instances)` needed. Measured
-  with slangc 2026.14: the SPIR-V comes out with the `OpIAdd` next to the
-  `OpISub` and no extra capability beyond the `DrawParameters` the file already
-  declares.
-
-  Declined for two reasons. First, `slangc` **rejects that semantic for WGSL** —
-  `error[E55202]: system value semantic 'sv_startinstancelocation' is not supported for the current target`
-  — so the source would have to be `#if`-split per target, and there is no
-  target macro to split on (probed: `__TARGET_SPIRV__`, `SLANG_SPIRV`,
-  `__SPIRV__`, `__TARGET_WGSL__` are all undefined; only `__SLANG_COMPILER__`
-  is), so the split would have to ride on the `-D` per target that
-  `crates/crcbl-shaders/tools/compile-shaders.sh` and `build.rs` now pass —
-  `CRCBL_TARGET_SPIRV`, `CRCBL_TARGET_WGSL`, `CRCBL_TARGET_MSL`,
-  `CRCBL_TARGET_HLSL`. Second and worse, the WGSL half would then be correct
-  **because Slang's two lowerings disagree**: `SV_InstanceID` becomes
-  `InstanceIndex - BaseInstance` on SPIR-V and a bare `@builtin(instance_index)`
-  on WGSL, and only the SPIR-V one matches HLSL. A Slang release that made WGSL
-  consistent with the rest would silently break the browser, with nothing in
-  this repository pointing at the cause. Always drawing from instance 0 depends
-  on neither lowering.
-
-- **A dynamic offset on the instance _storage_ buffer rather than a per-batch
-  constant block.** The obvious shape — bind `sprites` with `dynamic: true` and
-  offset it to the batch — needs the binding's declared **size** to be fixed at
-  bind-group creation while `offset + size` must stay inside the buffer, so the
-  size would have to be "the largest batch", which is a per-frame quantity the
-  group is not rebuilt for. Batches would also have to be padded to
-  `min_storage_buffer_offset_alignment` (256 on WebGPU) rather than packed at
-  `INSTANCE_STRIDE`. The constants block is 80 bytes and fixed, so the same
-  mechanism costs nothing there.
-
-- **Sharing `apps/*/src/audio.rs` and the best-score file between the two
-  samples directly.** The duplication is real (findings 4 and 5) and the fix is
-  in the engine, not in a crate the samples share between themselves: a
-  `flappy-and-breakout-utils` would be a third place for the same code to rot,
-  and it would hide the evidence that `crcbl-audio` and `crcbl-store` are
-  missing a layer. **Vindicated**: both layers were built where the evidence
-  said they belonged — `crcbl_audio::synth` and `crcbl::store::record::Record` —
-  and the samples adopted them.
-- **A `visible` check inside `DebugPanel::layout`.** It was written, and it
-  could not be made to fail: `add` refuses to gather while hidden and
-  `set_visible` drops what was gathered, so a hidden panel has no sections and
-  the emptiness check already returns `None`. A guard that no test can reach is
-  a guard that reports "passed" for reasons unrelated to what it guards, so it
-  was deleted and the reasoning left in its place.
-- **A `DebugSection::row` taking `String`s.** It takes `fmt::Arguments` instead,
-  so a module writes `row("fps", format_args!("{fps:.1}"))` and formats straight
-  into a `String` the section already owns. The ugly signature buys a
-  steady-state section rebuild that allocates nothing, which matters for the one
-  widget whose job is not to disturb the thing it is measuring.
-- **Tinting one brick sprite four ways instead of authoring four frames.** It is
-  the cheaper sheet and it is what `app.rs`'s colour table used to do. Four
-  frames is what lets the rows differ in their _shading_ — a lit top edge and a
-  shaded bottom in each row's own hue — which a single tinted rectangle cannot
-  express, and it is what a sprite sheet is for. The cost is 96 × 8 texels
-  instead of 24 × 8.
-- **Re-randomising flappy's course from a clock.** A restart advances the seed
-  deterministically (`course_seed(seed, runs)`) instead. A clock would make the
-  course unreproducible, and the sample's exit criterion is that a recorded
-  script replays to the same score.
-- **Authoring flappy's background bands at one texel per sprite unit.** They are
-  drawn at `art::BACKGROUND_SCALE` = 2 instead. At `TEXELS_PER_UNIT` = 20 a hill
-  wide enough to read as a hill is a couple of hundred texels of hand-written
-  rows for a silhouette with two bumps in it; the pipe is deliberately **not**
-  scaled, because its caps are measured in texels and scaling would stretch
-  them. If the bands ever gain detail that the doubling makes obvious, redraw
-  them rather than adding a second scale knob.
-
-## Full-codebase review 2026-08-04
-
-Scope: working tree was clean (branch `crcbl-worktree` == `origin/main`, commit
-050f570), so per the review/audit/perf conventions the **entire workspace** was
-reviewed — `crates/*` and `apps/*`, ~216k lines of Rust. Correctness, security
-and performance passes were split per crate across read-only review passes;
-every finding below was re-verified against the code it cites (re-traced to the
-return path, guard chain checked, string/length arithmetic applied) before being
-published. **47 findings: 16 medium, 31 low, no critical or high — and all 47
-were closed on 2026-08-04**, one commit each (pushed to `main`; `git log` is the
-record, and each fix shipped with a test that failed on the old code or an
-honestly stated gap). What survives below is the part of the review that is not
-a closed finding.
-
-### Cleared (the expensive half)
-
-Per-crate review passes explicitly disproved these before publishing anything:
-
-- **crcbl-net**: decoder panics on hostile bytes (every decoder length-gated
-  through `ByteReader`); unbounded allocation from length fields (delta/system
-  counts checked against remaining bytes before `with_capacity`); ReplayWindow
-  edges; HMAC vs RFC 4231 vectors, constant-time compare; rate-limiter overflow
-  (u128/saturating); reflected authenticated packets (disjoint direction tags
-  fail the codec decode); repair-ack loop; `handle_ack` monotonicity.
-- **crcbl-vk**: acquire-semaphore reuse (safe only because of the
-  `slots = image_count + 1` throttle); surface refcount balance across every
-  swapchain path; `Drop for DeviceInner` ordering; handle-tagging collisions;
-  `write_buffer` bounds; submit-counter ordering; SPIR-V parser bounds.
-- **crcbl-shell appkit**: pointer-capture revert on error; enqueue coalescing
-  against the BackingChanged+Resized pair; retain/release balance; warp/flip
-  math; CAMetalLayer Retina sizing; pool handle reuse.
-- **crcbl-shell win32**: WM_CAPTURECHANGED guard; resize-coalescing order;
-  WM_PAINT termination; 0×0 WM_SIZE handling; WM_DPICHANGED nesting; X_BUTTON
-  decode; RAWINPUT sizes; TimeBase wrap; Drop ordering.
-- **crcbl-shell x11**: GeGeneric sizing and `full_sequence` offset (verified
-  against libxcb layout); xcb reply/event free-exactly-once at all ~20 sites;
-  get_property chunk loop; Atoms pipelining; INCR state machines (terminator
-  always emitted, ack-by-delete ordering); fp3232 fraction; blank_cursor
-  lifetime; SelectionClear ordering; set_pointer_mode grab failure.
-- **crcbl-shell wayland**: same-offer selection re-send (verified against
-  wlroots source); fd close-exactly-once on every path; protocol decode overruns
-  (libwayland signature validation); keymap size-vs-length check before mmap;
-  drag drop/teardown double-destroy ordering; TimeBase rebase wrap; repeat-rate
-  caps; axis gating.
-- **crcbl-hal**: `Extent3d::full_mip_levels`; Format block/texel sizes for all
-  29 formats; `needs_barrier` discriminant logic; readback poll contract; device
-  outlives instance; create_device default loop; reversed-Z consistency;
-  swapchain extent obligations.
-- **crcbl-wgpu / null**: null ring rotation; poll_readback slice bounds; wgpu
-  lock ordering; generational handle reuse; destroy_readback on Failed; present/
-  reconfigure/destroy present the outstanding SurfaceTexture on every path;
-  double-submit detection; semaphore promotion.
-- **crcbl-render**: tonemap bind-group cache (destroyed-after-use is safe via
-  the retire queue + generational handles); cross-frame barrier ordering;
-  nine-slice geometry (traced against tests); camera math; texture row pitch;
-  sprite-batching instance addressing; UI tier split; timer ring; graph state
-  tracking.
-- **crcbl-core / ecs / input**: arena aliasing (bumpalo-style argument),
-  zero-size allocs, generation wrap (checked_add retires at u32::MAX),
-  stale/foreign handles, System::detach swap-remove, input key up/down pairing,
-  WASD normalization, WorldPos rebase math (Sterbenz), splitmix64 vectors,
-  FrameClock accumulator. All non-test panic sites are unreachable from within
-  the invariants.
-- **crcbl-phys**: AVL rotation (traced all four shapes); BVH slot recycling;
-  refit-only update_aabb; ray_vs_capsule piece tests; select_hit branches;
-  entity churn; determinism; DampingForce cap; swept-TOI arithmetic.
-- **crcbl-audio / store**: QOA bounds (verified against qoa.h byte-for-byte),
-  allocation bomb rejected before reserve, WAV parser chunk arithmetic, mixer
-  data races (single mutex, immutable samples, atomic ids), web resampler phase
-  math, crash-ring wrap agreement, save/replay parser length gates, OPFS framing
-  checksum + generation restore, URL/key allow-list containment.
-- **crcbl-ui**: HUD snapshot vertex counts (136 hand-verified), double-applied
-  scale (all callers pass 1.0), RectOutline geometry, menu centring math, fit
-  loop, FrameStats windows, UTF-8 codepoint handling, widget_id collisions,
-  click-capture correctness.
-- **crcbl-sprite / wl-scanner / shaders / golden**: crpix header let-else,
-  palette `#` handling, XML entity DoS (no DTD), quote-aware start-tag scan,
-  emit identifier gating, SHA-256 vs FIPS 180-4 + NIST vectors, golden PNG size
-  guard (the pattern load.rs should copy), JSON surrogate pairs.
-- **crcbl-cli / engine**: semaphore value-0 semantics, cargo invocation (no
-  shell, args via `Command::arg`), screenshot channel order, replay tick bounds,
-  `new` template escaping, App::frame stage machine, readback arithmetic,
-  GpuContext teardown order, FrameBudget cap.
-- **apps**: breakout bounce data (real sweep, not fabricated), per-tick
-  high_score.raise early-return, brick-neighbour geometry, asteroids wave/split/
-  tumble index spaces, perimeter_point catch-all, save-file parsing,
-  pause/focus/ dt handling in the engine loop; sandbox/sim/bare: sim tick-drift
-  (ManualTime whole-tick drain), headless tick-count assertions, seed
-  determinism, f32 hashing, frame-budget edges.
-
-### Hardening (correct today, fragile — explicitly not defects)
-
-**Re-triaged against the tree on 2026-09-02**, every claim in this list. The
-heading no longer holds for all of it: three claims were **never accurate** and
-say so in place (vk's `untag`, the QOA saturation, render's "documented"
-allocations), several the tree has since answered were deleted, and four were
-**defects rather than fragility** — all four shipped on 2026-09-03 (vk's
-`submit` not checking the command buffer's queue family, `write_buffer`'s memory
-rule differing across backends, view-format compatibility being three rules
-across four backends, and the missing re-handshake after a forged `Accept`). The
-rest of the list is unchanged in kind, sharpened where the triage found the
-original wording named the lesser half of a problem.
-
-- **net**: `baseline_tick = 0` is wire-ambiguous (delta.rs:824/866-869;
-  unreachable — the server never encodes against tick 0); a forged `Accept` is
-  still accepted, because the handshake reply is unauthenticated by design —
-  what shipped is the **recovery**, `Client::expire_unproven_session`, so the
-  wedge is bounded rather than permanent; `Reject` `msg_len` is u16 with a
-  silent cast on encode (codec.rs:399); key rotation on reconnect trusts a
-  cleartext token (documented); reject messages disclose server identifiers
-  pre-auth.
-- **vk**: the acquire path waits with `u64::MAX` _while holding the device lock_
-  — a compositor that never returns an image hangs every device call, and
-  **both** waits are under it, the armed fence and `acquire_next_image` itself;
-  the code comment shows only the unarmed-fence case was considered;
-  semaphore-reuse safety depends on the `slots = image_count + 1` throttle — and
-  the in-code comment claiming the acquire fence is what makes reuse provably
-  safe overstates it: the fence proves the signal completed, not that the
-  caller's submit-side wait retired. The `untag` claim was **never true**:
-  `Handle` stores a `NonZeroU32` generation behind a private constructor, so no
-  handle can carry generation 0 and `from_bits` cannot fail — the index is
-  masked, not checked.
-- **win32**: `ScreenToClient` return ignored in the wheel arm (proc.rs:679);
-  `GlobalLock` failure reads as `ClipboardContent::Empty` (documented);
-  registered-format payloads lose a trailing NUL; 0×0 descriptor creates a
-  frame-only window (doc overstates); `Limits` stale for one pump after
-  `WM_DPICHANGED`.
-- **x11**: `handle_selection_notify` phase routing times out pathological
-  owners; a second keyboard's held key reads as repeat; `create_window` clamps
-  width/height to u16::MAX; `warp_to` clamps out-of-i16 to (0,0); `modifiers()`
-  allocates per key event without a keymap; consumer offers are not size-capped
-  before `ChangeProperty` (trusted caller only).
-- **wayland**: `PendingConfigure` never cleared (protocol-violation-only);
-  `Conn::drain` treats any negative return as a permanent disconnect; e2e
-  `attach_shm_buffer` stride×height truncates to i32 (test scaffolding); a 4 GB
-  keymap file costs a 4 GB virtual mapping.
-- **hal**: the reference frame destroys the command buffer right after present
-  (wrong pattern to copy); `query_results` "returns zeros without
-  TIMESTAMP_QUERY" is unreachable (create_query_set errors first); `present`'s
-  queue must be present-capable but the seam never says so; `AcquiredFrame`
-  carries no swapchain identity.
-- **null**: `crcbl-dx12` and `crcbl-mtl` keep hand-rolled copies of the
-  subresource rule that `ImageViewDesc::check` already owns. (The view-format
-  disagreement that stood beside this is settled — see the cross-format entry
-  above.)
-
-  The rest of this bullet was about **`crcbl-wgpu`, which was deleted on
-  2026-08-21** — unclosed passes no-opping, `checked()` routing, abandoned
-  encoders leaking a pool entry, the wgpu/null format disagreement,
-  `SwapchainSlot::suboptimal`. Those name nothing now. A few were written
-  without saying which backend they were about (`set_scissor` at `i32::MIN`,
-  `create_buffer` within 3 bytes of `u64::MAX`, `copy_layout`'s `bytes_per_row`
-  wrap, two pending signals of one timeline value). Re-derived against `null`:
-  **`set_scissor` at `i32::MIN` is a real three-way divergence** — `null`
-  records it unchecked, `crcbl-vk` passes it to `vkCmdSetScissor` (a VUID
-  violation), `crcbl-mtl` clamps negatives to zero and `crcbl-dx12` refuses it,
-  and the seam documents no rule. **`create_buffer` near `u64::MAX` aborts**:
-  null's mappable path is `vec![0u8; size]`, which aborts the process where the
-  trait doc promises `OutOfDeviceMemory`. **The `copy_layout` claim names
-  nothing** and is dropped — no `copy_layout`, `bytes_per_row` or `row_pitch`
-  exists in `crcbl-hal` or `crcbl-webgpu`, the seam's field is
-  `BufferImageCopy::buffer_row_length`, and null does no size arithmetic in
-  `copy_buffer_to_image`. **The double timeline signal is answered**: null's
-  `submit` keeps an `advanced` list and refuses a second signal that does not
-  move past the first.
-
-- **render**: cross-frame mixed-state transient handoff (single-mip production
-  transients only); cross-frame queue-ownership release dropped (no second queue
-  in use); `begin_frame`'s `atlas` argument is layout-only; pool transient view
-  covers every mip; per-frame CPU allocations are small but **not** documented —
-  `graph.rs`'s "a plain index keeps compilation allocation-free" is false, since
-  every `create_image`/`create_buffer`/`add_render_pass`/`add_compute_pass`
-  allocates a `String` per frame and `compile` allocates several `Vec`s;
-  `upload_texture`'s expected-size math can overflow u64 and the "unreachable"
-  qualifier is **wrong** — `texture::upload` computes `expected` before
-  comparing against `pixels.len()`, so a `u32::MAX` extent with an empty slice
-  panics in dev builds instead of returning the documented `InvalidDescriptor`.
-- **core/ecs/input**: wrong-kind bindings silently produce permanently idle
-  actions — the "user-profile typo" vector named here does not exist (there is
-  no keybinding file), but the debug console is one: `apply_bind` only ever
-  installs `Binding::Key`, so binding an `Axis2` action to a key succeeds,
-  echoes back, and leaves a dead action; `set_enabled(true)` doesn't resolve
-  immediately (deliberate, pinned by a test); `with_capacity(usize::MAX)`
-  overflow is pre-empted by the vec capacity check.
-- **phys**: `world_mut()` lets a caller desync `collider_to_entity` — and it has
-  **zero callers in the workspace**, so deleting it is the whole fix;
-  `ThrustForce` fields are pub (unnormalized direction silently scales thrust);
-  negative collider radii bypass the constructors — whose guards are
-  `debug_assert!`, so a release build takes one through the front door too and
-  `Aabb::is_empty` then drops the collider from the BVH; per-tick `Vec<Entity>`
-  in `step` is negligible.
-- **audio/store**: `opfs.rs` write-before-ready can be replaced by a later
-  generation restore — `write` does not gate on `inner.restored` the way
-  `delete` and `list` do, and seeds `(seq, slot)` at `(1, 1)`, so a disk file at
-  a higher generation silently overwrites the newer local write, and `write`'s
-  own doc claims the opposite; `settings.rs get` falls through on a type error
-  in a hand-edited file; `voice_mixes()`/`voice_count()` take the audio thread's
-  mutex (HUD polling can stall audio, and `voice_mixes` allocates while holding
-  it). The QOA saturation claim was **never true**: `prediction` is shadowed by
-  `prediction >> 13` on the line above, so the sum cannot reach the saturation
-  point, and the two places that genuinely rely on C `int` wrapping already use
-  `wrapping_add`/`wrapping_mul` with a comment saying why. This decoder cannot
-  differ from a conforming one on any input.
-- **ui**: `FrameStats::with_window` aborts on a huge caller-supplied window;
-  public float style fields are unclamped (0/negative → inverted geometry);
-  `Text` top-left-anchor holds only for the built-in metrics; trailing-newline
-  labels measure one line too tall; per-frame allocations are documented.
-- **sprite/wl-scanner**: JSON recursion depth (~30-50k nested objects overflow
-  the stack; sidecars trusted); `emit::KEYWORDS` omits `self`/`Self`/`super`
-  (loud compile error, not silent mis-generation) — `union` is contextual and a
-  legal identifier, so that half was never a gap, and the real defect is that
-  `KEYWORDS` _contains_ `"crate"`, which has no legal raw form; `worst_pixels`
-  collects all differing pixels then truncates (up to ~230 MB on an
-  all-different 4K frame); `escape_ident`/`camel_case` collisions name the
-  generated file, not the XML line.
-- **cli/engine**: `channel_order`'s `_ => Rgba` arm would silently mislabel a
-  future non-8-bit format (unreachable today); F11 toggle runs before the
-  `destroyed` check; the pointer hit-test runs before `draw_menu`
-  (one-frame-late menu clicks — **deliberate**: `engine.rs`'s `showing` binding
-  is commented "last frame's menu, deliberately", so this is a wording fix, not
-  a behaviour one); failed `PendingGpuContext`/`GpuContext::finish` drops
-  surfaces without `destroy_surface` (vk cleans up with a warning);
-  `request_open`/ `start_device` accept a (0,0) extent (swapchain creation fails
-  loudly); sandbox `--frames 0` accepted while bare rejects it; sandbox's
-  `--backend` usage text now names every backend and is guarded by a test, but
-  the `ENVIRONMENT` block's `CRCBL_GPU` line still says "(vk, null)" and the
-  guard does not scan it.
-- **apps**: asteroids score is u32 (debug panic after ~43M small rocks); muzzle
-  spawn wraps to the far side at the field edge; fire press during respawn is
-  consumed (no edge buffering); breakout destroys a brick even when not
-  approaching (unreachable with current geometry).
-
-### Coverage
-
-Scope: the whole workspace (clean tree at 050f570). Reviewed in full, per crate:
-`crcbl-net` (+fuzz), `crcbl-server`, `crcbl-client`, `crcbl-shell` (appkit,
-win32, x11, wayland, linux, web, shared), `crcbl-vk`, `crcbl-hal` (+null),
-`crcbl-wgpu`, `crcbl-render` (+tests), `crcbl-core`, `crcbl-ecs`, `crcbl-input`,
-`crcbl-phys` (+tests), `crcbl-audio` (+tests), `crcbl-store` (+web), `crcbl-ui`,
-`crcbl-sprite` (+tests), `crcbl-wl-scanner` (+tests), `crcbl-shaders`,
-`crcbl-golden`, `crcbl-scene` (empty), `crcbl-cli` (+tests), `crcbl` (engine;
-non-test code), and apps asteroids, breakout, sandbox, sim, bare, horde.
-
-GAPS — reported honestly:
-
-- **apps/flappy: reviewed by a sub-agent whose report was never delivered** (the
-  agent twice claimed delivery of a report that never arrived; only a summary
-  fragment was received). The horde finding (45) was independently verified
-  against the code; **flappy's zero-finding verdict is the agent's claim, not
-  independently confirmed** — nothing in flappy was verified by me.
-- **`crates/crcbl/src/engine.rs`'s test module** and
-  `crates/crcbl-ecs/src/{world,schedule}.rs` internals were not read by any
-  review pass. The line range this used to cite no longer points at that module
-  — `engine.rs` has more than doubled since — so the gap has to be re-derived
-  from the file rather than followed.
-- **`crates/crcbl-net/fuzz/corpus/`** binary seeds — exercised via
-  `include_bytes!`, not read as code.
-- **wgpu internals** (the wgpu/wgpu-core dependency) were consulted for specific
-  claims (resolve_target, tight packing, output_buffer_size) but not audited.
-- No build/test run was performed during the review passes (read-only
-  constraint); every finding above is static-verified. The project's CI gate
-  (`cargo fmt/clippy/build/nextest`) was not run as part of this review.
+**The finding this leaves is about the engine, not the samples**:
+`crcbl_ui::hud` has no consumer anywhere in the workspace. It is either owed a
+`color` on `Label` and an optional explicit panel size — at which point the
+samples could adopt it — or it should be deleted. Not decided here, because
+adding a field nothing uses is the speculative-machinery mistake and deleting a
+module is not a call to make inside an adoption task.
 
 ## What MTL1 left open on the Metal backend
 
@@ -19348,194 +12583,6 @@ GAPS — reported honestly:
 - **`DeviceType::Virtual` is unreachable on Metal.** There is no virtualisation
   query, so a paravirtual GPU answers every question exactly as the built-in one
   and enumerates as `Integrated`. Stated as a gap, not fixed.
-
-## Considered and declined: an OpenGL / GLES backend
-
-**Decided 2026-08-05.** GL is a dying support surface and the engine will not
-grow a `crcbl-gl`. The platform matrix is Vulkan for Windows, Linux and Android;
-Metal for macOS and iOS; DX12 for Windows as the second Windows path. Nothing
-else — see the Apple decision below, taken the same day, which closed the
-MoltenVK option this entry originally listed alongside them.
-
-Reasons, so this is not re-argued:
-
-- **GL was already reachable and nobody needed a crate for it.** `crcbl-wgpu`
-  enumerated `wgpu::Backends::all()` and wgpu's default feature set includes
-  `gles`, so a GL device was enumerable through the existing backend — present
-  and unproven rather than supported, since nothing in CI exercised it. **This
-  reason expired on 2026-08-21**: that crate is deleted, so nothing in the tree
-  enumerates a GL device any more. The decision stands on the two reasons below,
-  which are the load-bearing ones.
-- **The blocker is above the seam, not at it.** The renderer targets exactly two
-  tiers, and Tier B is not a low bar: per-batch indirect draws, indexed SSBO
-  lookups, and culling still running in compute. GLES 3.0 has no compute, no
-  SSBOs and no indirect draw — those arrive in 3.1 — so the old hardware GL
-  would be added _for_ cannot reach even Tier B. A Tier C is a renderer change
-  with a third draw-emission path and a third set of golden images, which is far
-  more expensive than the backend crate it would sit under.
-- **GL fights this seam specifically.** No command buffers (the seam hands out a
-  `CommandEncoder` and submits; GL executes immediately), thread-affine contexts
-  against a seam that requires `Device: Send + Sync` on native, no explicit sync
-  to map `pipeline_barrier` onto, and reversed-Z — locked engine-wide — needing
-  `glClipControl`, which is core in GL 4.5 but only an extension on GLES.
-- **It is the wrong tool for mobile anyway.** iOS is Metal-only and has
-  deprecated GL ES since iOS 12; modern Android ships Vulkan. The Android gap is
-  a `crcbl-shell` surface backend, not a HAL backend — `crcbl-vk` already exists
-  and is the best-tested path in the workspace.
-
-## Considered and declined: Vulkan on macOS and iOS
-
-**Decided 2026-08-05. Apple platforms are Metal only.** `crcbl-vk` is not
-expected to run there, MoltenVK is not a shipping path, and the MoltenVK spike
-`docs/plan/09-backends-metal-dx12.md` scheduled as P14's first task **will not
-be run** — the gate it was meant to inform is closed by this decision instead.
-
-What that buys, and what it costs:
-
-- **One macOS path instead of two.** The alternative was shipping on MoltenVK
-  while native Metal caught up, which means two GPU paths to test on the
-  platform with the least CI capacity, and bug reports that begin with "which
-  one were you on".
-- **iOS was never in question.** There is no Vulkan loader or ICD story on iOS
-  at all; MoltenVK is linked directly into the app. Metal is the only path
-  there, so choosing it for macOS as well makes the whole Apple side one
-  backend.
-- **The cost is that `crcbl-mtl` is now load-bearing rather than an
-  optimisation.** Until it can present a frame, macOS has no native GPU path —
-  `crcbl-wgpu` is the only thing that runs, at Tier B. That raises the stakes on
-  MTL3 (first pixel) and MTL5 (swapchain) and is the reason they are the two
-  slices worth watching.
-
-The technical question the spike would have answered is recorded here because it
-is the same question `crcbl-mtl` itself has to answer, and the answer is now
-expected from the Metal side rather than the Vulkan one: `crcbl-vk` demands
-`Features::GPU_DRIVEN` outright rather than degrading, that set includes
-`DRAW_INDIRECT_COUNT`, and `crates/crcbl-vk/src/adapter.rs` reads it straight
-off `VkPhysicalDeviceVulkan12Features`. **Metal has no native indirect-count
-draw**, which is exactly why `crcbl-mtl` reports Tier B today and why MTL6's
-indirect-command-buffer work is what moves it. MoltenVK would have hit the same
-wall from the other side.
-
-One framing note kept because it explains why "the user installs MoltenVK" was
-never the shape this would have taken: MoltenVK ships **bundled with the
-application**. The Vulkan SDK's macOS installer places an ICD for development,
-but a shipped app embeds `libMoltenVK.dylib`. It describes a developer's
-machine, not a player's.
-
-## Confirmed: DX12 stays, alongside Vulkan on Windows, and last
-
-**Decided 2026-08-05**, closing a question that had been half-answered twice —
-`docs/plan/09-backends-metal-dx12.md`'s original text justified DX12 as old-iGPU
-coverage, its 2026-07-27 correction retracted that and substituted the Xbox door
-plus Windows tooling, and neither pass weighed it against simply using
-`crcbl-vk` on Windows.
-
-**Windows keeps both backends. DX12 is never a replacement for Vulkan there.**
-
-### The asymmetry that settles the "instead of" framing
-
-`crcbl-vk` has to exist regardless — it is the Linux path and, per the same
-day's platform decision, the Android one. Windows support falls out of it at
-approximately zero marginal cost, because it is the same code reaching a
-different loader. So dropping Vulkan _from Windows_ saves nothing: the crate,
-its tests and its maintenance all stay. Replacing it with DX12 would pay for a
-new backend to obtain a working path that already exists.
-
-It would also cost the one thing Windows is uniquely placed to give:
-**cross-backend differential debugging on identical hardware.** "Does it repro
-on the other backend?" is reason #1 in `crcbl-hal`'s own argument for dynamic
-dispatch and for compiling two backends into one binary, and Windows is the only
-platform where both can run against the same GPU.
-
-### Why it is still worth building
-
-- **Xbox.** The only item here obtainable no other way.
-- **A GPU device on the Windows CI runner.** Every software-rasteriser job in
-  `ci.yml` is `ubuntu-latest`/lavapipe; `windows-latest` has no device at all,
-  which is why Windows has no golden images and no sample-level render pass.
-  WARP is D3D12's software rasteriser and ships in Windows, so this would be
-  Windows' lavapipe. **Confirmed** — see "WARP clears the bindless bar —
-  measured, 2026-08-05" below.
-- **Robustness against a missing or stale vendor ICD.** D3D12 is part of the OS;
-  Vulkan is not.
-- **Windows-on-ARM**, where D3D12 is first-class and Vulkan is patchier.
-- **PIX and DRED**, and DXGI's waitable swapchain object — a mature answer to
-  the closed-loop frame pacing this backlog already has open, where the Vulkan
-  side needed `VK_KHR_present_wait` (bound in the pinned `ash`) and
-  `VK_EXT_present_timing` (ratified, but not in `ash` at all, so genuine
-  hand-written FFI) — both of which have since landed.
-
-### Why it is last
-
-- It maps near-1:1 onto the Vulkan-shaped seam, so **it finds no HAL leaks**.
-  That is a cost saving and a value reduction at once: Metal is the backend that
-  stresses the abstraction, which is why the plan orders it first.
-- Its value is infrastructure and optionality, not capability. Nothing renders
-  today that it would render better.
-- It is a crate comparable in size to `crcbl-vk`, the largest in the workspace,
-  plus a third shader artifact (DXIL) in `crcbl-shaders` and its manifest, plus
-  another pinned toolchain in the `shaders` job, plus a second Windows path to
-  test permanently.
-
-Ranked below finishing Metal — which after the same day's decision is the _only_
-Apple path — and below an Android surface in `crcbl-shell`, which is the largest
-coverage win available and needs no new HAL backend at all.
-
-## Considered and deferred: console backends
-
-**Decided 2026-08-05. No console support now; open to it if someone asks for
-it.** Nothing is being built speculatively, and nothing in the engine forecloses
-it. The canonical platform matrix is in `docs/plan/01-foundations.md`.
-
-### What each console would actually need
-
-- **Xbox — comes free with DX12.** It is D3D12X through the GDK rather than
-  desktop D3D12, so it is not literally the same backend, but `crcbl-dx12` is
-  the prerequisite and the delta is small. This is already the strongest item in
-  DX12's justification (see the DX12 entry above).
-- **PlayStation — a private crate.** There is no Vulkan on PlayStation, ever.
-  PS5 is AGC (with a GNM compatibility layer), PS4 is GNM/GNMX, and shaders are
-  PSSL. **The blocker is legal rather than technical**: the SDK, its headers and
-  the API's detailed shape are under NDA, and downloading any of it requires
-  licensed-developer status with an approved concept. So it cannot live in this
-  repository and cannot be written speculatively by anyone.
-- **Switch — probably `crcbl-vk` with a shell backend.** It has a working Vulkan
-  driver. NVN is the faster native path and what shipping titles use, but Vulkan
-  is a genuine bring-up route, which makes Switch by far the cheapest console to
-  reach and the only one needing no new HAL backend.
-
-### Why this costs nothing to defer
-
-**The seam is what makes a console backend possible at all.** A closed crate
-implementing the public `crcbl-hal` traits drops into a private workspace as a
-path dependency, with zero changes above the seam — the renderer, ECS, UI and
-every game compile unchanged. That property is already load-bearing for the four
-public backends; consoles just exercise it under an NDA.
-
-AGC is also close to the shape already built: explicit command buffers, explicit
-sync, bindless descriptors, GPU virtual addresses. The Vulkan-flavoured seam is
-roughly right for it, for the same reason DX12 maps near-1:1.
-
-The genuinely new axis is **shaders**. PSSL is HLSL-like and the platform
-toolchain consumes HLSL-ish input, so the path is Slang → HLSL → PSSL — a fourth
-artifact after SPIR-V, WGSL, MSL and DXIL, and the only one whose compiler could
-never run in public CI.
-
-### `BackendKind` would need a variant — and that is not a problem
-
-`crcbl_hal::BackendKind` is a closed enum —
-`Vulkan | WebGpu | Metal | Dx12 | Null` — so a console backend needs a new
-variant (naming a console is not an NDA breach) or a `Custom(&'static str)`,
-because a private crate cannot add one to a public enum it does not control.
-
-**Add it when a console backend actually exists.** This was first written up as
-something to settle before the seam freezes, on the grounds that a new variant
-is a breaking change to a public API. That reasoning does not apply here: the
-workspace is `0.1.0` with no tags, everything so far is unreleased, and the
-project's own convention is that below 1.0 a breaking change bumps the minor.
-Breaking changes are routine and expected, so there is nothing to buy by
-deciding early — and adding a variant nothing implements would be the
-speculative machinery this codebase deletes rather than keeps.
 
 ## What MTL2 left open on the Metal backend
 
@@ -19557,18 +12604,16 @@ genuine sub-rect. The consequence is a real behaviour difference: **a
 `LoadOp::Clear` clears the whole attachment on Metal, where Vulkan clears only
 the render area.** Nothing above the seam depends on it today (the render graph
 always passes the full attachment), so this is latent rather than broken.
-Options, none taken:
 
-1. Document `render_area` as affecting rasterisation only, and require a caller
-   wanting a partial clear to draw one. Cheapest; makes the seam honest about
-   the weaker guarantee.
-2. Have the Metal backend emulate a partial clear with a draw when `render_area`
-   is a sub-rect and the load op is `Clear`. Costs a pipeline in the backend.
-3. Drop `render_area` from the seam entirely and give the encoder a scissor
-   call. Largest change, and closest to what Metal, DX12 and WebGPU all do.
-
-Wants a decision before anything starts relying on the Vulkan behaviour. Both
-backends must then be re-verified.
+**DECIDED 2026-09-06 — option 1, with the scissor.** `render_area` scissors
+rasterisation on every backend, and a `LoadOp::Clear` is whole-attachment on all
+four: Metal and WebGPU cannot do otherwise, and wgpu documents a render pass's
+clears as whole-attachment. Vulkan's partial clear is narrowed to match, so the
+seam promises the weaker guarantee rather than paying for a backend to emulate
+the stronger one with a draw. Work: say so in `RenderPassDesc`'s and
+`LoadOp::Clear`'s docs, narrow `crcbl-vk` to clear the whole attachment, and
+re-verify both backends. The three options as they were written are in
+docs/notes/backends.md under the same heading.
 
 ## What MTL3 left open
 
@@ -19623,74 +12668,6 @@ quarantined draw tests above). What remains:
   composite with alpha, but nothing verified the non-opaque behaviour, so it is
   not offered rather than offered untested.
 
-## The Win32 shell tests share the desktop, and it keeps costing red builds
-
-`hiding_the_cursor_is_balanced_however_many_times_it_is_asked_for` failed the
-`build + test (windows-latest)` leg on 2026-08-05; re-running the same job
-passed clean on a macOS-only commit, so it is environmental — the shared
-runner's foreground being contended — rather than a defect. The assertion is
-doing its job (it fails at the point focus was lost, naming why nothing after it
-can be trusted, instead of asserting against an unfocused window), but it is
-still a red build on an unrelated change, which trains readers to re-run rather
-than read. Options, none taken: retry the focus acquisition with a longer budget
-than 8 attempts; move the focus-dependent assertions into the feature-gated e2e
-suite where `desktop::take_foreground` already pulls the foreground levers; or
-mark the test as allowed-to-retry if nextest's retry support is acceptable here.
-**Third instance, 2026-08-09, and it is a _different test_:**
-`win32::shell::tests::confining_the_pointer_clips_it_and_losing_focus_gives_the_desktop_back`
-failed on `assert!(shell.window_state(window).focused)` — the assertion right
-after `make_foreground` + `send_focus`, before the confine is even attempted. So
-this is not one brittle test but the whole class the backlog already names:
-`ClipCursor` and `SetCursorPos` are foreground-only, several tests arrange the
-foreground to use them, and a shared runner does not always grant it.
-
-It failed on a **revert commit**, whose code was green two commits earlier —
-which is about as clean a demonstration as this gets that it is environmental
-rather than a defect. A re-run of the same job was taken to unblock `main`, and
-that is the third time a re-run has stood in for a decision.
-
-**The decision is overdue, and the options have not changed:** retry the
-foreground acquisition with a longer budget; move the focus-dependent assertions
-into the feature-gated e2e suite where `desktop::take_foreground` already pulls
-the levers; or allow this specific test a retry. Doing nothing means every
-unrelated commit carries a chance of a red Windows leg, which trains readers to
-re-run rather than read — the exact habit that makes a real failure invisible.
-
-**Fourth instance, 2026-08-09, and it is a different _resource_:**
-`win32::shell::tests::an_empty_offer_empties_the_clipboard_and_an_empty_payload_does_not`
-failed on `assert!(!clipboard_is_open())`. So the class is wider than focus —
-these tests use **shared desktop resources** (the foreground, the clipboard) on
-a runner that contends for them.
-
-**The clipboard half is fixed.** That assertion sat at the end of a test and
-meant "our code closed the clipboard", while `clipboard_is_open()` was
-`!GetOpenClipboardWindow().is_null()` — whether **any process** holds it. Its
-scope was wider than its intent, so a foreign process failed it while our code
-was correct. `clipboard_held_by(hwnd)` replaces it, every caller now asks the
-narrower question, and that is both non-flaky and a **stronger** assertion. The
-"nothing is open before we start" precondition was deleted rather than narrowed:
-that test is _about_ contention — it asserts the open was not refused — so a
-foreign holder is the case its retry budget exists for, not a reason to fail
-before starting.
-
-Two failures in one session, both on commits that had nothing to do with
-windowing (a `Revert` and a mesh-shader reland), both cleared by re-running the
-same job unchanged.
-
-**Decided, 2026-08-24, and none of the three options above is what shipped.**
-All of them treat the contention as foreign, and most of it was not: nextest
-runs tests in parallel _processes_, so this suite was contending with itself —
-several of its tests take the foreground, and one of them empties the clipboard
-while a sibling is reading back what it just wrote. `.config/nextest.toml` now
-puts every `win32::shell::tests::` test in a `windows-desktop` test group capped
-at one thread. No assertion was weakened, no retry was added, and no test left
-the default suite.
-
-**What that does not fix** is a foreign process on the runner taking the
-foreground or the clipboard, which is what the tests' own retry budgets are for.
-If the class recurs after this, that is the remaining half, and it is a
-different question from the one this entry was open on.
-
 ## What MTL6 settled, and what it leaves for a decision
 
 Metal's last planned slice. **The backend still reports Tier B**, and the reason
@@ -19706,13 +12683,15 @@ moved rather than went away:
   **Resolved**: `ComputePipelineDesc` carries `workgroup_size`, sourced from the
   `WORKGROUP_SIZE` constant `crcbl-shaders` publishes beside each compute
   shader, so no caller restates a number the `.slang` already declares.
-- **Needs the user: `block2` is now a direct dependency of `crcbl-mtl`.**
-  `objc2-metal` types the `addPresentedHandler:` parameter as a
+
+- **`block2` is a direct dependency of `crcbl-mtl` — DECIDED 2026-09-06,
+  ratified.** `objc2-metal` types the `addPresentedHandler:` parameter as a
   `block2::DynBlock` and re-exports nothing, so the callback the seam needs
-  cannot be written without naming the type. The case is argued next to the edge
-  in `crates/crcbl-mtl/Cargo.toml`. It adds no package to the graph — `block2`
-  was already in `Cargo.lock` as an `objc2` sibling — but a direct dependency is
-  a decision, so it is flagged here for ratification rather than kept silently.
+  cannot be written without naming the type; `block2` was already in
+  `Cargo.lock` as an `objc2` sibling, so the edge adds no package to the graph.
+  The case is argued next to the edge in `crates/crcbl-mtl/Cargo.toml`. Nothing
+  owed.
+
 - **A partially filled bind group leaves its unfilled argument-table slots
   holding whatever the previous bind put there.** Not checked, because
   `update_bind_group` makes create-then-fill a legal pattern. Vulkan leaves the
@@ -19720,20 +12699,9 @@ moved rather than went away:
 
 ## WARP clears the bindless bar — measured, 2026-08-05
 
-The question this file told the DX12 phase to settle is settled: the
-`windows-latest` runner reports
-`ResourceBindingTier=3  HighestShaderModel=6.8 sm66-dynamic-resources=yes` for
-both the DXGI lists and `EnumWarpAdapter`, and `crcbl_dx12::device`'s
-`a_pulled_triangle_is_drawn_by_d3d12_and_read_back_texel_by_texel` has since
-passed there — so WARP supports SM6.6 dynamic resources **and executes a
-shader**, which closes the coverage hole that `windows-latest` has never had
-golden images or a render pass: Windows can have a software rasteriser, the way
-Linux has lavapipe. What that does not cover is hardware: WARP is one
-implementation with one set of tolerances, and no D3D12 code in this workspace
-has run on a GPU. `renderer-tier=B` in the run's lines is the backend's own gap
-— `TIMELINE_SEMAPHORE` waits on a call no slice has written.
-
-Deferred inside DX4, each with what it would take:
+The measurement, the two DX1 decisions a later slice may have to undo, and the
+LUID rule are in docs/notes/backends.md under the same heading. Deferred inside
+DX4, each with what it would take:
 
 - **Register-space mapping is verified for set 0 only.** Every committed shader
   declares `[[vk::binding(N, 0)]]`. **Settled by measurement, and the
@@ -19747,23 +12715,6 @@ Deferred inside DX4, each with what it would take:
   fixed capacity, and `HalError::OutOfDeviceMemory` past it, because a bind
   group's GPU handle is an address inside the heap it came from. A real
   suballocator is a slice of its own.
-
-Two things DX1 decided that a later slice may have to undo:
-
-- **`DESCRIPTOR_INDEXING` is reported ahead of a call** — the opposite of what
-  `crcbl-mtl` ended up doing, deliberate because `adapters()` is where the WARP
-  question is asked, so the flag has to be derivable before any device exists.
-  The binding slice must withdraw it if D3D12 bind groups cannot deliver a
-  runtime-sized array, exactly as Metal's did.
-- **`driver` comes from `CheckInterfaceSupport(IID_IDXGIDevice)`**, documented
-  as a Direct3D 10 interface check, with a fallback string when it refuses. WARP
-  is the adapter most likely to refuse it; if the CI line shows the fallback on
-  real hardware too, the field needs a different source.
-
-**Do not write a LUID into code or an assertion.** DXGI's `AdapterLuid` is
-per-boot — two CI runs reported different LUIDs for the same two adapters. It is
-an identity _within_ one enumeration and nothing more: fit for de-duplicating a
-list, unfit for a fixture, a golden value or a comparison across runs.
 
 ## `Format::ALL` cannot be made airtight on stable
 
@@ -19788,32 +12739,13 @@ except that there an exhaustive `match` in the test forces an author who adds a
 variant to visit the file — which is the mitigation `Format` cannot have,
 because its list lives in a different crate from its consumers.
 
-## Only `null` enforces pass scoping, and that is the design
-
-**Not a defect in `crcbl-vk`, and worth saying so before someone fixes it.**
-`begin_compute_pass` checks only whether a compute pass is already open, and
-`begin_render_pass` only whether a render pass is — so a compute pass opened
-_inside_ a render pass, or the reverse, is accepted, and `dispatch` checks no
-scope at all. The null recorder rejects every one of those as `NestedPass` or
-`OutsidePass`.
-
-That asymmetry is what `CommandEncoder`'s own documentation asks for. It lists
-the scoping rules — including "passes do not nest" — and then says a backend
-**may assume** they hold, naming `crcbl_hal::null` as the one that checks them
-so the graph's unit suite can catch a violation without a GPU. `crcbl-vk` is
-conformant; `null` is the reference.
-
-The checking half is guarded: `crcbl-hal`'s `null::tests` asserts `NestedPass`
-for a compute pass opened inside another, and `OutsidePass` at three more sites.
-No test asserts the _absence_ of a check in `crcbl-vk` — that would pin a gap in
-place if the design ever changed.
-
-Recorded because it is the second place the mock is stricter than the backend it
-models, after the cross-instance surface bug, and that pattern is worth watching
-rather than rediscovering.
-
-The illegal _commands_ are still caught by the validation layer at record time.
-The illegal _pass bookkeeping_ is caught nowhere.
+**DECIDED 2026-09-06 — a declarative macro, when `Format` next grows.** The enum
+and `ALL` are generated from one source by a `macro_rules!`, so a variant
+appended to the enum cannot miss the list; no proc-macro dependency is taken for
+it. Precedent: a declarative macro is the stable-Rust answer to an
+enum-and-its-list pair, and this workspace declines proc-macros elsewhere for
+the same reason. Work: fold the pair into one macro invocation the next time a
+variant is added, not before.
 
 ## Vulkan's cross-submission barriers need CI's layer, not CI
 
@@ -20003,30 +12935,8 @@ arithmetic (host-testable, and its tests run on any `cargo test`);
 New gaps and deferrals from the planning session. The plan docs carry the
 decisions; these are the things nobody has done.
 
-### Deferred: browser multiplayer over WebRTC
-
-**The only route that survives the no-infrastructure constraint**, and it is
-recorded rather than refused so the decision is reopenable.
-
-Data channels with **manually exchanged connection codes**: peer A creates the
-connection, waits for ICE gathering to complete so candidates are embedded in
-the SDP, and the compressed base64 of that is a "code" pasted to peer B, who
-answers with one of their own. No signalling server. It maps onto topic 23's
-channel semantics **better than WebSocket would have** — DataChannel offers both
-ordered-reliable and unordered-unreliable, so the unreliable channel survives.
-
-Against it: a third transport to maintain; a JS shim owning `RTCPeerConnection`
-(the same `extern "C"` shape `crcbl-audio`'s web module already uses, so no
-`wasm-bindgen` in any crate); a code that is hundreds of characters rather than
-a room code; two round trips of copy-paste with both players in live contact
-elsewhere; two peers realistically, since full mesh is N(N−1) exchanges; STUN
-needed off-LAN and TURN needed behind symmetric NAT, which is the part that
-costs money. Free public STUN is plentiful and the Open Relay Project offers a
-free TURN tier.
-
-**Do not fold it into bracket** — manual pairing is the antithesis of
-matchmaking. If it is ever built it wants its own small sample whose subject is
-the transport seam over a third transport shape.
+The deferred browser-multiplayer-over-WebRTC route is in
+docs/notes/simulation.md under its own heading.
 
 ### Coverage gaps and unbuilt things the plan assumes
 
@@ -20095,19 +13005,8 @@ the transport seam over a third transport shape.
 
 ### Metal compute works, confirmed on hardware
 
-`ComputePipelineDesc` carries `workgroup_size`, `crcbl-mtl` implements
-`bind_compute_pipeline`/`dispatch`/`dispatch_indirect`, and the macOS CI job ran
-all three new tests on a real device:
-`a_compute_dispatch_writes_the_values_it_ was_asked_for`,
-`an_indirect_dispatch_reads_its_workgroup_count_from_the_buffer` and
-`the_compute_pass_opens_an_encoder_and_its_calls_fail_only_as_themselves` all
-PASS (112 tests run, 6 skipped). **Compute is no longer a Vulkan-and-wgpu
-capability.** `indirect_count` is a separate Metal refusal and still stands.
-
-The 6 skipped are the pre-existing draw tests that fault on that runner
-(excluded by name in `.github/workflows/ci.yml`) — unrelated to compute, but
-worth knowing the device is not fully healthy before reading any green macOS
-run.
+The confirmation run and the six pre-existing draw tests that fault on that
+runner are in docs/notes/backends.md under the same heading. What it leaves:
 
 **A wrong workgroup size is caught on Vulkan and nowhere else.**
 `crcbl_vk::spirv::require_workgroup_size` reads `OpExecutionMode … LocalSize`
@@ -20116,86 +13015,10 @@ declares no thread count, which is why the field exists). Safe only while every
 compute shader is also run under Vulkan, which is true today and will not always
 be.
 
-### Settled: `setDepthStencilState(nil)` hung every Metal draw
-
-**Found by bisect, fixed in `8e40f55`.** For months every draw `crcbl-mtl`
-recorded hung on GitHub's macOS runner with
-`kIOGPUCommandBufferCallbackErrorHang` while render-pass clears succeeded, and
-six tests were quarantined for it. Two hypotheses were wrong before this one.
-
-The final round: ten probes, each the known-good hand-encoded pass plus exactly
-one call, with a known-red and a known-green control. **7 passed, 3 failed**,
-and the three failures are precisely the ones passing `nil` to
-`setDepthStencilState:`. Its twin — same selector, real state object — passed,
-as did `setCullMode`, `setFrontFacingWinding`, `setTriangleFillMode`,
-`setDepthClipMode` and `setDepthBias:slopeScale:clamp:` individually.
-
-**The fix makes `None` unrepresentable** rather than substituting at the bind
-site: a pipeline without depth-stencil state holds a default object the device
-builds once at open, so nothing in the crate can produce nil and the type says
-so. Every descriptor field is set explicitly — `Always`, no depth write, `Keep`
-on all three stencil outcomes — because `objc2-metal` is a generated binding
-that documents no defaults, and guessing them would trade a hang for wrong
-pictures.
-
-Things worth carrying out of this investigation:
-
-- **Three hypotheses, two wrong, and both wrong ones were "what's left standing"
-  arguments.** The render-target format and the long draw forms were each the
-  last candidate after eliminating others. What settled it was a _controlled
-  comparison_ — one call reproducing the hang and its near-identical variant not
-  — rather than an elimination.
-- **The bug was invisible to every picture-based test by construction.** All six
-  replay calls are image-neutral for a pipeline with no culling and no depth
-  attachment. No golden could ever have caught it; only a device that faults.
-- **Carry a known-red and a known-green control in any bisect** whose baseline
-  would otherwise be a previous log. Without them "everything passed" cannot be
-  distinguished from "the runner changed".
-- The probes were deleted once they answered. A diagnostic that keeps running
-  after it has reported is noise in the next run's signal.
-
 ### Vulkan on Windows: the loader ignores its environment when elevated
 
-**The cause, in the loader's own words** (`44bdf32`, with `VK_LOADER_DEBUG=all`
-finally on the right job):
-
-```
-[Vulkan Loader] INFO: Loader is running with elevated permissions.
-                      Environment variable VK_DRIVER_FILES will be ignored
-                      … VK_ICD_FILENAMES will be ignored
-                      … VK_ADD_DRIVER_FILES will be ignored
-                      … VK_LAYER_PATH will be ignored
-[Vulkan Loader] ERROR | DRIVER: vkCreateInstance: Found no drivers!
-```
-
-**GitHub's Windows runners run elevated, and the Vulkan loader discards every
-environment-variable driver and layer path when the process has elevated
-privileges** — deliberately, so a lower-privileged caller cannot inject a DLL
-into one. `VK_DRIVER_FILES` was set correctly the entire time and the loader was
-throwing it away by design. No shell and no path form was ever going to work:
-neither the `cygpath -w` fix nor the move to `pwsh` could have mattered.
-
-**The fix is registry registration** — `HKLM\SOFTWARE\Khronos\Vulkan\Drivers`
-for the ICD and `…\ExplicitLayers` for the validation layer, each a `DWORD 0`
-named by the manifest's full path. That is where a normally-installed driver
-registers itself and what an elevated loader still reads.
-
-**`CRCBL_VK_EXPECT_ADAPTER` is now the only thing that can prove which driver
-answered**, since the pin no longer works through the environment. It was worth
-building for exactly this.
-
-Three rounds of diagnosis went to two causes that were real but not sufficient
-(the `C:/…` path form; variables not crossing from Git Bash) and one that was
-never measured at all — see the retraction below. **The loader could have said
-this on round one.** `VK_LOADER_DEBUG` cost one line and answered immediately
-once it was set on the job being debugged.
-
-**Retracted, and the error was mine:** an earlier version of this entry
-concluded "a loader ignoring its own debug switch is not reading its
-environment". The switch had been inserted by matching the first step named
-`Run the suite against lavapipe`, and both the Linux and Windows jobs have a
-step with that name, so it landed on Linux. That conclusion was drawn from a
-variable never set on the job it described.
+The loader's own diagnosis, the registry fix and the retraction are in
+docs/notes/ci.md under the same heading. What is left:
 
 **Still unknown after this fix:** whether the goldens hold.
 `Tolerance::RASTERISER` was calibrated radv-versus-one-lavapipe and this is a
@@ -20204,127 +13027,14 @@ second, Windows Mesa build — unmeasured between two lavapipes.
 **Owed:** `run-vk-e2e.ps1` and `run-vk-e2e.sh` are two harnesses over one suite,
 and their guards are duplicated knowledge that will drift.
 
-### Metal draw coverage in CI: what the ecosystem does
-
-Researched 2026-08-10, because "is this just us?" was worth answering before
-buying hardware. It is a real and widely-hit gap, but **it is not our failure**
-— see the entry above.
-
-- **GitHub's own position**: "Add support for Metal in macOS images" is an open
-  discussion; a GitHub staff reply says _"There is no ETA for now but it's on
-  our radar."_ Real GPU passthrough for hosted macOS runners is an open feature
-  request.
-- **Godot hit the paravirtual device too**, differently: it aborts with
-  `-[AppleParavirtDevice newArgumentEncoderWithLayout:]: unrecognized selector`
-  on `Apple Paravirtual device (Apple5)`. Closed unresolved; the reporter asked
-  only for a graceful error. So the device is genuinely feature-poor — but ours
-  fails on draws it demonstrably supports.
-- **The asymmetry that matters for the plan**: Linux and Windows both have
-  software rasterisers CI can install — lavapipe, which we already use, and
-  **WARP** on Windows. macOS has no equivalent, which is why this gap is
-  macOS-shaped rather than general.
-
-**The consequence this named was acted on.**
-`crates/crcbl-dx12/tests/run-dx12-e2e.sh` runs on `windows-latest` pinned to
-WARP, which is the D3D12 software rasteriser closing that gap the way lavapipe
-closes Vulkan's. macOS still has no equivalent, which is the whole of what makes
-this gap macOS-shaped.
-
-### Settled: the render layer runs on all four backends
-
-**D3D12 drew the cube frame on `4907b7e`**, and with the tightest golden match
-of any backend:
-
-```
-dx12 selected IndirectCount / Bindless / Rasterised
-device on adapter 0 "Microsoft Basic Render Driver" type=Cpu (CRCBL_ADAPTER=cpu)
-golden cube on dx12 — 256x192: max channel delta 1, 0 over tolerance (0.0000%),
-ssim 0.999879
-```
-
-So `render_e2e.rs` now passes on **Vulkan, Metal and D3D12** and the step is a
-real gate — the `continue-on-error` is gone. The fourth backend reaches the same
-goldens by a different road: `crcbl-webgpu` has no native binary to run this
-suite from, so `pages.yml`'s `render-harness` job renders every scene in a real
-browser and compares it against the same committed references. One golden,
-blessed on lavapipe, matched by four independent implementations. (It read
-"Vulkan, native wgpu, Metal and D3D12" until `crcbl-wgpu` was deleted on
-2026-08-21; the count did not change, the fourth name did.)
-
-The two causes, both found by asking the device rather than reasoning about it:
-
-1. **A constant buffer view outran its buffer.** D3D12 requires a CBV's
-   `SizeInBytes` be a multiple of 256; `crcbl-dx12` rounded the _view_ up while
-   the allocation stayed 16 bytes. The allocation is padded now, only for
-   `UNIFORM` usage.
-2. **Three draw-generation buffers were on an upload heap and bound writable.**
-   D3D12 refuses `ALLOW_UNORDERED_ACCESS` on that heap at creation and pins the
-   resource to a state no shader can write from. They are `DeviceLocal` now, and
-   the frame zeroes them with a clear dispatch.
-
-**The second was not a D3D12 bug at all** — it was a compromise this file had
-already recorded under GPU-driven draw generation, kept because `fill_buffer` is
-legal only outside a pass and the graph had no fill step. Vulkan tolerated it
-for months. Worth remembering: **a portability compromise that one backend
-accepts is not a compromise, it is a latent failure with a delay on it.**
-
-Also settled by that work: a graph-level fill was the obvious fix and the wrong
-one. `fill_buffer` is four separate backend promises — Metal repeats a byte,
-wgpu clears only to zero, `crcbl-dx12` refuses it entirely — so it would have
-moved the blocker one call later. A dispatch's portability is held by
-construction.
-
-**Two follow-ups this leaves:**
-
-- ~~The `dx12 e2e (WARP)` job is misnamed~~ — renamed to
-  `dx12 e2e (software adapter)`. `CRCBL_ADAPTER=cpu` selects the single
-  `DeviceType::Cpu` adapter, and on that runner it is **Microsoft Basic Render
-  Driver** rather than WARP. Naming the job after a specific implementation
-  claimed something the pin never asked for.
-- ~~`crcbl-dx12::fill_buffer` wants recording as a deliberate non-fix~~ — done,
-  at the refusal itself. D3D12's fill needs a shader-visible descriptor heap
-  this backend does not create, and nothing in the workspace needs it now that
-  the counters are cleared by dispatch. A caller who wants it should say why a
-  dispatch will not do.
-
 ### What WARP has actually proven
 
-Worth separating from what is merely implemented, because this backend is
-written blind and only CI ever executes it.
-
-Proven on hardware:
-
-- Compute dispatch, indirect dispatch, and a workgroup size refused for
-  disagreeing with the container's `[numthreads]`.
-- **Indexed draws, indirect draws, and indirect-count draws reading a GPU-side
-  count** — all four passed on `c4e8655`.
-- The root-signature register fix, implicitly: `compute_probe`'s pipeline could
-  not have been created at all under the old `[[vk::binding]]`-derived rule.
+What it has proven, the three times the "still unimplemented" test rotted, and
+the lesson that came out of it are in docs/notes/backends.md under the same
+heading. What is left:
 
 Not proven on any device: dynamic offsets, offscreen surfaces, and a recorded
 frame.
-
-**A rot to expect, and it has now happened three times.** `c4e8655` reddened
-WARP on
-`the_metal_slices_that_have_not_arrived_still_refuse_and_name_themselves` — a
-test asserting the unimplemented calls still answer `Unsupported` — because
-three of them had just started working. The Metal mesh slice reddened it again
-on 2026-08-20, and the counter-query slice emptied it entirely on 2026-08-21:
-its last two members were `QueryKind::Timestamp` and
-`QueryKind::PipelineStatistics`, and with those implemented the list had nothing
-in it.
-
-It is now `the_query_slice_refuses_for_the_device_or_builds_the_object`, which
-asserts **both** arms against what the device reports rather than asserting an
-absence: a machine carrying the counter set must build the object, one without
-it must refuse naming `counterSets`. That shape cannot rot the same way, because
-implementing something does not falsify it.
-
-**The general lesson, which cost three red runs to learn:** a test whose subject
-is "this is not implemented yet" is a test that fails on success, and it runs
-only on the platform that can implement it — so the failure always arrives from
-CI, never locally. Prefer asserting what a call _does_ on each side of a
-capability to asserting that it does nothing.
 
 Also: `crcbl-dx12`'s crate docs still say bind groups and pipelines refuse,
 which the code contradicts.
@@ -20375,13 +13085,16 @@ is bit-identical through it. What is not settled:
 
 - **Dead instance slots.** `InstancePool::remove` does not rewrite the element
   and the pass iterates `0..instance_count`, so a removed slot is culled on
-  stale contents. The liveness bit wants to be `GpuInstance::flags`, which is
-  still reserved and defines nothing. Today the count is the caller's problem.
-- **No compute-only differential harness for `cull.slang`.** Every browser demo
+  stale contents. The liveness bit is `GpuInstance::LIVE`, which `crcbl-shaders`
+  now defines alongside `BASE_VERTEX_OVERRIDE` and the `MATERIAL_MODE_*` field —
+  so the word exists and the pass does not read it for this. Today the count is
+  still the caller's problem.
+
   dispatches `cull.wgsl` now that `DrawGen` consumes the survivor list, so the
   pass does execute under WGSL — but only as part of a rendered frame, compared
   as pixels. Nothing compares the pass's own output across backends, and that
   harness will be wanted again for every later compute pass.
+
 - `cull.slang` **re-declares** `GpuInstance` and `GpuMesh` because the compile
   script hashes one source per artifact and there is no shared header. A drift
   test compares the field lines of both files; a shared-include mechanism would
@@ -20409,31 +13122,6 @@ after.
   binding added to `mesh.slang` has to be mirrored there. A second hand-built
   copy of a layout is the kind of thing that drifts; worth folding into a shared
   test helper the next time either moves.
-
-### Settled: base vertex and base instance never reach a shader
-
-Recorded because it is a rule for every future shader here, and because it is
-the first time the differential render gate caught a real divergence rather than
-a hypothetical one.
-
-`SV_VertexID` and `SV_InstanceID` mean **different things per target**, measured
-rather than assumed: SPIR-V subtracts `BaseVertex`/`BaseInstance` (HLSL's
-meaning), DXIL passes them through with D3D12 excluding both bases, and WGSL and
-MSL index raw builtins that _include_ them. A pooled mesh at a non-zero base
-vertex therefore rendered a correct pyramid through wgpu and a corrupted slab
-through Vulkan — one source, two pictures — and `run-cross-backend-e2e.sh`
-failed on it at 10.09% of pixels with a structural mismatch.
-
-**The rule: every draw passes zero for both bases, and the real values arrive in
-a per-draw constants block.** Zero is the one value all four lowerings agree on,
-so nothing in the picture depends on how a target lowers a builtin.
-`sprite.slang` reached the same conclusion independently for its own case; this
-makes it the pattern rather than one shader's workaround.
-
-The gate only caught it because `Scene::Cube` was changed to draw a second mesh
-at a non-zero base. **A path nothing exercises is a path the gate cannot see** —
-which is the general form of this and worth remembering before trusting any
-green run over content that does not use the feature.
 
 ### Owed by the mesh-shader path
 
@@ -20638,92 +13326,21 @@ the shared one and no fix to it reaches them. `run-vk-e2e.ps1` and
 is the sharpest version of the problem: one suite, two guards, one of them
 shared and one of them a copy.
 
-**The option, stated and not taken: make the Windows harnesses bash and delete
-the `.ps1` copies.** It is demonstrably possible for at least one of them —
-`crates/crcbl-dx12/tests/run-dx12-e2e.sh` runs on `windows-latest` today, and
-its "Why bash, when `run-win32-e2e.ps1` argued for PowerShell" section argues
-that the Git Bash that image ships has `mktemp`, `tee`, `sed` and `grep`, that
-GitHub Actions' `shell: bash` selects it, and that what bash buys is guards
-`shellcheck` and a Linux developer can exercise, which matters because nobody on
-this team has a Windows machine.
-
-Against it, from those files' own headers:
-
-- `run-win32-e2e.ps1` chose `pwsh` because it starts nothing and needs nothing a
-  Windows shell lacks: `windows-latest` boots into a session with a window
-  station and a desktop, so unlike the Wayland and X11 harnesses there is no
-  compositor to launch, and `mkfifo` and `trap EXIT` — the two things those
-  harnesses need bash for — mean nothing on Windows. Porting it would buy the
-  shared guard and nothing else.
-- `run-vk-e2e.ps1`'s reason is a measurement rather than a preference, and it is
-  the strong one. `run-vk-e2e.sh` **was** the Windows harness, for three CI
-  runs, and the Vulkan loader never saw its environment. Two real causes were
-  found and fixed on the way (the manifest reaching the loader in Git Bash's
-  `C:/…` form, and exported variables not reaching a native child), and the
-  loader still reported
-  `windows_read_data_files_in_registry: Registry lookup failed`. Its conclusion
-  is that a native process launching a native process is the only shape with no
-  environment translation in it.
-
-**Correction to the premise this entry was raised under:** `run-vk-e2e.ps1` does
-_not_ register an ICD in `HKLM`. What it does is resolve `CRCBL_VK_ICD` to a
-native path, fill in `VK_DRIVER_FILES`/`VK_ICD_FILENAMES` when nobody else set
-them, walk `PATH` for `vulkan-1.dll`, dump those variables one process from the
-loader, and run `vulkaninfo`. The `HKLM:\SOFTWARE\Khronos\Vulkan\Drivers` and
-`…\ExplicitLayers` writes are in `.github/workflows/ci.yml`, in the job step
-that extracts lavapipe — and stay PowerShell whichever shell the harness is
-written in.
-
-That correction cuts both ways, which is why the call needs a measurement rather
-than a re-read. The workflow's own comment says GitHub's Windows runners are
-elevated and that the loader **discards every environment path when the process
-is elevated**, deliberately, which is why HKLM is what actually selects lavapipe
-there and `CRCBL_VK_EXPECT_ADAPTER` is the only thing that proves which driver
-answered. If that holds, the environment-translation argument for `pwsh` is no
-longer load-bearing on the runner it was written for: nothing the harness
-exports selects the driver either way. Verifying that is a CI run, not a
-reading.
-
-What was verified here: the two `.ps1` guards' regexes and their cancelled and
-zero branches; that `run-dx12-e2e.sh` is bash on `windows-latest` in `ci.yml`;
-that the HKLM writes are in the workflow and not in either harness. What was
-not: whether `run-vk-e2e.sh` under Git Bash would pass on that runner today,
-which only a CI run can answer.
+**DECIDED 2026-09-06 — keep the two PowerShell copies.** Porting the Windows
+harnesses to bash buys the shared guard and risks the one thing that was
+measured rather than preferred: `run-vk-e2e.sh` **was** the Windows harness for
+three CI runs and the Vulkan loader never saw its environment. Precedent: a
+native process launching a native process is the shape with no environment
+translation in it. Work: add a test that runs both the bash and the PowerShell
+regexes against the same fixture lines — `tools/nextest-summary-test.sh` gains a
+pwsh leg on the Windows job — so the two copies cannot drift silently. The
+argument on both sides, and the correction to this entry's premise, are in
+docs/notes/ci.md under the same heading.
 
 ## Test-file names: what the rename slice left, and one rename declined
 
-The naming slice took `docs/plan/12-testing.md`'s "filenames name the subject,
-never the taxonomy tier" and applied it to nine files. What it could not close,
-and one thing it deliberately did not do:
-
-**`crates/crcbl-shell/tests/appkit_session.rs` is not renamed to `appkit_e2e.rs`
-— considered and declined.** By subject it is the macOS member of the family
-`wayland_e2e.rs` / `x11_e2e.rs` / `win32_e2e.rs` belong to: a real WindowServer,
-a real window, injected input. But in this workspace the `_e2e` suffix carries a
-second meaning beyond the subject — every other file wearing it opens with a
-crate-level `#![cfg(all(target_os = …, feature = "…-e2e"))]`, carries
-`#[ignore]`, and is driven by its own harness script. `appkit_session.rs` has
-none of that, and cannot: `.github/workflows/ci.yml`'s AppKit step records that
-this target is the AppKit backend's _only_ executable coverage, so putting it
-behind a gate would leave the backend with none by default. A name promising a
-switch nobody has to throw is the more expensive error — the reader goes looking
-for the feature that enables it and concludes it is off. The file's `//!` header
-now argues this under "Why it is not called `appkit_e2e`", so the question does
-not get re-opened from the filename alone. If the suffix ever stops implying a
-gate, the rename becomes correct and the header is where to look.
-
-**The stale path references this entry listed are all fixed** — verified
-2026-08-23: `broadphase.rs` and `docs/plan/12-testing.md` name
-`crates/crcbl-phys/tests/broadphase_churn.rs`, `forces.rs` names
-`crates/crcbl-phys/tests/dynamics.rs`, and `crcbl/src/engine.rs` names
-`crates/crcbl/tests/seam_from_outside.rs`. Each was prose in a code span rather
-than an intra-doc link, which is why `cargo doc` stayed green throughout and
-nothing but a reader was ever misled.
-
-- The review cited `crates/crcbl-server/tests/integration.rs:15` and
-  `crates/crcbl-audio/tests/orbit.rs:191`; both files are gone (the first
-  replaced by `client_server_session.rs`, the second by `spatial_chain.rs`).
-  Settled by deleting the review — see the aggregated section above.
+The declined `appkit_session.rs` rename and the stale path references that are
+now fixed are in docs/notes/process.md under the same heading. What is left:
 
 **Test _names_ inside these files were not touched.** `docs/plan/12-testing.md`
 records six crates as drifted below the prose-sentence-name convention —
@@ -20767,39 +13384,6 @@ the two are the _same obligation_ asked of the null backend and of every real
 one, so the shared name arguably reads correctly and the collision is cosmetic.
 What is not defensible is the paragraph above claiming the collision does not
 exist.
-
-### The first-triangle milestone is four different claims, not one written four ways
-
-Recorded because the opposite is the obvious guess and unifying the four names
-would flatten a real difference. All four were read end to end:
-
-- `crcbl-mtl`'s
-  `a_metal_triangle_draw_paints_the_centre_and_leaves_the_corners_clear` draws a
-  hand-written MSL triangle with **no bindings at all** — geometry from
-  `[[vertex_id]]`, a fragment shader returning the `INK` literal — and
-  `assert_ink_triangle` checks that the centre texel is exactly the ink colour,
-  all four corners exactly the clear, and every other texel is one of those two.
-  `ink_msl`'s own doc says why it is not the engine's shader: pulling vertices
-  needs bind groups.
-- `crcbl-dx12`'s
-  `a_pulled_triangle_is_drawn_by_d3d12_and_read_back_texel_by_texel` runs the
-  engine's `crcbl_shaders::triangle` through an SRV over a storage buffer, and
-  `assert_triangle_drawn` asserts three fixed probes are red-, blue- and
-  green-dominant and that each probe's channels sum to full scale — the
-  barycentric property that catches a wrong element stride.
-- `crcbl-vk`'s `a_triangle_pulled_from_a_vulkan_storage_buffer_reaches_memory`
-  makes the same pulled-vertex claim but derives its probes from the geometry
-  (75% of the way from centroid to each vertex) rather than fixing pixel
-  coordinates, and adds a centre-blend assertion for interpolation.
-- `crcbl-vk`'s `the_vulkan_triangle_matches_its_golden_image` is the P1
-  golden-image gate against `tests/golden/triangle.png` at
-  `Tolerance::RASTERISER`.
-
-So the flat-colour coverage check, the two dominance checks and the golden
-compare are four distinct assertions; only the backend qualifier was missing and
-only that was added. What is genuinely absent is a golden-image gate on Metal
-and D3D12 — `crates/crcbl/tests/render_e2e.rs` is the backend-agnostic golden
-and covers whole scenes, not the triangle.
 
 ## What the mtl/dx12 `#[ignore]` placement slice left open (2026-08-10)
 
@@ -20872,105 +13456,9 @@ anything except the harness. A lint would have to know which helpers open a
 device, which is the same trace this slice did by hand; recorded as a gap rather
 than attempted.
 
-### What the non-backend test-name rename left behind
-
-The prose-sentence rule in `docs/plan/12-testing.md` was applied to every test
-name of three words or fewer outside the backend crates. Measured with a
-`#[test]`/`#[tokio::test]` extractor over the whole tree: 138 such names before,
-1 after. The `debug_format` bullet and the `ray_misses_aabb`, `decode_empty`,
-`decode_truncated`, `debug_output` and `debug_formatting` copies named in "Exact
-test-name collisions still open between non-backend crates" above are resolved;
-the rest of that entry's list still stands.
-
-- **Closed: the stranded `orbit_integration_deterministic` citation.** The test
-  is `an_orbit_hashes_the_same_twice_and_differently_in_reverse` in
-  `crates/crcbl-audio/tests/spatial_chain.rs`; the old name exists nowhere. The
-  review that cited it was wrong in three ways at once by the end — the path (an
-  `orbit.rs` that no longer exists), the name, and the finding itself, which
-  said the test XORs per-block hashes and is order-insensitive when it feeds one
-  hasher in block order and asserts the reversed order hashes _differently_.
-  Deleting the review closed all three.
-
-  **The method is the part worth keeping.** It was found by sweeping every
-  backticked symbol in this file against the tree — a check
-  `tools/check-doc-citations.sh` does not make, since it resolves paths and not
-  names. That sweep is worth re-running after any rename: it also caught
-  `draw_pause_menu`, deleted long before the entry naming it.
-
-- **The four `the_workgroup_size_matches_the_numthreads_the_shader_declares`
-  copies and the three `the_params_block_matches_the_offsets_slangc_emits`
-  copies in `crcbl-shaders` now name their shader** — read end to end first, and
-  they are one contract instantiated per shader, not one claim written several
-  ways: each reads its own `.slang` source, or asserts its own `PARAMS_SIZE` and
-  field offsets. That is the same situation `docs/plan/12-testing.md` describes
-  for the backend crates, where the fix is to differ by the one word that names
-  what is under test. Renaming them meant editing the `PARAMS_SIZE` doc comments
-  in `cull.rs`, `clear_counters.rs` and `draw_gen.rs`, which cite the test by
-  name; those three doc-comment lines are the only non-test text the rename
-  touched.
-- **Same-crate duplicate names in `crcbl-render` were left alone**:
-  `a_pool_leaks_nothing` and
-  `a_pool_error_flattens_into_the_seams_without_losing_its_message` each exist
-  in both `instance_pool.rs` and `mesh_pool.rs`. Both are prose sentences
-  already, so they were outside the rename's criterion, but a grep for either
-  finds two tests over two different pools and nothing in the name says which.
-  Naming the pool in each would close it.
-- **Not re-examined:** the 4-to-6-word names that already read as claims but are
-  thin — `sweep_removes_dead_entities`, `t_values_are_correct`,
-  `element_ids_are_preserved` and their neighbours in `crcbl-phys` and
-  `crcbl-net`. The rename's cut was at three words, so these were never read;
-  whether they state what the body asserts is unmeasured, not judged fine.
-
-### The duplicate-name census, and why most of it stays
-
-Measured 2026-08-22 by extracting the `fn` after every `#[test]` in the tracked
-Rust and grouping by name: **4882 test functions, 4691 distinct names, 115 names
-carried by more than one test.** Grouping each duplicated name by the crate or
-app its copies live in:
-
-- **53 across the sample apps** —
-  `a_paused_game_shows_the_pause_menu_and_nothing_else` in all four of
-  `asteroids`, `breakout`, `flappy` and `horde`,
-  `the_art_bakes_to_the_sheets_it_declares` in the same four, and so on.
-- **35 inside one crate, across its modules** — `crcbl-shell`'s `appkit` and
-  `win32` halves account for most of them (`control_characters_are_not_text`,
-  `two_windows_resizing_do_not_collapse_into_each_other`), `crcbl-jobs`'
-  `assert_send` across four containers for the rest.
-- **21 spanning unrelated units**, listed below.
-- **6 across the GPU backends**, which `docs/plan/12-testing.md` already
-  governs.
-
-**So the great majority is deliberate parallel structure and renaming it would
-be a loss, not a fix.** One contract instantiated per sample, per platform half
-or per container is exactly the shape that should share a name: the name is the
-contract, and making the copies differ by a suffix would hide that they are the
-same claim. This is the opposite conclusion from the `crcbl-shaders` rename
-recorded above, and the difference is real — those copies each read a
-_different_ source file and asserted _different_ offsets, so one name over
-several claims was wrong there.
-
-**What the duplication does cost** is already recorded under "Declined:
-extending the citation gate from paths to symbols": a bare test name quoted in
-prose does not identify a test, and `cargo test <name>` runs all the copies.
-That is the price of the parallel structure and is accepted.
-
-**The residue worth a second look** — pairs that share a name by coincidence
-rather than by contract, where the two tests assert unrelated things:
-
-- `every_index_is_in_range` — `apps/quarry/src/face.rs` and
-  `crcbl-shaders/src/mesh.rs`.
-- `every_normal_is_unit_length` — `apps/quarry/src/face.rs` and
-  `crcbl-greybox/tests/greybox.rs`.
-- `the_entry_points_answer_zero_until_a_source_is_installed` —
-  `crcbl-audio/src/web.rs` and `crcbl-store/src/web/fetch.rs`.
-- `the_sections_labels_are_its_own` — `crcbl-render/src/counters.rs` and
-  `crcbl-ui/src/budget.rs`.
-
-None is a defect and none is scheduled; they are named so the next sweep does
-not have to re-derive which of the 115 are accidents. The other 17 mixed groups
-are contract-sharing after all — the sample apps against `crcbl-ui`'s own menu
-tests, `crcbl-client` against `crcbl-server`, `crcbl-hal` against
-`crcbl-shell`'s matching error convention.
+What the non-backend test-name rename left behind, and the duplicate-name census
+that explains why most of the 115 shared names stay, are in
+docs/notes/process.md under the same headings.
 
 ### Fixed sleeps left in tests the assert-nothing slice did not own
 
@@ -21096,79 +13584,6 @@ in place.
   question is whether the plan's rule reaches it; the other seven have no such
   argument.
 
-## Decisions taken 2026-08-10, so they are not re-argued
-
-Each of these was a question the coverage audit raised and left open. They are
-answered here rather than carried, with the reasoning, so a later session can
-disagree with the argument rather than rediscover the question.
-
-### Decided: device loss surfaces, it does not self-heal
-
-The engine will not recreate the device. `HalError::DeviceLost` propagates and
-the loop stops with an error naming it.
-
-Recreation means rebuilding every resource the frame graph, the pools and the
-renderers hold, on a code path that by construction almost never runs — the
-classic shape of a recovery path that is broken when it is finally needed.
-Surfacing it is honest, testable in one assertion, and leaves the harder policy
-available later for whoever has a real reason to want it. A game that wants to
-survive a lost device can restart the engine; nothing in the samples does.
-
-**Implemented and pinned.** `Recorder::lose_device` reports a device as gone and
-keeps it gone, and `a_lost_device_stops_the_driven_loop_with_an_error_naming_it`
-in `crates/crcbl/src/engine.rs` drives `drive` over a real `GpuContext` on it:
-the run ends on the frame that hit the loss, with the driver's own message, with
-its frame budget unspent and with no rebuild attempted. The last of those is
-asserted off the `hal: reconfiguring the swapchain to ` log line rather than off
-the recorder, because a rebuild that failed records no event — so an engine that
-never tried and one that tried and was refused look identical in the stream, and
-those are exactly the two policies this entry chose between.
-
-### Declined: minimum-count floors on the e2e harnesses
-
-Both backend harnesses now select `--run-ignored only`, so the number they guard
-on is the device-test count — 70 on the Metal runner and 73 on the D3D12 one,
-measured. The zero-count guard still passes a selection that collapsed from 73
-to 3.
-
-A floor would catch that, and it is **not** being added: any threshold below the
-real number is arbitrary, and a threshold equal to it fails CI every time a
-device test is added, which trains people to bump it without reading. The counts
-are printed by both harnesses and visible in the run log, and the classification
-that produces them is now documented in `docs/plan/12-testing.md`. Revisit if a
-collapse ever actually happens — at that point the floor has evidence behind it
-instead of a guess.
-
-### `crcbl-dx12` has no timeline-semaphore test because it has no timeline semaphore
-
-Recorded so it is not mistaken for a coverage gap. `crcbl-vk` and `crcbl-mtl`
-each have
-`a_<backend>_timeline_semaphore_signals_from_a_submission_and_the_cpu_sees_it`;
-D3D12 has none because the feature is unimplemented there, not because the test
-was forgotten.
-
-## The owner tag cannot separate two owners whose tags collide
-
-Found while implementing the seam's third obligation in `crcbl-wgpu`, deleted
-2026-08-21. The finding is about every backend that carries the side table
-rather than about that crate, which is why it outlives it.
-
-**The slot's `u64` cannot separate owners whose tags collide.** True of
-`crcbl-vk`, `crcbl-mtl` and `crcbl-dx12` for the same reason: every pool holds
-exactly one owner's rows, so a foreign handle that gets past the tag lands on a
-row the _looking-up_ owner filled, the id agrees, and the lookup succeeds. The
-id half is what catches a shared pool and what stops `handle::remove` from
-taking a row this owner does not own — it is not a second line of defence
-against a colliding tag, and a test written to claim it was failed and said
-otherwise. The hole opens only after `OWNER_TAG_COUNT` owners in one process.
-
-**Owner tagging is a hand-written copy per backend, and extracting it was
-declined.** Each backend spells the same idea itself, which is duplicated
-knowledge that will drift. Pulling it into `crcbl-hal` is the obvious move and
-was deliberately not taken while the existing copies work; revisit when a
-backend has to grow a fresh one, which is the point at which the duplication
-stops being tolerable.
-
 ## What the three-scene `render_e2e` does and does not prove
 
 `docs/backlog.md`'s "Decided: the four-backend compare is more scenes in
@@ -21178,13 +13593,13 @@ golden under `crates/crcbl/tests/golden/`. What follows is what that run did not
 settle.
 
 **Metal and D3D12 remain unverified.** Both goldens were blessed on lavapipe and
-both hold bit-identically on `CRCBL_GPU=vk` and `CRCBL_GPU=wgpu` against the
-same ICD, which is the only cross-target evidence obtainable on a Linux machine.
-The `mtl-e2e` and `dx12-e2e` jobs are the first time `sprite.slang` and
-`ui.slang` will be compared against anything on MSL or DXIL, and nobody has seen
-those frames. A large pixel delta there is a tolerance question; a structural
-mismatch or a failed slot assertion is a finding about the backend. The
-comparison prints enough to tell them apart, and
+hold bit-identically on `CRCBL_GPU=vk` against that ICD; the `CRCBL_GPU=wgpu`
+half of that evidence no longer reproduces, because `crcbl-wgpu` was deleted on
+2026-08-21. The `mtl-e2e` and `dx12-e2e` jobs are the first time `sprite.slang`
+and `ui.slang` will be compared against anything on MSL or DXIL, and nobody has
+seen those frames. A large pixel delta there is a tolerance question; a
+structural mismatch or a failed slot assertion is a finding about the backend.
+The comparison prints enough to tell them apart, and
 `every_sprite_slot_is_painted_and_the_gaps_are_not` is the assertion that names
 the `SV_InstanceID` failure mode directly rather than as a summary number.
 
@@ -21240,17 +13655,20 @@ kind's layers are still all one extent. Real content does not look like that.
 See "The base-colour page is still `ArrayPages`" below for what stands between
 here and the bindless form.
 
-**glTF base-colour and normal import landed; metallic-roughness and emissive are
-still unimported.** `crcbl-scene`'s `gltf_render` decodes the `baseColorTexture`
-of every material that names one, resamples them onto the base-colour page's own
-square extent (its largest image, clamped to `MAX_PAGE_EXTENT`) with an
-alpha-weighted box filter in linear light, and hands back a `PageDesc` sized per
-kind plus the per-material layer indices. `GpuMaterial::NO_PAGE` is what a
-material with no texture — or one that would not decode — keeps, so the surface
-shades by its factors rather than black, and every skip is logged. What is not
-imported is everything the single texture column cannot hold: metallic-roughness
-and emissive maps, each of which needs a page of its own for the reason the
-first bullet gives.
+\*\*glTF base-colour and normal import landed; metallic-roughness and emissive
+are
+
+**glTF import now reaches all four page kinds.** `crcbl-scene`'s `gltf_render`
+decodes the `baseColorTexture` and `normalTexture` of every material that names
+one, and since 2026-09-06 the `metallicRoughnessTexture`, `occlusionTexture` and
+`emissiveTexture` too — resampled onto each page kind's own square extent (its
+largest image, clamped to `MAX_PAGE_EXTENT`) with an alpha-weighted box filter
+in linear light, handed back as a `PageDesc` sized per kind plus the
+per-material layer indices. `GpuMaterial::NO_PAGE` is what a material with no
+texture — or one that would not decode — keeps, so the surface shades by its
+factors rather than black, and every skip is logged. What the columns still
+cannot hold is a second UV set (`uv1` is reserved and unwritten) and
+`occlusionTexture.strength`; both are recorded under the §2 rung entries above.
 
 **A material is a start-up write.** `MaterialTable` is one host-visible buffer
 with no ring — the mesh table's shape, not `InstancePool`'s — because nothing
@@ -21263,33 +13681,8 @@ two callers that coalesce runs rather than one that writes single rows.
 
 ## The debug-overlay retrofit: what was rejected, and one engine doc that is now stale
 
-Breakout, flappy and asteroids now contribute `DebugModule` sections
-(`BoardStats`, `CourseStats`, `FieldStats`, plus `DebugModule for Audio` on
-flappy and asteroids), wired through `HostedGame::debug_sections` the way
-horde's `SceneStats` already was. What was considered and left out:
-
-- **Breakout has no audio section.** `breakout::audio::Audio` keeps no counter
-  at all — no `plays`, no `dropped` — so a row would have meant adding state to
-  the game for the panel's benefit. Rejected on those grounds. If breakout ever
-  grows a `plays` vector the way flappy's did, the section is three lines.
-- **Ball speed was the only invisible breakout number.** `GameLogic::ball_speed`
-  is the difficulty ramp and nothing displayed it; everything else breakout
-  knows (score, lives, state, high score) is already in `HudStrings`. A
-  `paddle`/`ball x,y` row was considered and dropped as a number the player can
-  see.
-- **Asteroids does not repeat the wave.** `HudStrings::refresh` already draws
-  `Wave: {wave + 1}`, and two numbers on screen under the same word that differ
-  by one is worse than one.
-- **No entity count for breakout.** It would have meant a new
-  `Game::entity_count` accessor, and breakout does not churn: it spawns the grid
-  once and despawns bricks until a restart respawns them. Flappy and asteroids
-  both already had the accessor because both are churn samples.
-- **Four audio modules, four different facts — deliberately not shared.** Horde
-  reports `dropped` (it is the only sample with a `MAX_VOICES` cap), flappy two
-  cue counts plus live voices, asteroids three cue counts plus whether the held
-  engine loop is sounding, breakout nothing. The `label: value` shape is common;
-  the knowledge is not, and the samples are separate binaries, so extracting one
-  would mean a new crate or a change to `crcbl-ui`.
+What was considered and left out of the retrofit is in docs/notes/samples.md
+under the same heading. What is not fixed:
 
 Two findings that are **not** fixed:
 
@@ -21333,52 +13726,9 @@ horde 3 028 644, which is the measurement this entry said was worth having.
 Four things that slice found in the shared web tooling and did not fix, none of
 them hud's:
 
-- **Settled: Chrome 151 broke the browser gate, and it was a device mismatch,
-  not a readback quirk.** This entry predicted the failure and it arrived
-  exactly as described — GitHub's runner moved from Chrome 150.0.7871.128 to
-  151.0.7922.108 between `4eb0d65` (Pages green) and `77fa401` (Pages red),
-  group A went red for all five demos at once, and the deploy was **skipped**
-  rather than failed, which is the shape that hides a broken publish.
-
-  The cause: a WebGPU canvas is handed between two devices — Dawn renders into
-  it and Chromium's compositor reads it back for `toDataURL` — and those must be
-  the same Vulkan implementation. `--use-webgpu-adapter=swiftshader` moves
-  **only Dawn**; the shared-image device stayed on whatever the machine had, and
-  on 151 the hand-off fails. The snapshot was therefore **uninitialised memory
-  rather than black** — decoding the raw PNG outside the browser gave 2427
-  distinct colours, almost all at alpha 0, which is why it decoded as
-  `rgb(0,0,0)`. Chromium said so in its own stderr:
-  `ReadPixels: Source shared image is not accessible` and
-  `CopyTextureForBrowser from [Invalid Texture]`.
-
-  The fix is `--enable-features=Vulkan --use-vulkan=swiftshader` in
-  `browserFlags`, pointing the shared-image device at SwiftShader too. Neither
-  flag works alone, and `--use-angle=swiftshader` does **not** substitute — it
-  is specifically Chromium's shared-image Vulkan device that has to match
-  Dawn's. Nothing about how pixels are read changed: `toDataURL` was never the
-  problem, and the control and every render check still read through the same
-  path.
-
-  **It was never confined to the control.** With group A bypassed, the real
-  breakout demo failed identically at its own canvas size with 16 device errors.
-  The control was faithfully representing group D, which is its whole purpose.
-
-  **No browser pin.** The gate passes on 151, and the control is what turned a
-  silent regression into a loud one — a pin would have hidden this rather than
-  fixed it.
-
-- **An unexplained workaround, found and deliberately not used.** Creating a 2D
-  canvas in the page _before_ the WebGPU context and reading it back with
-  `toDataURL` also makes the SwiftShader readback work, with the old flags.
-  Priming it after the fact does not work, the mechanism is unexplained, and it
-  would have to be injected into every demo page. Recorded only in case the flag
-  fix stops working.
-
-- **Xvfb + `--hardware` reads transparent black on this machine** and loses the
-  WebGPU device mid-run, on Chromium 151 with an RX 7900 XTX under RADV. It is
-  harmless because `auto` falls through to SwiftShader — which is also what CI
-  does, since the runner has no GPU at all — but a developer who passes
-  `--hardware` under Xvfb gets a confusing failure. Not investigated.
+The Chrome 151 readback investigation, the unexplained 2D-canvas workaround and
+the `--hardware`-under-Xvfb behaviour are in docs/notes/browser.md under the
+same heading.
 
 - **No standing regression guard for the null adapter.** Nothing patches
   `requestAdapter` to resolve `null` and asserts the message a visitor would
@@ -21514,139 +13864,6 @@ any implementor that is not `Send`.
 **Not reviewed:** budgets. The registry has no size cap, no eviction and no
 limit on how many loads can be outstanding; `poll` walks every `Loading` entry
 every call, which is fine for tens and unmeasured for thousands.
-
-### Accepted: CI will not have a real Metal GPU, and that is not a task
-
-Recorded as a decision so it stops reading as work somebody could pick up.
-
-GitHub's hosted macOS images expose an `Apple Paravirtual device`. Real GPU
-passthrough is an open feature request on their side with no date, so no amount
-of work in this repository changes it. The options that would are a self-hosted
-runner or a Mac in somebody's office, and both are a standing cost for a gap
-that is narrower than it first looks.
-
-**What the paravirtual device does cover**, and this was itself a correction —
-it was long assumed to run no shaders at all, generalised from macos-14, the one
-image whose `MTLCreateSystemDefaultDevice()` returns nil. macos-15 and macos-26
-run compute dispatches and triangle draws correctly, `macos-latest` resolves to
-macos-26, and the Metal suite's device tests pass there. The render e2e draws
-every scene on it and matches goldens blessed on lavapipe.
-
-**What it does not cover**, stated so nothing implies otherwise: a discrete or
-unvirtualised Apple GPU, and anything a real driver does that a paravirtual one
-does not. `crates/crcbl-mtl/tests/run-mtl-e2e.sh`'s header already says this and
-should keep saying it. Metal has no software rasteriser, so unlike Vulkan
-(lavapipe) and D3D12 (WARP) there is no second implementation to cross-check
-against — the cross-backend comparison is the substitute, and it is weaker
-because it compares Metal against a _different API_ rather than against a second
-Metal.
-
-The mitigation is the one already in place: a person on a real Mac can run
-`run-mtl-e2e.sh` unchanged, and that remains the only thing that covers a
-non-virtual GPU. Nothing else is owed here.
-
-### The split comparator: what CI has to confirm, and what was declined
-
-The scoring split landed — `Tolerance` carries `gross_channel_delta: 24` and
-`max_gross_ratio: 0.001` beside a `max_failing_ratio` relaxed to 0.01, and
-`compare` counts each pixel against both thresholds on its one existing visit.
-What is left is verification nobody here can run, plus the alternatives that
-were tried on paper and rejected, so they are not re-proposed.
-
-**Not verified locally, and CI is the only verdict: the two frames the bound is
-sized against.** Neither backend runs on this machine.
-
-- **D3D12 / WARP's sprite scene** — 76 pixels of 49 152 over the delta at up
-  to 13. It now clears the drift budget by 6.5× where it used to clear one ratio
-  by 3.2×, and its 13 is under `gross_channel_delta`, so it scores nothing at
-  all on the gross budget. The exposure is the second of those: if a future
-  sprite scene puts WARP's edge disagreements past delta 24 on more than 0.1% of
-  the frame, D3D12 goes red where the old ratio passed it. Delta 13 on an edge
-  texel is a function of the contrast across that edge, not of driver quality,
-  so a higher-contrast sprite could plausibly reach it. Nothing measured has.
-- **Metal's cube on a paravirtual device** — 2 pixels at delta 207, 0.0041%.
-  This is the one legitimate frame that scores on the gross budget at all, and
-  it sits 24× under it. At 97×61, the smallest size the gate runs at, that
-  budget is five pixels.
-
-Both are pinned by fixtures in `compare.rs`'s tests
-(`warps_sprite_edges_pass_and_are_what_the_ratio_is_sized_against`,
-`the_worst_measured_cross_backend_frame_still_passes_with_room_to_spare`) that
-reproduce the reported per-pixel numbers, so a future tightening argues with a
-test. A fixture is not the frame, though: it reproduces the counts and deltas,
-not the pixels.
-
-**The one place this is looser than what it replaced.** A frame with between
-0.5% and 1% of its pixels off by 3 to 24 levels was refused by the 0.005 ratio
-and passes now. That band is empty in every measurement across vk, wgpu, dx12
-and metal, and the alternative is leaving WARP 3.2× from a false alarm on the
-backend nobody here can debug. Recorded because it is a real trade, not a free
-win: the criterion the split had to meet was more room on **both** sides, and
-more room on the legitimate side necessarily means a looser drift budget.
-
-**Declined: a budget on `mean_abs_error`**, which is the shape this entry used
-to propose and which the data refutes. P1.3's HDR frame is legitimate at 0.2284
-mean abs error — 91% of the frame off by one level, a quantisation boundary the
-whole background lands on — and the sprite recolour that must fail is 0.0734.
-Any total-error budget loose enough for the first passes the second by a factor
-of three, whichever way it is normalised, because total error cannot tell a
-level spread over the frame from a patch that is badly wrong. Separation has to
-be on **per-pixel magnitude**, which is what a second delta threshold does.
-Restricting the sum to pixels already over `max_channel_delta` does work — it
-separates WARP from the recolour by 16× — but only 4× on each side, which is
-under the bar the split had to clear, and it costs a metric nothing else reads.
-
-**Declined: scoring how _localised_ the differing pixels are.** It is the real
-physical difference — WARP's 76 are scattered along quad edges, the recolour's
-361 are a 19×19 block — and `differing_bounds` already computes a box. It was
-not built because metal's legitimate 2 pixels are adjacent, so density does not
-separate that pair; because a real bug need not be contiguous; and because it
-needs a second traversal or a running per-region accumulator where the two delta
-thresholds cost one comparison inside the existing loop. If the gross budget
-ever proves too blunt, this is the next idea, not a new ratio.
-
-**Worth keeping from the entry this replaces:** the original derivation was
-built from a table of per-backend figures that did not include D3D12's sprite
-scene, because that number had never appeared in a log anybody had read. It was
-not wrong about the data it had. That is the ordinary shape of a bound
-calibrated on the backends that are easy to measure, and the reason the Metal
-and D3D12 jobs upload their diffs.
-
-### Re-affirmed: no Vulkan on macOS, and two facts the original decision lacked
-
-`docs/plan/09-backends-metal-dx12.md`'s 2026-08-05 correction made Apple
-platforms Metal-only and cancelled the MoltenVK spike. It was reconsidered on
-2026-08-11 and **kept**. The plan doc still carries the reasoning; this records
-the reconsideration so the question is not opened a third time, and two things
-found while costing it that the original argument did not use.
-
-**`crcbl-vk` cannot enumerate a portability driver at all.** There is no
-`VK_KHR_portability_enumeration`, no `ENUMERATE_PORTABILITY_BIT_KHR` on the
-instance create flags, and no `VK_KHR_portability_subset` handling anywhere in
-`crates/crcbl-vk/src/`. Without those, `vkEnumeratePhysicalDevices` returns zero
-devices on macOS whether or not MoltenVK is installed. So "install MoltenVK and
-it works" was never true — it is a code change first, and a small one, but it
-means no macOS Vulkan support exists to accidentally regress.
-
-**MoltenVK runs on Metal, so a macOS Vulkan CI job adds no GPU coverage.** It
-would exercise `crcbl-vk`'s portability against the same paravirtual device
-`crcbl-mtl` already uses, not a second driver. That is worth something — it
-would have tested the capability model's degradation, since MoltenVK has neither
-`DRAW_INDIRECT_COUNT` nor `VK_EXT_mesh_shader` — but it is not the independent
-coverage a second backend usually buys, and the original decision's cost (two
-GPU paths on the platform with the least CI capacity) stands unchanged against
-it.
-
-**If it is ever revisited, the tooling question has a trap in it.** `ash-molten`
-statically links MoltenVK and would make a bare `cargo build` sufficient, but it
-bypasses the Vulkan loader, and with no loader there are no validation layers —
-which `crcbl-vk`'s harness asserts the presence of by design, because a suite
-that passes for want of a layer proves nothing. The configuration that keeps
-that guarantee is the LunarG SDK, which ships MoltenVK, the loader and the
-layers together. Downloading any of it from a `build.rs` was considered and is
-the wrong mechanism regardless: it breaks `--offline` and sandboxed builds, runs
-in every job including the ones that need nothing, and is invisible to the
-`cargo deny` gate this workspace already has.
 
 ### glTF import: what the first half left, and what it found upstream
 
@@ -21861,48 +14078,9 @@ and cancelling the rest — the depth probe's layout, not the renderer's.
 layouts not. Nothing below the GPU seam checks a bind-group layout's visibility
 against the module bound to it.
 
-### What the probe found, which is not what it was pointed at
-
-**Every one of the four targets emits the flat qualifier**, read out of this
-crate's own regenerated artifacts with slangc 2026.14: SPIR-V decorates both
-sides `Flat`, WGSL writes `@interpolate(flat) @location(3)`, MSL puts `[[flat]]`
-on the fragment's `[[stage_in]]` struct — which is where Metal reads it, not the
-vertex output struct — and DXIL's input signature lists `TEXCOORD 0` as
-`nointerpolation`. No divergence to report.
-
-**Dropping `nointerpolation` does not make a golden go red, and cannot.** Tried
-it, on both backends that run here:
-
-- **SPIR-V repairs it.** Slang drops `Flat` from the vertex _output_ but keeps
-  it on the fragment _input_, which is the decoration that decides
-  interpolation, so `vk` draws a bit-identical frame:
-  `golden cube on vulkan — 256x192: 0 pixel(s) differ at all (0.0000%)`.
-- **WGSL refuses it**, and does so before any frame — naga rejects the module
-  with "`@interpolate(flat)` must be explicitly specified for integer I/O". That
-  is caught by `crcbl-shaders`' own
-  `wgsl_validation::every_committed_wgsl_artifact_validates` on a machine with
-  no GPU, which is a better gate than a golden anyway.
-
-**And the cube scene could not detect a wrong interpolation _mode_ even if one
-existed**, which is worth knowing before trusting it for the next varying. The
-material id is constant across every primitive — all three vertices of a
-triangle belong to one instance — so flat and linear interpolation of it agree
-by construction, and there is no "fragment between two vertices" that could
-resolve a third row. What `nointerpolation` actually buys here is what
-`sprite.slang`'s `sheet.z` note says it buys: an exact integer instead of one
-that arrived through a float unit and truncates a row early.
-
-**What the golden does detect is a fragment resolving the wrong row**, which is
-the failure a texture fetch would produce and the reason the scene's two
-pyramids are in unlike colour families. Pinned by making the fragment stage read
-a fixed `materials[0]` and rendering:
-`256x192: 4105 pixel(s) differ at all (8.3516%), max channel delta 105, 4105 over tolerance (8.3516%), mean abs error 2.0736, rmse 11.1112, ssim 0.991305 — failed: TooManyDifferingPixels`,
-the same line on `vk` and on `wgpu`.
-
-**`msl` and `dxil` were not rendered.** Nothing here runs Metal or D3D12, and
-they are the two whose lowering this probe least exercises. Their artifacts were
-read and carry the right qualifier; CI is the only thing that can say the frame
-does too.
+What the probe actually found — that all four targets emit the flat qualifier,
+that dropping `nointerpolation` cannot redden a golden, and what the cube scene
+can and cannot detect — is in docs/notes/rendering.md under the same heading.
 
 ### D3D12 allow-list: two entries, and what retires each
 
@@ -21933,18 +14111,7 @@ runtimes accept a zero in a classic `D3D12_SAMPLER_DESC` rather than filing
 nothing here can test, and the CI runner being Windows Server 2025 would prove
 nothing about older ones. Settle that and this entry goes.
 
-### Verified, not a problem: the D3D12 info queue does not leak across tests
-
-Recorded so it is not re-investigated. `debug::read_queue` reads from index 0
-and never clears, which looks like it would let one test's messages fail
-another's teardown. It does not: every device test opens its own `ID3D12Device`
-through `device::tests::open_device`, and `debug::attach` clears _that device's_
-queue at creation, so a report means "since this device was created" by
-construction. Evidence: in run 31454155654, message 597 — the gate's own
-deliberate violation — appears exactly once, inside the expected panic of the
-test that raises it, and that test passed.
-
-## DECISION NEEDED — bindless is a Vulkan-only path now, so what does P7 owe?
+## Bindless is a Vulkan-only path now, so what does P7 owe?
 
 `docs/plan/03-gpu-driven-rendering.md` §3.2's texture half is implemented as one
 `Texture2DArray` page — `crcbl_render::forward`'s `base_color_page`, bound at
@@ -21976,46 +14143,26 @@ deliver: a page is one image, so its layers share an extent, a format and a mip
 count. Real imported content does not. Every option below is judged on whether
 it lifts those three.
 
-**Option A — implement `BindingModel::Bindless` as a second, Vulkan-only path.**
-Selected by `caps.binding_model()`, so a WebGPU run keeps `ArrayPages`. Cost: a
-descriptor array with a runtime bound, `BindingFlags::VARIABLE_COUNT` and
-`BindGroupDesc::variable_count` used for the first time, a per-material index
-that is a descriptor slot rather than a layer, a second `mesh.slang` arm, and
-two paths that must render the same frame — a new cross-path observable on top
-of the cross-backend one. Lifts all three constraints, on Vulkan only. Against:
-it is the only place in the renderer where the two active backends would run
-structurally different shading code, and the browser — the platform whose
-content is most likely to be imported — is the one that does not get it.
+**DECIDED 2026-09-06 — option C: several `ArrayPages`, bucketed by size class.**
+One `Texture2DArray` binding per bucket in `mesh.slang`, with
+`GpuMaterial::base_color_texture` splitting into a bucket and a layer, so the
+frame stays one code path on both active backends and the existing cross-backend
+goldens keep their meaning. Precedent: size-class atlas buckets are what an
+engine without a bindless floor uses, and `BindingModel::Bindless` stays a seam
+capability with no renderer path (option A is refused: the browser is the
+platform whose content is most likely to be imported and it is the one that
+could never take that path). Long-term, sparse virtual texturing — a page cache
+plus an indirection table — is the WebGPU-compatible answer to "any texture";
+recorded, not scheduled. Work, in order: **measure first** — how many distinct
+extent/format/mip classes the shelf glTFs produce, and what the samples and
+`crates/crcbl/tests/render_e2e.rs` fixtures feed the page today — then set the
+bucket count from that number and check it against a real adapter's reported
+`maxSampledTexturesPerShaderStage` (`mesh.slang` already declares eight sampled
+bindings and WebGPU's default limit is 16, so the headroom is the narrow half of
+this).
 
-**Option B — leave `ArrayPages` and re-scope P7's row.** Strike the bindless
-page from P7's owed list, keep the capability declared and exercised by
-`hal_seam_e2e`'s `exercise_bindless_descriptor_array` (which is a seam test, not
-a renderer path), and say in the row that the renderer is `ArrayPages` on both
-active backends by choice. Cost: nothing built; the three constraints stay, so
-imported content still has to be conformed to one page. Honest, and it leaves
-the engine unable to draw a scene whose textures differ in size.
-
-**Option C — several `ArrayPages`, bucketed by extent/format/mip class.** One
-`Texture2DArray` binding per bucket in `mesh.slang`, and
-`GpuMaterial::base_color_texture` splits into a bucket and a layer. Lifts the
-same three constraints for any content that falls into one of the buckets, needs
-no descriptor arrays, and runs identically on both active backends — so the
-frame stays one code path and the existing cross-backend goldens keep their
-meaning. Against: the bucket count is fixed when the shader is compiled, not at
-runtime, so this is "N size classes", not "any texture"; content outside every
-bucket still has to be rescaled or re-encoded. The ceiling is the
-sampled-texture limit — WebGPU's default `maxSampledTexturesPerShaderStage` is
-16 and `mesh.slang` already declares eight — base colour, the shadow atlas,
-ambient occlusion, the specular DFG table, normal maps, the LTC matrix table,
-contact shadows and probe visibility — which has not been checked against a real
-adapter's reported limit, and which makes option C's headroom the narrower half
-of the argument rather than an afterthought.
-
-**Not yet measured, and it would decide between B and C:** what the samples and
-`crates/crcbl/tests/render_e2e.rs` fixtures actually feed the page today, and
-how many distinct extent/format/mip classes an imported glTF scene produces.
-Nobody has counted. C is only worth its bindings if that number is small and
-stable.
+The three options as they were argued are in docs/notes/backends.md under the
+same heading.
 
 ## What the shadow LOD bias left, and two stale docs
 
@@ -22055,47 +14202,8 @@ sample could ever have fired. `HostedGame::pointer_event` and the routing in
 `Loop::frame_body` are new. Worth remembering as a shape: "the events arrive"
 was true and told us nothing about whether anything consumed them.
 
-### Decisions taken
-
-- **`Binding::PointerPosition { axis }` feeding an `Axis1`**, normalised to the
-  surface at −1…+1 with +X right and +Y up. Not an `Axis2`, which would put a
-  _place_ in the same value shape as `Binding::Wasd`'s _direction_ — handed
-  `(0.5, 0.0)` a consumer cannot tell "half way right" from "moving right at
-  half speed". The pixel→normalised step happens once in the engine loop; the
-  surface→world step stays in the game, because the play field is not the
-  canvas.
-- **An absolute binding replaces the relative ones within one `Axis1`** rather
-  than summing: a place plus a rate is neither.
-- **The pointer wins on the tick it moves; the keyboard owns every other tick.**
-  A resting mouse is not a command, so arrow keys still work on a desktop with a
-  cursor over the field, and a lifted finger has not asked for anything. That is
-  what `Axis1Action::pointer_moved` exists for — the edge an absolute source has
-  and a relative one does not.
-- **A pointer that leaves keeps its last position.** A leave carries no
-  coordinate so nothing is fed to the map at all, which is why the paddle stays
-  put instead of walking to the middle on every tap — a touch pointer is
-  destroyed on `pointerup`, so a lift is a leave.
-- **Breakout's launch is bound to the pointer too.** A lost life returns to
-  `WaitingForLaunch` with no menu on screen, so without it a phone could move
-  the paddle and never serve again.
-- **The viewport meta is unchanged and zoom is not suppressed.** `layout.html`
-  is shared with every prose page, iOS Safari has ignored `user-scalable=no`
-  since iOS 10, and `touch-action: none` on the canvas already kills double-tap
-  zoom — which is the actual complaint. Suppressing it would be an accessibility
-  regression that does nothing on the platform it targets.
-
-### Three touch bugs the survey did not predict
-
-All were real, all are fixed, and all three are invisible to a mouse:
-
-- **`pointercancel` was unhandled.** The OS taking over a gesture leaves the
-  button down forever, and a held button raises no _edge_ — so the tap silently
-  stops working.
-- **Non-primary contacts were forwarded** into a seam with no contact ids, so a
-  second finger read as the first one teleporting.
-- **A tap that opened and closed inside one pump dropped its release** — which
-  on a phone is every tap. The first tap worked and the second did nothing.
-  Found by writing the test first and watching it fail.
+The decisions taken and the three touch bugs the survey did not predict are in
+docs/notes/browser.md under the same heading.
 
 ### What is left
 
@@ -22121,9 +14229,15 @@ All were real, all are fixed, and all three are invisible to a mouse:
 - **Both pointer defects were fixed in the web shim, and both are really the
   engine's seam.** A release that arrives with a leave, and a cancel that names
   no button, are what any touch platform does — an Android or iOS backend would
-  hit the same two. The durable fix is in `PointerCapture::resolve` and
-  `Pending::observe`, not in `shell.js`. **Decision wanted** before a native
-  mobile backend is attempted.
+  hit the same two. **DECIDED 2026-09-06 — fix them in the seam:**
+  `PointerCapture::resolve` treats a release-with-leave as a release, and
+  `Pending::observe` remembers the button that went down so a cancel naming
+  `button: -1` still releases it. Precedent: the Pointer Events specification
+  makes both of these the platform's normal behaviour, so a per-backend
+  workaround would be written once per backend. Work: move both fixes out of
+  `web/engine/shell.js` into `crcbl-shell`'s pointer handling, keeping the
+  shim's behaviour identical.
+
 - **`touch-action` coverage is Chromium-under-emulation, not a phone.** The
   check is behavioural rather than a stylesheet read — with the declaration
   overridden to `auto` the same drag delivers 1 move of 8, raises a
@@ -22233,11 +14347,14 @@ All were real, all are fixed, and all three are invisible to a mouse:
   `7ce0f2b`'s decision and stayed untouched. A contact is the menu's only if its
   `Began` latched a button, one at a time, and the contact carrying the emulated
   pointer is skipped — without that skip a one-finger tap fires twice.
-- **That primacy is re-derived in the loop rather than carried by the seam**:
+
+- **Contact primacy is re-derived in the loop rather than carried by the seam**:
   the contact down while no other is, which is the Pointer Events rule the shim
-  already documents. **The durable alternative is a `primary` flag on
-  `ShellEvent::Touch`**, which touches `crcbl-shell` and `shell.js`. Worth a
-  decision.
+  already documents. **DECIDED 2026-09-06 — `ShellEvent::Touch` gains
+  `primary`**, so the platform's own answer is carried rather than
+  reconstructed; it touches `crcbl-shell` and `shell.js`. Precedent: the browser
+  already computes primacy and every touch platform has the notion.
+
 - **Horde's in-frame HUD still says "WASD to move" on a phone.**
 - **`web/engine/shell.js` is the one web file prettier would rewrite**, and it
   was already so before any of this work — `demo.js`, `style.css` and the
@@ -22607,32 +14724,9 @@ Still open, and not touched here:
 
 ## Where the Windows vk e2e leg's time goes, and the one measurement nobody has taken
 
-The leg is 4.39x the Linux one (142.05s against 32.35s over the same 95 tests),
-read out of the two jobs' logs. Inside that:
-
-- **GPU time is at parity.** The same four-frame test measures 8.856 ms of GPU
-  work on Windows against 7.629 ms on Linux while wall time is 7.4x apart, so
-  four frames of GPU work is 1.7% of that test's runtime and ~98% of a rendering
-  test's cost on Windows is host-side, on every recorded command. The
-  inter-frame gaps are flat (1.927, 1.904, 1.656, 1.643 s), which rules out
-  one-time shader JIT.
-- **The loader's debug output is not the cost.** 2035 occurrences of the
-  package-scan line, 19 per test; a 421-line test completes in 0.075s on Windows
-  against 0.086s on Linux. `VK_LOADER_DEBUG: all` is deliberate and the reason
-  is written above it in `ci.yml` — leave it on.
-- **Serial execution was a large part of it, and is fixed.** Both harnesses
-  passed `--no-capture`, which hands the test binary the real stdio and so
-  silently forces one thread: nextest printed
-  `warning: ignoring --test-threads because --no-capture is specified` on every
-  run of both legs, making the `--test-threads 1` beside it dead. Both now pass
-  `--success-output immediate` instead. Measured locally on this workstation,
-  from the suite's own summary line: lavapipe 9.786s -> 1.439s, radv 7.753s ->
-  1.193s.
-- **The other harnesses' `--test-threads 1` is effective and deliberate.**
-  `run-cli-e2e.sh`, `run-wayland-e2e.sh`, `run-x11-e2e.sh` and
-  `run-win32-e2e.ps1` pass it _without_ `--no-capture`, so nextest honours it —
-  `run-win32-e2e.ps1`'s header says why. The one harness that carried the same
-  dead pair was `crcbl-wgpu`'s, and it went with that crate on 2026-08-21.
+Where the 4.39x goes — GPU time at parity, the loader's debug output ruled out,
+and the serial-execution cause that is fixed — is in docs/notes/ci.md under the
+same heading. What is still unmeasured:
 
 ### The suspicion that is still unmeasured: synchronisation validation
 
@@ -22674,6 +14768,13 @@ The measurement, to be run as a one-off and then reverted:
      procedure measures by flipping `CRCBL_VK_VALIDATION` instead. That one is a
      bigger coverage loss and would only ever be a diagnostic run.
 
+**DECIDED 2026-09-06 —** run the one-off measurement above, then keep sync
+validation on if it is not the cost. The coverage it buys is what
+`docs/plan/02-vulkan-backend.md` names as this stage's headline-risk mitigation,
+so it is not traded away on a guess; if the measurement says it _is_ most of the
+142 s, the decision about the Windows leg goes to the user with a number behind
+it. Work: the three steps above, run once and reverted.
+
 ## A recording that names a swapchain view is still not protected
 
 `crcbl_vk::device`'s `retire_swapchain` deliberately does not go through the
@@ -22698,45 +14799,14 @@ when one is found, since it cannot park what it is destroying: either wait, or
 refuse, or invalidate the recording loudly. That decision is the reason this is
 an entry rather than a change.
 
-## `CARGO_NET_OFFLINE` on the vk e2e steps: looked at, not applied
-
-**DECIDED 2026-08-30 — left as is.** `Updating crates.io index` costs about 7.4s
-per cargo invocation on the Windows leg despite `--locked`, and
-`CARGO_NET_OFFLINE=true` would remove it. **Not applied, because the workflow
-cannot be read as making it safe.** `Swatinem/rust-cache@v2` restore is
-best-effort — a cold key, an evicted entry or a changed lockfile hash all leave
-the registry index absent — and no step in either vk e2e job runs `cargo fetch`
-first, so an offline cargo would fail the job outright rather than fetch. Making
-it safe means an explicit `cargo fetch --locked` step before the suite, and only
-then the variable; that is a workflow change with its own failure mode and wants
-the user's call.
-
-The other cost in the same job, also untouched: the pinned LunarG SDK install is
-about 46s and `Swatinem/rust-cache` does not cover it, since it caches cargo
-directories and not `C:\VulkanSDK`. An `actions/cache` keyed on
-`VULKAN_SDK_VERSION` would, at the cost of a second cache to reason about.
-
-## A timing test started its clock after the thread it was timing
-
-`crcbl-mtl`'s `a_wait_sleeps_until_the_presented_handler_reports` asserts the
-wait blocked for at least `HANDLER_DELAY` (40 ms), and took `Instant::now()`
-**after** spawning the handler thread. The handler's sleep begins the moment the
-thread runs, which is somewhere inside `spawn`, so the clock was already behind
-it by however long the spawn took. CI caught it at **39.932915 ms** —
-sixty-seven microseconds short — after months of passing.
-
-Fixed by starting the clock before the spawn. Worth knowing for its shape rather
-than its size:
-
-- **It made the assertion sound, not tighter.** Moving the clock earlier can
-  only increase the measured elapsed, so the lower bound got easier to pass.
-  What it removed was the window in which a correct implementation could fail
-  it. The check still has teeth against what it exists for — a
-  `wait_until_shown` that returns immediately elapses in microseconds —
-  confirmed by mutating the wait to return at once and watching it go red.
-- **The local suite could not have found it.** It is a race whose window is a
-  thread spawn, and it fired once in CI and never in twenty consecutive local
-  runs of the same test.
+**DECIDED 2026-09-06 — refuse.** `retire_swapchain` consults the same
+recorded-but-unsubmitted set `poll_retire` builds, and returns an error naming
+the command buffer rather than waiting on it or invalidating the recording
+silently. Precedent: wgpu errors when a surface texture is used after the
+surface is reconfigured — the loud failure is the one a caller can act on. Work:
+thread the set into `retire_swapchain`, add the named error, and write the test
+that acquires, records against `AcquiredFrame::view` and reconfigures without
+submitting.
 
 ## What screen-space AO left owed
 
@@ -22976,82 +15046,24 @@ diagnosing the code.
 
 ## Profiling and benchmarking: decisions taken 2026-08-13, before any code
 
-`docs/plan/40-profiling.md` specifies the whole thing; it is a cross-cutting
-track in the roadmap alongside CLI, testing, audio, persistence, debug tools and
-pixel art. `crcbl_core::trace` has since landed — see below — and nothing else
-in the plan has. The decisions, so they are not re-argued when a slice starts:
+The decisions themselves — Chrome Trace Event JSON over Tracy, always-compiled
+spans gated by an atomic, p50/p95/p99/max over means, CI publishing rather than
+gating, an environment block per benchmark, the frames-latent GPU report, and
+the `crcbl_core::trace` calls that followed — are in docs/notes/tooling.md under
+the same heading. What they leave owed:
 
-- **Trace export is Chrome Trace Event JSON**, which Perfetto and
-  `chrome://tracing` both read. Still unwritten: `crcbl_core::trace::Snapshot`
-  has `report()`, a human summary, and no JSON emitter. Text, no dependency, and
-  `crcbl-cli` already has JSON machinery. **Tracy was considered and declined
-  for now**: it is a client library, therefore a new dependency and the user's
-  call, and its wire protocol is not something to hand-roll. If it is wanted
-  later it is an optional feature over the same span data rather than a second
-  instrumentation pass.
-- **Spans are always compiled and gated at runtime by an atomic**, not compiled
-  out behind a feature. A profiler you have to rebuild to use is one nobody
-  turns on mid-investigation, and a build that changes what it measures is the
-  classic way to measure the wrong thing. A compile-time off switch exists for
-  shipping builds. The cost of this decision — one relaxed atomic load per span
-  when disabled — should be measured rather than asserted, by benchmarking the
-  profiler itself.
-- **Benchmarks report p50/p95/p99/max, not means.** Frame time is a tail problem
-  and a mean hides the stutter a player notices. This session already produced a
-  case where a within-arm spread was wider than the between-arm difference being
-  claimed, which is the same failure in miniature.
-- **CI publishes benchmark numbers and does not gate on them.** A shared runner
-  is far slower and noisier than a dev box — the roadmap says so already — so CI
-  proves the benchmark _runs_ and stores the output as an artifact; comparison
-  happens against a baseline from a known machine. A perf gate that fails for
-  reasons unrelated to the commit is a gate people learn to ignore.
-- **A benchmark's output carries its environment or it is not comparable**:
-  adapter, driver, backend, the three capability selectors, build profile,
-  commit. A comparison against a baseline from different hardware should be
-  refused rather than printed.
-- **The GPU report stays frames-latent.** No benchmark mode "reads it properly"
-  by stalling, because a stall changes what is being measured.
-
-**What the survey found already built**, so no slice rebuilds it: per-pass GPU
-timestamps (`crcbl_render::timing`) wired into `CompiledGraph::execute`, frames
-latent by design, a pass's span deliberately including its barriers, degrading
-to an empty report without `Features::TIMESTAMP_QUERY`, and feeding a
-`DebugModule`. That half is good. What is absent is: no baseline or comparison,
-no trace export, no memory or pool-occupancy accounting, no `crcbl-jobs`
-instrumentation, and counters scattered across `SceneStats`, `visible_count` and
-each sample's own rows rather than one place. `crcbl bench` has since landed —
-`crates/crcbl-cli/src/bench/` with its `jobs` and `phys` scenarios, warm-up,
-p50/p95/p99/max, `MIN_PERCENTILE_SAMPLES`, `--json` and a mandatory environment
-block — and that module's own header records that `--compare <baseline>` and
-`--trace <path>` are the rows it did not start.
-
-**`crcbl_core::trace` landed, and `Loop::frame` and the panel's budget row are
-its first callers.** Decisions taken there, so they are not re-argued:
-
-- **CPU frame time is the frame span less `pace` and `present-wait`.** Under
-  vsync the loop blocks inside the present, so an unsubtracted frame span reads
-  as the display's period on every machine, always exceeds the GPU total, and
-  answers "CPU-bound" without having looked. Verified on a real horde run: the
-  loop's wall-clock line reported 1.053 ms at a 1000 fps cap while the row
-  reported 0.41 ms of work, the difference being the `pace` sleep.
-- **The plan's `schedule`, `physics`, `upload` and `record` phases do not
-  exist** in the loop — the first two live inside a game's `tick` closure and
-  there is no asset upload in the frame. `perf.rs` records that rather than
-  faking them. They arrive with whichever slice gives `tick` its own structure.
-- **`shell.wait_events` is outside the frame span**, deliberately: it is the
-  loop idling, and a frame span containing the compositor's idle timeout would
-  report it as CPU cost on every still frame.
-- **`drain` is called once per frame while the gate is on, and not at all while
-  it is off.** Calling it unconditionally is two mutex acquisitions per frame to
-  move nothing, which is the disabled-cost claim the module makes about itself.
-- **The two windows are distributions, not a pair.** The GPU report is frames
-  latent by design; over 120 frames a two-frame lag cannot move a percentile,
-  whereas a per-frame pairing would be wrong by exactly that offset. The row
-  carries the frame number its newest GPU sample came from rather than hiding
-  it.
-- **`MIN_PERCENTILE_SAMPLES` is 20 because it is derived, not picked**:
-  nearest-rank p95 is `ceil(0.95n)`, which is just the maximum for every `n`
-  under 20. Below it the row says `filling 7/20`.
+- **The JSON trace emitter is unwritten.** `crcbl_core::trace::Snapshot` has
+  `report()`, a human summary, and no Chrome Trace Event emitter. Text, no
+  dependency, and `crcbl-cli` already has JSON machinery.
+- **`crcbl bench` has no `--compare <baseline>` and no `--trace <path>`.**
+  `crates/crcbl-cli/src/bench/` landed with its `jobs` and `phys` scenarios,
+  warm-up, p50/p95/p99/max, `MIN_PERCENTILE_SAMPLES`, `--json` and a mandatory
+  environment block; that module's own header records those two as the rows it
+  did not start. Until they land, two runs are compared by a person reading two
+  blocks of output.
+- **Also absent:** no memory or pool-occupancy accounting, no `crcbl-jobs`
+  instrumentation, and counters scattered across `SceneStats`, `visible_count`
+  and each sample's own rows rather than one place.
 
 What is left:
 
@@ -23126,15 +15138,6 @@ What is left:
   `--cfg crcbl_trace_off` with a `build.rs`, not a feature;
   `docs/plan/40-profiling.md` records the argument. Nothing ships from this repo
   yet, so it has no caller either way.
-
-**`crcbl_render::MAX_TIMED_PASSES` bounds this crate's renderers, not the
-caller's own passes** — a deliberate call, taken 2026-08-13. Every renderer here
-carries a `MAX_PASSES` and the constant is their sum, so a pass added anywhere
-below moves it; but a sample that records a pass of its own — the 2D samples
-each have a clear — is that much over. Today none of them is close (they record
-four against a bound far above that), and the once-per-`PassTimers` warning is
-the backstop if one ever is. The alternative was every sample writing
-`MAX_TIMED_PASSES + 1`, which is the guessing this constant exists to end.
 
 ## DEFERRED — P6A, the native wasm module host (2026-08-30)
 
@@ -23286,30 +15289,9 @@ proves nothing about it.
 
 ## The host-visible-write rule has now cost two devices, and the seam could enforce it
 
-`crcbl-dx12` refuses a shader-written binding that names a host-visible buffer —
-D3D12's upload and readback heaps refuse `ALLOW_UNORDERED_ACCESS` at creation,
-so there is no UAV of one. The refusal is correct and its message is excellent.
-It has now caught the same mistake **twice**: the draw-generation counters, and
-the LOD hysteresis state.
-
-**Done.** `NullDevice` refuses a `read_only: false` entry naming a mappable
-buffer at `create_bind_group` and `update_bind_group`, and `MemoryLocation`
-carries the rule with its D3D12 mechanism. Nothing in the tree violated it, so
-there was no third latent instance. Read-only bindings of host-visible buffers
-stay legal — removing that exemption fails 28 tests, which is the measure of how
-load-bearing it is.
-
-**The image half is closed too**, and it turned out stronger than the buffer
-rule: `ImageDesc::memory` has exactly one legal value, because the seam has no
-way to touch an image's bytes from the CPU — no `write_image`, no mapping, no
-subresource layout — so the field buys nothing observable on any backend while
-removing a D3D12 device. **Done — the field is deleted.** Taken as a sane
-default under the standing instruction, on `CLAUDE.md`'s rule that a contract is
-enforced rather than documented: a field with one legal value is one every
-caller must fill and can still fill wrongly, and removing it makes the state
-unrepresentable instead of refused. 36 sites, 20 files, no golden moved, and the
-run-time refusal added one commit earlier is deleted with it — a guard against
-the unconstructable is noise.
+Both halves shipped — `NullDevice` refuses a `read_only: false` entry naming a
+mappable buffer, and `ImageDesc::memory` is deleted. The account of what that
+took is in docs/notes/backends.md under the same heading. What is left:
 
 **What blocks writing it from outside `crcbl-hal`:** the null backend does not
 record bind-group _contents_. `Detail::BindGroup` keeps the layout handle and an
@@ -23431,17 +15413,19 @@ Topic 25's QEM simplifier exists host-side with no consumer. What is left:
 
 ## The shared layout validator: two Metal decisions, and what only CI can prove
 
-`BindGroupLayoutDesc::check_entries` and `BindGroupLayoutEntry::resolved_count`
-replaced four drifted copies. Decisions taken while doing it, so they are not
-re-argued:
+One shared layout check replaced four drifted copies. **Corrected 2026-09-06:**
+the names this entry gave it — `BindGroupLayoutDesc::check_entries` and
+`BindGroupLayoutEntry::resolved_count` — no longer resolve in `crcbl-hal`; the
+surviving spellings live in `crcbl-webgpu/src/command.rs` and
+`crcbl-webgpu/src/writer.rs`, so follow those rather than the old paths.
+Decisions taken while doing it, so they are not re-argued:
 
-- **`crcbl-mtl` refuses the `u32::MAX` count sentinel where the other four clamp
-  it.** Metal reports `max_bindless_descriptors: 0` — flat argument tables have
-  no runtime-sized array — so clamping would hand back a **one**-element array
-  on a backend that cannot do bindless at all, which is exactly the quiet
-  downgrade the seam exists to forbid. `plan_set`'s table-capacity `checked_add`
-  refuses it by name instead. Reversible in about a line plus a `limits`
-  parameter on `plan_set` if this ever looks wrong.
+no runtime-sized array — so clamping would hand back a **one**-element array on
+a backend that cannot do bindless at all, which is exactly the quiet downgrade
+the seam exists to forbid. `plan_set`'s table-capacity `checked_add` refuses it
+by name instead. Reversible in about a line plus a `limits` parameter on
+`plan_set` if this ever looks wrong.
+
 - **`crcbl-mtl`'s own flags refusal is now unreachable through
   `create_bind_group_layout`.** The seam's check fires first, so a caller asking
   for bindless on Metal gets the generic "descriptor-indexing flags on a device
@@ -23485,19 +15469,14 @@ the seam actually asks for.
 
 The narrowing fails loudly rather than silently: a WGSL module that reads
 through a `write` binding is rejected at pipeline creation naming the binding.
-So this is recorded rather than fixed. **Fixing it wants a decision**, and the
-two options are:
 
-- a third state on the seam — `StorageAccess { Read, Write, ReadWrite }` in
-  place of the `bool` — with `crcbl-webgpu` refusing `ReadWrite` on a format
-  WebGPU does not allow it for; or
-- leaving the `bool` and documenting that a WebGPU target must declare the
-  binding `write` in WGSL.
-
-Nothing in `crcbl-render` or the committed shaders declares a storage image at
-all, so neither option has a caller to prove itself against yet. Revisit when a
-compute pass first wants one — a mip-generation pass is the likely first,
-`docs/plan/03-gpu-driven-rendering.md` §3.2.
+**DECIDED 2026-09-06 —** `StorageAccess { Read, Write, ReadWrite }` replaces the
+`bool`, and `crcbl-webgpu` refuses `ReadWrite` for a format outside WebGPU's own
+read-write list. Precedent: wgpu's `StorageTextureAccess` is exactly this
+triple, so the seam adopts the shape the narrowest backend already models. Work:
+lands with the first storage-image consumer — a mip-generation pass,
+`docs/plan/03-gpu-driven-rendering.md` §3.2 — not before, since nothing in
+`crcbl-render` or the committed shaders declares a storage image today.
 
 ## What the sun shadow pass owes
 
@@ -23561,47 +15540,10 @@ cannot be _said_, so AJ cannot cover them and no gate can: the seam has no way
 to ask for either. AJ narrows what is unwitnessed rather than settling the
 design question.
 
-## Settled: the `D2Array` page samples on Metal and D3D12
-
-Was an open coverage gap — `SampledImage { view_type }` is dropped by
-`crcbl-vk`, `crcbl-mtl` and `crcbl-dx12` (each takes the dimension off the bound
-view, and each says so at the arm that drops it), and neither Metal nor D3D12
-runs a draw on this machine, so both were type-checked only.
-
-CI confirmed it on `7c4042b`: `golden cube on metal` and `golden cube on dx12`
-each came back **max channel delta 1, 0 over tolerance, 0 grossly wrong**
-against the lavapipe-blessed golden. Metal is the one that mattered — it is the
-only `ArrayPages` device, because it withdraws `Features::DESCRIPTOR_INDEXING` —
-and its cube previously carried `max channel delta 207` with 2 pixels grossly
-wrong, so agreement went strictly up. Kept only as the record that this was
-checked and how; there is nothing owed.
-
 ## `crcbl_scene::meshlet`: decisions taken, and what it does not do
 
-The §3.5 bake step exists as `build_meshlets` and has no producer and no
-consumer. Decisions, so they are not re-argued:
-
-- **It lives in `crcbl-scene`, not a crate of its own.** That crate's `lib.rs`
-  already says its job ends at host memory — vertex arrays, index arrays — and a
-  cluster builder is host-side geometry over exactly those. `GltfPrimitive` is
-  its first producer. A crate would have been a fourth name for one
-  responsibility.
-- **It takes `&[[f32; 3]]` and `&[u32]`, not a `GltfPrimitive`.** Keeps it
-  testable from literals and keeps the importer's private struct out of it.
-  Deliberately **no** `GltfPrimitive::meshlets()` — that is a second caller that
-  does not exist yet.
-- **A dedicated `MeshletError`, against the crate's stated
-  `StorageError`-for-everything convention** (argued in
-  `crates/crcbl-scene/Cargo.toml`). The convention is about the IO seam; the
-  builder reads no bytes, so every `StorageError` variant but `Other(String)` is
-  unreachable and `Other` would erase which of the two caller bugs was hit.
-  Reason is recorded in the manifest beside the dependency. Revisit only if a
-  third error enum shows up in this crate.
-- **Greedy sequential clustering**, no dependency. `meshoptimizer` would be a
-  new dependency and that is the user's call; the simple form is deterministic
-  by construction, which is what §3.5 actually requires.
-- **Offsets are `usize`.** Narrowing them for the GPU is the later slice's call,
-  and `u32` here would have needed a third error variant for overflow.
+The decisions taken when the bake step was written are in
+`docs/notes/tooling.md` under this heading.
 
 What it does not do, in the order it would be wanted:
 
@@ -23625,6 +15567,14 @@ What it does not do, in the order it would be wanted:
 - **The bounding sphere is the AABB midpoint and the furthest vertex**, which is
   valid and not minimal. Ritter's or Welzl's would be tighter and neither was
   worth transcribing for a first cut.
+
+**DECIDED 2026-09-06 — the spatial pre-sort is `meshopt`** (the meshoptimizer
+bindings) when the meshlet path gets a producer. It is the industry clusteriser
+— what Nanite-style pipelines and Bevy both use — and transcribing one is
+exactly the kind of geometry code that passes review while being wrong on the
+case nobody tried. The greedy index-order walk stays until then, so nothing is
+taken on a dependency ahead of a consumer. Work: the dependency lands with the
+producer slice.
 
 ### What the mesh-shader path owes, now that it draws
 
@@ -23716,32 +15666,8 @@ left:
   `a_cluster_the_point_form_would_reject_survives_the_conservative_one` is the
   host-side case that actually pins the correction.
 
-- **`CRCBL_BLESS` is suite-wide and there is no way to scope it to one golden.**
-  Setting it re-blesses every golden the run reaches, so it cannot be used to
-  regenerate a single image. The safe way to regenerate one golden is to delete
-  that file and run **only** its test (`run-vk-e2e.sh -E 'test(name)'`), because
-  a missing reference is created by `Golden::check` and reported as
-  `Blessed { created: true }`, which the harness turns into a failure saying the
-  run proved nothing. Worth knowing before someone reaches for `CRCBL_BLESS=1`
-  to fix one image.
-
-  **This entry used to claim that a suite-wide bless "fails fast on the first
-  test that objects", and that is wrong — corrected 2026-08-15.** Adding the
-  `EXTENT_ODD` goldens to `render_e2e` began with an unscoped
-  `CRCBL_BLESS=1 run-render-e2e.sh`, and it rewrote most of the existing
-  references in `crates/crcbl/tests/golden/` before the run ended. Fail-fast
-  cannot protect anything here: nextest runs a process per test, so the other
-  tests have already written their files by the time any one of them reports.
-  The rewritten images still passed `Tolerance::RASTERISER` against the
-  originals — the drift is real but within budget — which is precisely why this
-  is dangerous: nothing goes red, and the blessed-on-lavapipe references
-  silently become blessed-on-whatever-ran-it.
-
-  Scoping the filter is therefore **required, not merely preferable**:
-  `CRCBL_GPU=vk CRCBL_BLESS=1 crates/crcbl/tests/run-render-e2e.sh -E 'test(<name>)'`
-  writes only the goldens those tests reach. A guard in the harness — refusing
-  an unscoped bless, or refusing to overwrite a reference that already matches
-  within tolerance — would be better than a note here, and has not been written.
+The `CRCBL_BLESS` scoping rule this entry carried is in docs/notes/process.md
+under the same heading.
 
 - **The open box's golden is blessed on lavapipe**, like every other vk golden,
   so CI compares it at zero differing pixels and a local radv run drifts instead
@@ -23820,12 +15746,16 @@ against, or found on the way:
   mistake for an authored material, and `GpuMaterial`'s docs say so — but the "a
   row nobody wrote shades black" contract is now "shades black apart from a
   glint".
-- **The importer reads `baseColorTexture` now and still not
-  `metallicRoughnessTexture`.** `crcbl_scene::gltf_render` decodes the first
-  onto the page; the second waits on a linear page, which is the stride decision
-  above. The gloss map is the one whose absence is _visible_ — a document that
-  varies roughness over a surface arrives with the factor applied flat across
-  it.
+
+- **The importer reads every glTF texture slot now.** This entry said
+  `metallicRoughnessTexture` was still unimported; that was true until
+  `docs/plan/43-render-standards.md` §2's rung 3 landed on 2026-09-06, and
+  `crcbl_scene::gltf_render` now decodes the metallic-roughness, occlusion and
+  emissive slots onto their own pages beside base colour and normal. The gloss
+  map is no longer flat: a document that varies roughness over a surface arrives
+  with the map applied. What those pages still do not carry is recorded under
+  "The packed and emissive pages: what rung 3's device half left".
+
 - **An imported default material is no longer `GpuMaterial::UNTINTED`**, and
   that is deliberate. glTF defaults a material to `metallic 1.0, roughness 1.0`;
   the engine's neutral row is a dielectric at half roughness. The importer
@@ -23847,120 +15777,12 @@ against, or found on the way:
   in, `Scene::Lights`' green quadrant lost so much specular that the frame's
   brightest pixel there stopped leading its own channel.
 
-### Two scene constants the new lobe invalidated
-
-Both were calibrated against a Blinn lobe at a fixed strength of 0.35, which is
-several times brighter than a four-per-cent dielectric GGX lobe at the same
-angles. Neither assertion was weakened; the scenes were recalibrated.
-
-- **`crcbl::screenshot`'s green point light.** `scene_lights`' own rule is that
-  each light's colour is chosen against the material under it — and "the
-  material" turns out to be the mesh's vertex colour as much as the row's
-  factor. Every pyramid shows the same purple `+Z` face
-  (`PYRAMID_SIDE_COLORS[2]`, whose blue is nearly three times its green), so the
-  green light was the one fighting its own surface, and the Blinn highlight was
-  what carried it. Its blue is now 0.1, the same as the red light's weakest
-  channel. **This file is outside the slice's brief and the edit is one
-  constant**; the alternative was to change what
-  `each_point_light_pools_where_it_was_put_and_nowhere_else` asserts, which
-  would have been weakening a test to fit the code.
-- **`render_e2e`'s two-geometry-path comparison is no longer an exact byte
-  compare.** It is now "at most `path_lsb_channels` channels differ, and never
-  by more than 1". The mesh arm and the indirect arm transform a vertex through
-  two different shaders (`mesh_cluster.slang`'s mesh stage, `mesh.slang`'s
-  vertex stage) and are not obliged to contract their multiply-adds alike; a
-  sharper highlight turns that last bit into a pixel where a broad one absorbed
-  it. Measured: llvmpipe disagrees on **one** channel of the dunes frame, by
-  one, out of 196608; radv and wgpu are still byte-for- byte identical on every
-  scene. The budget is 16, two orders of magnitude under anything a level that
-  failed to draw would produce.
-
-### The render-e2e observable, and what it does not say
-
-`the_smooth_pyramid_holds_a_tighter_highlight_than_the_rough_one` in
-`crates/crcbl/tests/render_e2e.rs` is the check that the lobe actually responds
-to the column: `Scene::Cube`'s two top pyramids are the same mesh at the same
-orientation under the same sun, and `crcbl_render::forward`'s
-`PYRAMID_ROUGHNESS` is the only shading difference between their rows. It
-measures the **falloff across one face** — inner block over outer block — on
-both, and requires the smooth one's to exceed the rough one's by
-`HIGHLIGHT_FALLOFF_RATIO`. Proven red: with both rows at one roughness it
-measures 1.057 against 1.003 and fails; as the renderer writes them, 1.357
-against 1.003.
-
-- **It is a falloff and not a width, and the brief that asked for it wanted a
-  width.** "Brighter at its centre and narrower across it" needs the lobe's
-  centre to sit inside the measured surface with room either side. Under a
-  _directional_ light on a _flat_ face the half-vector sweeps monotonically
-  across the face, so the highlight's centre is at the face's inner edge and the
-  frame shows one flank of the lobe. The falloff across that flank is the same
-  claim by the only statistic this geometry supports. A scene with a curved
-  surface, or `Scene::Spot`'s floor with two materials on it, is what would let
-  the width be measured directly — and neither exists.
-- **The right-hand pyramid is the only surface in the frame at the mirror
-  direction.** `DirectionalLight::default`'s sun comes from `+X` and that
-  pyramid stands at `+X`; the left-hand one's face never reaches the reflection
-  angle, which is why the same pair of roughnesses leaves it flat and why it
-  works as the control. The consequence is that the roughness edit had to go on
-  the _tinted_ row, so `material_rows`' "one row and two single-column edits"
-  invariant is now "two edits, neither of which can be mistaken for the other".
-- **A metal is covered by `apps/lantern` alone.** Its brass block and mirror
-  panel are fully metallic rows under a golden, so the `F0` interpolation and
-  the `1 - metallic` on the diffuse albedo are exercised there; no
-  `crcbl::screenshot` scene sets `metallic` above zero.
-- **Not covered locally: Metal, D3D12 and wasm.** The lobe was run on lavapipe,
-  radv and wgpu-on-radv. `msl/mesh.metal` and `dxil/mesh.fragmentMain.dxil` were
-  regenerated and compile, and CI is the only thing that can say the frame they
-  draw matches.
-
 ## Re-affirmed: shader artifacts stay committed (2026-08-13)
 
-Asked directly whether the shaders should be built during `cargo build` so no
-binaries live in the repo, and whether committing them is standard practice.
-Answered no on both counts, and recorded here so it is not re-argued from
-scratch.
-
-**Committing prebuilt shaders is a minority pattern**, not an industry standard.
-The common camps are: compile at build time (Khronos' Vulkan samples, most CMake
-projects calling `glslc`); ship text and compile at load (WGSL in wgpu, MSL,
-HLSL through `D3DCompile`); a cook step into a derived-data cache (Unreal,
-Unity); and committing binaries, which is what this repo does.
-
-What makes the choice narrower than it first looks:
-
-- **Two of the four columns are already text.** `wgsl/` and `msl/` carry
-  `text eol=lf` and are source in every meaningful sense — `crcbl-mtl` compiles
-  the `.metal` at device init, which is the load-time camp exactly. Only SPIR-V
-  and DXIL are binary, and that is intrinsic: Vulkan consumes only SPIR-V, D3D12
-  only DXIL.
-- **The size cost is nil.** Every SPIR-V and DXIL blob across the whole history
-  is 186 objects and 0.8 MiB, against a 167 MiB `.git`. Repo weight is not the
-  argument either way. The real cost is review noise — a shader change shows as
-  `Bin 24516 -> 25524 bytes`, which no reviewer can read.
-- **`dxc` is the actual obstacle.** `pinned_dxc` has no `PATH` fallback because
-  distributions ship Shader Model 6.10 preview builds that abort on this source,
-  so there is no package-manager path to a working one; Slang is a GitHub
-  release tarball for the same reason. Building at compile time therefore means
-  every contributor's first `cargo build` and every macOS, Windows and wasm CI
-  leg acquiring two pinned toolchains no package manager provides — in practice
-  a download inside `build.rs`, which puts the network in the build, or a
-  vendored compiler far larger than the artifacts it replaced.
-- **The pin is needed either way, and asymmetrically.** Committed artifacts need
-  the pinned toolchain in one CI job, to verify. Build-time compilation needs it
-  in every build on every platform. Build-time is the more demanding position,
-  not the cheaper one.
-
-**What would change the answer:** topic 6's runtime recompilation for shader hot
-reload at P9. That makes a `slangc`-shaped compiler a dependency anyway, and if
-it is present for hot reload the argument for committing SPIR-V weakens a lot.
-Revisit then, not before.
-
-**One real gap the question surfaced, now fixed:** `.gitattributes` marked
-`*.spv binary` and never `*.dxil`, so DXIL was covered only by git's
-NUL-sniffing heuristic under the file's own `* text=auto`. Nothing was being
-corrupted — git does call it binary today — but the block's stated rule is that
-an artifact whose bytes are a checked invariant should not rely on a heuristic,
-and DXIL is hashed in `spirv/manifest.txt` like everything beside it.
+The argument — why committing prebuilt shaders is the right minority position
+here, what would change the answer, and the `#line`-churn surprise in `msl/` —
+is in docs/notes/tooling.md under the same heading. The coverage gap it leaves
+standing:
 
 **Coverage gap this leaves standing:** the committed bytes are only ever
 _verified_ by a machine that has the toolchain, which is the one `shaders` CI
@@ -23969,20 +15791,6 @@ other leg would build the stale artifact and pass. The manifest hash catches a
 source edited without regenerating; it cannot catch a manifest regenerated
 against a source that was then not committed, which is what the recompile step
 exists for and which only that job always runs.
-
-**Editing a comment in a `.slang` rewrites `msl/` and nothing else** —
-surprising but not a bug, and worth knowing before it is diagnosed a second
-time. Slang's MSL backend emits `#line` directives pointing back into the
-`.slang`, so adding or removing a comment line shifts them and changes the
-`.metal` bytes and its `msl-sha256`. Measured on the comment above
-`mesh.slang`'s `float3 lit = …`, which grew by four lines: the entire
-`msl/mesh.metal` diff was three `#line` directives moving by exactly four, and
-`spirv-sha256`, `wgsl-sha256` and both `dxil` hashes were unchanged. So the
-other three backends are comment-invariant and MSL is not. Two consequences: a
-comment-only shader edit still has to be regenerated like any other (the
-manifest hashes the **source**), and the `msl/` churn in that diff is noise
-rather than codegen — a reviewer should read the `#line` numbers and stop, not
-go looking for what moved.
 
 ## `apps/lantern` is at milestone 1a: what it owes next (2026-08-14)
 
@@ -24024,53 +15832,17 @@ room produced. `docs/plan/sample/13-lantern.md` carries the status.
 - **Sound.** Rule 8 says no sample ships silent after P4A. lantern has no audio
   at all, and it is not obvious it should: it is an acceptance fixture with no
   events, and `hud` — the other fixture — is the precedent for a sample with no
-  cue grammar. **Left as a decision rather than as work**: either lantern claims
-  the exemption in its own doc the way rule 11's is claimed, or it gets a hum
-  positioned at the lamp, which would at least give the moving light an audible
-  correlate.
 
-### Findings the first real room produced
+- **Sound — DECIDED 2026-09-06: lantern claims the exemption.** Rule 8 says no
+  sample ships silent after P4A; lantern is an acceptance fixture with no
+  events, and `hud` is the precedent for a fixture with no cue grammar. It
+  states the exemption in its own doc the way rule 11's is claimed, rather than
+  inventing a cue grammar for the rule's sake. Work: the sentence in
+  `docs/plan/sample/13-lantern.md`.
 
-- **The sun's shadow peter-panned at contacts, and it is closed.** A lit strip
-  along the foot of every wall and a sawtoothed band at the head of the back
-  wall; two bias slices took the strip 0.60 m → 0.26 m and
-  `docs/plan/45-shadows.md`'s seventh decision — the normal offset, 2026-08-28 —
-  took the rest. What it left is "The normal offset scallops one silhouette's
-  foot" above, and "What the sun's shadow bias still leaves open" below.
-- **A single-quad wall casts no shadow at all.** Back faces are culled in the
-  shadow pass as well as the colour one, so an inward-facing quad is invisible
-  to the sun. lantern's first frame was an evenly lit floor with a window that
-  did nothing; the room is built of slabs for that reason and `room::SHELL`
-  records it. Worth knowing before the next scene is authored: it is not a bug,
-  it is what `CullMode::Back` means on an open surface, and nothing warns about
-  it.
-- **A gap in a shell leaks light and reads as an artefact.** Stopping lantern's
-  ceiling at the room's own footprint left a slot over the top of every wall;
-  the sun came through the one above the window wall and laid a band along the
-  back wall that looked exactly like a shadow-map failure. The ceiling caps the
-  walls now. Same class as the row above: authoring hazard, not an engine
-  defect.
-- **`crcbl::screenshot::Scene` is not where lantern belongs, and that is
-  decided.** Considered: adding a `Scene::Lantern` variant so
-  `crcbl screenshot --scene lantern` would work. **Declined** — the room is an
-  _application's_ scene description and putting it in `crates/crcbl` would make
-  the engine own sample content, which is the exact thing this sample exists to
-  prove is no longer necessary; and the enum's stated job is one variant per
-  engine shader pair that has pixels of its own, which lantern adds none of.
-  What it needed instead was a way in: `OffscreenSetup::open_forward` takes a
-  caller-built `ForwardScene` and reuses the surface, adapter pin, ring,
-  readback barriers and row unpadding. That is rule 1 working as designed — a
-  sample needing a backdoor is an engine API gap, filed and fixed in the engine.
-- **`crcbl new` scaffolds a shape lantern would have had to undo.** The template
-  is one `src/main.rs` with a bin target and a `Game` with a simulation in it.
-  lantern needs a lib target — an integration test cannot reach a bin crate's
-  room — and has no simulation. Not a defect in the template, which is aimed at
-  games; recorded so the next fixture does not start from it either.
-- **`OffscreenSetup` leaked a swapchain and a surface when a scene refused.**
-  `Scene::Dunes`' "no amplification stage" arm destroyed its own renderer and
-  returned, leaving both behind. Fixed in the same change as `open_forward`,
-  because the new entry point made the refusal path reachable from an
-  application.
+The findings the first real room produced are in docs/notes/samples.md under the
+same heading. The one that is a live gap:
+
 - **Coverage gap: nothing in the tree asserts a debug row's _text_.**
   `apps/lantern/src/app.rs`'s `f3_shows_the_path_report_and_the_unbuilt_notice`
   checks that the section titles exist and that the row _labels_ — `geometry`,
@@ -24089,108 +15861,13 @@ room produced. `docs/plan/sample/13-lantern.md` carries the status.
   once. Whether the assertion should be on the exact string or on a keyword the
   wording must contain is the same call.
 
-## The AO tuning constants, measured against a real frame (2026-08-13)
-
-Two entries above — under "What screen-space AO left owed" and "What the
-depth-weighted blur left owed" — say `r_ssao_radius`, the kernel's lateral reach
-and `DEPTH_TOLERANCE_RADII` were tuned against `Scene::Ao` alone and that
-`lantern` is what would tune them. This is what `Scene::Ao` could say on its
-own; the section after it is the same three questions asked of lantern's room,
-which now exists. **Nothing has been retuned in either**; the numbers are here
-so the retune has a starting point.
-
-Measured on this box — AMD RX 7900 XTX, radv, Mesa 26.1.6,
-`MeshShader / Bindless / Rasterised` — from
-`crcbl screenshot --scene ao --size 1280x960`, and from the render-e2e suite's
-own printed numbers at its 256×192.
-
-- **The trough is already room-scale in one axis, which the entries do not
-  say.** `AO_RUN` is 6.0 and `AO_WALL` is 2.0 world units: a six-metre run
-  between two-metre walls. What `Scene::Ao` is missing is not scale, it is a
-  camera at eye height inside the box, a corner where three surfaces meet, and
-  anything to cast a silhouette. The straight-down camera is load-bearing for
-  the measurement it exists for and should not be changed to get those.
-- **The occlusion reaches 0.38–0.40 world units from the wall**, against a
-  kernel whose stated lateral reach is `7/8 × r_ssao_radius` = 0.4375. Floor
-  luma down the middle of the run, averaged over a 3-unit-wide strip: 74.66 on
-  open floor, falling to 63.31 at 0.10 from the wall, back within one percent of
-  open floor by 0.38. So the term is **bounded by the kernel and not by the
-  geometry** — `r_ssao_radius` is doing exactly what it says, and the trough is
-  wide enough not to clip it.
-- **So it reads as a broad ambient wash, not as contact occlusion.** A 0.4-unit
-  gradient against a 2-unit wall is a fifth of the wall's height. Contact
-  occlusion in a room wants a tighter band; 0.5 is at the top of the usual
-  range. **This is the finding a retune would act on**, and it is a judgement
-  about looks, so it wants goldens and a human, which is what the deferral said.
-- **The gradient terraced, and GTAO 2026-08-28 is what stopped it.** It was
-  about eleven sRGB levels over roughly 150 pixels at 1280×960 — a band every
-  fourteen pixels — invisible at the goldens' 256×192 and plain in a
-  contrast-stretched crop. Re-measured after the horizon integral shipped, over
-  the same 0.40 units of floor approaching the wall and the same strip: the
-  hemisphere put 13 distinct levels in 16 steps, so it repeated values; the
-  integral puts 19 in 19, which is monotone. The rest of that profile barely
-  moved — open floor 75.14 either way, the foot 53.14 against 51.68, the reach
-  0.390 against 0.370 — because `Scene::Ao` is a closed trough and the wash the
-  integral removes needs an open surface to appear on. `probes` and `lights` are
-  where it showed.
-- **The bilateral blur holds at a silhouette, with about a fortieth left.** The
-  render-e2e's own reading on this GPU:
-  `cube — the pyramid's underside measures 67.3 along its silhouette and 66.0 two rows in, against a clear of 37.0`
-  — a residual halo of 2.0%, matching what the blur entry claimed. Against a
-  _real_ silhouette rather than a pyramid's underside, nothing has been
-  measured, because no scene in the tree has one.
-- **`DEPTH_TOLERANCE_RADII` remains unmeasured and that is not fixable here.**
-  It weights the blur by view-space depth difference, so what exercises it is
-  two surfaces at different depths sharing a kernel footprint. `Scene::Ao` has
-  one flat floor and two walls at the same depth as it, and `Scene::Cube` has
-  one silhouette against the clear. Neither separates the tolerance from the
-  far-plane test beside it. A room with furniture is still what would.
-- **Where these came from**, so they can be reproduced: `r_ssao_radius` is a
-  `convar!` in `crates/crcbl-render/src/ssao.rs` — reachable from the console
-  and from an `autoexec.cfg`, which is what makes a sweep cheap now — the
-  lateral reach is the `KERNEL` table in
-  `crates/crcbl-shaders/shaders/ssao_hemisphere.slang`, which is where that
-  kernel lives now that `r_ssao_technique` defaults to the GTAO march, and
-  `DEPTH_TOLERANCE_RADII` is a `static const` in `ssao_blur.slang` reachable
-  from nothing. So a tolerance retune is still an engine edit and a re-bless.
-
 ## The AO constants against lantern's room (2026-08-14)
 
-The measurement the entry above could not make, now that there is an eye-height
-camera inside a real room. Read off `apps/lantern/tests/golden.rs`'s own
-projection at 1280×960 on AMD RX 7900 XTX, radv, Mesa 26.1.6,
-`MeshShader / Bindless / Rasterised`, averaging a 21×21 block about each world
-point. **Nothing was retuned.**
+The measurements — that `r_ssao_radius = 0.5` reads as contact occlusion at room
+scale, that the three-surface corner is the weakest of the three, and that the
+sun's bias contaminates a profile taken on a sunlit wall — are in
+docs/notes/rendering.md under the same heading. What they leave takeable:
 
-- **AO reads as contact occlusion in a real room, and its reach is the kernel's
-  rather than the geometry's.** Floor luma approaching the back wall, in the
-  ambient-only part of the room: flat at 77–80 from 1.4 m out down to 0.5 m,
-  then 71.5 at 0.35 m, 60.5 at 0.20 m, 61.5 at 0.05 m. A 25% darkening confined
-  to the last 0.35 m. The same shape on a wall going up from the floor — 53.8 at
-  0.12 m, recovering to 63.7 by 0.6 m — and at the metal block's contact with a
-  _sunlit_ floor, where AO touches the ambient alone and still cuts 172 to 130
-  over the last 0.3 m.
-- **So `r_ssao_radius = 0.5` is sane at room scale**, and the "broad ambient
-  wash" reading the `Scene::Ao` entry above reports is a property of that scene
-  rather than of the constant: 0.4 units against a 2-metre trough wall is a
-  fifth of it, and the same 0.4 units against a 3-metre room wall with an
-  eye-height camera reads as the band under a skirting board. **The finding the
-  earlier entry proposed a retune on does not survive the room it asked for.**
-- **The three-surface corner is measurably darker and is the weakest of the
-  three.** Down the diagonal into the floor–back-wall–coloured-wall corner: 99.5
-  at 0.40 m, 95.6 at 0.30 m, 83.4 at 0.20 m. A 16% cut where two walls close
-  most of the hemisphere, against the 25% a single wall gives. Not chased: it is
-  in the sunlit part of the floor, so ambient is a smaller share of the pixel
-  there, and separating the two needs an AO-off frame of the same view, which
-  `--no-ao` can now produce.
-- **`DEPTH_TOLERANCE_RADII` finally has something to be measured against, and
-  shows no halo at it.** The room puts two surfaces one to two metres apart in
-  view depth inside one kernel footprint at three places: the metal block's
-  vertical silhouette edge, the plinth's, and the mirror panel's against the
-  back wall. Row profiles across each: the block's edge goes 132.3 to 93.2 in
-  **one** pixel with no gradient on either side, and the panel's goes 0.0 to
-  57.0 in two. So the depth-aware blur is not smearing a near surface's
-  occlusion onto a far one at 2.0 radii.
 - **That is an upper bound on the artefact, not a tuning measurement, and the
   measurement that would settle it has still not been taken.** Every number here
   is AO folded into a shaded pixel. Isolating the term needs the same frame with
@@ -24200,12 +15877,6 @@ point. **Nothing was retuned.**
   difference the two frames, and re-read the corner and the silhouette-edge
   profiles on the isolated term. Until someone does, `DEPTH_TOLERANCE_RADII` can
   be said not to be _visibly_ wrong and cannot be said to be right.
-- **A finding worth more than any of them: the sun's shadow bias contaminates
-  the floor's occlusion profile near a wall.** The first profile taken —
-  approaching the `-x` wall — read 49 at 0.8 m and 138 at 0.25 m, which is
-  backwards. That is the peter-panning recorded in the lantern entry above, not
-  AO. Anyone repeating this measurement must take it on a wall whose foot the
-  sun does not reach, which is why the numbers above are from the back wall.
 
 ## What the sun's shadow bias still leaves open (2026-08-28)
 
@@ -24250,260 +15921,28 @@ What is still open — and none of it was re-measured after the normal offset:
   legitimate shadow tightening at low bias. No numeric acne metric in this tree
   is trustworthy on its own.
 
-## Run the local `cargo doc` gate with `--all-features`, as CI does
-
-**Corrected 2026-08-15.** The entry this replaces said `crcbl-sprite` had six
-unresolved `crate::bake` doc links and concluded "a `bake` module was removed or
-renamed and its referrers were not followed". **That diagnosis was wrong.**
-`crates/crcbl-sprite/src/bake.rs` exists and is declared in `lib.rs` behind
-`#[cfg(feature = "bake")]`, and the `bake` feature is off by default because it
-pulls in the PNG encoder a runtime consumer would never call.
-
-So the six warnings are an artefact of **how the gate was invoked**, not a
-defect in the crate. A bare `cargo doc --workspace --no-deps` unifies the `load`
-feature on — something else in the workspace asks for it — while nothing turns
-on `bake`, so `load.rs` compiles and its links into `bake` dangle. CI's `docs`
-job in `.github/workflows/ci.yml` runs `--all-features`, under which every one
-of them resolves; `cargo doc --all-features --no-deps -p crcbl-sprite` was run
-to confirm and emits **zero** warnings.
-
-**Re-derived independently on 2026-08-18, and it is the same answer.** A later
-pass found the six links again and wrote them up as a live defect with three
-unattractive fixes — merge the features, blanket-allow the lint, or duplicate a
-sentence per link. That entry stands below as "`cargo doc` without features is
-red, and nothing runs it"; the two disagree only on the word _defect_ — the fact
-is one, and the gate is `--all-features`.
-
-What the second pass did add is a measurement the first left open: **`bake` and
-`load` gate the identical dependency set** — both are `["dep:png"]` — so merging
-them costs nothing in dependencies and only widens what a `load`-only consumer
-compiles. That is a public-surface decision rather than a fix, and nothing
-forces it: `cargo doc --all-features -p crcbl-sprite` was re-run today and still
-emits zero warnings.
-
-**The lesson worth keeping is about the gate, not the crate.** A feature-gated
-module is normal Rust and an intra-doc link into one is not a defect, but a doc
-run whose feature set differs from CI's produces warnings CI never sees — and
-standing phantom warnings are exactly the noise that hides a real one. That
-happened twice in one session here: two separate readings took the six at face
-value, and the second wrote this entry's wrong diagnosis. Match CI's invocation
-when running `cargo doc` locally.
-
-**Considered and not taken:** `[package.metadata.docs.rs] all-features = true`
-would make published docs complete regardless. No crate in this workspace sets
-that metadata today, so adding it to one is an inconsistency and adding it to
-all is a convention nobody has asked for. Worth doing as a deliberate sweep if
-these crates are ever published in earnest.
-
 ## Irradiance probes: the slice plan (designed 2026-08-14)
 
-The design is `docs/plan/18-render-features.md`'s "Irradiance probes: the
-design" — a static grid of L1 spherical-harmonic probes in a read-only storage
-buffer, adding no render pass, added to `frame.ambient` for diffuse and returned
-by an SSR miss for specular. Read it first; all slices are built and both of its
-open questions are taken, so what stays here is the record and the limits.
-
-The seam still permits a read-only storage binding of a host-visible buffer, and
-appending the mesh binding after `AMBIENT_OCCLUSION_BINDING` needed no
-`mesh_cluster.slang` mirror for the same reason occlusion did not.
-
-### Decisions, both taken
-
-- **Q1: does the probe half of the environment specular evaluate above
-  `ROUGHNESS_CUTOFF`?** **Resolved yes.** A wide lobe is where the low-frequency
-  probe is more honest than one screen-space ray. The cutoff therefore gates the
-  march only; rough surfaces return probe environment with zero sharpness, and
-  the blur composites that centre value without filtering. This keeps
-  `UNTINTED`'s exact-zero march endpoint without leaving lantern's brass black.
-- **Q2: does this get a `RenderEffects` bit?** **Resolved no.** The off-switch
-  is the scene, and a zero volume is bit-identical, so there is nothing to
-  resolve through four layers. `effects.rs`'s own rule is that an effect which
-  is off is a frame with fewer passes and never a shader branch — a probe bit
-  removes no pass. If lantern's milestone-4 matrix wants a row anyway, it should
-  swap the bound table for the zero one, which is still data and still no
-  branch. It is public API shape, so it is yours.
+All slices are built and both design questions are taken; the record, the two
+decisions and the limits that closed are in `docs/notes/rendering.md` under this
+heading. What is still deferred is below.
 
 ### Named limits, so they are not rediscovered
 
-- **Light leaking was the grid's real weakness, and per-probe visibility closed
-  it.** A probe inside a wall used to light the room beyond it.
-  `crcbl_render::probe_visibility` renders each probe's octahedral depth map and
-  `probe_gather.slang` weights the probe by a Chebyshev test against it, which
-  is the first of the two answers the literature offers; DDGI's temporal depth
-  moments remain out of scope. What is left is what the RSM updater's own entry
-  above records.
 - **An L1 probe in a mirror is a gradient, not a room.** Fixing that is
   prefiltered radiance cubemaps, which need the filtered read `ssr.slang`
   refuses. Trigger: when somebody looks at lantern's panel and objects.
-- **With `REFLECTIONS` off, metals go black again**, because the reflection pair
-  is what draws the environment specular. Coherent rather than a defect, and
-  `--no-reflections` showing it is honest.
+
 - **The bake tool is deferred on a hard prerequisite**, not on taste: a gather
   bake needs a ray-triangle intersector, and the workspace has none —
   `crcbl-phys` offers ray-vs-sphere, ray-vs-AABB and ray-vs-capsule. The BVH
   half of that prerequisite is no longer missing: `crcbl_phys::Bvh` is built and
   `PhysicsWorld` holds one.
 
-## The probes fixture is a full-frame gradient, and WARP will not have it (2026-08-14)
-
-`a5f0e29` added `Scene::Probes` and `a88d671` reverted it. **The probe maths was
-not what broke** — on the WARP run that failed, the shader and
-`crcbl_shaders::probe`'s Rust mirror agreed to 0.07 levels and the two geometry
-paths were bit-identical, so the evaluation is right on that device. What failed
-was the golden: max channel delta 8, **1212 pixels (2.47%) over tolerance
-against `Tolerance::RASTERISER`'s 1% budget**.
-
-### Why, and it is a lesson about fixtures rather than about probes
-
-The fixture was designed so that **every pixel is the probe term and nothing
-else** — ambient exactly zero, the sun parallel to the floor so Lambert and the
-specular lobe vanish, the measured bands twice the occlusion radius from any
-wall. That makes the anti-vacuity argument airtight and it is why the shader
-could be compared against the mirror absolutely rather than only as a ratio.
-
-It also makes the whole frame one smooth gradient, which removes the margin an
-8-bit golden lives on. Every other scene's cross-driver drift is confined to
-edges, so a handful of pixels exceed tolerance and the _ratio_ stays tiny —
-`point_shadow` on the very same WARP run has max channel delta **34** and
-passes, because only 0.057% of its pixels are affected. A gradient spanning the
-frame has no such confinement.
-
-**The two properties are in tension and that was not seen when the design was
-written.** "Every pixel is the effect" and "an 8-bit golden survives four
-rasterisers" pull against each other, and this is the first fixture in the tree
-where the effect covers the whole frame rather than a shape inside it.
-
-### Rebuilding it: two options, and the numbers needed to choose
-
-- **A scene-scoped budget**, the way `path_lsb_channels` in
-  `crates/crcbl/tests/render_e2e.rs` already scopes an allowance to
-  `Scene::Dunes`. Honest if the argument is written down — the 1% ratio was
-  derived for localised edges, not for content that is gradient everywhere.
-  Dishonest if it is picked to be whatever makes WARP pass, which is the trap.
-- **A fixture that is not gradient-dominated**: keep the probe term as the only
-  term but give the frame flat regions — facing quads at distinct normals rather
-  than one floor across the interpolation. The ratio assertion survives; the
-  golden regains its margin.
-
-**Neither can be chosen from this machine.** The failure only appears on dx12
-under WARP, which needs Windows, so any fix validated locally is a guess pushed
-to CI. Get the WARP numbers for a candidate fixture before blessing anything —
-the previous attempt passed radv, lavapipe, both geometry paths and a four-way
-negative control, and still broke `main`.
-
-### Not at issue
-
-`ce253ad` (slice 1) was never implicated and stays. The design's determinism
-argument — that probe evaluation has no comparison between fetched values to
-diverge on — was _supported_ by this run, not contradicted: radv against
-lavapipe is max delta 2, and WARP agrees with the host mirror to 0.07 levels.
-The 8-bit golden is the fragile part, not the arithmetic.
-
-**The first replacement preserved the semantics but not WARP's budget.** With a
-`0.4`-unit interval, WARP still reported 1,216 pixels over tolerance — 2.4740%
-of the frame, effectively the reverted fixture's result — even though every
-semantic check passed and the shader agreed with the Rust mirror to 0.20 levels.
-The gradient had been confined, but not enough to fit the global 1% budget.
-
-Reducing the interval to `0.1` units disproved that diagnosis: WARP again
-reported exactly 1,216 over-tolerance pixels. The uploaded actual/diff artifact
-located every one on the thin oblique `±X` wall strips — 656 on the left and 560
-on the right. The floor had 8,825 differing pixels but none over tolerance and a
-maximum channel delta of 2. The wall strips reached 7 and 8 respectively.
-
-The room is now wide enough to crop those `±X` strips while retaining the `±Z`
-walls as context. That changes no measured floor point, probe row, tolerance, or
-semantic assertion. The centre is still compared against both endpoints, and the
-widened-to-room negative control still fails on an 11.60-level endpoint-region
-change against its 0.5-level flatness budget. **The crop held**:
-`dx12 e2e (software adapter)`'s ForwardRenderer step runs `render_e2e` on WARP,
-and it has been green with `Scene::Probes` in it since.
-
-## The Pages browser gate fails on the runner's GPU stack, not on the code
-
-`ce253ad`'s Pages run failed in `build the demo site` at "Render breakout in a
-real browser", with the runner's GPU process dying during initialisation:
-`VerifyExtensionsPresent: Extension not supported: VK_KHR_surface`, then
-`eglInitialize Vulkan failed with error EGL_NOT_INITIALIZED`, then
-`Exiting GPU process due to errors during initialization`. The next commit's
-Pages run passed with no change to anything the gate touches, and `breakout` was
-not modified in that commit or any near it.
-
-So it is the ANGLE/Vulkan stack on the ubuntu runner image, not the demo.
-Recorded because a red Pages run on a commit that did not touch wasm is going to
-look like a real break to whoever sees it next, and because a gate that fails
-this way occasionally is a gate people learn to re-run rather than read. **Not
-fixed, and not obviously ours to fix** — if it recurs, the question to answer is
-whether the gate should demand a software GL/Vulkan fallback explicitly rather
-than taking whatever the image offers.
-
-## The browser gate's staleness guard did not cover Rust (fixed 2026-08-20)
-
-Kept because the _shape_ recurs, not because the fix is pending.
-`web/run-browser-e2e.sh` warns when `target/site` is older than its sources, and
-that warning is the only thing standing between a reused site and a green run
-about code that is not under test — the block says so in capitals.
-
-It scanned `web/engine` and `web/tools` for `.js`/`.mjs` and nothing else. Its
-comment excused the gap with "the wasm has `build.sh`'s own staleness handling",
-which is true of `build.sh` and irrelevant in the branch where the warning
-lives: that branch is precisely the one `build.sh` does not run in, so no
-`cargo` invocation ever compares a `.rs` against the artifact.
-
-**It cost a false red-check the day it was found.** A deliberately frozen camera
-was re-run through the gate without `--build`; the gate reported
-`the dolly keeps running down the face under its own steam — it took 2 values`
-and passed 34/34, against a wasm built before the sabotage. With `--build` the
-same tree failed 32/34. The guard printed nothing either way.
-
-The find now also walks `apps` and `crates` for `.rs`, `.slang` and
-`Cargo.toml`. **The general lesson:** a staleness guard has to cover every input
-to the artifact, and an exemption reasoned from another code path is how one
-ends up covering the half nobody edits.
-
 ## The browser gate's budgets are measured, not fixed (2026-08-20)
 
-**Both 3D demos now render in a real browser on CI**, which closes the decision
-this entry used to be. What is kept is how it was closed, because the shape
-recurs and the reasoning is not recoverable from the diff.
-
-**The decision was never about the demos.** The old blocker — `crcbl-render`'s
-draw-argument pass binding fourteen storage buffers against SwiftShader's
-ceiling of ten — went when that pass was packed down to eight. What was left was
-"nobody has run either on a GitHub runner", and turning the step on twice bought
-two precise defects rather than an opinion:
-
-1. **32 of 34.** Both failures were group E's HUD heartbeat,
-   `0 HUD line(s) in 4000 ms`. `TICK_WINDOW_MS` was a constant chosen on this
-   desktop; the runner advances quarry's simulated second every 27 seconds.
-   Worse, "a paused demo runs no ticks at all" **passed for free** on that run —
-   no heartbeat could appear in any state — which is the exact failure mode the
-   group's first check exists to catch, and it caught it.
-2. **33 of 34.** Group E green after the window was derived from the measured
-   beat; `PADDLE_SETTLE_MS`'s flat 1500 ms failed instead, one budget along.
-
-**So the fix was not a bigger number, it was a measured one.** The heartbeat's
-nominal value is one simulated second, so `slowdown = max(1, beat / 1000)` is
-how far behind real time a machine is running the demo, and every budget in the
-harness is scaled by it. Clamped at 1, so nothing is ever shorter than the
-constant already gave. The control prints the factor.
-
-**Measured on the runner, 2026-08-20**, which is what the whole exercise was
-for:
-
-| demo      | beat     | factor | result | step  |
-| --------- | -------- | ------ | ------ | ----- |
-| breakout  | 993 ms   | 1.0x   | 47/47  | —     |
-| flappy    | 1034 ms  | 1.0x   | 43/43  | —     |
-| asteroids | 992 ms   | 1.0x   | 38/38  | —     |
-| horde     | 1023 ms  | 1.0x   | 47/47  | —     |
-| hud       | 1003 ms  | 1.0x   | 37/37  | —     |
-| quarry    | 26243 ms | 26.2x  | 37/37  | 5m54s |
-| lantern   | 19339 ms | 19.3x  | 37/37  | 5m23s |
-
-The five 2D demos sit at exactly nominal and are untouched by the scaling, which
-is the property that makes it safe; only the two heavy frames are behind, and by
-the factor their own heartbeat reports.
+How the budgets were derived and the measured per-demo table are in
+`docs/notes/browser.md` under this heading.
 
 **What is still owed.** `TAP_INTERVAL_MS` is deliberately not scaled — an input
 cadence rather than a budget for observing a result, and the loops that tap are
@@ -24511,11 +15950,6 @@ bounded by scaled deadlines, so a slow machine already gets more taps rather
 than fewer. Untested above 1x: no demo with a `touch` row in `EXPECTATIONS` is
 also slow. If a tap sequence ever fails on a slow runner where the deadline
 plainly did not expire, event coalescing is the first thing to suspect.
-
-**Both stale prose claims are fixed**: `web/pages/index.html`'s excusing clause
-and `web/pages/lantern.html`'s "This one wants a real GPU" note, which said the
-canvas stays black on a software adapter and had been false since the pass was
-packed.
 
 **The calibration's own two lines outgrew the flat budget (2026-09-05).** The
 beat above was 19.3 s for lantern; on the pool the Pages workflow has drawn
@@ -24535,63 +15969,10 @@ make the second line late while the first is on time, so the scaled second wait
 is shown right by the fourteen-run table it was sized from and by arithmetic,
 not by a red run.
 
-## The pinned shader compilers ARE installed here (2026-08-14)
-
-**A previous entry in this file said they were not, and that claim blocked a
-real improvement for a day.** It is worth its own heading because the next
-reader has to be able to trust the rest of this file: an entry claiming a tool
-is missing is one nobody re-checks, and this one was never true. Both pinned
-compilers are on the development machine, at the versions
-`crates/crcbl-shaders/tools/compile-shaders.sh` names:
-
-- `~/.local/slang/bin/slangc` — `2026.14`, the script's `SLANG_VERSION`
-- `~/.local/dxc/bin/dxc` — `1.9(1-0d3ee6b5)(1.9.0.1)`, the script's
-  `DXC_VERSION`
-
-So editing a `.slang` is ordinary work here, not something to defer.
-`crates/crcbl-shaders/build.rs` verifies each source by SHA-256 against
-`spirv/manifest.txt`, so _any_ edit — a comment included — fails the build until
-the artifacts are regenerated, and the regeneration is one command:
-
-```
-CRCBL_SLANGC=~/.local/slang/bin/slangc CRCBL_DXC=~/.local/dxc/bin/dxc \
-  crates/crcbl-shaders/tools/compile-shaders.sh
-```
-
-then the same script with `--check`. Note that `CRCBL_DXC` has no PATH fallback
-by design, and Arch's `directx-shader-compiler` is a preview build the script
-refuses — so the path above is not interchangeable with whatever `which dxc`
-finds.
-
 ## The effect toggles landed, and two things about them are owed (2026-08-14)
 
-`crcbl_render::effects` is topic 39's resolution point: `RenderEffects` is the
-effect set, `EffectRequest` carries the three requested layers,
-`EffectRequest::resolve` applies the order, and `ForwardRenderer::begin_frame`
-resolves once per frame and freezes the answer. What follows is what that left.
-
-### The device-capability clamp is real and its rule set is empty
-
-`ForwardRenderer::device_effects` is `RenderEffects::all()`, and that is a
-statement about these three effects rather than an unfinished clamp:
-
-- AO has no device fact to gate on, which topic 18 says in as many words —
-  "inventing a capability that is really a performance opinion is what topic 39
-  exists to prevent".
-- The reflection pair says the same of itself in `crcbl_render::ssr`'s module
-  docs: every backend has a full-screen draw, a sampled `D32Float` and a sampled
-  `Rgba8Unorm`.
-- Shadows are a `D32Float` image and a depth-only pass. **Considered and
-  declined:** a rule requiring `max_image_2d >= shadow::atlas_extent()`. It is
-  true and it is unreachable — a device that fails it cannot create the atlas at
-  `build`, so the renderer never exists to be clamped, and writing the rule
-  would imply a degradation path that is actually a build failure.
-
-The clamp _step_ is exercised:
-`the_layers_resolve_in_the_order_topic_39_specifies` passes a reduced device set
-to `EffectRequest::resolve` and checks it wins over an override forcing an
-effect on. The first rule that fires arrives with the ray-traced variants, which
-`LightingPath` already selects.
+What `crcbl_render::effects` resolves and why the device-capability clamp's rule
+set is empty are in `docs/notes/rendering.md` under this heading.
 
 ### Coverage gaps this slice leaves
 
@@ -24615,73 +15996,8 @@ effect on. The first rule that fires arrives with the ray-traced variants, which
 
 ## The scene API: the slice plan (decided 2026-08-13)
 
-`apps/lantern` could not be built because an application cannot describe a
-scene: `ForwardRenderer::begin_frame` takes the cube's transform as an argument,
-five `set_*` methods place instances of meshes the renderer holds the ids of,
-and there is no material call on the type. The roadmap already put P9's scene
-work before S4B while P7B's deliverable named lantern. **Resolved by pulling the
-scene work forward**, rather than by moving lantern.
-
-The resident set is a description now — `crcbl_render::scene` and
-`ForwardRenderer::with_scene`, with `new` as `with_scene(&scene::demo())`;
-instances are a runtime API: `ForwardRenderer::add_instance` / `set_instance` /
-`remove_instance` over a `scene::InstanceDesc`, and the five `set_*` demo
-wrappers are gone; `begin_frame` no longer takes the cube's transform — the cube
-is an ordinary instance every caller places for itself, by `scene::DEMO_CUBE`
-and the other public demo indices. Materials and page layers are the caller's
-too: `PageDesc` at the caller's own extent, `push_layer` per layer,
-`SceneDesc::materials` row by row, refused at build when a row names a layer the
-page has not got. The pools are sized by `Capacities`, and a description that
-outgrows one of the four is refused up front rather than part way through
-filling it. `apps/lantern` is the application that consumed it, and what still
-binds a future caller is everything below.
-
-### The shape
-
-The resident set becomes a description the app hands to `new`; instances become
-a runtime API. That split is where the seam already is: pools, the cluster pool,
-the bucket table and the page are fixed at build and never grow, while
-`MaterialTable::insert` and `InstancePool::insert`/`set`/`remove` are already
-per-frame paths. A runtime `add_mesh` would mean recreating the camera's
-`DrawGen` and the four shadow ones plus every bind group naming their buffers
-mid-life, which is the streaming path `crcbl-render`'s own `mesh_pool` docs
-already assign to P9.
-
-### The slices left, in dependency order
-
-None. `apps/lantern` shipped on top of this API at milestone 1a, and it is the
-first and only consumer of it — everything else in the tree still draws
-`scene::demo`. What the sample still owes is its own entry, "`apps/lantern` is
-at milestone 1a"; what the API still owes is "Deliberately left at P9-proper"
-below.
-
-### Flat meshes only, and why that is not negotiable yet
-
-`build_meshlets` needs positions alone and emits vertex runs indexing the
-original array, so attributes survive exactly — a flat app mesh is fine. **A
-cluster DAG is not.** `crcbl_scene::simplify` is position-only and says so in
-its own module docs: a coarse level has no normals and no UVs. The engine's one
-DAG works because the dunes patch is analytic — `residents` synthesises each
-coarse vertex through `crcbl_shaders::dunes::vertex_at`. An app-supplied DAG
-needs attribute-aware simplification or nearest-source attribute transfer, which
-is unbuilt topic 25 work listed in that plan's own risks. `Geometry::Dag`
-carries that constraint in its own documentation, so the limitation is stated at
-the type rather than discovered.
-
-### Capacity: a documented cap the caller chooses, never growth
-
-The `POOL_*` constants are fields of `Capacities` now, whose `Default` is the
-numbers the engine shipped. Growth is out for the reason `mesh_pool` already
-argues — every bind group names those buffers. A description that outgrows one
-is refused by `ForwardRenderer::check_scene`, before the first device object
-exists, naming the pool, the capacity and what the description needs; the plan's
-"`MeshPoolError::PoolExhausted` must reach the caller un-flattened" turned out
-to be the wrong answer to that, for the reason the `SceneError` entry below now
-records. Worth knowing while sizing: raising the instance cap is not linear,
-since the LOD hysteresis buffer is per instance per `DrawGen` and there are
-five. `Capacities::instances` is the one number no description can be measured
-against — objects are placed while the renderer runs — so filling it is
-`InstancePoolError::PoolFull` from `add_instance` and nothing earlier.
+The plan, the shape it took, and what each landed slice found are in
+`docs/notes/rendering.md` under this heading. What the API still owes is below.
 
 ### Deliberately left at P9-proper
 
@@ -24693,84 +16009,10 @@ decision rather than a wiring job); RON scene files and the deterministic
 writer; hot reload; material templates; the glTF corpus; runtime `add_mesh`;
 texture slots beyond the page.
 
-### Where the refactor could silently change a frame
-
-Ordered by how quietly each would fail. Row 0 of the material table is what
-`GpuInstance::default` names, so a reordered description swaps the pyramids'
-materials. Mesh table ids come from upload order and the cull pass reads a
-bounding box out of the entry the instance names, which for a DAG is level 0's.
-Page layer numbers are a producer's own and nothing checks that a row names the
-layer its producer meant — a row pointed one layer along shades a surface with
-somebody else's texture. (Row (d) closed the older version of this: layer 0 used
-to have to be opaque white, and `GpuMaterial::NO_PAGE` is out of band now, so
-layer 0 is an ordinary layer and no page burns one.) `draw_gen`'s scatter takes
-the first bucket whose mesh id matches, so two buckets naming one mesh means the
-second never draws. Instance index is the LOD hysteresis key, inert with one DAG
-instance and not inert with two. And the rollback path gains new early-failure
-points that must sit on the same side of the self-cleaning handover, or a
-rejected description leaks two device-local buffers.
-
-**Four of these are invisible to `cargo test`**: `crcbl-render`'s unit tests run
-on the null backend and cannot tell a right frame from a wrong one. Every
-remaining slice is verified by `run-render-e2e.sh` and `run-vk-e2e.sh` on a real
-device or it is not verified.
-
-What the landed slices did about each, so the next one does not re-derive it:
-row order is `SceneDesc::materials` order and `material_rows` inserts in it,
-asserted by `scene`'s
-`the_demo_scene_shades_by_omission_through_an_untinted_row`; ids are description
-order, asserted by `forward`'s
-`the_description_resolves_to_the_ids_it_was_written_in`; a layer's length
-against its kind's extent is `PageDesc::check`'s to verify and a row naming a
-layer that kind has not got is `check_scene`'s; buckets are built by walking the
-mesh list, so a duplicate is not refused but unspellable; and every description
-check runs from the top of `ForwardRenderer::check_scene`, before the first
-device object exists, which `a_refused_description_creates_nothing_at_all` reads
-off the recorder's live object count — with one arm deliberately refused _after_
-the pool exists, so that count is evidence about `build_geometry`'s rollback and
-not only about `check_scene`.
-
 ### The materials-and-layers slice was almost entirely already done
 
-Recorded because the next reader will otherwise re-derive it. Of the three
-things that slice was scoped as, the first description slice had already
-delivered all three:
-
-- The constants a caller reads the pattern off — `PYRAMID_TINT`,
-  `PYRAMID_ROUGHNESS`, `CHECKER_TEXELS`, `CHECKER_LAYER`, `PAGE_EXTENT` — are
-  public on `crcbl_render::scene`, and `scene::demo` builds its page through
-  `PageDesc::empty`, `set_extent` and `push_layer` like any other caller.
-  `UNTEXTURED_TEXELS` does not exist any more, and neither does the burned white
-  layer it described: a material that names no texture carries
-  `GpuMaterial::NO_PAGE`.
-- A row naming a layer the page has not got is already refused by
-  `ForwardRenderer::check_scene`, naming the row, the layer and the page's layer
-  count, before any device object exists — and
-  `a_refused_description_creates_nothing_at_all` already has an arm for it. Not
-  duplicated.
-- `PageDesc` already lets a caller append layers and gives it no way to write
-  one at no extent, its fields being private and `set_extent` the only way to
-  size a kind.
-
-What was actually missing was **evidence**, not mechanism: every scene built
-anywhere in the tree was `scene::demo()` — three rows, two layers, one extent —
-so a `with_scene` that uploaded the first two layers and stopped, or inserted
-the first three rows and stopped, would have left all eleven goldens
-byte-identical and passed everything else. `forward`'s
-`an_app_page_and_table_reach_the_device_whole` is what closes that: a four-layer
-page at an extent that is not `PAGE_EXTENT` and six material rows, checked
-against the recorded `CopyBufferToImage` per layer and against the material
-buffer's bytes per row. Shown red three ways — the page upload truncated, the
-row insert truncated, and the row insert reversed.
-
-**Considered and declined: a `PageDesc::layer_bytes` accessor.** `extent² × 4`
-is computed in `check` and by any app producing texels for `push_layer`, so
-there is a real second caller for it. Left out anyway: it is a convenience
-rather than a sufficiency gap — an app has `extent(kind)` and the RGBA8 layout
-is documented on `push_layer` — and this slice's whole obligation was not to
-manufacture work. Re-checked when row (d) landed on 2026-09-06: still declined,
-and the per-kind extent makes it `layer_bytes(kind)` rather than a constant, so
-the accessor would now have to carry the kind too.
+What that slice found, and the accessor it declined, are in
+`docs/notes/rendering.md`. What it left owed:
 
 The instance-index risk is now **documented rather than removed**, on
 `ForwardRenderer::add_instance`: the index is the LOD hysteresis key and the
@@ -24785,70 +16027,6 @@ writes it, so clearing one instance's `group_stride` words means work recorded
 inside a frame, and the existing per-frame clearing dispatch is explicitly the
 thing that must not touch this buffer. Unmeasured whether the pop is visible at
 all.
-
-### Instance order is the caller's now, and it is what keeps a golden still
-
-`ForwardRenderer::new` used to insert the cube itself, so it was always instance
-0 and every `set_*` object landed above it. Nothing is inserted at build any
-more, so the pool's slot order is the order a caller places objects in — and the
-eleven goldens stayed byte-identical across the `begin_frame` slice and again
-across the setters' retirement because every caller places the cube **first**:
-`screenshot.rs`'s `place_cube`, `vk_e2e`'s `mesh::place_cube` / `place_cube_at`,
-and `forward`'s own test helper, each of which says so at the call site.
-
-Retiring the setters made this the whole risk of that slice, and it is why every
-converted call site is a straight `add_instance` in the setters' own order, why
-the toggling ones hold a handle and `remove_instance` before placing again
-rather than inserting twice, and why the three helpers that grew out of it —
-`screenshot.rs`'s `place`, `vk_e2e::mesh::place` and `forward`'s `place_demo` —
-each say the order is load-bearing where a reader will find it.
-
-Whether a different order would actually move a frame is **not measured**. The
-visible list is filled by an atomic, so the draw order is not the pool's order
-to begin with; but the instance index is `docs/plan/25-lod.md`'s hysteresis key
-(see the entry above), and a slice whose whole obligation was that no golden
-moves was not the place to find out.
-
-### A renderer nobody placed anything in records fewer dispatches
-
-Not a defect, and newly reachable. With an empty instance pool the cull dispatch
-covers no workgroups, and `DrawGen::add_passes` records **no dispatch at all**
-rather than one of zero — Metal rejects the empty dispatch, and the comment
-there says so. Before the cube became a caller's instance the pool was never
-empty, so this could not be reached from `ForwardRenderer` at all.
-
-`forward`'s
-`the_frame_records_one_indirect_call_per_bucket_whatever_the_scene_holds` is
-what found it: its no-pyramid half recorded 7 dispatches against the other
-half's 10. It places the cube in both halves now, so the two differ in the
-pyramid alone, which is what the test was always about. Nothing else in the tree
-draws a frame with an empty pool.
-
-### Declined twice: a `SceneError`, and the second reason retires the condition
-
-The description slice declined one as indirection with a single implementation,
-and set a condition for revisiting it: `MeshPoolError::PoolExhausted` reaching
-the caller un-flattened, because its `largest_free`-versus-`total_free` pair
-tells fragmentation from a genuinely full pool and `HalError` cannot carry that
-distinction. The capacity slice revisited it and **declined again, because the
-condition is not reachable at `with_scene`**.
-
-`build_geometry` creates the `MeshPool` and then fills it; nothing is ever freed
-in between, and `FreeList::alloc` is first-fit over a list that starts as one
-block, so every allocation comes off the front of a single trailing block and
-`largest_free == total_free` at every failure. The refusal a build can actually
-produce says so out loud — breaking the new check and letting the pool refuse
-instead prints
-`the largest free block holds 1 and 1 are free in total, out of a capacity of 1`.
-So the only thing exhaustion can mean here is "too small", the only answer is
-"raise the capacity", and both are known from the description before a device
-object exists. `check_scene` says it there instead, naming the pool, the
-capacity and the need.
-
-The condition becomes real when meshes can be freed and re-uploaded during a
-renderer's life — P9's streaming `add_mesh`, deliberately deferred — and that is
-the slice where the type earns itself. Not before: today it would still be one
-implementation, and it would be carrying a distinction that cannot arise.
 
 ### `add_instance` still cannot refuse a DAG the device cannot draw
 
@@ -24872,60 +16050,10 @@ one wants an error type on `add_instance` that says something other than "full
 pool", which is the type the entry above has now declined twice. No test covers
 a `Geometry::Dag` instance placed on that device shape.
 
-### The demo setters are gone, and what indexed the description besides them
-
-`set_pyramid`, `set_tinted_pyramid`, `set_textured_pyramid`, `set_open_box` and
-`set_dunes` are deleted, with `ForwardRenderer::place` — the body they shared,
-whose swallowed `InstancePoolError::PoolFull` this backlog kept as "it goes when
-they go" — and the five `Option<InstanceHandle>` fields, and the
-`REQUIRED_MESHES` / `REQUIRED_MATERIALS` floor `check_scene` enforced.
-
-**The floor was not held up by the setters alone**, which is what the plan for
-this slice assumed. `ForwardRenderer::build` also indexed the description at
-`DEMO_DUNES` in two places — the cluster range it published as `dunes_clusters`
-and the per-level bucket list it published as `dunes_level_buckets` — so with
-the check simply deleted, a one-mesh description **panicked** out of `build`
-rather than being refused. Both are per-description-mesh now: the fields are
-`mesh_clusters` / `mesh_level_buckets` and the accessors are
-`ForwardRenderer::cluster_range(mesh)` and
-`ForwardRenderer::level_buckets(mesh)`, whose only callers are
-`vk_e2e/mesh.rs`'s `read_cut` and `selected_dunes_level`. `forward`'s
-`a_description_smaller_than_the_demo_is_a_scene` is the test, and it was shown
-red both ways — against a restored floor, and against the positional indexing,
-where it fails with `index out of bounds: the len is 1 but the index is 3`.
-
-Nothing in `crcbl-render`'s non-test code names a `DEMO_*` constant any more.
-
 ### Where the capacity slice drew the line, and what it left to the pool
 
-`check_scene` owns what only the whole description knows — the four totals
-(vertices, indices, mesh table entries, material rows) against `Capacities`, and
-the cross-references between page, rows and DAG levels. What one mesh's _bytes_
-say stays the pool's: `MeshPoolError::VertexStrideMismatch` and `EmptyMesh` are
-still raised from inside `build_geometry`, mesh by mesh, and arrive as
-`HalError::Backend` carrying their numbers.
-
-**Considered and declined: hoisting those two into `check_scene` as well.** It
-would make every description refusal free, and it would also make the
-self-cleaning branch of `build_geometry` unreachable from any description — dead
-code with a test that could no longer drive it. Left where it is deliberately,
-so `a_refused_description_creates_nothing_at_all`'s last arm is a real path: it
-appends one byte to the open box's vertices, which is refused on the third of
-four meshes with the pool created, its buffers live and two meshes already
-staged into them, and asserts both that something _was_ created (or the arm
-proves nothing about the rollback) and that the live-object count came back.
-Shown red by removing `pool.destroy(device)` from `build_geometry` — 8 objects
-leaked, and that arm was the **only** failure in the whole `crcbl-render` suite.
-
-The four capacity refusals are `HalError::InvalidDescriptor` like every other
-`check_scene` answer, each asserted against a fragment of its own message so an
-arm cannot pass on another check's refusal, and each shown red by deleting its
-row from the table — every one of them then reached the pool and came back as
-`Backend`. The opposite mistake has its own test, because nothing else in the
-tree could fail on it: every other scene reserves far more than it holds, so a
-comparison written `>=` would pass the entire suite and refuse only the
-application that had sized its pools exactly right.
-`a_description_that_exactly_fits_its_capacities_is_built` is what fails there.
+Where the line was drawn, and the two per-mesh refusals deliberately left inside
+`build_geometry`, are in `docs/notes/rendering.md`. What is not covered:
 
 Not covered, and not attempted: `Capacities::lights` has no description to be
 measured against — a caller sets lights per frame — and no test drives its
@@ -24983,178 +16111,11 @@ nothing else.
 Also unmeasured: the cook's load-time cost — time the `cook-clusters` example
 rather than quoting a guess.
 
-### What the cook slice actually had to move, and what was already there
-
-`ClusterDag::cook` was **already** in `crcbl-scene` (landed with
-`crcbl lod gen`), so the `cook`/`sphere` pair in
-`crates/crcbl-shaders/tools/cook-clusters.rs` was a second copy of the same
-transcription with nothing between them. The example calls `built.cook()` now
-and its own copy is gone;
-`cargo run -p crcbl-shaders --example cook-clusters -- --check` is what says the
-move changed no byte, and it was shown red by perturbing one cooked vertex index
-(`they first differ at byte 4972`).
-
-New is `MeshletBuild::into_clusters`, which is the flat-mesh half an application
-needs and had no spelling at all: `build_meshlets` produces three private `Vec`s
-and `crcbl_render::scene::Geometry::Flat` takes a
-`crcbl_shaders::meshlet::MeshClusters`. `ClusterDag::cook` goes through it now
-too (`level.clusters.clone().into_clusters()`, the same three allocations the
-three `to_vec`s cost), so the mapping lives in one place.
-
 ## Screen-space reflections: the slice plan (decided 2026-08-14)
 
-The design and its refusals are in `docs/plan/18-render-features.md`'s SSR
-section. This is the slice order and what each one's observable is.
-
-**The attachment, march, blur, probe fallback and rough-surface integration have
-landed.** The cutoff remains at 0.5 because it gates marching rather than probe
-environment specular; the measured cutoff raise below remains a declined
-alternative, not pending work.
-
-What those slices found on the way, and what a reader of the design should know
-before writing the next one:
-
-- **The reach had to become a share of the frame.** The design said a fixed
-  pixel stride and a fixed loop bound, which a first cut read as a fixed pixel
-  _reach_ — and a reflection that shrinks as the window grows is the same defect
-  the design refuses one level down. `ssr.slang`'s `REACH_FRACTION` is the fix
-  and `docs/plan/18-render-features.md` carries the amendment.
-- **The forward pass stores its depth now.** `PassBuilder::clear_depth` is
-  `StoreOp::Discard`, and a discarded attachment is undefined rather than
-  "whatever was written": radv and llvmpipe handed the values back and wgpu
-  handed back the clear, so the same build reflected on one backend and not the
-  other with no error anywhere. Anything else that wants to read the depth
-  _after_ the forward pass inherits this.
-- **`Scene::PointShadow` earned a geometry-path budget.** Its caster carries the
-  tinted row, the only demo material under the cutoff, so it is the first scene
-  whose pixels come from a march rather than from shading the fragment the
-  rasteriser handed over — which makes the depth buffer's last bits visible in
-  the picture. One channel, off by one, on llvmpipe alone, stable across runs.
-  See `path_lsb_channels` in `crates/crcbl/tests/render_e2e.rs`.
-- **The cross-driver evidence, which the design asked for and had none of.**
-  `ssr.png` blessed on llvmpipe compares on radv and on wgpu at **max channel
-  delta 1, zero pixels over `Tolerance::RASTERISER`** — a _less_ divergent frame
-  than `cube.png`, which has no reflection in it and differs on 60% of its
-  pixels at the same delta. The structural ratio reads 92.8 against 64.0 on all
-  three, to the decimal. `lantern`'s room is where the exposure is visible: of
-  the nine pixels over tolerance between llvmpipe and radv, five are in the
-  panel's reflecting band and two of those are gross (deltas 66 and 33). That is
-  one fixture's worth of evidence, not a general argument, and the design's
-  recorded resolution — flatten the reflected content or drop the golden and
-  keep the ratio — has not had to be used.
-- **The stepping is gone, and it is measured rather than eyeballed.**
-  `the_reflection_does_not_step_down_the_band` in
-  `crates/crcbl/tests/render_e2e.rs` takes the **second** difference of the
-  reflection down single rows of `Scene::Ssr`, so a reflection that merely fades
-  down the band scores zero and only the alternation counts: 17.7 levels per row
-  with `ssr_blur.slang`'s kernel cut down to its centre tap, 2.8 with the real
-  one, limit 8. A block average hides it, which is why every other claim on that
-  scene cannot see it and why the review PNG was the only evidence before.
-- **The blur reduced cross-driver divergence where it mattered.** On the 192
-  pixels of `lantern`'s room the blur changed, llvmpipe and radv disagree by at
-  most **8** and 27 are over `Tolerance::RASTERISER`; the unfiltered march's
-  worst inside the panel's band was 66. The pixels over tolerance that remain
-  gross (worst 134) are **bit-identical to the pre-blur frame** on llvmpipe, so
-  they are triangle-edge divergence and not the reflection's. A sixteen-tap
-  denominator turning one whole-pixel disagreement into a spread of small ones
-  is exactly what the AO pair's design predicts.
-
-### lantern's mirror panel is close to SSR's worst case
-
-Worked out by hand before the slice and **measured** by it since. The panel
-faces `+Z` at the camera, so its rays point back past the viewer and its centre
-reflects a point on the front wall behind the camera — off screen, a miss. Only
-where the panel point is below eye height do rays go downward, and the band that
-reaches the floor _while still inside the frame_ is narrower than the hand
-estimate: `y = 0.45` up to about `0.607`, an eighth of the face rather than two
-thirds, because the vertical frustum edge binds before the geometry does.
-`room.rs`'s `the_mirror_panel_reflects_at_its_foot_and_not_at_its_head` bisects
-for that height rather than writing it down.
-
-So the observable is a block hung on the panel's **bottom edge** against one
-further up the same face — same material row, same normal, same `F0`, same
-roughness, same absence of direct light, differing only in whether the ray finds
-anything. It reads about 22/255 against exactly 0 at 256×192 and 18 against 0 at
-1280×960.
-
-**`METAL_DARKNESS` is gone, not kept** — this entry said it survived at
-`MIRROR_MISSES` with its number unmoved, and that was wrong on every count;
-`71ef3e2 feat(render): fill SSR misses from probes` deleted it, and it resolves
-nowhere in the tree (checked 2026-08-23). What stands at that control point is
-`MIRROR_FRACTION_OF_PLASTER` in `apps/lantern/tests/golden.rs`, which asserts
-the opposite sense — a floor on the brightness a miss retains, rather than a
-ratio by which it must be darker, because a miss is filled from the probes now
-instead of going black. `MIRROR_GRADIENT` is the central claim beside it, and
-`reflecting > LIT_FLOOR` is the floor that stops a ratio against zero from being
-a check that cannot fail.
-
-**Considered, and for the sample's owner rather than the SSR slice:** if lantern
-wants a mirror showing the room, the panel wants angling or moving to a side
-wall. That is a change to the sample's content and should not be done on the way
-past.
-
-### The cutoff raise: what it costs, measured before it was declined
-
-The blur slice was written with `ROUGHNESS_CUTOFF` at **0.75** first, run
-end-to-end, and then split back out — so the cost below is measured on this tree
-rather than estimated, and slice 1 above starts from an answer instead of a
-guess.
-
-**Two questions to settle before writing it.**
-
-- **Is 0.75 the smallest cutoff that gets `ROUGH_METAL` reflecting?** It was not
-  derived; it was placed between `lantern`'s brass at 0.55 and its plaster at
-  0.9. The ramp is `1 - roughness/cutoff`, so brass weighs 0.083 at a cutoff of
-  0.6, 0.214 at 0.7 and 0.267 at 0.75 — and the falloff comparison needs the
-  brass reflection to clear `LIT_FLOOR` and to turn that face's own downward
-  gradient around, which at 0.083 it may not. **Unmeasured below 0.75**, and
-  worth measuring: a lower cutoff buys nothing in blast radius (any value over
-  0.5 takes `UNTINTED` in) but it does keep more of the frame's arithmetic near
-  zero.
-- **Does any cutoff over 0.5 cost the determinism claim?** Yes, and it should go
-  on the record as a decision rather than arrive as a side effect.
-  `GpuMaterial::UNTINTED`'s roughness is exactly 0.5, no monotone ramp passes
-  0.55 and stops at 0.5, and the design's one _unconditional_ determinism
-  statement is that a pixel shaded through that row weighs exactly zero on four
-  rasterisers. Raising the cutoff at all trades that for "the rough end —
-  plaster, a fully rough conductor, `crcbl_scene`'s imported glTF default —
-  weighs exactly zero", which is a real claim and a narrower one.
-
-**What it moved, at 0.75, on llvmpipe.** Nine goldens: `ao` 41.3% of its pixels
-at delta 3, `dunes` 6.6% at 9, `spot_shadow` 5.5% at 16, `cube` 0.07% at 1,
-`lights` 0.04% at 1, `crcbl-vk/mesh_clusters` 12% at 5 — all of those purely
-because `UNTINTED` entered the ramp — plus `ssr` and `point_shadow` moving
-further than the blur alone moved them (0.25 weighs 0.667 where it weighed 0.5)
-and `lantern/room` gaining the brass block's reflection. `ui`, `sprite`, `spot`
-and every sprite and UI golden in `crcbl-vk` stayed byte-identical.
-
-**What it broke.** Two byte-exact geometry-path comparisons: `Scene::Ao` in
-`render_e2e` (four channels, off by one, llvmpipe only, stable over three runs)
-and `crcbl-vk`'s open box in
-`a_multi_cluster_mesh_draws_the_same_frame_through_both_geometry_paths` (one
-channel, off by one, llvmpipe only). Both for `Scene::PointShadow`'s recorded
-reason — a marching pass makes the depth buffer's last bits visible in the
-picture, and the two paths compute the same world position through different
-arithmetic. **If that slice re-adds a budget to `crcbl-vk`, it should be the
-measured value per comparison and not `render_e2e`'s 16**: that constant is
-per-scene there and zero everywhere it holds, and handing a second suite a
-blanket sixteen is slack nobody measured.
-
-**What the observable would be.** A sixth claim in
-`apps/lantern/tests/golden.rs`, in the shape of `render_e2e`'s
-`the_smooth_pyramid_holds_a_tighter_highlight_than_the_rough_one`: two blocks up
-each conductor's face, hung off its bottom edge five half-extents apart, and the
-brass block's falloff asserted above one while the panel's is not. It reads
-1.211 at 256×192 and 1.156 at 1280×960 with the cutoff at 0.75, against 1.007
-and 0.897 with no reflection on that row — so a threshold near 1.08 has about a
-fifteenth of margin either side. **The block's own shading runs the other way**,
-which is what makes the measurement a claim about the reflection: the sun
-reaches that face at a glancing angle and it darkens towards the floor, so a
-build with no reflection on it reads _under_ one. It needs `BLOCK_FOOT` in
-`room.rs` — the middle of the block's bottom edge — and a no-GPU bisection
-beside `the_mirror_panel_reflects_at_its_foot_and_not_at_its_head` showing that
-the block reflects across most of its face where the panel reflects across an
-eighth of its own.
+Every slice has landed; what they found, `lantern`'s panel geometry, the
+declined cutoff raise and the shared-helper guards are in
+`docs/notes/rendering.md` under this heading. What is left is coverage.
 
 ### The roughness weight is unmeasured, and no assertion was invented for it
 
@@ -25173,88 +16134,10 @@ mirror-grade strip laid into the brass block's face, or the panel standing on
 the floor rather than on a plinth. Both are changes to a sample's content, which
 the SSR slices have kept declining to make on the way past.
 
-### `crcbl-vk`'s mesh goldens differ from a render on this machine, and always did
-
-`mesh.png`, `mesh_ortho.png` and `mesh_second.png` differ on **100%** of their
-pixels at max channel delta 2, and `mesh_shader_triangle.png` and `triangle.png`
-on a few percent at delta 1 — on llvmpipe, with zero pixels over tolerance, so
-every one of them passes. `crcbl`'s own goldens are exact on the same machine,
-so those files were blessed against a different driver or Mesa version.
-
-Nothing was re-blessed for it. Recorded because a blanket `CRCBL_BLESS=1`
-absorbs that drift into whatever commit runs it — the blur slice did exactly
-that and had to restore four files by name. **Bless the golden that failed, by
-name.**
-
-### One shared-code hazard
-
-`ssr.slang` re-declares `depth_at`, `view_position` and `normal_at` verbatim and
-`ssr_blur.slang` re-declares `depth_at` and `view_z`, because this repo has no
-include mechanism by design — the manifest hashes one source per artifact.
-`crcbl_shaders::ssr`'s `the_shared_screen_space_helpers_have_not_drifted`
-compares the bodies as text and holds all of them: four copies of `depth_at`,
-two each of `view_z`, `view_position` and `normal_at`. (The plan said three
-copies of `normal_at`; `ssao_blur.slang` carries `depth_at` and a `view_z` cut
-down from `view_position`, not a normal.)
-
-Two shader **constants** are copied as well, and each has a guard beside that
-one: `DEPTH_FAR`, which every screen-space source declares and
-`the_far_plane_matches_the_constant_the_reflection_pair_declares` checks against
-`crcbl_shaders::ssao::DEPTH_FAR`; and `THICKNESS_FLOOR`, which the march and its
-blur both declare and `the_thickness_floor_matches_the_one_the_march_declares`
-holds together. The blur has no ray, so that floor is the only length the march
-owns which it can still evaluate — which is why it is a copy rather than a
-uniform field.
-
-Making that an equality rather than a substitution cost one rename: all three
-files bind the projection block as `camera` rather than as `ssao`, because
-`view_position`'s body names it. No compiled instruction moved and no golden
-did.
-
 ## The browser entry point is shared; what the move left behind (2026-08-15)
 
-S1B finding 2 is closed: `crcbl::web_exports!` writes the ten
-`#[unsafe(no_mangle)]` symbols and the page state, and every sample's `web.rs`
-invokes it. It was landed as a move, and these are the things it deliberately
-did not fix.
-
-### `asset_source` has no caller in the four samples that define it
-
-The four samples that define it — asteroids, breakout, flappy, horde — export
-`pub fn asset_source() -> Option<Rc<FetchSource>>` and none of the four calls
-it. `opfs_store` is genuinely used (`crate::best` in three of them,
-`crate::high_score` in breakout).
-
-**It is no longer the speculative half, though: `apps/viewer` has a caller.**
-`apps/viewer/src/shelf.rs` resolves every browser shelf key through it, which
-makes the viewer the pattern any of the four would copy rather than an argument
-for deleting the accessor.
-
-Left alone because the task was a move and deleting it is a public-API change to
-four sample crates in the same commit as the migration. It is **not** a wasm
-export — it has no `#[unsafe(no_mangle)]`, so removing it cannot change what the
-shim resolves. Deleting it is a two-line-per-sample change whenever someone
-wants it gone.
-
-### The unit test cannot observe `prepare`'s log line
-
-`web::tests::the_generated_exports_drive_the_page` invokes the macro over the
-`FakePending` fixture and drives nine of the ten symbols. It **cannot** assert
-that `prepare` logs, because `log::set_logger` is process-global and
-`args::tests::the_front_end_returns_the_contract_exit_codes` calls
-`crcbl::core::log::init_logging` in the same test binary — whichever runs first
-wins, and the assertion passed alone and failed in the suite. It was observed
-failing both ways before being rewritten to push onto `LOG` directly.
-
-What covers the line instead is `web/tools/smoke.mjs`, which `web/build.sh` runs
-per demo against the real artifact and which asserts "the log queue delivers the
-line prepare wrote". The exact rendered text was also read out of all five
-browser-gate page logs: `<name>: prepared; assets from assets/`, unchanged from
-the literal each sample used to carry, because the macro reaches it through
-`HostedGame::NAME`.
-
-`boot` is the tenth symbol and is not driven by the unit test at all: it opens a
-`Web` shell, which exists only on `wasm32`. The browser gate is its only cover.
+What the move deliberately did not fix, and what covers `prepare`'s log line
+instead, are in `docs/notes/browser.md` under this heading.
 
 ### `crates/crcbl/src/web.rs` is now the size that was the reason for the move
 
@@ -25264,34 +16147,10 @@ and its expansion are a separate responsibility from the state machine they
 drive — but it would have to become `crates/crcbl/src/web/` with `mod.rs` and
 `exports.rs`, which was outside this task's file set.
 
-### The macro is reachable by two paths
-
-`#[macro_export]` puts it at `crcbl::web_exports!`, and a
-`#[doc(inline)] pub use` in the module makes `crcbl::web::web_exports!` work
-too. The samples all call it as `crcbl::web_exports!`. Nothing enforces that; a
-future sample writing the longer path is not wrong, just inconsistent.
-
 ## The command stream's contract, read from the other side
 
-`crates/crcbl-webgpu` encodes the browser command stream and
-`web/engine/gpu-stream.js` decodes it. Writing the second implementation against
-the first surfaced six things about the contract. Three were fixed in the same
-change and are gone from here; these are the three that were not.
-
-### A bad presence byte and a bad enum code report the same error
-
-`read_opt_string` passes its own field name down to `read_present`, so a
-malformed presence byte on `BufferDesc::label` surfaces as
-`InvalidEnum { field: "BufferDesc::label", code: 2 }` — the same shape a bad
-`MemoryLocation` code produces. The two are different defects: one is a
-structural framing error, the other a value the far side does not recognise.
-Nothing in the docs says which a reader is looking at, and a JS implementer has
-to trace two calls to find out.
-
-A distinct `DecodeError` variant for a non-canonical presence byte would say it
-plainly. Not done because it widens a public error enum for a case that has not
-bitten anyone, and the JS half matched the current behaviour deliberately so the
-two agree.
+The two contract findings that were declined are in `docs/notes/backends.md`
+under this heading.
 
 ### `MEMORY_*` is the only enum code table not named for its enum
 
@@ -25300,16 +16159,6 @@ are `MEMORY_DEVICE_LOCAL` and siblings. Trivial, and the only cost is that a
 reader has to grep to be sure there is no separate `Memory` enum. Renaming
 touches both halves of the format and the fixture stays valid, since names are
 not on the wire.
-
-### The JS decoder is hand-written against the Rust tag table
-
-The fixture check catches drift, which is why this is not urgent — but it
-catches it rather than preventing it. Generating `gpu-stream.js`'s constants
-from `tag.rs` would make a whole class of disagreement impossible instead of
-merely detected. Declined for now: it adds a codegen step to a build that has
-none, and the failure it prevents already fails loudly in the Pages job on every
-pull request. Worth revisiting if the tag table grows to the full surface and
-the two tables start being edited in separate sessions.
 
 ## What the reply channel still owes
 
@@ -25341,28 +16190,8 @@ wiring.
 
 ## `webgpu` is a refusal on native, and the browser's only backend
 
-`crcbl::backend::REGISTRY`'s `GpuBackend::WebGpu` entry returns
-`WEBGPU_NOT_IMPLEMENTED` on native. On `wasm32` it does not: its `open` starts a
-real `crcbl_webgpu::WebGpuInstanceOpen`, and with `crcbl-wgpu` deleted on
-2026-08-21 there is no second candidate a build flag could reach, so it is the
-browser's only automatic backend.
-`exactly_one_backend_is_auto_selectable_and_it_depends_on_the_target` is what
-pins that, so a change there is a deliberate edit rather than something that can
-drift.
-
-It is registered rather than left out on purpose: an unregistered name yields
-`UnknownBackend`, which reads as a typo, where the registered refusal reads as
-work not yet done.
-
-### The e2e scripts' backend hints omit `webgpu` deliberately
-
-`crates/crcbl/tests/run-render-e2e.sh` and
-`apps/lantern/tests/run-lantern-golden.sh` carry a "Name one:" usage hint
-listing the backends that can draw a golden. `webgpu` is not among them and
-should not be until it can render. **No script validates backend names against a
-whitelist** — every one passes `CRCBL_GPU` and `--backend` straight through and
-lets the Rust reject them — so these hints are documentation, not gates, and
-nothing fails if they lag.
+Why it is registered rather than left out, and why the e2e scripts' hints omit
+it, are in `docs/notes/backends.md` under this heading.
 
 ### The env-var path is not covered automatically
 
@@ -25381,26 +16210,8 @@ only comes from CI.
 
 ## The adapter reply is not filtered, though the mapping is now gated
 
-`web/engine/gpu-replay.js` maps a browser's `adapter.features` onto
-`crcbl_hal::Features` and reports what the browser said. Two different things
-could go wrong with that, and as of 2026-08-22 they have different answers.
-
-**Half closed: the mapping can no longer outrun the stream.**
-`web/tools/gpu-replay.mjs` gained a section that reads `FEATURE_MAP`'s keys out
-of the table itself — `halFeaturesFor` is handed a `Set` whose `has` records
-what it is asked and answers `false`, so the walk yields the table's keys in its
-own order — and for each key replays the command that feature governs against a
-stub device that opened with it, reading back what reached WebGPU. A row added
-for a feature whose commands do not exist yet has nothing to drive and fails.
-Red-checked both ways: a bogus `shader-f16` row fails naming it, and making
-`Replayer#createGraphicsPipeline` drop `unclippedDepth` fails
-`depth-clip-control` and prints the descriptor that was recorded. `pages.yml`
-runs the suite, so it is a CI gate and not a local one.
-
-`indirect-first-instance` is the weak row and the code says so: WebGPU exposes
-no field for it — the feature lifts core's `firstInstance == 0` rule and the
-value lives in the indirect buffer — so the evidence is only that the indirect
-draws it governs are replayed at all.
+The gate that keeps `FEATURE_MAP` honest, the per-feature witness groups and
+what was measured for each are in `docs/notes/backends.md` under this heading.
 
 **Still open: `Instance::adapters` withholds nothing.** This entry used to say
 the intersection was owed "the moment an `impl Instance` exists". It exists —
@@ -25417,107 +16228,6 @@ and served today and stops being served tomorrow, and only a filter on the reply
 can. What a filter would need is a list, on the Rust side, of the capabilities
 this crate's command set can encode — which is what `Device::supports` already
 answers for a device, and what nothing answers for an adapter.
-
-**What a runtime filter would still add is narrower than it sounds, measured
-2026-08-22.** The new gate drives each mapped feature against a **stub** device
-in node and reads the descriptor back, so it answers for the _replayer_. It does
-not answer for the Rust encoder: the gate builds the command object in JS
-(`{ ...graphicsPipeline, primitive: { ...primitive, depthClamp: true } }`), so a
-`crcbl-webgpu` that could not encode the field would still pass it. Each link of
-that chain is separately held — `writer.rs` puts the bool, `reader.rs` reads it,
-`gpu-stream.js` decodes it — which is why this is a coverage note and not a
-defect.
-
-**The instance this named has shipped.** It read: every pipeline in `probe.rs`
-sets `depth_clamp: false`, so no Rust-originated command had ever carried
-`depth_clamp: true` to a real browser, and the bit was reported to callers on
-the strength of a node stub. Group AH now draws a triangle past the far plane
-through two pipelines differing only in that flag and reads back that the
-clamped one kept its fragments and the control one did not — on SwiftShader
-under Xvfb and on the RX 7900 XTX. `probe_device_desc` asks for `DEPTH_CLAMP`
-optionally to get a device that can, and the module's parsimony argument is now
-an admission test rather than a list.
-
-What that leaves is the general point, which still stands: the JS gate answers
-for the replayer, and only a group like AH answers for the wire.
-`indirect-first-instance` has since got its group — **AI**, two indirect draws
-off argument structures differing only in `firstInstance`, landing a half-target
-apart — so **two mapped features are left without one**:
-
-- **`texture-compression-bc` has its group — AK — and what it left owed is a
-  branch nothing here can reach.** The group uploads an 8×8 BC1 source as four
-  blocks, one per quadrant, every index zero so every texel decodes to its
-  block's `color0`, and holds each quadrant against that endpoint byte for byte.
-  The endpoints are **cube corners** (`red`/`green`/`blue`/`yellow`), and that
-  is the whole design rather than a detail: D3D 11.3 §19.5.2 permits a decode
-  tolerance across every channel of every texel — about ±8.65 in UNORM8 against
-  a black `color1` — with no carve-out for the endpoints, and mandates bit
-  accuracy only for BC6H and BC7. Its one exactness clause is that values the
-  reference decodes to 0.0 or 1.0 must always be exact, and the rails are also
-  the only place D3D's bit replication and Khronos Data Format 1.3 §18.1's
-  rational agree (they part at 5-bit 3, 7, 24, 28 and 6-bit 11–15, 48–52).
-  `the_four_bc_sample_colours_are_exact_on_every_decoder` holds the four to both
-  formulas and carries a vacuity guard proving the two are different arithmetic.
-  Both local adapters decoded them byte-exact.
-
-  **This entry said "SwiftShader does not report the feature" and that was
-  wrong** — measured 2026-08-23, its adapter lists `texture-compression-bc` and
-  the device opens with it. So **AK's absent branch is taken by no adapter
-  available here**, neither SwiftShader under Xvfb nor the RX 7900 XTX. It is
-  guarded rather than merely present — a device that drops the feature while the
-  adapter keeps it fails the group, and a probe reporting the feature absent on
-  a device that can create a BC texture fails it too, so "not supported" cannot
-  arrive as "passed" — but the branch itself has run nowhere. Whether the macOS
-  or Windows runner reaches it is the open question; if none does, the branch is
-  reasoned-about code with no execution anywhere, which is the same standing as
-  group AI's absent branch.
-
-  **Answered 2026-08-23 on `ab706a0`'s Pages run: no runner reaches it either.**
-  Both seam-probe jobs report `texture-compression-bc` on the device — Windows
-  `[core-features-and-limits, depth-clip-control, indirect-first-instance, texture-compression-bc, timestamp-query]`,
-  macOS the same without `timestamp-query`. So AK's absent branch is taken by no
-  adapter and no runner, and is code reasoned about and never executed. Group
-  **AL** is the contrast: macOS lacks `timestamp-query`, so its absent branch
-  runs on a real job every time, which makes it the first of these whose absent
-  half anybody can watch. Runner images drift, so both readings are dated and
-  were read off a CI log rather than reasoned about.
-
-- **`timestamp-query` has group AL, and the sweep it demanded refuted the
-  premise this entry gave.** The entry said browsers quantise timestamps for
-  privacy, so "non-zero" and "strictly increasing" were unsafe without measuring
-  first. The measuring happened on 2026-08-23 and **nothing quantises on either
-  adapter here**: SwiftShader's ticks have gcd 1 with gaps as small as 70 ns
-  over 288 distinct values, and `amd rdna-3` sits on a 40 ns intra-frame grid
-  over 320 — what a 25 MHz counter gives. An empty pass's span was never zero in
-  152 samples. Explicitly _enabling_ `timestamp_quantization` changed nothing,
-  so the mechanism is not established; `--enable-unsafe-webgpu`, which
-  `browserFlags` passes everywhere, is a suspicion and no more. Group AF's
-  comment asserted the 100 µs figure and now states what was measured instead.
-
-  The advice survives its own premise: AL gates a **separation**, not a duration
-  — every busy pass outspans every empty pass in the same frame, plus a
-  non-decreasing boundary array — so no nanosecond constant enters the assertion
-  and a quantising browser only widens the gap.
-
-  **The Windows runner is measured now, and it does not quantise either.**
-  `14c89de`'s Pages run reported AL's margin there as **155053×** — 8 busy
-  passes spanning 527181300–532648300 ns against 8 empty ones at 400–3400 ns. A
-  browser quantising to 100 µs would have floored every empty span to zero; none
-  did. That is a third independent environment agreeing with the sweep, and the
-  rung needs no revisiting. macOS took the absent branch and **asserted** it —
-  "opened a device without `timestamp-query`, so no `GPUQuerySet` of that type
-  could exist" — which is the branch running rather than being excused.
-
-  The original note, kept for what it still covers: Linux runs SwiftShader and
-  macOS takes the absent branch, so Windows is the one job where the present
-  branch runs on a device nobody here has profiled. AL's second check prints the
-  ratio, so the next Pages run reports it: a margin near 1 means the workgroup
-  count wants revisiting, and a quantised one would be the first evidence of
-  what quantisation does to this group. Both gcd findings are from one developer
-  machine.
-
-AI cost about as much as AH and bought the same kind of witness, so the pattern
-is proven; what is unanswered is only whether these two are worth it.
 
 ### The probe gate's expected local failure is now documented, not prevented
 
@@ -25540,41 +16250,6 @@ Xvfb — only the harness knows both halves, so either the harness has to tell t
 driver to hold that group back (there is no such switch; `--expect-fail` changes
 the verdict, not whether it runs) or the page needs the fact passed in.
 `--expect-fail X` is the honest interim, and the run now says so.
-
-**Every mapped feature is served today**, so nothing is currently misreported
-through either half. `TIMESTAMP_QUERY` used to be the standing example and is
-not one any more: `crcbl-webgpu/src/command.rs` defines
-`Command::CreateQuerySet`, `probe.rs` calls `stream.create_query_set`, and
-`gpu-replay.js` has `createQuerySet`.
-
-### Considered and declined
-
-- **`GPUAdapter.isFallbackAdapter` as `DeviceType::Cpu`.** It grades
-  _performance_, not device class; a fallback adapter is not necessarily a CPU
-  one, and the mapping would put a guess where the honest answer is "declined to
-  say".
-- **Reporting `max_sampler_anisotropy: 16` and granting `SAMPLER_ANISOTROPY`**,
-  the way `crcbl-wgpu` did before it was deleted. WebGPU accepts `maxAnisotropy`
-  above 1 but reports no queryable ceiling, and `Limits` is what the backend
-  _guarantees_ — 16 would be a number nothing told us.
-
-### Group AI's absent branch has never been taken
-
-Measured on Pages run for `eb8b6b2`, the first run since AI landed whose seam
-probes were not cancelled. Every browser this project can reach reports
-`indirect-first-instance`: Chromium on Linux locally, the hardware RDNA-3
-adapter locally, SwiftShader on the Windows runner and the browser on the macOS
-runner all took the **present** branch and produced the pixel verdict. So the
-`NotOnThisDevice` half of group AI — the one that passes with a message saying
-there is nothing to hold the capability to — is written and unrun.
-
-Not a defect and not obviously fixable: the branch exists because the capability
-is optional, and no runner here lacks it. It is recorded because an untaken
-branch that always passes is the shape `docs/plan/12-testing.md` warns about,
-and because the same branch in group AF **is** taken — the macOS runner opens a
-device without `timestamp-query` — which shows the machinery works in general
-while saying nothing about AI's copy of it. If a runner ever loses the feature,
-this is the entry that says the path was never proven.
 
 ### Coverage gap in what the browser corroborates
 
@@ -25614,79 +16289,29 @@ The draw-args pass is at exactly 8 storage bindings now and all eleven golden
 scenes render on a software adapter. Three things that slice surfaced and did
 not fix:
 
-- **Settled — `ssr` and `ui` are excused by name on SwiftShader, and widening
-  the tolerance was declined.** The choice this entry posed was between widening
-  `Tolerance::RASTERISER` for those scenes and recording them as known
-  software-rasteriser differences. The second was taken: the `render-harness`
-  job's Linux and Windows legs pass `--expect-fail ssr,ui`, both scenes still
-  render and still print their numbers every run, and
-  `web/tools/render-harness-verdict.mjs` fails the job the moment either starts
-  matching or anything else stops. Widening instead would have quietly weakened
-  all eleven scenes to excuse two. The macOS leg carries **no** excuse list and
-  gates all eleven, which is what says these are a rasteriser limit rather than
-  a backend defect. The reasoning is in `.github/workflows/pages.yml` above the
-  `render-harness:` job, which is where someone re-opening it will be standing.
+The settled `ssr`/`ui` excuse list is in `docs/notes/rendering.md` under this
+heading.
+
 - **`crcbl-dx12`'s register case list claims "every shader is listed" and omits
   `clear_counters`.** Found while updating `draw_gen`'s row; pre-existing. The
   table transcribes each shader's binding classes so the register assignment can
   be asserted, so a missing shader is an unasserted one.
 
-## DECISION NEEDED — the seam does not say whether an acquire is exclusive
+## The seam does not say whether an acquire is exclusive
 
-Found while fixing dx12's missing acquire tracking; not a dx12 bug, and not
-something to fix on one backend alone.
+**DECIDED 2026-09-06 —** The seam says an acquire is **not** exclusive. Vulkan
+permits more than one image to be acquired at once and bounds it by the ring's
+size, Metal's `nextDrawable` blocks on an empty pool rather than refusing,
+WebGPU has no second acquire to make, and DXGI has no acquire at all — so
+refusing would forbid on all four what three of them offer, and would red dx12's
+own e2e job for a loop that is not doing anything wrong. What that schedules:
+`crcbl-vk`'s single `entry.acquired` slot in `acquire_next_frame`
+(`crates/crcbl-vk/src/device.rs`) has to model the ring rather than overwrite,
+and `crates/crcbl/tests/hal_seam_e2e.rs` gains a case that acquires twice and
+expects `Ok` twice on every backend it runs.
 
-- **Acquiring twice without presenting is accepted** by dx12, vk and mtl — each
-  simply overwrites the outstanding acquire — and by `crcbl-webgpu`, whose
-  `acquire_next_frame` in `hal/device.rs` allocates a fresh image and view and
-  returns `Ok` with no outstanding-acquire state at all. **The one backend that
-  refused it was `crcbl-wgpu`**
-  (`"acquire_next_frame with a frame already acquired; present it first"`),
-  deleted 2026-08-21 — so the divergence that raised this question is gone and
-  every surviving backend now accepts the call. The question it raised is still
-  open, and making them refuse would turn dx12's own e2e job red today: the
-  windowed loop in `crcbl-dx12/src/swapchain.rs` acquires and then calls
-  `draw_and_present`, which acquires again before presenting. Decide what the
-  seam means before adding it to `hal_seam_e2e.rs`.
-
-The suite that would hold every native backend to an answer already exists
-(`crates/crcbl/tests/hal_seam_e2e.rs`, run by CI on WARP, lavapipe and Metal),
-so this is a decision rather than infrastructure.
-
-**The question is answered: accepting a second acquire is right, and refusing it
-would have been stricter than every API underneath.** Vulkan permits more than
-one image to be acquired at once — that is what lets a mailbox swapchain keep a
-frame in flight while the next is drawn — and bounds it by the ring's size
-rather than at one; Metal's `nextDrawable` vends from a finite pool and blocks
-when it is empty rather than refusing; WebGPU has no acquire to call twice,
-since `getCurrentTexture` hands back the same texture for the rest of the frame;
-and DXGI has no acquire at all, only a current back-buffer index. A seam that
-refused the second call would forbid on all four what three of them offer, and
-it would turn dx12's own e2e job red for a loop that is not doing anything
-wrong. **So the seam should say an acquire is not exclusive**, and `crcbl-vk`'s
-single `entry.acquired` slot — which overwrites, in `acquire_next_frame` in
-`crcbl-vk/src/device.rs` — is the thing that does not model the ring rather than
-the caller being at fault. Verified in the tree; the per-API statements are from
-the specifications and were not re-read for this note.
-
-**Two method lessons from the half that closed** — `acquire` → `reconfigure` →
-`present`, now refused by `a_present_without_an_acquire_is_refused` in
-`crates/crcbl/tests/hal_seam_e2e.rs` on every backend that suite runs, by
-`a_present_without_a_matching_acquire_is_refused` in `crcbl-hal`'s null backend,
-and — since `crcbl-webgpu` is a native binary the agnostic suite does not reach
-— by `a_present_with_no_acquired_frame_is_refused` in that crate's own
-`hal::tests`. Both lessons are about how the work was parked, not about the
-code:
-
-- Parking it assumed closing the hole _required_ an agnostic test, which would
-  have reddened the two deferred backends. It did not. **"Fixing it needs an
-  agnostic test" is the assumption to check before parking anything else on the
-  deferral.**
-- `crcbl-webgpu` had to record both an outstanding acquire and the fact of
-  having presented it, which the other backends keep in one place.
-  `SwapchainState::presented` records the second without disturbing the first.
-  **Worth remembering as a shape**: "these two facts are stored in one place on
-  the other backends" is not a reason they must be here.
+The per-backend survey behind that answer, and the two method lessons from the
+half that closed, are in `docs/notes/backends.md` under this heading.
 
 ## Seam obligations no test enforces, from a survey (2026-08-24)
 
@@ -25780,23 +16405,6 @@ side — `crcbl-webgpu`'s `writer` module says in its own comments that the spli
 of enforcement between the encoder and the replayer is where "an unenforced rule
 both sides assume the other checks" could hide, and that was not audited.
 
-## What the indirect-rule wiring left owed (2026-08-24)
-
-The offset, stride and bound rules now live in `crcbl_hal::indirect` and
-`crcbl-vk`, the null backend and `crcbl-webgpu` call them. Three things that
-slice deliberately did not do.
-
-- **`crcbl-webgpu` does not enforce the bound, by design.** Its encoder holds a
-  channel and a handle pool and cannot reach a buffer's length, so it calls
-  `check_layout` (offset and stride) and leaves the bound to the browser, which
-  validates the indirect range itself and reports it. This is an
-  enforcement-location difference rather than a capability divergence, so it is
-  deliberately **not** a `parity_blockers()` row — recorded here so it is not
-  rediscovered as a gap. Closing it would mean giving the encoder a handle on
-  the device's buffer table (the `buffers` map already exists for
-  `check_buffer_range`), which is a larger change than the rule was worth; the
-  option is real if a reason appears.
-
 ## Image-view subresources: what the rule left owed (2026-08-24)
 
 `ImageViewDesc::check` is on the seam and `crcbl-vk`, the null backend and
@@ -25828,13 +16436,19 @@ slice deliberately did not do.
 
 ## Decision: should `crcbl-webgpu`'s encoder see device state? (2026-08-24)
 
-**DECIDED 2026-08-30 — option A, leave it:** the browser validates the range and
-the offsets itself; the seam's asterisk stays recorded here.
-`WebGpuCommandEncoder` holds a `SharedChannel` and a `HandlePool` and nothing
-else. The device holds the tables — `buffers`, `layouts`, `images`, `swapchains`
-— so any rule that needs to know something about a resource can be checked in a
-`Device` method and **cannot** be checked in an encoder method. That has now
-blocked two seam rules, which is what makes it a decision rather than a quirk:
+**DECIDED 2026-09-06 — option B, give the encoder a handle on the device's
+tables**, superseding the 2026-08-30 "leave it". An `Arc<DeviceState>` holding
+the existing maps, cloned into the encoder at `create_command_encoder`, its
+tables behind an `RwLock` and read-locked per recorded call — which is the hub
+shape `wgpu-core` already uses for exactly this. It is the only option that
+makes the seam's rules mean the same thing on every backend, which is what the
+exhaustive `Capability` enum and the agnostic suites exist for. What it
+schedules: the shared-state change on every recording method of that backend,
+and a measurement of the per-recorded-call read lock against the browser gate's
+frame timing **before** the slice is accepted. Option C — checking in
+`web/engine/gpu-replay.js` — stays refused.
+
+The two seam rules that are blocked until it lands, and which it closes:
 
 - **The indirect-draw bound.** `draw_indirect` calls
   `crcbl_hal::indirect::check_layout` (offset and stride) and cannot call
@@ -25848,38 +16462,8 @@ blocked two seam rules, which is what makes it a decision rather than a quirk:
 Neither is currently a `parity_blockers()` row, because neither is a capability
 divergence — the call works, it is the _checking_ that happens elsewhere.
 
-**Option A — leave it.** The browser validates the indirect range itself and
-reports a `GPUValidationError`, and it validates dynamic offsets too, so nothing
-is unchecked in the end; it is checked late, by a different party, with a
-different message. Cost: two seam rules whose answer on this backend is "the
-browser will tell you", and an asterisk on any claim that the seam's rules are
-enforced uniformly.
-
-**Option B — give the encoder a handle on the device's tables.** An
-`Arc<DeviceState>` holding the existing maps, cloned into the encoder at
-`create_command_encoder`. Closes both rules and any future one, and matches what
-`crcbl-vk` does (its encoder reaches `self.device.state()` freely). The real
-cost is **a mutex acquisition per recorded call on the hot path** — `bind_group`
-and `draw_indirect` run per draw, per frame — where today the encoder touches no
-shared state at all. An `RwLock`, or sharding per table, would soften it;
-measuring it before choosing is the honest route, and the browser gate's
-frame-timing numbers are where that would show.
-
-**Option C — check in the replayer instead.** `web/engine/gpu-replay.js` sees
-every resource. But `crates/crcbl-webgpu/src/writer.rs` already warns in its own
-comments that splitting enforcement between the encoder and the replayer is
-where "an unenforced rule both sides assume the other checks" hides, and this
-would put the seam's rules in JavaScript, in a second copy, in a language where
-nothing type-checks them against `crcbl_hal`. Recorded so it is not re-proposed:
-this is the option to avoid.
-
-**What I would pick, and why it is not simply done:** B, if the per-call lock
-measures as noise — it is the only option that makes the seam's rules mean the
-same thing on every backend, which is the whole point of the exhaustive
-`Capability` enum and the agnostic suites. It is not done here because it is a
-change to how every recording method on that backend works, it wants a
-measurement first, and it is not what either of the two slices that hit the wall
-was about. **Needs the user's call**, or an explicit decision to measure.
+The three options as they were argued are in `docs/notes/backends.md` under this
+heading.
 
 ## Do `crcbl-mtl` and `crcbl-dx12` report an adapter's limits on a narrower device? (2026-08-24)
 
@@ -25910,53 +16494,6 @@ its accepting value from `caps().features` rather than trusting `caps().limits`,
 precisely so a backend overstating a limit does not red the macOS and Windows
 runners for a bug that is its own. Closing the two backends' half is what would
 let that test assert the limit directly, which is the stronger rule.
-
-## The Windows clipboard test failed once on a shared runner (2026-08-24)
-
-`crcbl-shell`'s
-`win32::shell::tests::an_empty_offer_empties_the_clipboard_and_an_empty_payload_does_not`
-failed the `build + test (windows-latest)` job on CI run 32685206238 with:
-
-```
-an empty slice releases: Backend("the clipboard could not be opened within 70ms (Refused { attempts: 8, error: 5 }); another process is holding it")
-```
-
-`error: 5` is `ERROR_ACCESS_DENIED`. The Windows clipboard is a single
-machine-wide resource with no fair queue, so any other process on the runner
-holding it starves this one; the test's own retry budget gave up after eight
-attempts inside 70 ms.
-
-**It recurred on `e7d09be`**, in a different test of the same suite and with a
-different symptom:
-
-```
-both_offered_formats_round_trip_and_the_reader_picks
-assertion `left == right` failed: the engine's own format is lossless, padding and all
-  left: Empty
- right: Bytes([40, 107, 105, 110, 100, ...])
-```
-
-Not a refused open this time — a successful read that came back **empty**, which
-means something emptied the clipboard between the write and the read.
-
-**Measured before changing anything, as this entry asked.** Of the last
-twenty-five CI runs, two failed on the Windows leg for this class and no others
-did; a third Windows failure in that window was a compile error that failed
-every leg. Two observations of a shared-resource race in twenty-five runs.
-
-**What the second symptom identifies is us.** nextest runs tests in parallel
-processes, and this very suite contains
-`an_empty_offer_empties_the_clipboard_and_an_empty_payload_does_not` — a test
-whose whole job is to empty the machine-wide clipboard. A sibling reading back
-its own payload getting `Empty` is exactly what that looks like from the other
-side.
-
-**Fixed by serialising the suite against itself**, not by a retry or a wider
-budget: `.config/nextest.toml` groups every `win32::shell::tests::` test into
-`windows-desktop` with `max-threads = 1`. The foreground half of the class — see
-the entry above — is the same shared-desktop problem and is covered by the same
-group. What remains is contention from processes that are not ours, which the
-tests' retry budgets already exist for.
 
 ## `apps/orbit` — what the first slice left (2026-08-24)
 
@@ -26088,7 +16625,14 @@ block, or plain code text — rather than turning the features on by default,
 which is what `png` being optional exists to avoid. Whether the no-features
 configuration should also be a CI job is the open question: it is a second
 rustdoc run over the whole workspace, and this is the first defect it would have
-caught.
+
+**DECIDED 2026-09-06 —** Fix the link and add **no** second CI job. The link is
+the defect: an intra-doc link inside a `#[cfg(feature)]` block, or plain code
+text, so `crcbl-sprite` documents under any feature set. A no-features rustdoc
+run over the whole workspace is a second full gate for the first defect it would
+have caught in a month, which is not the ratio a gate earns — the rule the fix
+establishes (a doc link must not cross a feature seam) is what stops the next
+one.
 
 ## sandbox is not in the windowed gate (2026-08-24)
 
@@ -26143,55 +16687,18 @@ in one wasm module — so it belongs with the native milestone, not this one.
 
 ## Narrow matchmaking stretches an Elo ladder (2026-08-24)
 
-Found while building `apps/bracket`, and it needs a decision before the sample
-can claim a rating system that converges.
+**DECIDED 2026-09-06 — move `apps/bracket` to Glicko-2.** Glickman's is the
+standard open rating with uncertainty, and its `g(RD)` factor attenuates the
+expected score by how uncertain the opponent's rating is, which is exactly the
+correction this selection effect needs; Lichess and chess.com's variants are the
+precedent, and TrueSkill is patented. What it schedules: implement it with every
+constant checked against Glickman's paper rather than recalled — a transcription
+slip in a rating system nobody can falsify would never show up — and re-measure
+convergence with the same mean-error-and-spread table `bracket` already
+produces, since that table is the only thing that can see the drift.
 
-**What happens.** `bracket`'s population converges and then comes apart. Mean
-distance between a player's rating and their true skill, 64 players, five seeds,
-tight agreement across all of them:
-
-| ticks  | mean error | ladder spread (true range is 1000) |
-| ------ | ---------- | ---------------------------------- |
-| 2 000  | 54–58      | 978                                |
-| 10 000 | 132–139    | 1 860                              |
-| 30 000 | 325–335    | 2 689                              |
-
-The mean rating stays put (1499.9) and the ladder _order_ stays right. What
-breaks is the scale: the top player inflated to 2832 against a true skill of
-2000, the bottom deflated to 144 against a true 1000.
-
-**Why.** Not a random walk — it is far too consistent across seeds for that. It
-is a selection effect. Pairing on a small _observed_ rating gap preferentially
-picks pairs whose _true_ skill gap is larger, because a rating is a noisy
-estimate of skill. The favourite therefore wins more often than the rating gap
-predicted, gains points on average, and the spread inflates with every match.
-
-**Evidence it is the pairing and not the update.** Same `settle` on both sides:
-`rating.rs`'s test pairs at random and holds ~36 points of error over 40 000
-matches; `sim.rs` pairs by rating and drifts as above. Two mitigations were
-measured and neither fixes it — drawing the partner uniformly from the tolerance
-band rather than taking the nearest changed nothing (2673 at 30k), and sending
-2%/5%/15% of matches out wide as calibration got 30k error only to 277/232/164.
-
-**The decision.** Two ways forward, and they are not the same amount of work:
-
-- **Keep Elo and state the window.** What is committed: convergence is claimed
-  and tested at 2 000 ticks, and `queue.rs` says in its own header that it does
-  not hold indefinitely. Cheap and honest, but the sample's exit criterion wants
-  a rating system that converges, and "for a while" is a weaker claim than that.
-- **Move to an uncertainty-aware rating (Glicko-2, or TrueSkill).** This is what
-  the industry actually does and the reason it does it: Glicko's `g(RD)` factor
-  attenuates the expected score by how uncertain the opponent's rating is, which
-  is exactly the correction this selection effect needs. Bigger, and it is a
-  published algorithm with constants that must be checked against Glickman's
-  paper rather than recalled — the whole point of a rating system nobody can
-  falsify is that a transcription slip in it would never show up.
-
-Worth noting the drift is arguably _content_ for this sample rather than only a
-defect: making a matchmaking property visible instead of asserted is what the
-plan says the demo is for, and "your rating is only as good as the variety of
-people you play" is a real thing to show. That does not settle which rating
-system ships.
+The measured drift, the diagnosis and the two mitigations that did not fix it
+are in `docs/notes/simulation.md` under this heading.
 
 ## World-anchored debug text is not built (2026-08-31)
 
@@ -26275,28 +16782,6 @@ filter applied where `begin_frame` decides what to upload — already one place.
 The buffer would store the category per segment or segregate it into runs; a run
 per category is cheaper and keeps the draw one call per category.
 
-## Hardware line width is one pixel, and the layer takes that (2026-08-31)
-
-**Considered and taken deliberately**, against the earlier prediction that
-`crcbl_ui::draw_list`'s triangle expansion would be lifted and shared. The
-pipeline is `PrimitiveTopology::LineList` with no line-width state: one
-entry-point pair over a storage buffer and no CPU-side expansion, so a box is
-twelve `line()` calls and 24 vertices rather than twelve quads and 144. All four
-backends already map `LineList`, so nothing at the seam changed.
-
-**What it costs, plainly.** No width control, no dashed or thick lines, and the
-exact texels a diagonal covers differ between rasterisers — D3D12's diamond-exit
-rule and Vulkan's parallelogram rule disagree at a line's last pixel.
-`crates/crcbl/tests/mesh_e2e/debug_draw.rs` is written around that: the sharp
-per-texel assertion is on a segment that is horizontal in screen space, and the
-twelve-edge and six-face assertions allow one texel of slack and say why.
-
-**When to revisit.** If a caller wants width, the expansion is a vertex-stage
-change — two triangles per segment, expanded in NDC by a pixel width from a
-constant — not a new pass. `push_stroke`'s bevel logic is a screen-space helper
-that does not transfer to a world-space segment whose two ends have different
-depths, so "lift `push_stroke`" is probably still not the answer.
-
 ## The debug draw layer's `depth_write: false` is guarded only by Vulkan validation (2026-08-31)
 
 **A coverage gap, found while sabotaging the depth test.**
@@ -26361,3 +16846,12 @@ draws, and expansion would have meant a width in world or screen units, a
 miter/round decision at every joint, and four vertices where there are two. If a
 caller ever needs a thick world-space line, that is the argument to revisit, and
 `push_stroke` is still the thing to lift.
+
+## Two shader headers still cite the backlog for the dx12 WARP record (2026-09-06)
+
+`crates/crcbl-shaders/shaders/task_write_probe.slang` and
+`zero_dispatch_probe.slang` open with "`docs/backlog.md`'s D3D12 mesh-shading
+entry is being bisected"; that bisection now lives in `docs/notes/backends.md`.
+Not repointed with the split because a shader source's comment is hashed into
+the committed manifest, so the edit is a `compile-shaders.sh` regeneration — it
+rides with the next slice that regenerates the artifacts anyway.

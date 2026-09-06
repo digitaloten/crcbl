@@ -877,8 +877,9 @@ pub(crate) fn mesh(
     // default for `PS` is a null bytecode — and being explicit costs nothing.
     //
     // **It is not the fix for the WARP device removal**, which is worth saying
-    // because it was written as one. `docs/backlog.md`'s dx12 mesh-shading entry
-    // has the measurement: with this subobject present and empty,
+    // because it was written as one. `docs/notes/backends.md`'s dx12
+    // mesh-shading record has the measurement: with this subobject present and
+    // empty,
     // `a_depth_only_mesh_pipeline_draws_the_toy_triangle_on_this_device` still
     // removes the device on run 32421732642, exactly as it did without it.
     add(

@@ -7344,9 +7344,10 @@ pub(crate) mod tests {
     /// **It ran, and WARP removed the device** — `DXGI_ERROR_DEVICE_REMOVED`,
     /// zero debug-layer errors, DRED reporting `0 command list(s) with recorded
     /// work`: `crcbl-render`'s exact signature, out of a test with no renderer
-    /// in it. That is what `docs/backlog.md`'s "DECISION NEEDED — dx12 mesh
-    /// shading: WARP claims it and dies, hardware works" entry records, and this
-    /// is the repro it names.
+    /// in it. That is what `docs/notes/backends.md`'s "DEFERRED — dx12 mesh
+    /// shading: WARP claims it and dies, hardware works" record holds, and this
+    /// is the repro it names; `docs/backlog.md`'s entry of the same name keeps
+    /// the next step.
     ///
     /// Its `#[ignore]` reason therefore names the **defect**, not a hardware
     /// requirement — but read it as documentation and nothing more, because

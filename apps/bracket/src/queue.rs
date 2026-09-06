@@ -38,8 +38,9 @@
 //! reduces it, which is the same statement from the other side: the drift is
 //! what the match quality costs. It is not fixable here — the correction
 //! belongs in the rating update, which has to know how uncertain the two
-//! ratings are. See `docs/backlog.md`, "narrow matchmaking stretches an Elo
-//! ladder".
+//! ratings are. See `docs/notes/simulation.md`, "narrow matchmaking stretches
+//! an Elo ladder", for the measurements, and `docs/backlog.md` under the same
+//! heading for the rating that replaces it.
 
 use crate::rating::Rating;
 

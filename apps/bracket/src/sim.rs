@@ -381,7 +381,7 @@ mod tests {
     /// Measured across five seeds at 64 players: mean error 54.4..57.7 points
     /// against a starting error of 254, so this window is where convergence is
     /// claimed and checked. It does **not** hold indefinitely — see
-    /// `docs/backlog.md`, "narrow matchmaking stretches an Elo ladder".
+    /// `docs/notes/simulation.md`, "narrow matchmaking stretches an Elo ladder".
     const CONVERGENCE_TICKS: u64 = 2_000;
 
     #[test]

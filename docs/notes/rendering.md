@@ -1,0 +1,2238 @@
+# Rendering — records
+
+Records kept so they are not re-derived: measurements, investigations, ideas
+considered and declined, and lessons. Open work lives in `docs/backlog.md`.
+
+### Considered and declined: a per-scene golden tolerance
+
+Record; the work this entry still owes is in `docs/backlog.md` under this
+heading.
+
+`specular_aa` failed the browser gate on its first geometry — 4788 pixels over
+`Tolerance::RASTERISER`'s two levels (9.7412%) against an allowance of one per
+cent — and the obvious lever was a third tolerance in `crcbl-golden` that a
+scene could name, so an awkward frame could be compared on its population rather
+than pixel by pixel. **Not built, and now not needed.** The cause was the
+fixture's geometry, not the comparison: its strips were 1.49 pixels wide and
+landed at arbitrary sub-pixel positions, and Vulkan guarantees only four
+`subPixelPrecisionBits`, so SwiftShader's sixteenth-of-a-pixel vertex grid put
+each strip edge somewhere radv's eighth-bit grid did not. Sizing the strips to
+exactly two pixels on integer columns — `screenshot`'s `SPECULAR_STRIP_PITCH`,
+which asserts the property vertex by vertex — took the disagreement to **one
+pixel over tolerance, max channel delta 3**. Anyone reaching for a per-scene
+tolerance again should first check whether the fixture's own edges are on the
+pixel grid.
+
+## What the alpha-mask and double-sided material modes shipped without (2026-09-05)
+
+Decision record; the decision is in `docs/backlog.md`.
+
+- **The bucket table is twinned per scene, not per mesh, and the empty twins
+  cost measurable time on the raster tier.** `ForwardRenderer::build` walks
+  `SceneDesc::materials` for the set of modes present and emits every resident
+  mesh's levels once per mode in it, because which mesh will be drawn by which
+  material is not knowable there: instances arrive later through `add_instance`,
+  and the description pairs meshes with materials nowhere. So a scene with one
+  cutout in it doubles its bucket table, and every pass records one indirect
+  call per bucket whatever is in it — topic 03 §3.3's own invariant.
+
+  **Measured, not feared.** §3 of the plan carries the run: lantern with an
+  unconditional empty twin per mesh reads `shadow` 0.222 ms on radv against
+  0.138 ms with one bucket per mesh, which is the same number the genuinely
+  masked build reads — so the cost is the twelve extra dispatches per shadow
+  view rather than the `discard`. On lavapipe the split still wins by a wide
+  margin, and on radv lantern's shape (twelve tiny meshes, two shadow views)
+  loses.
+
+  **A twin per mode the scene's materials carry, not per mode that exists.**
+  `DEPTH_MODES` grew to four entries when `doubleSided` landed on 2026-09-05 and
+  the table did not grow with it: `ForwardRenderer::build` filters that list by
+  the mode _values_ its own `SceneDesc::materials` hold, so two materials of two
+  modes are two twins whichever two they are, and only a description holding all
+  four modes pays for four.
+  `an_all_opaque_scene_keeps_one_bucket_per_mesh_level` states both halves — a
+  scene whose three rows carry two mode values between them, setting both mode
+  bits, still gets two.
+
+  A finer rule needs something the description does not currently say: which
+  `(mesh, material)` pairs a scene will actually instance. The two shapes worth
+  weighing are a declared pair list on `SceneDesc`, checked against
+  `add_instance` the way `check_scene` checks page layers; and rebuilding the
+  bucket table when an `add_instance` introduces a pair no bucket covers, which
+  is a device allocation inside a frame-adjacent call and is why it was not
+  taken here. A third shape keeps that allocation out of `add_instance`: rebuild
+  the table in `begin_frame` when the set of live `(mesh, mode)` pairs has
+  changed since the last build — the pool's host mirror knows the set — so the
+  stream still depends only on which pairs exist and never on how many instances
+  there are, which is the property topic 03 opens with and
+  `the_frame_records_one_indirect_call_per_bucket_whatever_the_scene_holds`
+  pins. Skipping empty buckets at record time was considered and declined for
+  that property's sake: it would make the recorded stream a function of the
+  instance count. **Which of the three, if any, is the user's call**; none is
+  worth doing before a scene in this tree actually has foliage in it — every
+  demo is still all opaque, so every one of them emits exactly the table it
+  emitted before modes existed.
+
+## What the atmosphere shipped without (2026-09-05)
+
+Decision record; the decision is in `docs/backlog.md`.
+
+- **No demo has been switched to it, and that re-bless is owed.** Every shipped
+  demo still draws no sky at all — nothing in `apps/` calls `set_sky` or
+  `set_atmosphere` — so the whole rung is exercised by
+  `crcbl::screenshot::atmosphere_forward` and `Scene::AtmosphereMirror`, through
+  `render_e2e`'s `an_atmosphere_frame_is_the_host_lut` and
+  `an_atmosphere_mirror_reflects_the_luts_limb`, and by nothing else. Giving
+  `lantern`, `sundial` or `alcove` an atmosphere moves that demo's golden
+  images, which is its own slice: pick the demo, set the sun to the one its
+  `DirectionalLight` already uses, re-bless on both local adapters, and check
+  the browser gate, which has its own copies.
+
+- **The sun disc is not drawn.** The sky-view LUT holds the scattered sky, as
+  Hillaire's does; the disc is whatever `DirectionalLight` the scene set. A
+  camera pointed at the sun sees a bright aureole and no sun in it. Adding one
+  is a screen-space term in `sky.slang` — the angle between the ray and
+  `SkyParams::atmosphere.xyz` against a limb-darkened disc — and it needs a
+  decision about how bright, because the real value blows out an `Rgba16Float`
+  target on purpose.
+
+- **No aerial perspective.** The paper's third LUT — the froxel volume that puts
+  the air in _front_ of a surface — is not built. `crcbl_render::volumetric`'s
+  column is the tree's froxel pass and does not read the atmosphere's medium.
+  Doing it means the medium's extinction and in-scattering per froxel, which is
+  the same march this module already has, and a decision about whether the two
+  passes merge or compose.
+
+- **The ground below the horizon is black, deliberately.** A view ray that meets
+  the planet returns only the air in front of it, so the atmosphere's own lower
+  hemisphere adds nothing to `SkyView::irradiance`. What bounces off a scene's
+  floor is `docs/plan/50-irradiance-probes.md`'s volume, and an idealised
+  sphere's albedo here would count it twice. `GROUND_ALBEDO` is still used by
+  the multiple-scattering cook, where it belongs. Revisit only if a scene wants
+  a sky with no floor under it.
+
+- **A rough lobe still reflects the atmosphere as three bands.** The mirror half
+  shipped: `ssr.slang`'s `sky_environment` reads the sky-view LUT along the
+  reflected direction and weights it by `sharpness_of`'s ramp, so a surface at
+  `ROUGHNESS_CUTOFF` and above takes `sky_prefiltered`'s three bands exactly as
+  it did. **What that leaves** is the azimuth of a wide lobe: a rough conductor
+  beside the sun gathers the horizon's azimuthal mean rather than a cone of the
+  aureole. The upgrade is a convolution of the LUT itself — a second cooked
+  table, or a mip chain over `SkyView::rows` — and it is not a committed cook
+  like `sky_prefilter.bin`, because the field it convolves changes whenever the
+  sun moves. Declined here on those terms and because the error shrinks as the
+  lobe widens, which is the direction that matters: the widest lobes are the
+  ones the azimuthal mean is closest to.
+
+- **The demo cube's faces carry vertex colours, and `mesh.slang` multiplies them
+  into the albedo.** `crcbl_shaders::mesh::FACES` gives the `+Y` face
+  `[0.25, 0.80, 0.30]`, and `albedo = input.color * material.base_color * texel`
+  — so a floor placed as the demo cube through a white conductor row has a green
+  `F0` and reflects a green sky. Not a bug and not new; it cost an afternoon to
+  find because the tint is plausible. `Scene::AtmosphereMirror` authors its own
+  plate (`atmosphere_mirror_mesh`) for that reason, and `Scene::Ssr`'s
+  `SSR_CHANNEL` doc is the one place the tree already said so.
+
+- **The presented sky lags a moving sun by up to one whole build.** The striped
+  march shipped: `SkyViewBuild` in `crcbl_shaders::atmosphere` and
+  `ForwardRenderer::refresh_sky_view` stepping it `SKY_VIEW_BUILD_ROWS` rows per
+  frame. What it leaves is the trade that choice makes — a sun that moves again
+  mid-march restarts the build, so a sun that moves _every_ frame never
+  completes one and the frame goes on drawing the LUT of the last sun the march
+  caught up with. Deliberate, and written down in `refresh_sky_view`'s doc: the
+  alternative is a sky that stutters at whatever the march last passed. If a
+  scene ever wants the sky to track a continuous sweep rather than lag it, the
+  two options left are the ones this rung declined — a coarser LUT while the sun
+  is moving, or the march on a compute pass, which gives up "no transcendental
+  reaches a colour". Neither is needed until an app sweeps a sun.
+
+- **No measured band's normal has more than one non-zero component.** Every band
+  either fixture reads faces an axis — `+Y` on the floor, `+Z` on the wall — so
+  what is pinned is each lane on its own rather than a normal that mixes them.
+  L1 is linear in the normal, so an oblique band is a combination of directions
+  already read and there is no new arithmetic in it; recorded because "the row
+  is evaluated at an arbitrary normal" is a stronger claim than anything here
+  makes, not because a fix is planned.
+
+- **`sky_ambient_forward` and `sky_ambient_wall_forward` are builders and not
+  `Scene`s.** They are reached only from `render_e2e`, so they have no golden,
+  are absent from `crcbl-cli`'s scene list and never reach the render-harness
+  browser gate. Deliberate on two counts: the picture is a flat lit floor or a
+  flat lit wall, which a golden could not tell from any other flat lit surface,
+  and each fixture needs the same room drawn twice — with an atmosphere and
+  without — which the `Scene` enum has no way to ask for. If the browser leg or
+  the Metal and D3D12 legs ever need a sky-lit _surface_ rather than a sky-lit
+  background, these become variants and gain goldens.
+
+- **The LUT parameterisation is this tree's, not the paper's.** Hillaire indexes
+  the sky-view LUT by angles; this one indexes it by the direction's `y` through
+  `sign(s)·s²` and by the cosine of the azimuth away from the sun through
+  `1 − 2u²`, because both of those and both inverses are algebraic and the
+  paper's are not. The consequence to watch is resolution on the anti-solar
+  side, where `sky_view_cosine_of` coarsens: the field is smooth there, and no
+  artefact has been seen, but nothing measures it. `SKY_VIEW_WIDTH` is where to
+  spend if one appears.
+
+- **`SkyView::irradiance` is a quadrature where `SkyGradient::irradiance` is
+  closed form**, and it is checked against a brute-force integral rather than
+  against an analytic answer, because the field it integrates is a march's
+  output and has no analytic answer. What that leaves is the shared error: both
+  the projection and its oracle read the same LUT, so an error _in the LUT_
+  cancels between them. `the_vertical_transmittance_matches_its_closed_form` is
+  the one test in the module that reaches outside it, and it covers the
+  transmittance integrator alone — the multiple-scattering cook and the sky-view
+  march are checked structurally and against themselves.
+
+## The shadow filter selector leaves three things owed (2026-09-04)
+
+Decision record; the decision is in `docs/backlog.md`.
+
+- **Decision needed: which rung each tier's shadow filter is.** The three are
+  priced now — measured 2026-09-04 and written into `docs/plan/45-shadows.md`'s
+  fifteenth decision, off five `apps/sundial` runs per filter per adapter at the
+  goldens' own pose with the seam off. Median `forward` p50: 0.228 / 0.199 /
+  0.180 ms for `pcss` / `disc` / `box` on an RX 7900 XTX (radv, Mesa 26.2.2) at
+  1920x1080, and 8.586 / 7.349 / 6.914 ms on that machine's llvmpipe (LLVM
+  22.1.8) at 960x720. The ladder's own order on both adapters, no two ranges
+  overlapping, and the ladder end to end is 0.068 ms of a 0.649 ms radv frame;
+  the `shadow` row is flat across all three, as the selector claims. What is
+  left is the assignment, and it is the user's: `r_shadow_filter` has no tier
+  row, so every tier runs the shipped `pcss`, and
+  `docs/plan/39-capabilities.md`'s tier table is where a row would go. Same
+  shape of question as the SSR visibility weight and the AO knobs below, and the
+  same missing route.
+- **Considered and declined: drawing the scene twice to compare.** The occlusion
+  chain's seam records its gather twice under a scissor, and that shape is
+  available to a full-screen pass because each recording pays for half a target
+  of fragments. The forward pass is a _scene_ draw: a second recording is every
+  triangle, every cull and every vertex fetch again, so a comparison would cost
+  two frames rather than one. The per-side `PassTimers` row it would have bought
+  measures the scene rather than the filter and would be dominated by whatever
+  each half contains, so it buys nothing the per-filter runs above do not.
+  `crcbl_render::split`'s header carries both shapes and which client takes
+  which.
+
+## What sundial still owes (2026-09-04)
+
+Record; the work this entry still owes is in `docs/backlog.md` under this
+heading.
+
+- **Subdivision is the coverage ladder's doing, not the allocator running out.**
+  Recorded because the entry this replaces said the opposite: a scene with more
+  shadowed lights than the atlas has root cells subdivides nothing.
+  `Selection::lay_out` spends the coarsest requests first and its allocation
+  cannot run out — which is why the failure there is `unreachable!` rather than
+  a fallback. What hands out a halving is `shadow::tile_level` on a light's
+  `coverage`, so the way to reach a subdivided cell from a test is one light
+  whose map covers little of the frame, not a crowd of them.
+- **A frame at a render scale below one draws the readout through the upscale.**
+  The pass writes the internal target, which the upscale then filters to the
+  caller's extent — so at `set_render_scale(0.5)` the atlas is a Catmull-Rom
+  reconstruction of itself and its one-pixel borders are soft. Considered and
+  left: drawing after the upscale would want a second pipeline at the caller's
+  format for a case a reviewer can avoid by putting the scale back.
+  - **What surprised us, and is not a bug (2026-09-05).** The pavement claims
+    cannot be read from a pose high enough to look down on the whole plaza, and
+    two independent reasons stop it. A raised eye puts `plaza::PLINTH_CONTACT`
+    **past the cascade split** — 6.69 m from an eye at `(0, 3.5, 8.5)` against a
+    split at 6.100 — and `r_shadow_bias` and `r_shadow_normal_offset` are counts
+    of texels _of the cascade the fragment landed in_, so `PETER_PAN_BIAS`'s 96
+    texels stop being the shipped station and wipe the shadow outright (contact
+    `0.00`, beyond `19.88`, and `HELD_OFFSET` takes the contact from `69.11` to
+    `0.00`). And `speckle_percent` is a **screen-space** statistic: from an eye
+    at 2.5 m the constant bias's rise over the acne block is `1.4857%`, under
+    the `1.5%` floor, where at 2.0 m it is `3.3629%` and at the fixture pose
+    `3.2575%`. Both are why `plaza::PAVEMENT_EYE` is a modest 2.0 m rather than
+    an overlook.
+
+- **What surprised us, and is not a bug (2026-09-05).** Peter-panning at the
+  plinth's contact needs a very large bias — 88 texels of `r_shadow_bias`,
+  against the 1.5 that ships — and the plinth's own thickness is why. The depth
+  pass keeps front faces, so what the shadow map stores along the ray from
+  `PLINTH_CONTACT` to the sun is the plinth's _far_ face, and a bias towards the
+  light has to cross the whole 1.2 m depth of the block before the contact
+  compares as lit. A thin caster loses its contact at a small count, which is
+  what `apps/lantern`'s 0.15 m shell showed `docs/plan/45-shadows.md`'s seventh
+  decision. The consequence for this fixture is that its peter-panning reading
+  is a claim about a _thick_ caster, and a thin one in the plaza would make the
+  same claim at a count near the shipped value — which is the version worth
+  building if the pair is ever wanted as a regression guard rather than as a
+  comparison.
+
+**What surprised us, and is not a bug.** The first cascade's extent is a
+function of the camera's **near plane** — `Cascades::splits` blends a
+logarithmic division of `near .. DISTANCE`, and the logarithmic half is
+`near * (DISTANCE / near).powf(ratio)` — so the two-centimetre near plane every
+other sample opens with puts the first split about four metres from the eye and
+makes the whole penumbra ladder unmeasurable: at cascade 1's texel, every
+separation in a scene this size clamps to the same lower bound and `pcss` draws
+exactly what `disc` draws. `apps/sundial/src/plaza.rs`'s `NEAR` is half a metre
+for that reason and says so, and the split is read back out of `Cascades` by
+`the_colonnade_straddles_the_cascade_split` rather than assumed.
+
+## What the AO default change of 2026-09-03 did not cover (2026-09-03)
+
+Record; the work this entry still owes is in `docs/backlog.md` under this
+heading.
+
+**The sweep the test's thresholds are chosen off**, read from
+`forward_e2e::occlusion::the_tangential_occlusion_line_does_not_step`, sharp
+edges over `DIAGONAL_LENGTH` samples, identical in all seven runs of each row:
+
+```text
+slices  blurs     radv   lavapipe
+     2      1       37         38   the clamp floor
+     4      1      100         89
+     2      2        8          9
+     4      2        0          2   what ships
+anti-baseline: one plane orientation across the whole tile
+     2      1      118        113
+```
+
+Kept because `MAX_SPARSE_SHARP_EDGES` and `MAX_SHIPPED_SHARP_EDGES` are picked
+off it, and because it is re-taken whenever the pass changes rather than carried
+forward. It was carried once — across the half-resolution change — read
+`1 / 1 / 2 / 0` on radv for weeks, and produced a conclusion that was backwards
+in both this file and `docs/plan/46-ambient-occlusion.md`.
+
+## The SSR visibility weight costs the software tier 11% of a frame (2026-09-04)
+
+Decision record; the decision is in `docs/backlog.md`.
+
+`b83ae75` gave `ssr.slang`'s probe fallback the Chebyshev visibility weight
+`mesh.slang` already had, closing a specular leak through walls. It was landed
+unpriced; the two native tiers have now been measured and the answer is not
+free.
+
+`apps/lantern --headless --frames 400 --size 1920x1080`, p50 of the `ssr` row of
+the app's own pass table, three runs each, before and after. "Before" is a
+worktree at `55d0eba` — the commit `b83ae75` sits on — so the two binaries
+differ by this change and nothing else:
+
+```text
+                    ssr p50          the whole frame's p50
+              before    after        before    after
+radv           0.115    0.169         1.141    1.109
+lavapipe       7.072   15.421        72.042   80.152
+```
+
+- **On radv it is invisible at frame level.** The pass grows 47%, 54 us, and the
+  frame total moves by less than the spread between runs — the two totals above
+  bracket each other, which is the honest reading of a 3% instrument.
+- **On lavapipe it more than doubles: +118%, +8.35 ms**, and the frame follows
+  it almost exactly, +8.11 ms or **+11.3%**. The `ssr` pass goes from 9.9% of
+  the frame to 19.1%. A software rasteriser pays for the sixteen extra `Load`s
+  per pixel in a way a discrete GPU does not.
+
+**The browser tier was measured on hardware and behaves like radv, not like
+lavapipe.** quarry through Chrome on an RDNA-3 adapter at the gate's 959x463,
+`web/run-browser-e2e.sh` on the `hardware` adapter, three runs each side: `ssr`
+**0.036 ms p50 before against 0.053 after**, identical to the printed digit in
+all three runs of each, and the frame **0.720 to 0.737 ms** — +47% on the pass,
+exactly the +0.017 ms the pass grew, and **+2.4% of the frame**. So both GPU
+tiers pay 47% and only the software rasteriser pays 118%.
+
+**The candidate that would pay for it, not yet costed.** `ssr.slang`'s
+`probe_environment` is evaluated for every non-far pixel including fully rough
+ones, exactly as it was before the weight landed — so the weight's sixteen loads
+apply to the whole screen rather than to the pixels whose ray actually missed
+and actually reflects. Restricting the fallback to those pixels is a change to
+the pass's shape rather than to the weight, it was already true before this
+commit, and it is where the software tier's eight milliseconds are. Whether that
+is worth building, or whether the leak fix should carry a console variable so a
+tier can decline it, is the user's call — the same shape of decision as the AO
+knobs, and the same missing route: neither `r_probe_visibility` nor anything
+else has an `[engine.video]` key or a tier row.
+
+## What the RSM probe updater shipped without (2026-09-04)
+
+Decision record; the decision is in `docs/backlog.md`.
+
+**What it costs.** p50 of three,
+`lantern --headless --frames 400 --size 1920x1080`, the sun-only updater on
+against off:
+
+```text
+                radv on   radv off   lavapipe on   lavapipe off
+rsm               0.060          —         1.136              —
+probe-gather      0.047          —         0.052              —
+frame total       1.281      1.161        81.964         80.092
+```
+
+**+0.120 ms on radv, which is 10% of that frame**, and +1.87 ms on lavapipe,
+which is 2.3% of that one. The discrete tier pays the larger share because its
+frame is small; the software tier's `rsm` is nineteen times its radv cost and
+still disappears into an 80 ms frame. `docs/backlog.md`'s survey constraint C3
+budgets the whole frame at 0.990 ms on this adapter and it was already at 1.161
+before the updater, so this is a rung spent over budget rather than into it. The
+punctual half's own price is in `crcbl_shaders::probe_gather`'s
+`PUNCTUAL_RSM_SIDE`, which carries its extent sweep.
+
+**A finding worth keeping, because it cost most of the debugging time.** A probe
+standing above a floor gathers nearly all its flux from below, so its L1 lobe
+cancels at the floor's own `+Y` normal and a floor pixel shows the bounce barely
+at all. The first fixture written for this measured a floor and read exactly
+zero difference between the walled and open arms — a perfect false negative.
+**Any future updater fixture must measure a surface facing the way the flux
+travels**, which is why the one that shipped measures a wall face the sun never
+touches.
+
+**A producer is only as good as the light it is given.** `apps/shard`'s doused
+zone was measured on 2026-09-04 with `r_probe_bounce` off and on and moved by
+0.01 of a luma level, because the one light left burning there is faint and
+stands in a corner — see "shard's doused zone was never lifted" in
+`docs/notes/samples.md`. The gather is not at fault and no engine change
+addresses it; it is what a scene with nothing to bounce looks like.
+
+## Two price fixtures print a `forward` that bundles its fused clears (2026-09-05)
+
+Record; the work this entry still owes is in `docs/backlog.md` under this
+heading.
+
+`forward`'s full-extent attachment clears — scene colour, reflectivity and
+motion — are `LoadOp::Clear`s fused into the pass's begin, so giving them their
+own timestamp means giving them their own pass and a second full-target write —
+**not worth doing, and the reason is the measurement's, not the renderer's.**
+What attributes them honestly is a zero-geometry configuration timed beside the
+loaded one, and `mesh_e2e/depth_only.rs`'s `the_price_of_the_depth_only_passes`
+now has one: `PRICED_FIELDS`' second row draws an empty list at the same extent
+through the same effect stack, interleaved a frame at a time with the field, and
+the helper holds the two rows apart by their `FrameCounters` instance counts
+rather than by a duration. Measured 2026-09-05 at 640x480 over 48 recorded
+frames, the floor is a `forward` p50 of 0.009 ms on an RX 7900 XTX and 0.258 ms
+on lavapipe — medians of three runs each, spread 0.009–0.010 and 0.256–0.268 —
+and it is written into `docs/plan/43-render-standards.md`'s Delivery preamble.
+
+- **`docs/plan/47-reflections.md`'s shares are split now, and no lantern-side
+  floor row was added, because one would measure nothing new.** There is no
+  lantern price fixture to add a row to: those figures come from headless runs
+  of the `lantern` **binary** (`c0917d6`, `b87a1ab`) reading the engine's
+  `PassStats` report, and the only fixtures in the tree that read `PassStats`
+  are `mesh_e2e`'s four. A lantern-side row would take the same number as
+  `depth_only.rs`'s: `PassBuilder::clear_color` is `LoadOp::Clear` plus
+  `StoreOp::Store` unconditionally, `ForwardRenderer::add_passes` creates
+  `reflectivity` and `motion` whatever the effect stack is doing, and
+  `RenderGraph::execute` emits a pass's barriers outside its timestamp bracket —
+  so an empty-draw-list `forward` is the same quantity at a given extent
+  whatever else the frame draws, and `price_frame`'s `CRCBL_PRICE_SIZE` already
+  takes it at any extent. What lantern adds is only that its `forward` line is
+  two passes summed, the room's and the monitor's, which `pass_stats.rs`
+  documents and the report's occurrence column shows. Measured 2026-09-05 with
+  `CRCBL_GPU=vk CRCBL_PRICE_SIZE=<extent> crates/crcbl/tests/run-mesh-e2e.sh the_price_of_the_depth_only_passes`,
+  medians of three runs: 0.011 ms at 960×720 plus 0.005 ms at
+  `room::MONITOR_EXTENT` on an RX 7900 XTX, 0.463 plus 0.098 on lavapipe — about
+  a twenty-fifth of the `forward` row on both drivers.
+
+## The multi-bounce tint narrowed AO's contrast, and two claims lost margin (2026-09-01)
+
+**DECIDED 2026-09-06 —** the narrowed margin is accepted as measured, and this
+entry is a record rather than an open question. `r_ssao_intensity` is the
+industry control (Unreal's `r.AmbientOcclusion.Intensity`), and it defaults to
+identity. The guards' contract is that the pass reaches shading, both go red
+under sabotage, and the margin is what a correct curve leaves. Nothing is
+scheduled by it.
+
+`mesh.slang`'s `multi_bounce_occlusion` shipped 2026-09-01 and does what it is
+for: it lifts an occluded fragment by the colour of what occludes it. On a
+bright surface that lift is large, and it comes straight out of the occlusion
+contrast a scene shows.
+
+Measured on radv, before and after:
+
+| claim                                      | scene                                    | was                     | is      |
+| ------------------------------------------ | ---------------------------------------- | ----------------------- | ------- |
+| `AO_RATIO` (`crcbl/tests/render_e2e.rs`)   | wall bands against open floor            | `1.198`                 | `1.058` |
+| `AO_LIFT` (`apps/lantern/tests/golden.rs`) | contact corner, occlusion on against off | comfortably over `1.08` | `1.038` |
+
+Both figures match the published curve at those scenes' albedos, so this is the
+fit working rather than the occlusion weakening — checked against the polynomial
+directly before either constant was touched. Both constants were re-measured and
+both still land at exactly `1.00` for a pass that never reached the shading
+line, which is the failure they exist to catch; that was verified by sabotage,
+feeding `multi_bounce_occlusion` a visibility of one so the occlusion never
+reaches the ambient term, and both went red.
+
+**What is left open is the margin.** `AO_RATIO` guards a separation of 5.8%
+where it used to guard 20%, and `AO_LIFT` 3.8% where it used to guard more than
+8%. Both are still far above the rasteriser drift
+`crcbl_golden::Tolerance::RASTERISER` was measured for, so neither is fragile
+today, but the headroom for a future change to eat is a third of what it was.
+
+**Re-checked after half-resolution AO landed, 2026-09-02, and neither margin
+moved.** The halving was the obvious candidate for eating the headroom this
+entry is about, so both were read again on radv: the AO scene measures its walls
+at 70.8 and 70.5 against an open floor of 74.7, a ratio of 1.055, and lantern's
+contact corner goes 57.5 to 59.7 with occlusion on, a lift of 1.038. Both sit
+where they sat before the gather was halved, so the reconstruction is carrying
+the contrast the full-resolution pass had. The margin is unchanged, and so is
+the case for an intensity control below.
+
+**Re-checked after the AO defaults moved, 2026-09-04, and both margins gave a
+little back.** On radv the AO scene now measures its walls at 71.2 and 70.6
+against an open floor of 74.7 — a ratio of **1.049** where the halving left it
+at 1.055 — and lantern's contact corner goes 54.3 to 56.2 with occlusion off, a
+lift of **1.035** against 1.038. So four horizon planes and a second blur cost
+about half a point of separation on each, against thresholds of `AO_RATIO` 1.03
+and `AO_LIFT` 1.02. Both still clear, and both clear by less: the AO scene now
+guards 4.9% where this entry recorded 5.8%, and the corner 3.5% where it
+recorded 3.8%.
+
+**Re-read against the tree 2026-09-05, and the lift's figures above are a day
+old.** `AO_LIFT` is **1.008**, not 1.02, and the corner reads 66.7 against 67.6
+on radv (1.0135) and 66.8 against 67.6 on lavapipe (1.0120): the punctual RSM
+producer narrowed it again on 2026-09-04 (`5874479`), and the constant's own doc
+in `apps/lantern/tests/golden.rs` says it has run out of room to narrow a third
+time. `AO_RATIO` and its 1.03 are as written.
+
+The lift is measured on a frame whose bounce is the RSM updater's rather than
+lantern's old CPU bake, since both landed before this reading. The ratio is not:
+`Scene::Ao` is `ProbeUpdate::Authored`, so nothing about the updater reaches it
+and its half-point is the AO defaults alone.
+
+**The industry answer is an AO intensity control, and it was built on
+2026-09-02** — `r_ssao_intensity`, a console variable in `crcbl_render::ssao`
+that `ssao_upsample.slang` raises its reconstructed visibility to, applied to
+the scalar occlusion before `mesh.slang` tints it. It is a power rather than a
+blend towards one, because a blend can only lift the answer back towards
+unoccluded and this knob exists to ask for more occlusion than the horizons
+found. Range `0.25 ..= 4.0`, argued from the curve's slope at an unoccluded
+surface.
+
+**What that does _not_ do is restore the margin, and this entry stays open for
+that reason.** The default is 1.0 and is exactly identity, so every figure above
+still describes the frame that ships: `AO_RATIO` still guards 5.8% where it once
+guarded 20%, and `AO_LIFT` 3.8% against more than 8%. The knob makes the
+contrast _recoverable_ — it does not recover it. **Whether the shipped default
+moves off 1.0 is the user's call**, and it is the same shape of decision the
+`r_ssao_slices` and `r_ssao_blur_passes` defaults were until they moved on
+2026-09-03: three occlusion console variables now exist, none has an
+`[engine.video]` key, and no tier row spends any of them.
+
+**This is also the honest answer to "the AO looks weak"** if that comes up: the
+tint makes it weaker on purpose, and the fix is turning the intensity up rather
+than removing the tint.
+
+## The bent normals weakened one cross-path guard, and it is recorded (2026-09-02)
+
+Decision record; the decision is in `docs/backlog.md`.
+
+**Why it moved, and it is the feature rather than a defect.**
+`path_lsb_channels`' own entry already recorded that a last-bit depth difference
+can flip which tap wins a horizon in `ssao.slang`'s integral. Before the
+bent-normal rung a flip could only move the occlusion **scalar**, which scales
+the ambient — second order in the pixel. The direction is downstream of the same
+max, and `mesh.slang` now samples the probe irradiance _along_ it, so a flipped
+tap turns the lookup rather than dimming it. Measured at **9 channels, worst by
+2** out of 196608, identical on the runner's Mesa 25.2.8 / LLVM 20.1.2 and on
+Arch's Mesa 26.2.1 / LLVM 22.1.8; radv answers zero. The differing channels are
+a contiguous cluster along the top edge rather than the pre-rung pair, which is
+what one flipped tap looks like — `path_lsb_channels`' own entry carries the
+coordinates.
+
+**What is owed:**
+
+- **Whether the damping is worth taking.** The remedy recorded under the
+  bent-normal slice for a different reason — slerp the bent direction back
+  towards the shading normal by the occlusion scalar, in `mesh.slang`'s
+  `bent_normal_at` — would also damp this, by making a lightly-occluded pixel
+  depend on the horizon direction not at all. Whether it takes `Probes` back to
+  one level is unmeasured, and it is a picture change, so it is not a thing to
+  do purely to restore a guard.
+- **The user's call on whether that trade is acceptable at all.** Two levels out
+  of 256 on nine channels is three orders of magnitude under the failure this
+  guard exists for — a cluster that did not draw — so its teeth are intact. What
+  is gone is this scene's ability to catch a one-to-two-level regression in the
+  probe term specifically.
+
+## What the bent-normal slice left owed (2026-09-02)
+
+Decision record; the decision is in `docs/backlog.md`.
+
+- **Specular occlusion, which is the other half the plan asks for.** It needs a
+  cone angle beside the direction and the channel does not carry one:
+  `Rgba8Unorm` is spent, so the angle wants either a second image or a swap to
+  an octahedral pair in `.gb` with the angle in `.a` — the encoding the slice
+  turned down for a three-channel direction with no seam and no fold. Until it
+  exists, `docs/plan/46-ambient-occlusion.md`'s SSR refusal stands and is
+  correct.
+
+- **The tier split the 2026-08-30 decision asked for.** The user's call was
+  scalar-only on low and the widened target on medium and high. What landed is
+  the widening on _every_ tier, because
+  `crcbl_render::TransientImageDesc::ambient_occlusion` is one format and a
+  per-tier format means a second pipeline, a second bind-group layout and a
+  second `mesh.slang` binding type. `crcbl_render::ssao::r_ssao_bent_normals`
+  turns off the _arithmetic_ and nothing turns off the bandwidth. Whether low
+  should set it — and through what, since a console variable is not reachable
+  from a preset — is the same open question as the two knobs in this file's HIGH
+  PRIORITY entry and the contact-shadow entry: it wants an `[engine.video]` key
+  or a tier-table cell, and has neither.
+
+- **The direction is written in world space, not the view space the brief asked
+  for.** Every other part of the encoding decision is as specified. The reason
+  is that `mesh.slang`'s consumers — `sky_irradiance` and `probe_irradiance` —
+  evaluate world-space L1 environments, and `crcbl_shaders::mesh::FrameUniforms`
+  carries `view_proj` and no view matrix, so a view-space channel would need
+  that struct to grow a member. It cannot grow one from inside `crcbl-shaders`
+  alone: `crcbl-dx12`'s device builds `FrameUniforms` field by field with no
+  `..Default::default()` spread, so every backend's construction site has to
+  move with it. Instead `SsaoParams` gained `inv_view` and `ssao.slang` rotates
+  once per half-resolution gathered pixel, which is also cheaper than rotating
+  once per shaded fragment. Deriving the camera basis from `view_proj` was
+  considered and declined: it depends on the projection matrix's sparsity and
+  breaks under TAA jitter. If a later reader wants view space, the cost is that
+  `FrameUniforms` change, not a redesign.
+
+- **`apps/lantern`'s `SSR_HIT_TOLERANCE` widened from 0.10 to 0.15 rather than
+  being blessed.** `zero_probes_only_remove_the_ssr_and_rough_fallbacks`
+  measures, so a golden bless is not available to it. Brighter ambient on the
+  reflected surface means zeroing the probe rows removes more of it: the hit
+  moved 53.7 to 47.1 on radv (12.3%) and 54.1 to 47.7 on llvmpipe (11.8%), and
+  the A/B against `r_ssao_bent_normals` showed the _zeroed_ reading unmoved, so
+  the rung widened the remainder rather than changing the hit. The failure the
+  constant guards — a fallback substituted for the hit, which reads at or below
+  1.0 — is still an order of magnitude away. Not a defect, recorded because a
+  widened tolerance is a thing a later reader should be able to check rather
+  than trust. **It widened again to 0.28 on 2026-09-04** (`5874479`), when the
+  punctual producer put the lamp's bounce behind the hit as well — 61.2 to 47.7
+  on radv, 22.1% — and the constant's doc in `apps/lantern/tests/golden.rs`
+  carries each step; the teeth are unchanged, the miss still pinned at 0.0.
+
+## What the half-resolution occlusion harness does not cover (2026-09-02)
+
+Record; the work this entry still owes is in `docs/backlog.md` under this
+heading.
+
+- **`SILHOUETTE_SKIP` narrowing: considered 2026-09-02, declined.** Only the
+  edge column itself is disturbed — it reads 188 against its neighbour's 164 —
+  so the skip looks wider than the observation needs. Two things say leave it.
+  The value is the blur kernel's own width (`-1..=2`, four pixels), which is a
+  _reason_ the next reader can check; a fitted number is a measurement that
+  silently stops being true when the kernel changes. And the gain is at most one
+  column of falloff: the sweep note says the rise is monotonic "from the fourth
+  column", which does not settle whether that means `edge + 3` or `edge + 4`,
+  and settling it costs a GPU sweep to buy a single column. Revisit only if the
+  blur footprint changes, which moves the principled value anyway.
+
+## The depth-aware upsample has one reader, not three (2026-09-02)
+
+`docs/plan/46-ambient-occlusion.md` planned the bilateral upsample as **one
+shader with three readers** — the AO pass, `47-reflections.md`'s march, and
+`51-volumetrics.md`'s composite, which already samples a froxel grid far below
+the frame's resolution and would trade its trilinear lookup for a depth-aware
+one. Only the AO reader was built, and that plan section has been deleted now
+that it ships. `docs/plan/51-volumetrics.md`'s row 3 no longer cites a shared
+pass — it says the generalisation is that row's own rung. `47-reflections.md`
+does not cite it at all — checked whole-file for "upsample", "bilateral" and
+"depth-aware".
+
+What actually exists is `crates/crcbl-shaders/shaders/ssao_upsample.slang`, and
+it is **AO-specific, not a shared pass**: it reads an `Rgba8Unorm` occlusion
+image carrying one visibility channel and a bent direction, hard-codes
+`RESOLUTION_DIVISOR` as its own scale factor, and returns `1.0` where nothing
+was drawn because unoccluded is the identity for the value it carries. A
+reflection colour and a froxel lookup share neither that channel layout nor the
+far-plane fallback, so making it serve three readers is a generalisation with
+real design in it — a rung, not a binding somebody forgot to add.
+
+(This entry said `R8Unorm` until 2026-09-04, and so did `crcbl_render::ssao`'s
+own module header. The target widened to four channels when bent normals landed
+2026-09-02 — `ssao.rs`'s pipeline builds
+`ColorTargetState::opaque(Format::Rgba8Unorm)` and the shader's `fragmentMain`
+returns a `float4`. The argument survives the correction and is stronger for it:
+a reflection colour is four channels too, and still not these four.)
+
+## SSAO reads no depth pyramid and the banding is bought (2026-09-01)
+
+Record; the work this entry still owes is in `docs/backlog.md` under this
+heading.
+
+**The number that did not reconcile has been measured, and the suspect was
+cleared.** This entry first recorded `docs/plan/46-ambient-occlusion.md`'s 0.255
+ms against the 582 µs in the sweep above — the same two-slice pass, same
+resolution, same driver, 2.3x apart — and named the tangential rung as the only
+AO change between the two dates. Re-measured 2026-09-01 on the same command,
+`lantern --headless --frames 400 --size 1920x1080` on radv: `ssao` is **0.488 ms
+p50 / 0.505 ms p95**, 22.8% of a 2.143 ms frame, and `forward` is ahead of it at
+0.531 ms.
+
+The rung did not cause it. Compiling the pre-rung `ssao.slang` against today's
+tree and running the same command measures **0.518 ms** — _slower_ than the
+0.488 ms the current shader takes — so the tangential rung made the pass
+slightly faster. A second guess was also tested and discarded: bounding the
+slice loop by the dynamic count instead of `SLICE_COUNT_MAX`, on the theory that
+unrolling four slices while two ship costs occupancy, measured 0.481 ms against
+0.488 ms.
+
+**None of the absolute figures above reproduce, and the discrepancy is not
+explained — 2026-09-02.** The same command on the same driver, `--release`, now
+measures a **0.890 ms** frame with `ssao` at **0.105 ms** (11.8%), against the
+2.143 ms and 0.488 ms recorded the day before. Four consecutive runs landed
+between 0.890 and 0.905 ms with `ssao` at 0.105 in every one, so the new figure
+is not the noisy one.
+
+The drop is not confined to AO, which is what makes it a measurement question
+rather than a rendering result: `shadow` 0.350 to 0.135 ms, `forward` 0.531 to
+0.256 ms, `ssr` 0.218 to 0.110 ms — a ratio near 2.05 on three passes that no
+commit in the window touches. AO's own 4.6x is that same factor times the
+halving.
+
+Three candidates were tested and none of them is it:
+
+- **GPU contention during the old run.** Refuted by reproducing the conditions:
+  with **three concurrent lantern runs** drawing at 1080p on the same adapter,
+  the measured run still came in at 0.957 ms with `ssao` at 0.105 — a 6% cost on
+  the frame total and none at all on the pass in question, nowhere near 2.4x.
+
+  **The first attempt at this check was vacuous and is worth recording as
+  such.** It launched `run-forward-e2e.sh` as the load and measured 25 seconds
+  later; that suite runs its 21 checks in **1.268 s**, so it had exited long
+  before the measurement began and the "contention" run was against an idle GPU.
+  It reported 0.904 ms — a plausible number, indistinguishable from a real
+  result, and evidence of nothing. The redone check asserts the load is alive
+  immediately before _and_ immediately after the measured run, which is the
+  thing the first one never established.
+
+- **The report's meaning changed.** It did not. `PassStats` has one commit since
+  2026-08-28 in `crcbl-render/src/pass_stats.rs`, and that is the commit that
+  introduced this format — before both measurements. A label is summed within a
+  frame and the occurrence count sits on the row, in both.
+- **Something landed that made the frame cheaper.** The only render commits in
+  the window are the albedo tint, the half-resolution gather, its test lock and
+  the intensity control. All four are AO; none can move `shadow`, `forward` or
+  `ssr`.
+
+So what remains is how the old run was taken — most likely a build profile or an
+environment difference that was not recorded with the number, which is the
+lesson worth keeping. **Treat every absolute figure in this entry dated
+2026-09-01 as unreproducible**, and re-measure rather than diffing against them.
+
+**That also dissolves this entry's open half rather than answering it.** The
+question was why `ssao` had grown from 0.255 to 0.488 ms and whether a denser
+room explained it. There is no growth to explain: the pass measures 0.105 ms
+today, below both. The scene-density hypothesis is withdrawn — it was reasoning
+from a number that does not stand — and `MIN_RADIUS_PIXELS` making the pass
+scene-dependent remains true and remains untested.
+
+## Per-face granularity inside a point light's cube: declined (2026-08-31)
+
+The cadence's unit is the cull, so a point light's `POINT_FACES` faces are
+redrawn or held together. Splitting them would need six culls where
+`docs/plan/18-render-features.md`'s fourth decision gives one — the six faces'
+union is the light's sphere, which is what the cull tests against — so the
+saving would be six `DrawGen`s of device-local memory against half a light's
+draws. Declined; revisit only if a scene is measured spending most of a frame on
+one cube.
+
+### What the LTC area-light rung left (2026-08-31)
+
+Decision record; the decision is in `docs/backlog.md`.
+
+- **`fill` is drawn on all three kinds, and no sample sets it.** The rectangle's
+  frame is `Scene::AreaLight`; the two punctual kinds got theirs on 2026-09-02 —
+  `Scene::FillLight` for the picture and `mesh_e2e/fill_light.rs` for the exact
+  comparison, two frames of one light with one boolean changed, so its
+  assertions are about bits rather than a ratio under a tolerance. Each kind
+  fails on its own: pinning `Light::is_fill`'s `Point` arm to `false` reddens
+  the point test and leaves the spot's green, which is the failure mode a
+  kind-agnostic flag actually has.
+
+- **A rectangle is culled as a sphere — measured 2026-09-02, and the waste is
+  not what this entry claimed.** It said the sphere reaches more froxels than
+  the rectangle lights, wastefully in proportion to the aspect ratio. The
+  aspect-ratio half is false: `mesh.slang`'s rect arm applies
+  `range_window(distance to the centre, position.w)`, which reaches exactly zero
+  at the same radius the cull tests, so **the sphere is the shading's support
+  rather than a loose box around it**. `mesh_e2e/rect_bound.rs` reads the
+  cluster grid back and finds byte-identical froxel sets from aspect ratio 1 to
+  64 at a fixed radius, on radv and lavapipe alike. Where the sphere does grow
+  with the shape it grows because `RectLight::radius` tells the caller to put it
+  past the half-diagonal so the panel does not fade before its own edge — the
+  shading model's reach, not the cull's slack.
+
+  What is genuinely removable is the half-space **behind** the panel, which is
+  what `light_cluster.slang`'s own `KIND_RECT` comment already names: 5.8% of a
+  rectangle's froxels at a fixed radius and 12–20% once the radius follows the
+  half-diagonal, and that is an over-estimate, since a bound in the pass would
+  test the froxel's AABB and that straddles the plane more often than the froxel
+  does. A wasted assignment does cost full price — 99.7% of a useful one on
+  radv, 96.3% on lavapipe, because there is no early out for a back-facing
+  receiver — but scaled against rectangles' share of a forward pass that ceiling
+  is single-digit per cent of a frame, in a fixture where sixteen rectangles
+  fill every froxel facing away.
+
+  **Not built, and the trigger is a scene rather than a rung**: one dot product
+  per froxel-light pair, the same shape as the existing spot-cone arm, worth
+  adding if a scene ever appears with many panels facing out of the frustum and
+  lit geometry behind them. Today the froxels behind a panel are usually inside
+  a wall and outside the frustum, which is what that shader comment says.
+
+- **The fit's grazing shoulder is tens of per cent off the real lobe, and that
+  is the paper's trade rather than a defect.** `crcbl_shaders::ltc`'s
+  `PUNCTUAL_SHARE` records the measurement against a punctual GGX lobe: 0.037 of
+  the answer head on, 0.156 at `N·V` 0.7 and 0.394 at 0.4. Raising `LTC_SAMPLES`
+  to 64 and `LTC_FIT_STEPS` to 160 did not move the worst case at all, which is
+  what says it is model error and not an unconverged simplex — a three-parameter
+  linear transform of a cosine cannot follow the asymmetric tail a grazing GGX
+  lobe grows, and the paper's error norm weights the peak instead. Improving it
+  means a richer transform (the full five-parameter matrix, or an anisotropic
+  fit), which is a bigger table and a different shader.
+
+### The shadow filter costs 48 taps and it timed out the browser gate (2026-08-28)
+
+Record; the work this entry still owes is in `docs/backlog.md` under this
+heading.
+
+`docs/plan/45-shadows.md`'s ninth decision replaced the 3×3 box filter with a
+32-tap rotated disc, in `tile_pcf` in both `mesh.slang` and `volumetric.slang`.
+The tenth put a 16-tap blocker search in front of it, in `sun_penumbra_texels`,
+on the fragment path and for the sun alone. So a sun-lit fragment reads 48
+texels of the atlas where it read 9, and a froxel reads 32; and **both counts
+were chosen entirely on the picture**. The grain table in the ninth decision
+says what 16, 24 and 32 filter taps leave on a smooth shadowed surface, and the
+wobble table in the tenth says what the search buys on a quantised edge. Neither
+says what any of it costs.
+
+**That sentence used to continue "and there is no shadow-pass timing in the tree
+to measure it with", and it was wrong.** `crcbl_render::PassTimers` brackets
+every pass in the graph with a GPU timestamp pair, `apps/lantern` builds one,
+and `crcbl::engine`'s `finish` logs the whole per-pass report at `info`. The
+instrument was there for both decisions; nobody ran it. What was true is that
+the filter shipped on quality evidence alone.
+
+**Something timed it anyway, and it went red.** The Pages workflow's browser
+gate runs each demo against SwiftShader with a `timeout-minutes: 10` cap per
+demo, and the per-step durations across four runs are the price of the two
+decisions:
+
+| demo    | 00c92e3 | cec27b3 | 713da9d (rotated disc) | c5bdf25 (PCSS) |
+| ------- | ------- | ------- | ---------------------- | -------------- |
+| quarry  | 480s    | 491s    | 586s                   | 602s — timeout |
+| lantern | 471s    | 479s    | 612s — timeout         | skipped        |
+
+Both runs failed on the cap with **every check inside them passing** — quarry
+reported 42/42 before the step was killed — because `web/tools/browser-e2e.mjs`
+scales its own per-check budgets to the machine it is on, so a slower frame
+stretches the run instead of failing it. So the gate cannot say "too slow"; it
+can only run out of wall clock, which is what it did.
+`docs/plan/49-antialiasing.md` and the Pages workflow's own header already say
+the per-step caps bound a _hanging_ demo and cannot bound a total; this is the
+first time the total was the thing that moved.
+
+Two commits of main did not deploy on that; the caps for quarry and lantern were
+raised to 20 minutes on 2026-08-28 and the gate has run inside them since. The
+cap change bought the site back and priced nothing.
+
+**Two of the four answers below are now taken.** The first —
+`docs/plan/45-shadows.md`'s eleventh decision, 2026-08-28 — put a five-tap probe
+in front of the disc, so a fragment away from a shadow edge costs 5 taps rather
+than 32 and a sun-lit one 21 rather than 48, moving no golden on either adapter.
+The second was to run the timer that already existed, and it did:
+`lantern --headless --frames N --size WxH` under `RUST_LOG=info` prints the
+per-pass report, and the filter's cost is in the **`forward`** row rather than
+the `shadow` one — `shadow` is the atlas draw and did not move.
+
+| Adapter           | `forward`, disc only | `forward`, with the probe | Cut |
+| ----------------- | -------------------- | ------------------------- | --- |
+| radv, 1920×1080   | 0.303 ms             | 0.221 ms                  | 27% |
+| llvmpipe, 960×720 | 11.281 ms            | 8.135 ms                  | 28% |
+
+Medians of five runs and of three. **This also settles what was not yet known**:
+a SIMD GPU and a scalar software rasteriser cut by the same share, so the 48
+taps cost what they cost because they are taps, not because of the branch
+divergence a SwiftShader lane adds by running every tap the widest fragment in
+its group takes.
+
+### DECIDED — the vertex and material strides widen once, into the compact split-stream layout (2026-08-30)
+
+Decision record; the decision is in `docs/backlog.md`.
+
+**Two calls this leaves open, both the user's:**
+
+- **MikkTSpace.** A tangent for a mesh that ships none has to be generated at
+  import, and MikkTSpace is what every tool and engine agrees on — but it is a
+  new dependency (`mikktspace` on crates.io) or a transcription of the reference
+  implementation into `crcbl-scene`. New dependencies are the user's call; a
+  transcription is the bigger review. The layout lands with the derivative frame
+  as the no-tangent fallback either way, so this does not block it.
+- **The BC encoder** for the block-compressed pages rung — a crate in the bake
+  tool or a pinned external `basisu` — which is the same shape of choice and is
+  the bandwidth rung's gate; see §2's filtering subsection.
+
+### DECIDED — GI is hardware ray tracing only; the raster stack carries every other tier (2026-08-30)
+
+**The user's decision:** no GI on hardware without ray tracing. The browser
+(WebGPU has no ray tracing), lavapipe and every device that lacks the feature
+run the traditional raster stack — direct lighting under forward+, cascades and
+the shadow atlas, sky IBL, GTAO, SSR — and nothing there approximates a bounce.
+On `crcbl-vk` (`VK_KHR_ray_query`), `crcbl-dx12` (DXR 1.1 inline) and
+`crcbl-mtl` (Metal ray tracing, `intersection_query`) GI is the runtime-traced
+probe volume below, tracing on the hardware through **inline ray queries in
+compute** — the one shape all three expose and Slang targets with one source —
+behind a `Capability` the device reports and the quality presets read. The
+standing rules hold: no bake step, every light dynamic, shadows from the same
+maps, and the tracer is priced on the desktop adapter before it counts. What
+this buys: the ray budget stops being the question (hardware traversal is two
+orders cheaper than a compute BVH), the browser tier pays nothing, and the
+raster stack is one stack on four backends rather than two.
+
+**Amended later the same day (2026-08-30):** the tier below ray tracing carries
+one bounce after all — `docs/plan/50-irradiance-probes.md`'s decision: the
+existing `GpuProbe` grid gains a per-probe octahedral depth map (rendered from
+static geometry on load, re-rendered on demand; a capture of geometry, not of
+light), `probe_irradiance` weights probes by a Chebyshev test against it so
+nothing leaks through a wall, and a compute pass fills the rows every frame from
+the sun's reflective shadow map, each sample gated by the same map. The user
+chose it on "best-looking for decent performance, and above all no light
+leaking": it is the one cheap option that is leak-free, and it is the same
+volume the RT tier fills by ray queries. The lantern and shard bakes leave with
+the slice that lands it. Order among the raster items: LTC area lights, the
+shadow atlas, the AO tint, **this**, then the atmosphere, then anything else.
+
+**Answered 2026-08-30 on the user's "best-looking for the performance": (i) no
+temporal blend — fixed pattern, every probe every frame, on both tiers; (iii)
+yes, ray-traced shadows and reflections join the high tier as presets once the
+queries exist, priced then. (ii) is a design task for foundation (c), not a
+call.** The original wording follows for the record: (i) whether the GI term may
+carry a temporal blend now that it never runs on a golden's tier — C2 stands
+until this is answered, and the fixed-pattern every-probe-every-frame update is
+the default; (ii) what the seam adds — an acceleration-structure build and
+refit, a ray-query capability, and the storage the hit shading reads — which is
+foundation (c) in `docs/plan/43-render-standards.md`'s delivery table; (iii)
+whether ray-traced shadows and reflections join the RT tier as a preset above
+the atlas and SSR, which is a pricing question once the queries exist.
+
+The survey that led here stays below for the record.
+
+### The raster lighting stack: what its twelve calls left (2026-08-30)
+
+Record; the work this entry still owes is in `docs/backlog.md` under this
+heading.
+
+- **Runtime reflection captures — DECLINED.** The rebuilt probe volume is the
+  interior environment on every tier and RT reflections are the exact one.
+  `47-reflections.md`'s refusals.
+- **Whether SSGI counts as GI — WITHDRAWN.** The probe volume is the bounce on
+  every tier; SSGI would be a second, view-dependent estimate of it for a pass
+  of its own. Struck from the GI candidates below and from
+  `43-render-standards.md` §7's ordering.
+- **Burley diffuse — DECLINED.** Lambert stays, improved by the terms around it
+  (multi-scatter compensation, the AO tint and bent normals, LTC area lights,
+  the probe bounce). `44-lighting.md` records it.
+
+#### The survey (2026-08-30, superseded by the decision above)
+
+A survey of what Frostbite, Unreal, Godot and Unity ship for GI, scored against
+this tree's five standing constraints rather than in the abstract (the full
+report lives outside the tree; this entry is its durable part):
+
+- **C1 — no ninth storage buffer.** `PORTABLE_STORAGE_BUFFERS_PER_STAGE` in
+  `crcbl_hal::pipeline` is what a WebGPU device promises, and the mesh
+  bind-group layout in `crcbl_render::forward` is at it. GI arrives as a sampled
+  image or as rows in the probe buffer `mesh.slang` already reads, or it does
+  not arrive on the browser tier.
+- **C2 — a frame is a function of its own inputs.** `Tolerance::RASTERISER`,
+  `47-reflections.md`'s SSR-history refusal and `50-irradiance-probes.md`'s DDGI
+  refusal all say so.
+- **C3 — the budget.** The whole frame is 0.990 ms p50 at 1920×1080 on an RX
+  7900 XTX (`46-ambient-occlusion.md`, the 2026-08-28 distribution).
+- **C4 — the software and browser tiers pay for every pass** at ~40× the desktop
+  cost.
+- **C5 — what exists.** L1 SH probes (`GpuProbe`, `probe_irradiance`), a Hi-Z
+  pyramid, GTAO and its blur, SSR; no SDF, no 3D image path (`transient.rs` is
+  `ImageType::D2`), no triangle intersector, no triangle BVH — `crcbl_phys::Bvh`
+  is SAH over AABBs with ray-vs-sphere and ray-vs-AABB leaves.
+
+**What the four engines say.** Every _runtime_ GI they ship carries state across
+frames — Lumen (TSR + probe history), SDFGI/VoxelGI/DFAO/Brixelizer
+(incrementally updated cascades), Enlighten (frame-rate decoupled), GIBS
+(amortised) — so every one fails C2, and the RT-hardware ones (Lumen HW, Unity
+RTGI, DDGI) have no WebGPU path at all; GIBS could trace on a compute BVH but is
+the amortisation, see below. Every _baked_ one — Frostbite Flux, Unreal
+Lightmass / Volumetric Lightmaps, Godot LightmapGI, Unity Adaptive Probe Volumes
+— is exactly deterministic, costs zero passes, and two of the four engines name
+it the recommended default for the hardware tier this engine targets. All three
+probe formats converged on 4×4×4 bricks of low-order SH: the format `GpuProbe`
+already is. What they have that this tree lacks is the thing that fills it — an
+offline path tracer.
+
+**Rule from the user (2026-08-30): lighting is not baked.** The sun and every
+scene light are dynamic — direction, position, colour, on and off — and no bake
+step writes a lighting result into the tree. That excludes candidate 1 (a cooked
+irradiance volume _is_ baked lighting) and, for scene lights, candidate 2 (it
+bakes the transport of a fixed light set); both stay below for the record of why
+they were the survey's answer, and question 4 below is answered "no" by the
+rule. It also settles what the tracer is for: **not a bake tool — a runtime.**
+
+**And shadows must work with it (the user, the same day):** every dynamic light
+shadows — the sun through the cascades that exist, the scene lights through the
+shadow atlas [45-shadows.md](../plan/45-shadows.md) pulled forward — and the
+GI's hit shading reads those same maps, so a bounce is occluded by the same
+shadow the eye sees. A BVH shadow ray at the hit is the desktop-preset upgrade,
+not the baseline.
+
+**The candidate the rule points at — runtime-traced probes, no history.** The
+probe volume `GpuProbe` already is, filled every frame by a compute pass that
+traces a _fixed_ ray pattern per probe against a triangle BVH on the GPU —
+DDGI's tracer (Majercik et al. 2019) with its temporal blend removed. Every
+probe, every frame, from this frame's lights and this frame's geometry, so it
+clears C2 the way GTAO does: a fixed pattern and a smooth target (L1 SH is
+low-frequency, and needs far fewer rays than DDGI's octahedral maps do). It
+needs no RT hardware — traversal is a compute shader over a flattened BVH in a
+storage buffer, its own pipeline and bind group, so C1's ceiling on the
+_forward_ pass does not bind it. Hits shade with this frame's direct light (the
+cascades and the light list the forward pass already reads), which gives one
+bounce; a second is a second explicit trace, not a feedback read of the previous
+volume. Dynamic geometry bounces too, through a refit of the BVH
+(`crcbl_phys::Bvh` refits; the triangle-leaf variant is the same first slice
+candidate 1 wanted, and its CPU form becomes the _reference_ the GPU pass is
+held to). What it costs is the open number: probes × rays × traversal — the same
+8192 × 64–128 rays is of the order of a million rays a frame, which on the
+desktop adapter is plausibly inside a millisecond and on lavapipe and the
+browser is not; it is priced on all three tiers before it counts, per plan 43,
+and the web tier runs it reduced or off behind the quality preset. The
+alternatives that also satisfy the rule — SDFGI/Brixelizer (SDF generator, 3D
+images, cascade state), voxel cone tracing (leaks), LPV (single low-frequency
+bounce, one RSM per light) — each carry more machinery for less; SSGI stays
+candidate 3, the desktop-only contact term on top.
+
+**The candidates, in order.**
+
+1. **A cooked irradiance-probe volume** (the APV / Flux shape). An offline CPU
+   gather that writes the probe rows, committed with a `--check` like `dfg.bin`
+   and `sky_prefilter.bin`. Clears C1–C5 by construction: zero passes,
+   byte-compared as an artifact rather than blessed as a golden, identical on
+   every tier; ~384 KB for an 8192-probe volume. First slice touches no renderer
+   code: `ray_vs_triangle` (Möller–Trumbore, tested against literature values)
+   and a triangle-leaf `Bvh`, red-checked by sabotaging the intersector. Second:
+   `cook-probes` on `cook-dfg`'s terms. Third: `apps/lantern` swaps its analytic
+   `bounce` for the general bake — the two must agree on a box. Static geometry
+   and, alone, static lights. Overturns `43-render-standards.md`'s "no baked GI"
+   as a decision, closes `50-irradiance-probes.md`'s deferred bake, and makes
+   P7C's ray-traced GI row worth re-arguing as reflections and shadows only.
+2. **Bake the transport, not the answer** (the Enlighten reduction). Per probe,
+   the L1 response to a small basis of sun directions plus a sky term; the host
+   folds the live sun into a weighted sum of rows before the upload `ProbeTable`
+   already does. No shader change, no binding, zero passes; the basis multiplies
+   committed bytes (six directions ≈ 2.3 MB for 8192 probes), not device memory.
+   Anti-vacuity: a basis of one reproduces candidate 1 bit for bit. Strictly
+   after candidate 1.
+3. ~~**Non-temporal SSGI over the Hi-Z pyramid, delivered as an image.**~~
+   **Withdrawn 2026-08-30** — the probe volume is the bounce on every tier. The
+   plan's SSGI row, with one correction: `43-render-standards.md` §9 and
+   `49-antialiasing.md` file it behind motion vectors for temporal accumulation,
+   and that is a choice — GTAO's fixed-pattern-plus-blur determinism argument
+   transfers to a cosine gather. Costs: it needs an albedo the tree does not
+   expose (the scene target is shaded colour; `47-reflections.md` refuses a
+   G-buffer), so it opens with a third attachment or a visible approximation;
+   without accumulation the only quieting tool is a wider blur, which confines
+   it to contact scale; and two GTAO-class passes is roughly a doubling of the
+   frame. The only candidate that gives dynamic objects any indirect response.
+
+**Considered and rejected — do not re-propose without answering the reason:**
+Lumen software (8 ms at 1080p against a 0.990 ms frame; TSR-dependent; per-mesh
+SDFs, card atlas, virtual texturing); every RT-hardware family (no WebGPU ray
+tracing in 2026; all temporal); Godot SDFGI and AMD Brixelizer (the best RT-free
+runtime answers, but SDF generator + 3D images + cascade state — reconsider only
+if question 1 below is "fully dynamic"); Godot HDDAGI (unmerged, re-check in a
+year); voxel cone tracing (thin-wall leaks, already "largely superseded" in
+`43-render-standards.md`); radiance cascades in 3D (right philosophy, "remains
+an open problem" per radiance.wiki, the 0.3 ms figure is a 2023 demo); NRC
+(training signal is live path-traced rays); Frostbite/SEED surfel GI, "GIBS"
+(read in depth after the survey, and the survey's one-liner was wrong twice:
+surfels spawn from the G-buffer in 16×16 screen tiles, not at ray hits, and only
+6 of its >50 dispatches trace rays, so a compute BVH can stand in for RT
+hardware — but the point of the cache is temporal amortisation, 1–2 rays per
+surfel per frame over a multi-scale mean estimator, with six frame-carried
+states of which surfel placement cannot be shed without collapsing into
+screen-probe SSGI; shipped at 2.5 ms on XBSX at 1440p and frozen during gameplay
+in College Football 25 to fit 2 ms at 60 Hz; the WebGPU port's integrate pass
+binds 10 storage buffers against the 8 this tree pins, and needs a storage image
+no `.slang` here uses yet); full Enlighten (custom clustering pipeline;
+candidate 2 is the part worth having); lightmaps before probes (needs UV unwrap,
+atlas and a denoiser on top of everything probes need); parallax-corrected
+cubemap probes (cube arrays, mip chains, `SampleLevel` — all refused in
+`50-irradiance-probes.md`; the specular twin of candidate 1, re-open after it);
+SH L2 (priced in `50-irradiance-probes.md`; a contained escalation later).
+
+**The questions, and the one that decides the rest:**
+
+1. **Must indirect light respond to geometry that moves** — doors, destruction,
+   player-built structures? _Lights_ are answered: dynamic, by the rule above.
+   Geometry is still the user's call, though the runtime-traced candidate makes
+   it a refit rather than a different design. Yes means candidates 1 and 2 are
+   insufficient and the answer is a cascaded SDF, at the cost of an SDF
+   generator, a 3D-image path across four backends and per-frame determinism for
+   the GI term. Static geometry with dynamic lights means 1 + 2 beat anything in
+   the plan for zero milliseconds. Every engine surveyed recommends the baked
+   answer for this hardware tier.
+2. May a golden ever carry a temporal component? If the answer is a permanent
+   no, it belongs in `43-render-standards.md` §5 as one constraint rather than
+   three scattered refusals.
+3. What is the GI budget in milliseconds, on which tier — is candidate 3's
+   doubling acceptable on desktop if off by default on the web tier?
+4. ~~Is a bake step acceptable in the content pipeline?~~ **No** (the rule
+   above). A scene acquires a committed, `--check`ed artifact and a scene edit
+   means a rebake. Everything above depends on this being yes.
+5. Do `ray_vs_triangle` and the triangle BVH live in `crcbl-phys` (available to
+   gameplay queries too) or bake-only beside the `cook-*` tools? No new
+   dependency either way.
+6. Does `apps/lantern` stay the GI acceptance fixture, or does GI want its own
+   demo (which joins every list `tools/check-browser-gate-demos.sh` enforces)?
+7. The lantern downlight question below becomes moot under candidate 1 — every
+   static source is in the gather — so it can close with that slice.
+
+Nothing here is started until question 1 is answered.
+
+**Where it sits in the schedule (2026-08-30):** the bake tool itself is
+foundation (c) in `docs/plan/43-render-standards.md`'s delivery table, and
+candidate 1's probe volume is its first output — so the tool is scheduled, and
+its first output waits on question 1, not the other way round.
+
+### The mesh goldens absorb a whole-frame darkening of a few per cent (2026-08-27)
+
+Measured while red-checking the fog composite, and worth keeping because it was
+a surprise. Flooring the fog density at `0.01` — which darkens every lit texel
+of the demo cube by roughly three per cent — leaves all four goldens in
+`crates/crcbl/tests/mesh_e2e/goldens.rs` **green** under
+`crcbl_golden::Tolerance::RASTERISER`.
+
+Two reasons, both structural rather than a slack tolerance: the default key
+light is bright enough that much of the cube tonemaps to saturation, where a
+three per cent cut changes nothing at all, and the swapchain is sRGB, so a
+linear cut of three per cent is a good deal less than three per cent of an
+encoded channel.
+
+**What this means for anyone reasoning about coverage:** "the goldens would have
+caught it" is not a safe assumption for a small _uniform_ change to the whole
+frame. They catch structure — a moved edge, a missing pass, a wrong colour — far
+better than they catch gain. A term that scales the whole picture slightly needs
+an assertion of its own, which is why the fog slice's zero-density claim is
+carried by exact arithmetic (`crcbl_shaders::fog`'s
+`the_exponential_is_exactly_one_at_zero` and the composite the shader guard
+pins) rather than by a golden.
+
+**Not measured:** where the threshold actually is. Nobody swept the darkening
+until a golden reddened; the one figure above is the one data point.
+
+### The Hi-Z march trusts a genuine crossing less than the strided one did (2026-08-27)
+
+`ssr.slang`'s `bound` — `saturate(1 - behind / thickness)`, the soft half of the
+thickness rejection — reads lower under the hierarchical march for the same hit,
+so a little more probe environment is blended behind a valid screen reflection.
+It is why `apps/lantern`'s `SSR_HIT_TOLERANCE` moved from 0.06 to 0.10. Not a
+defect that was found and left: it is a measured difference nobody has
+explained, and it is recorded so the next person does not repeat the search
+below.
+
+**What was measured** (the probe point in
+`zero_probes_only_remove_the_ssr_and_rough_fallbacks`, both adapters agreeing to
+a tenth of a percent):
+
+- Strided march: 51.8 with probes, 49.2 without. Hierarchical: 46.8 and 43.4.
+- With `bound`, `border` and `distance` all forced to one, **both marches read
+  53** — so the hit texel and its colour are the same and the whole difference
+  is the weight.
+- Forcing `distance` alone to one moves nothing, and `border` alone moves 0.1,
+  so `bound` is the entire term.
+- Thresholding `behind / thickness` instead of ramping it: the strided march has
+  almost every ray under 0.1, the hierarchical one spreads to 0.4.
+
+**Three explanations tested and rejected**, each by measurement:
+
+1. **A per-pixel-rate thickness** — dividing the ray's depth advance by the cell
+   span before `thickness_at`. Byte-identical output. `THICKNESS_FLOOR`
+   dominates at this pixel, so the advance term is not what is being compared
+   against.
+2. **Measuring `behind` at the cell entry** rather than at the exit, so the ray
+   depth and the sampled texel are the same point. 43.5 — worse, because a
+   smaller `behind` also relaxes the `behind <= thickness` gate and the march
+   then accepts an earlier, darker crossing.
+3. **Measuring `behind` at the midpoint of the cell traversal**, both as the
+   gate and as the fade alone. 44.9 and 43.0 — worse both ways, which also says
+   the sign of the ray's depth change along these rays is not what the
+   entry/exit argument assumed.
+
+**Not tested:** a minimum-travel gate before a hit is allowed was swept at 0,
+1.5, 3 and 6 pixels and changes nothing, so near-origin self-intersection is
+ruled out. What has _not_ been tried is instrumenting `behind` and `thickness`
+per pixel into a debug attachment; every measurement above is the one blurred
+pixel the lantern test reads, which aggregates a neighbourhood through
+`ssr-blur` and cannot separate one ray from another. That is the next step if
+this is picked up.
+
+**Why it was left:** the reflection is better by every other measure — the
+`Scene::Ssr` golden re-blessed to a smooth gradient where the strided march
+stepped, the other six lantern claims and both lantern goldens are unchanged,
+and the residual is a fade constant rather than a wrong pixel.
+
+## Surprises worth keeping — not bugs
+
+### Two geometry paths agree to the last bit only by luck (2026-08-27)
+
+`a_multi_cluster_mesh_draws_the_same_frame_through_both_geometry_paths` in
+`crates/crcbl-vk/tests/vk_e2e/mesh.rs` compared the mesh-shader and
+indirect-count frames byte for byte, and had done since it was written. The
+multi-scatter compensation term reddened it on lavapipe — one pixel of 49 152,
+red 156 against 157, in the interior of a wall rather than on an edge. radv
+still draws the two paths identically.
+
+The cause is not the term. The two paths run the same fragment stage, but the
+interpolated position and normal reach it from `mesh.slang`'s vertex stage and
+`mesh_cluster.slang`'s mesh stage — two separately compiled modules, which a
+driver may contract or reassociate differently. Any shading change moves which
+pixels sit on an 8-bit rounding boundary, so the byte claim was one edit away
+from failing whatever the edit was. The comparison now allows one 8-bit step and
+no pixel beyond it (`PATHS_AGREE` in that file).
+
+**Not tried: `precise` on both position outputs.** HLSL/Slang's `precise`
+forbids the reassociation and contraction that would explain the drift, and
+would restore byte equality if that is the whole cause. It was not attempted
+because it constrains the hot vertex path on every backend to fix one pixel on
+one software rasteriser, and because the mesh path also assembles its triangles
+from cluster corners rather than from the index buffer — so a corner ordering
+that differs from the index buffer's would move the barycentric evaluation and
+`precise` would not touch it. Whether the two orderings agree was not checked.
+
+### No transparent pass, and therefore no depth sort (2026-08-27)
+
+Decision record; the decision is in `docs/backlog.md`.
+
+**Scoped 2026-09-06, and held on the decisions below.** The whole rung was read
+against the tree before anything was written, because `43-render-standards.md`
+§3 says the order-independent question "should decide about before it is built,
+not after", and the sort's shape turns out to be a decision too. What the
+reading settled:
+
+- **The blend state and every backend are already there.**
+  `crcbl_hal::pipeline::BlendState::alpha` is the match — `mesh.slang`'s
+  `fragmentMain` already writes `float4(lit, albedo.a)` in straight alpha, so
+  the value a blend would consume is in the target today — and `crcbl-vk`,
+  `crcbl-dx12`, `crcbl-mtl` and `crcbl-webgpu` each translate it for the overlay
+  passes. The only hal work is a constructor beside `ColorTargetState::opaque`
+  that carries a blend, plus one with an empty write mask for the reflectivity
+  and motion targets, which a blended surface must not write
+  (`47-reflections.md`'s refusal, and motion has no opaque history to be
+  consistent with).
+- **Where it sits.** After `"sky"` (`crcbl_render::sky_pass` is `LoadOp::Load`
+  and fills only far-depth pixels, so a pass before it blends over clear), with
+  `depth_read(scene_depth)` and no depth write, exactly the attachment shape
+  `sky` already has; `debug_draw` is the precedent for the blend state over HDR.
+  Whether it lands before or after `"volumetric-composite"` and `"ssr"` decides
+  whether a blended surface is fogged and whether it can be a reflection source;
+  both answers are defensible and neither is chosen.
+- **The mode bits have room, and the room is a layout change.** Nothing reads
+  `GpuInstance::flags` above `MATERIAL_MODE_MASK`'s two bits, so widening it to
+  three is byte-neutral for every instance record; the cost is the twin
+  constants (`INSTANCE_MATERIAL_MODE_MASK` in `draw_gen.slang` and
+  `mesh_cluster.slang`), `DEPTH_MODES` and `ForwardRenderer::depth_partitions`
+  moving together as their docs demand, and a bucket per mode the scene holds in
+  `DrawGen::bucket_base`'s scattered run. An all-opaque scene keeps one bucket
+  per mesh level, which is what should keep every golden untouched, and
+  `an_all_opaque_scene_keeps_one_bucket_per_mesh_level` is the assertion to read
+  before spending anything else on the claim.
+- **The scatter's order is arbitrary by design.** `draw_gen.slang` says "nothing
+  here depends on the order" of the slots its atomic hands out, so a blended run
+  is nondeterministic today; the sort is what would fix that, and
+  `draw_scene_on_every_geometry_path`'s byte equality across `EmitTail` arms is
+  the test that would prove it.
+- **One key per instance is not enough.** A bucket is one indirect call whose
+  instance count is the whole run (`BucketDraws::record`), so sorting inside a
+  bucket orders one mesh's instances and two blended meshes still interleave in
+  bucket-table order. A global order needs one call per blended instance (breaks
+  §3.3's fixed CPU-side record), or one bucket per blended mesh (only if they
+  share a mesh), or an argument array the sort writes with the count from GPU
+  memory — which only `EmitTail::Count` can consume; `PerBatch` and `Mesh` have
+  no such tail. This is the rung's largest open question.
+
+**Decisions only the user can make, in the order they gate the work:**
+
+1. Is order-independent transparency refused now, or left open? Weighted-blended
+   OIT cannot be blessed against a reference; deciding this first is what stops
+   the sort being built and then discarded.
+2. Which of the three indirect shapes above carries the global order, given two
+   geometry paths cannot do the third.
+3. Do blended surfaces cast shadows? glTF says nothing — `alphaMode` governs
+   only the base colour's alpha. Excluding the mode from `depth_partitions`
+   gives "no", keeps the prepass honest and makes one sabotage serve two claims;
+   an opaque shadow is free and wrong-looking; a partial shadow needs a
+   mechanism the atlas has not got.
+4. Before or after the volumetric composite and the SSR march.
+5. Is `BLEND` exclusive with `MASK` (six modes, as glTF's one `alphaMode`) or
+   orthogonal to it (eight, more buckets)?
+
+### The atlas re-tiling's leftovers: resolution, and one option declined (2026-08-26)
+
+Record; the work this entry still owes is in `docs/backlog.md` under this
+heading.
+
+The budget question — how many point lights may cast — was answered by widening
+the atlas to `SHADOW_ATLAS_COLUMNS` × `SHADOW_ATLAS_ROWS` tiles of
+`SHADOW_TILE`, which ships. What that decision left behind:
+
+**A quarter of the linear shadow resolution went with it**, deliberately: the
+grid gained a column and a row while the tile shrank so `shadow::atlas_extent`
+would not move, so every map is now 768 texels a side rather than 1024. The
+visible cost is measured — `crates/crcbl/tests/golden/dunes.png` had 8.61% of
+its pixels differ at all and 4.03% past the comparison's tolerance, worst
+channel delta 40, and the diff image puts every one of them on a shadow edge —
+but two things moved with it and are worth knowing before reading either as a
+regression:
+
+- `apps/lantern`'s `MIRROR_FRACTION_OF_PLASTER` was re-measured from 0.20 to
+  0.14. The mirror itself did **not** move (20.3 before and after; it has no
+  direct light on it); the directly-lit plaster it is compared against went from
+  83.3 to 119.9 as the coarser maps' larger world-space bias let more of the
+  lamp reach it. Measured on lavapipe, both sides, at 256×192.
+- `room.png` and `live.png` were re-blessed for the same reason.
+
+**The other two options, and why neither was taken.** Recorded so they are not
+re-argued:
+
+- **4×4 at 1024** buys the same capability and costs +28 MiB of `D32Float`,
+  which matters because milestone 1's peak wasm memory is still unmeasured (see
+  the milestone-1 figures entry). Revisit this if shadow resolution ever becomes
+  the thing that is failing; it is a one-constant change now that the grid is
+  already four wide.
+- **Dual-paraboloid point shadows** — 2 tiles per point light instead of
+  `SHADOW_POINT_FACES` — is **declined** unless someone overrides it. The
+  paraboloid warp is nonlinear across a triangle, so it is wrong in proportion
+  to how large the triangles are, and every `crcbl::greybox` scene is large flat
+  quads: its worst case. Cube maps have no such dependence on tessellation.
+
+**No budget makes every light cast, and that is the design.** `shard`'s zone has
+more lights than `shadow::LIGHT_SLOTS`, so the renderer still ranks them and
+shadows the ones that win. What was wrong before was the budget being one point
+light, not the ranking.
+
+### A tile's border needs no explicit locking — the decimator already holds it
+
+Found on 2026-08-20 by a red-check that came back green, while building quarry's
+tiling case for "border locking on a tiling mesh".
+
+`crcbl_quarry::tile` first called `simplify_with_locked_edges` with every one of
+the tile's border edges named. Replacing that list with `&[]` **passed
+identically**: the two tiles' shared seam survived decimation bit-for-bit either
+way.
+
+The reason is in `crcbl_scene::simplify`'s own module docs and was there all
+along — "an edge used by any number of faces other than two is a border (or a
+non-manifold seam)… an open mesh keeps its boundary loop exactly". A tile is an
+open mesh and its outer border is a mesh border, so the decimator locks it
+unconditionally.
+
+**So `simplify_with_locked_edges` is for boundaries interior to the mesh**,
+which no rule over the two arrays can find — a cluster group's outer edge, which
+is what `crcbl_scene::cluster_dag` passes it and remains its only caller. Worth
+recording because the sample's own exit criterion is phrased as though a caller
+must do the locking, and the next reader will otherwise write the same redundant
+call.
+
+**What this does not say.** It says nothing about UV or normal seams, which are
+`crcbl_scene::simplify`'s other stated limitation and which quarry's single
+untextured material cannot exercise: a seam in an attribute the decimator does
+not carry is invisible to a position-only comparison like this one.
+
+## Normal maps: what the tangent and page rungs left (2026-08-30)
+
+Record; the open work is in docs/backlog.md under the same heading.
+
+- **Surprise, not a bug: only the browser gate sees a uniformity break.**
+  `shading_normal_of` was first written with its `layer == 0` early return above
+  the derivatives and an implicit-LOD `Sample` below them. SPIR-V, MSL and DXIL
+  all compiled that, every Vulkan suite passed on both ICDs, and the browser
+  refused the module outright —
+  `'textureSample' must only be called from uniform control flow`, with the
+  fragment input named as the possibly non-uniform value. WGSL's analysis is
+  static and cannot use the fact that the material row and the frame word are
+  `nointerpolation`. The shape that satisfies it is in the function's own doc;
+  the point for next time is that a native-only run says nothing at all about
+  whether a fragment stage will parse, and `web/build.sh` plus
+  `run-browser-e2e.sh` is the only thing that does. `fxaa.slang`'s `tap` learned
+  the same lesson earlier and its doc says so too.
+
+## The material lookup moved to the fragment stage, and what that probe learned
+
+Record; the gap it leaves — nothing below the GPU seam checks a bind-group
+layout's visibility against the module bound to it — is in docs/backlog.md under
+the same heading.
+
+### What the probe found, which is not what it was pointed at
+
+**Every one of the four targets emits the flat qualifier**, read out of this
+crate's own regenerated artifacts with slangc 2026.14: SPIR-V decorates both
+sides `Flat`, WGSL writes `@interpolate(flat) @location(3)`, MSL puts `[[flat]]`
+on the fragment's `[[stage_in]]` struct — which is where Metal reads it, not the
+vertex output struct — and DXIL's input signature lists `TEXCOORD 0` as
+`nointerpolation`. No divergence to report.
+
+**Dropping `nointerpolation` does not make a golden go red, and cannot.** Tried
+it, on both backends that run here:
+
+- **SPIR-V repairs it.** Slang drops `Flat` from the vertex _output_ but keeps
+  it on the fragment _input_, which is the decoration that decides
+  interpolation, so `vk` draws a bit-identical frame:
+  `golden cube on vulkan — 256x192: 0 pixel(s) differ at all (0.0000%)`.
+- **WGSL refuses it**, and does so before any frame — naga rejects the module
+  with "`@interpolate(flat)` must be explicitly specified for integer I/O". That
+  is caught by `crcbl-shaders`' own
+  `wgsl_validation::every_committed_wgsl_artifact_validates` on a machine with
+  no GPU, which is a better gate than a golden anyway.
+
+**And the cube scene could not detect a wrong interpolation _mode_ even if one
+existed**, which is worth knowing before trusting it for the next varying. The
+material id is constant across every primitive — all three vertices of a
+triangle belong to one instance — so flat and linear interpolation of it agree
+by construction, and there is no "fragment between two vertices" that could
+resolve a third row. What `nointerpolation` actually buys here is what
+`sprite.slang`'s `sheet.z` note says it buys: an exact integer instead of one
+that arrived through a float unit and truncates a row early.
+
+**What the golden does detect is a fragment resolving the wrong row**, which is
+the failure a texture fetch would produce and the reason the scene's two
+pyramids are in unlike colour families. Pinned by making the fragment stage read
+a fixed `materials[0]` and rendering:
+`256x192: 4105 pixel(s) differ at all (8.3516%), max channel delta 105, 4105 over tolerance (8.3516%), mean abs error 2.0736, rmse 11.1112, ssim 0.991305 — failed: TooManyDifferingPixels`,
+the same line on `vk` and on `wgpu`.
+
+**`msl` and `dxil` were not rendered.** Nothing here runs Metal or D3D12, and
+they are the two whose lowering this probe least exercises. Their artifacts were
+read and carry the right qualifier; CI is the only thing that can say the frame
+does too.
+
+### Two scene constants the new lobe invalidated
+
+Both were calibrated against a Blinn lobe at a fixed strength of 0.35, which is
+several times brighter than a four-per-cent dielectric GGX lobe at the same
+angles. Neither assertion was weakened; the scenes were recalibrated.
+
+- **`crcbl::screenshot`'s green point light.** `scene_lights`' own rule is that
+  each light's colour is chosen against the material under it — and "the
+  material" turns out to be the mesh's vertex colour as much as the row's
+  factor. Every pyramid shows the same purple `+Z` face
+  (`PYRAMID_SIDE_COLORS[2]`, whose blue is nearly three times its green), so the
+  green light was the one fighting its own surface, and the Blinn highlight was
+  what carried it. Its blue is now 0.1, the same as the red light's weakest
+  channel. **This file is outside the slice's brief and the edit is one
+  constant**; the alternative was to change what
+  `each_point_light_pools_where_it_was_put_and_nowhere_else` asserts, which
+  would have been weakening a test to fit the code.
+- **`render_e2e`'s two-geometry-path comparison is no longer an exact byte
+  compare.** It is now "at most `path_lsb_channels` channels differ, and never
+  by more than 1". The mesh arm and the indirect arm transform a vertex through
+  two different shaders (`mesh_cluster.slang`'s mesh stage, `mesh.slang`'s
+  vertex stage) and are not obliged to contract their multiply-adds alike; a
+  sharper highlight turns that last bit into a pixel where a broad one absorbed
+  it. Measured: llvmpipe disagrees on **one** channel of the dunes frame, by
+  one, out of 196608; radv and wgpu are still byte-for- byte identical on every
+  scene. The budget is 16, two orders of magnitude under anything a level that
+  failed to draw would produce.
+
+### The render-e2e observable, and what it does not say
+
+`the_smooth_pyramid_holds_a_tighter_highlight_than_the_rough_one` in
+`crates/crcbl/tests/render_e2e.rs` is the check that the lobe actually responds
+to the column: `Scene::Cube`'s two top pyramids are the same mesh at the same
+orientation under the same sun, and `crcbl_render::forward`'s
+`PYRAMID_ROUGHNESS` is the only shading difference between their rows. It
+measures the **falloff across one face** — inner block over outer block — on
+both, and requires the smooth one's to exceed the rough one's by
+`HIGHLIGHT_FALLOFF_RATIO`. Proven red: with both rows at one roughness it
+measures 1.057 against 1.003 and fails; as the renderer writes them, 1.357
+against 1.003.
+
+- **It is a falloff and not a width, and the brief that asked for it wanted a
+  width.** "Brighter at its centre and narrower across it" needs the lobe's
+  centre to sit inside the measured surface with room either side. Under a
+  _directional_ light on a _flat_ face the half-vector sweeps monotonically
+  across the face, so the highlight's centre is at the face's inner edge and the
+  frame shows one flank of the lobe. The falloff across that flank is the same
+  claim by the only statistic this geometry supports. A scene with a curved
+  surface, or `Scene::Spot`'s floor with two materials on it, is what would let
+  the width be measured directly — and neither exists.
+- **The right-hand pyramid is the only surface in the frame at the mirror
+  direction.** `DirectionalLight::default`'s sun comes from `+X` and that
+  pyramid stands at `+X`; the left-hand one's face never reaches the reflection
+  angle, which is why the same pair of roughnesses leaves it flat and why it
+  works as the control. The consequence is that the roughness edit had to go on
+  the _tinted_ row, so `material_rows`' "one row and two single-column edits"
+  invariant is now "two edits, neither of which can be mistaken for the other".
+- **A metal is covered by `apps/lantern` alone.** Its brass block and mirror
+  panel are fully metallic rows under a golden, so the `F0` interpolation and
+  the `1 - metallic` on the diffuse albedo are exercised there; no
+  `crcbl::screenshot` scene sets `metallic` above zero.
+- **Not covered locally: Metal, D3D12 and wasm.** The lobe was run on lavapipe,
+  radv and wgpu-on-radv. `msl/mesh.metal` and `dxil/mesh.fragmentMain.dxil` were
+  regenerated and compile, and CI is the only thing that can say the frame they
+  draw matches.
+
+## The AO tuning constants, measured against a real frame (2026-08-13)
+
+Two entries above — under "What screen-space AO left owed" and "What the
+depth-weighted blur left owed" — say `r_ssao_radius`, the kernel's lateral reach
+and `DEPTH_TOLERANCE_RADII` were tuned against `Scene::Ao` alone and that
+`lantern` is what would tune them. This is what `Scene::Ao` could say on its
+own; the section after it is the same three questions asked of lantern's room,
+which now exists. **Nothing has been retuned in either**; the numbers are here
+so the retune has a starting point.
+
+Measured on this box — AMD RX 7900 XTX, radv, Mesa 26.1.6,
+`MeshShader / Bindless / Rasterised` — from
+`crcbl screenshot --scene ao --size 1280x960`, and from the render-e2e suite's
+own printed numbers at its 256×192.
+
+- **The trough is already room-scale in one axis, which the entries do not
+  say.** `AO_RUN` is 6.0 and `AO_WALL` is 2.0 world units: a six-metre run
+  between two-metre walls. What `Scene::Ao` is missing is not scale, it is a
+  camera at eye height inside the box, a corner where three surfaces meet, and
+  anything to cast a silhouette. The straight-down camera is load-bearing for
+  the measurement it exists for and should not be changed to get those.
+- **The occlusion reaches 0.38–0.40 world units from the wall**, against a
+  kernel whose stated lateral reach is `7/8 × r_ssao_radius` = 0.4375. Floor
+  luma down the middle of the run, averaged over a 3-unit-wide strip: 74.66 on
+  open floor, falling to 63.31 at 0.10 from the wall, back within one percent of
+  open floor by 0.38. So the term is **bounded by the kernel and not by the
+  geometry** — `r_ssao_radius` is doing exactly what it says, and the trough is
+  wide enough not to clip it.
+- **So it reads as a broad ambient wash, not as contact occlusion.** A 0.4-unit
+  gradient against a 2-unit wall is a fifth of the wall's height. Contact
+  occlusion in a room wants a tighter band; 0.5 is at the top of the usual
+  range. **This is the finding a retune would act on**, and it is a judgement
+  about looks, so it wants goldens and a human, which is what the deferral said.
+- **The gradient terraced, and GTAO 2026-08-28 is what stopped it.** It was
+  about eleven sRGB levels over roughly 150 pixels at 1280×960 — a band every
+  fourteen pixels — invisible at the goldens' 256×192 and plain in a
+  contrast-stretched crop. Re-measured after the horizon integral shipped, over
+  the same 0.40 units of floor approaching the wall and the same strip: the
+  hemisphere put 13 distinct levels in 16 steps, so it repeated values; the
+  integral puts 19 in 19, which is monotone. The rest of that profile barely
+  moved — open floor 75.14 either way, the foot 53.14 against 51.68, the reach
+  0.390 against 0.370 — because `Scene::Ao` is a closed trough and the wash the
+  integral removes needs an open surface to appear on. `probes` and `lights` are
+  where it showed.
+- **The bilateral blur holds at a silhouette, with about a fortieth left.** The
+  render-e2e's own reading on this GPU:
+  `cube — the pyramid's underside measures 67.3 along its silhouette and 66.0 two rows in, against a clear of 37.0`
+  — a residual halo of 2.0%, matching what the blur entry claimed. Against a
+  _real_ silhouette rather than a pyramid's underside, nothing has been
+  measured, because no scene in the tree has one.
+- **`DEPTH_TOLERANCE_RADII` remains unmeasured and that is not fixable here.**
+  It weights the blur by view-space depth difference, so what exercises it is
+  two surfaces at different depths sharing a kernel footprint. `Scene::Ao` has
+  one flat floor and two walls at the same depth as it, and `Scene::Cube` has
+  one silhouette against the clear. Neither separates the tolerance from the
+  far-plane test beside it. A room with furniture is still what would.
+- **Where these came from**, so they can be reproduced: `r_ssao_radius` is a
+  `convar!` in `crates/crcbl-render/src/ssao.rs` — reachable from the console
+  and from an `autoexec.cfg`, which is what makes a sweep cheap now — the
+  lateral reach is the `KERNEL` table in
+  `crates/crcbl-shaders/shaders/ssao_hemisphere.slang`, which is where that
+  kernel lives now that `r_ssao_technique` defaults to the GTAO march, and
+  `DEPTH_TOLERANCE_RADII` is a `static const` in `ssao_blur.slang` reachable
+  from nothing. So a tolerance retune is still an engine edit and a re-bless.
+
+## The AO constants against lantern's room (2026-08-14)
+
+Record; the measurement it leaves takeable is in docs/backlog.md under the same
+heading. The measurement the entry above could not make, now that there is an
+eye-height camera inside a real room. Read off `apps/lantern/tests/golden.rs`'s
+own projection at 1280×960 on AMD RX 7900 XTX, radv, Mesa 26.1.6,
+`MeshShader / Bindless / Rasterised`, averaging a 21×21 block about each world
+point. **Nothing was retuned.**
+
+- **AO reads as contact occlusion in a real room, and its reach is the kernel's
+  rather than the geometry's.** Floor luma approaching the back wall, in the
+  ambient-only part of the room: flat at 77–80 from 1.4 m out down to 0.5 m,
+  then 71.5 at 0.35 m, 60.5 at 0.20 m, 61.5 at 0.05 m. A 25% darkening confined
+  to the last 0.35 m. The same shape on a wall going up from the floor — 53.8 at
+  0.12 m, recovering to 63.7 by 0.6 m — and at the metal block's contact with a
+  _sunlit_ floor, where AO touches the ambient alone and still cuts 172 to 130
+  over the last 0.3 m.
+- **So `r_ssao_radius = 0.5` is sane at room scale**, and the "broad ambient
+  wash" reading the `Scene::Ao` entry above reports is a property of that scene
+  rather than of the constant: 0.4 units against a 2-metre trough wall is a
+  fifth of it, and the same 0.4 units against a 3-metre room wall with an
+  eye-height camera reads as the band under a skirting board. **The finding the
+  earlier entry proposed a retune on does not survive the room it asked for.**
+- **The three-surface corner is measurably darker and is the weakest of the
+  three.** Down the diagonal into the floor–back-wall–coloured-wall corner: 99.5
+  at 0.40 m, 95.6 at 0.30 m, 83.4 at 0.20 m. A 16% cut where two walls close
+  most of the hemisphere, against the 25% a single wall gives. Not chased: it is
+  in the sunlit part of the floor, so ambient is a smaller share of the pixel
+  there, and separating the two needs an AO-off frame of the same view, which
+  `--no-ao` can now produce.
+- **`DEPTH_TOLERANCE_RADII` finally has something to be measured against, and
+  shows no halo at it.** The room puts two surfaces one to two metres apart in
+  view depth inside one kernel footprint at three places: the metal block's
+  vertical silhouette edge, the plinth's, and the mirror panel's against the
+  back wall. Row profiles across each: the block's edge goes 132.3 to 93.2 in
+  **one** pixel with no gradient on either side, and the panel's goes 0.0 to
+  57.0 in two. So the depth-aware blur is not smearing a near surface's
+  occlusion onto a far one at 2.0 radii.
+
+- **A finding worth more than any of them: the sun's shadow bias contaminates
+  the floor's occlusion profile near a wall.** The first profile taken —
+  approaching the `-x` wall — read 49 at 0.8 m and 138 at 0.25 m, which is
+  backwards. That is the peter-panning recorded in the lantern entry above, not
+  AO. Anyone repeating this measurement must take it on a wall whose foot the
+  sun does not reach, which is why the numbers above are from the back wall.
+
+## Irradiance probes: the slice plan (designed 2026-08-14)
+
+Record; the limits still deferred are in `docs/backlog.md` under this heading.
+
+The design is `docs/plan/18-render-features.md`'s "Irradiance probes: the
+design" — a static grid of L1 spherical-harmonic probes in a read-only storage
+buffer, adding no render pass, added to `frame.ambient` for diffuse and returned
+by an SSR miss for specular. Read it first; all slices are built and both of its
+open questions are taken, so what stays here is the record and the limits.
+
+The seam still permits a read-only storage binding of a host-visible buffer, and
+appending the mesh binding after `AMBIENT_OCCLUSION_BINDING` needed no
+`mesh_cluster.slang` mirror for the same reason occlusion did not.
+
+### Decisions, both taken
+
+- **Q1: does the probe half of the environment specular evaluate above
+  `ROUGHNESS_CUTOFF`?** **Resolved yes.** A wide lobe is where the low-frequency
+  probe is more honest than one screen-space ray. The cutoff therefore gates the
+  march only; rough surfaces return probe environment with zero sharpness, and
+  the blur composites that centre value without filtering. This keeps
+  `UNTINTED`'s exact-zero march endpoint without leaving lantern's brass black.
+- **Q2: does this get a `RenderEffects` bit?** **Resolved no.** The off-switch
+  is the scene, and a zero volume is bit-identical, so there is nothing to
+  resolve through four layers. `effects.rs`'s own rule is that an effect which
+  is off is a frame with fewer passes and never a shader branch — a probe bit
+  removes no pass. If lantern's milestone-4 matrix wants a row anyway, it should
+  swap the bound table for the zero one, which is still data and still no
+  branch. It is public API shape, so it is yours.
+
+### Named limits, so they are not rediscovered
+
+- **Light leaking was the grid's real weakness, and per-probe visibility closed
+  it.** A probe inside a wall used to light the room beyond it.
+  `crcbl_render::probe_visibility` renders each probe's octahedral depth map and
+  `probe_gather.slang` weights the probe by a Chebyshev test against it, which
+  is the first of the two answers the literature offers; DDGI's temporal depth
+  moments remain out of scope. What is left is what the RSM updater's own entry
+  above records.
+
+- **With `REFLECTIONS` off, metals go black again**, because the reflection pair
+  is what draws the environment specular. Coherent rather than a defect, and
+  `--no-reflections` showing it is honest.
+
+## The probes fixture is a full-frame gradient, and WARP will not have it (2026-08-14)
+
+`a5f0e29` added `Scene::Probes` and `a88d671` reverted it. **The probe maths was
+not what broke** — on the WARP run that failed, the shader and
+`crcbl_shaders::probe`'s Rust mirror agreed to 0.07 levels and the two geometry
+paths were bit-identical, so the evaluation is right on that device. What failed
+was the golden: max channel delta 8, **1212 pixels (2.47%) over tolerance
+against `Tolerance::RASTERISER`'s 1% budget**.
+
+### Why, and it is a lesson about fixtures rather than about probes
+
+The fixture was designed so that **every pixel is the probe term and nothing
+else** — ambient exactly zero, the sun parallel to the floor so Lambert and the
+specular lobe vanish, the measured bands twice the occlusion radius from any
+wall. That makes the anti-vacuity argument airtight and it is why the shader
+could be compared against the mirror absolutely rather than only as a ratio.
+
+It also makes the whole frame one smooth gradient, which removes the margin an
+8-bit golden lives on. Every other scene's cross-driver drift is confined to
+edges, so a handful of pixels exceed tolerance and the _ratio_ stays tiny —
+`point_shadow` on the very same WARP run has max channel delta **34** and
+passes, because only 0.057% of its pixels are affected. A gradient spanning the
+frame has no such confinement.
+
+**The two properties are in tension and that was not seen when the design was
+written.** "Every pixel is the effect" and "an 8-bit golden survives four
+rasterisers" pull against each other, and this is the first fixture in the tree
+where the effect covers the whole frame rather than a shape inside it.
+
+### Rebuilding it: two options, and the numbers needed to choose
+
+- **A scene-scoped budget**, the way `path_lsb_channels` in
+  `crates/crcbl/tests/render_e2e.rs` already scopes an allowance to
+  `Scene::Dunes`. Honest if the argument is written down — the 1% ratio was
+  derived for localised edges, not for content that is gradient everywhere.
+  Dishonest if it is picked to be whatever makes WARP pass, which is the trap.
+- **A fixture that is not gradient-dominated**: keep the probe term as the only
+  term but give the frame flat regions — facing quads at distinct normals rather
+  than one floor across the interpolation. The ratio assertion survives; the
+  golden regains its margin.
+
+**Neither can be chosen from this machine.** The failure only appears on dx12
+under WARP, which needs Windows, so any fix validated locally is a guess pushed
+to CI. Get the WARP numbers for a candidate fixture before blessing anything —
+the previous attempt passed radv, lavapipe, both geometry paths and a four-way
+negative control, and still broke `main`.
+
+### Not at issue
+
+`ce253ad` (slice 1) was never implicated and stays. The design's determinism
+argument — that probe evaluation has no comparison between fetched values to
+diverge on — was _supported_ by this run, not contradicted: radv against
+lavapipe is max delta 2, and WARP agrees with the host mirror to 0.07 levels.
+The 8-bit golden is the fragile part, not the arithmetic.
+
+**The first replacement preserved the semantics but not WARP's budget.** With a
+`0.4`-unit interval, WARP still reported 1,216 pixels over tolerance — 2.4740%
+of the frame, effectively the reverted fixture's result — even though every
+semantic check passed and the shader agreed with the Rust mirror to 0.20 levels.
+The gradient had been confined, but not enough to fit the global 1% budget.
+
+Reducing the interval to `0.1` units disproved that diagnosis: WARP again
+reported exactly 1,216 over-tolerance pixels. The uploaded actual/diff artifact
+located every one on the thin oblique `±X` wall strips — 656 on the left and 560
+on the right. The floor had 8,825 differing pixels but none over tolerance and a
+maximum channel delta of 2. The wall strips reached 7 and 8 respectively.
+
+The room is now wide enough to crop those `±X` strips while retaining the `±Z`
+walls as context. That changes no measured floor point, probe row, tolerance, or
+semantic assertion. The centre is still compared against both endpoints, and the
+widened-to-room negative control still fails on an 11.60-level endpoint-region
+change against its 0.5-level flatness budget. **The crop held**:
+`dx12 e2e (software adapter)`'s ForwardRenderer step runs `render_e2e` on WARP,
+and it has been green with `Scene::Probes` in it since.
+
+## The effect toggles landed, and two things about them are owed (2026-08-14)
+
+Record; the coverage gaps this slice left are in `docs/backlog.md` under this
+heading.
+
+`crcbl_render::effects` is topic 39's resolution point: `RenderEffects` is the
+effect set, `EffectRequest` carries the three requested layers,
+`EffectRequest::resolve` applies the order, and `ForwardRenderer::begin_frame`
+resolves once per frame and freezes the answer. What follows is what that left.
+
+### The device-capability clamp is real and its rule set is empty
+
+`ForwardRenderer::device_effects` is `RenderEffects::all()`, and that is a
+statement about these three effects rather than an unfinished clamp:
+
+- AO has no device fact to gate on, which topic 18 says in as many words —
+  "inventing a capability that is really a performance opinion is what topic 39
+  exists to prevent".
+- The reflection pair says the same of itself in `crcbl_render::ssr`'s module
+  docs: every backend has a full-screen draw, a sampled `D32Float` and a sampled
+  `Rgba8Unorm`.
+- Shadows are a `D32Float` image and a depth-only pass. **Considered and
+  declined:** a rule requiring `max_image_2d >= shadow::atlas_extent()`. It is
+  true and it is unreachable — a device that fails it cannot create the atlas at
+  `build`, so the renderer never exists to be clamped, and writing the rule
+  would imply a degradation path that is actually a build failure.
+
+The clamp _step_ is exercised:
+`the_layers_resolve_in_the_order_topic_39_specifies` passes a reduced device set
+to `EffectRequest::resolve` and checks it wins over an override forcing an
+effect on. The first rule that fires arrives with the ray-traced variants, which
+`LightingPath` already selects.
+
+## The scene API: the slice plan (decided 2026-08-13)
+
+Record; what the API still owes is in `docs/backlog.md` under this heading.
+
+`apps/lantern` could not be built because an application cannot describe a
+scene: `ForwardRenderer::begin_frame` takes the cube's transform as an argument,
+five `set_*` methods place instances of meshes the renderer holds the ids of,
+and there is no material call on the type. The roadmap already put P9's scene
+work before S4B while P7B's deliverable named lantern. **Resolved by pulling the
+scene work forward**, rather than by moving lantern.
+
+The resident set is a description now — `crcbl_render::scene` and
+`ForwardRenderer::with_scene`, with `new` as `with_scene(&scene::demo())`;
+instances are a runtime API: `ForwardRenderer::add_instance` / `set_instance` /
+`remove_instance` over a `scene::InstanceDesc`, and the five `set_*` demo
+wrappers are gone; `begin_frame` no longer takes the cube's transform — the cube
+is an ordinary instance every caller places for itself, by `scene::DEMO_CUBE`
+and the other public demo indices. Materials and page layers are the caller's
+too: `PageDesc` at the caller's own extent, `push_layer` per layer,
+`SceneDesc::materials` row by row, refused at build when a row names a layer the
+page has not got. The pools are sized by `Capacities`, and a description that
+outgrows one of the four is refused up front rather than part way through
+filling it. `apps/lantern` is the application that consumed it, and what still
+binds a future caller is everything below.
+
+### The shape
+
+The resident set becomes a description the app hands to `new`; instances become
+a runtime API. That split is where the seam already is: pools, the cluster pool,
+the bucket table and the page are fixed at build and never grow, while
+`MaterialTable::insert` and `InstancePool::insert`/`set`/`remove` are already
+per-frame paths. A runtime `add_mesh` would mean recreating the camera's
+`DrawGen` and the four shadow ones plus every bind group naming their buffers
+mid-life, which is the streaming path `crcbl-render`'s own `mesh_pool` docs
+already assign to P9.
+
+### Flat meshes only, and why that is not negotiable yet
+
+`build_meshlets` needs positions alone and emits vertex runs indexing the
+original array, so attributes survive exactly — a flat app mesh is fine. **A
+cluster DAG is not.** `crcbl_scene::simplify` is position-only and says so in
+its own module docs: a coarse level has no normals and no UVs. The engine's one
+DAG works because the dunes patch is analytic — `residents` synthesises each
+coarse vertex through `crcbl_shaders::dunes::vertex_at`. An app-supplied DAG
+needs attribute-aware simplification or nearest-source attribute transfer, which
+is unbuilt topic 25 work listed in that plan's own risks. `Geometry::Dag`
+carries that constraint in its own documentation, so the limitation is stated at
+the type rather than discovered.
+
+### Capacity: a documented cap the caller chooses, never growth
+
+The `POOL_*` constants are fields of `Capacities` now, whose `Default` is the
+numbers the engine shipped. Growth is out for the reason `mesh_pool` already
+argues — every bind group names those buffers. A description that outgrows one
+is refused by `ForwardRenderer::check_scene`, before the first device object
+exists, naming the pool, the capacity and what the description needs; the plan's
+"`MeshPoolError::PoolExhausted` must reach the caller un-flattened" turned out
+to be the wrong answer to that, for the reason the `SceneError` entry below now
+records. Worth knowing while sizing: raising the instance cap is not linear,
+since the LOD hysteresis buffer is per instance per `DrawGen` and there are
+five. `Capacities::instances` is the one number no description can be measured
+against — objects are placed while the renderer runs — so filling it is
+`InstancePoolError::PoolFull` from `add_instance` and nothing earlier.
+
+### Where the refactor could silently change a frame
+
+Ordered by how quietly each would fail. Row 0 of the material table is what
+`GpuInstance::default` names, so a reordered description swaps the pyramids'
+materials. Mesh table ids come from upload order and the cull pass reads a
+bounding box out of the entry the instance names, which for a DAG is level 0's.
+Page layer numbers are a producer's own and nothing checks that a row names the
+layer its producer meant — a row pointed one layer along shades a surface with
+somebody else's texture. (Row (d) closed the older version of this: layer 0 used
+to have to be opaque white, and `GpuMaterial::NO_PAGE` is out of band now, so
+layer 0 is an ordinary layer and no page burns one.) `draw_gen`'s scatter takes
+the first bucket whose mesh id matches, so two buckets naming one mesh means the
+second never draws. Instance index is the LOD hysteresis key, inert with one DAG
+instance and not inert with two. And the rollback path gains new early-failure
+points that must sit on the same side of the self-cleaning handover, or a
+rejected description leaks two device-local buffers.
+
+**Four of these are invisible to `cargo test`**: `crcbl-render`'s unit tests run
+on the null backend and cannot tell a right frame from a wrong one. Every
+remaining slice is verified by `run-render-e2e.sh` and `run-vk-e2e.sh` on a real
+device or it is not verified.
+
+What the landed slices did about each, so the next one does not re-derive it:
+row order is `SceneDesc::materials` order and `material_rows` inserts in it,
+asserted by `scene`'s
+`the_demo_scene_shades_by_omission_through_an_untinted_row`; ids are description
+order, asserted by `forward`'s
+`the_description_resolves_to_the_ids_it_was_written_in`; a layer's length
+against its kind's extent is `PageDesc::check`'s to verify and a row naming a
+layer that kind has not got is `check_scene`'s; buckets are built by walking the
+mesh list, so a duplicate is not refused but unspellable; and every description
+check runs from the top of `ForwardRenderer::check_scene`, before the first
+device object exists, which `a_refused_description_creates_nothing_at_all` reads
+off the recorder's live object count — with one arm deliberately refused _after_
+the pool exists, so that count is evidence about `build_geometry`'s rollback and
+not only about `check_scene`.
+
+### The materials-and-layers slice was almost entirely already done
+
+Recorded because the next reader will otherwise re-derive it. Of the three
+things that slice was scoped as, the first description slice had already
+delivered all three:
+
+- The constants a caller reads the pattern off — `PYRAMID_TINT`,
+  `PYRAMID_ROUGHNESS`, `CHECKER_TEXELS`, `CHECKER_LAYER`, `PAGE_EXTENT` — are
+  public on `crcbl_render::scene`, and `scene::demo` builds its page through
+  `PageDesc::empty`, `set_extent` and `push_layer` like any other caller.
+  `UNTEXTURED_TEXELS` does not exist any more, and neither does the burned white
+  layer it described: a material that names no texture carries
+  `GpuMaterial::NO_PAGE`.
+- A row naming a layer the page has not got is already refused by
+  `ForwardRenderer::check_scene`, naming the row, the layer and the page's layer
+  count, before any device object exists — and
+  `a_refused_description_creates_nothing_at_all` already has an arm for it. Not
+  duplicated.
+- `PageDesc` already lets a caller append layers and gives it no way to write
+  one at no extent, its fields being private and `set_extent` the only way to
+  size a kind.
+
+What was actually missing was **evidence**, not mechanism: every scene built
+anywhere in the tree was `scene::demo()` — three rows, two layers, one extent —
+so a `with_scene` that uploaded the first two layers and stopped, or inserted
+the first three rows and stopped, would have left all eleven goldens
+byte-identical and passed everything else. `forward`'s
+`an_app_page_and_table_reach_the_device_whole` is what closes that: a four-layer
+page at an extent that is not `PAGE_EXTENT` and six material rows, checked
+against the recorded `CopyBufferToImage` per layer and against the material
+buffer's bytes per row. Shown red three ways — the page upload truncated, the
+row insert truncated, and the row insert reversed.
+
+**Considered and declined: a `PageDesc::layer_bytes` accessor.** `extent² × 4`
+is computed in `check` and by any app producing texels for `push_layer`, so
+there is a real second caller for it. Left out anyway: it is a convenience
+rather than a sufficiency gap — an app has `extent(kind)` and the RGBA8 layout
+is documented on `push_layer` — and this slice's whole obligation was not to
+manufacture work. Re-checked when row (d) landed on 2026-09-06: still declined,
+and the per-kind extent makes it `layer_bytes(kind)` rather than a constant, so
+the accessor would now have to carry the kind too.
+
+(The instance-index reuse this slice documented rather than removed is in
+`docs/backlog.md` under this heading.)
+
+### Instance order is the caller's now, and it is what keeps a golden still
+
+`ForwardRenderer::new` used to insert the cube itself, so it was always instance
+0 and every `set_*` object landed above it. Nothing is inserted at build any
+more, so the pool's slot order is the order a caller places objects in — and the
+eleven goldens stayed byte-identical across the `begin_frame` slice and again
+across the setters' retirement because every caller places the cube **first**:
+`screenshot.rs`'s `place_cube`, `vk_e2e`'s `mesh::place_cube` / `place_cube_at`,
+and `forward`'s own test helper, each of which says so at the call site.
+
+Retiring the setters made this the whole risk of that slice, and it is why every
+converted call site is a straight `add_instance` in the setters' own order, why
+the toggling ones hold a handle and `remove_instance` before placing again
+rather than inserting twice, and why the three helpers that grew out of it —
+`screenshot.rs`'s `place`, `vk_e2e::mesh::place` and `forward`'s `place_demo` —
+each say the order is load-bearing where a reader will find it.
+
+Whether a different order would actually move a frame is **not measured**. The
+visible list is filled by an atomic, so the draw order is not the pool's order
+to begin with; but the instance index is `docs/plan/25-lod.md`'s hysteresis key
+(see the entry above), and a slice whose whole obligation was that no golden
+moves was not the place to find out.
+
+### A renderer nobody placed anything in records fewer dispatches
+
+Not a defect, and newly reachable. With an empty instance pool the cull dispatch
+covers no workgroups, and `DrawGen::add_passes` records **no dispatch at all**
+rather than one of zero — Metal rejects the empty dispatch, and the comment
+there says so. Before the cube became a caller's instance the pool was never
+empty, so this could not be reached from `ForwardRenderer` at all.
+
+`forward`'s
+`the_frame_records_one_indirect_call_per_bucket_whatever_the_scene_holds` is
+what found it: its no-pyramid half recorded 7 dispatches against the other
+half's 10. It places the cube in both halves now, so the two differ in the
+pyramid alone, which is what the test was always about. Nothing else in the tree
+draws a frame with an empty pool.
+
+### Declined twice: a `SceneError`, and the second reason retires the condition
+
+The description slice declined one as indirection with a single implementation,
+and set a condition for revisiting it: `MeshPoolError::PoolExhausted` reaching
+the caller un-flattened, because its `largest_free`-versus-`total_free` pair
+tells fragmentation from a genuinely full pool and `HalError` cannot carry that
+distinction. The capacity slice revisited it and **declined again, because the
+condition is not reachable at `with_scene`**.
+
+`build_geometry` creates the `MeshPool` and then fills it; nothing is ever freed
+in between, and `FreeList::alloc` is first-fit over a list that starts as one
+block, so every allocation comes off the front of a single trailing block and
+`largest_free == total_free` at every failure. The refusal a build can actually
+produce says so out loud — breaking the new check and letting the pool refuse
+instead prints
+`the largest free block holds 1 and 1 are free in total, out of a capacity of 1`.
+So the only thing exhaustion can mean here is "too small", the only answer is
+"raise the capacity", and both are known from the description before a device
+object exists. `check_scene` says it there instead, naming the pool, the
+capacity and the need.
+
+The condition becomes real when meshes can be freed and re-uploaded during a
+renderer's life — P9's streaming `add_mesh`, deliberately deferred — and that is
+the slice where the type earns itself. Not before: today it would still be one
+implementation, and it would be carrying a distinction that cannot arise.
+
+### The demo setters are gone, and what indexed the description besides them
+
+`set_pyramid`, `set_tinted_pyramid`, `set_textured_pyramid`, `set_open_box` and
+`set_dunes` are deleted, with `ForwardRenderer::place` — the body they shared,
+whose swallowed `InstancePoolError::PoolFull` this backlog kept as "it goes when
+they go" — and the five `Option<InstanceHandle>` fields, and the
+`REQUIRED_MESHES` / `REQUIRED_MATERIALS` floor `check_scene` enforced.
+
+**The floor was not held up by the setters alone**, which is what the plan for
+this slice assumed. `ForwardRenderer::build` also indexed the description at
+`DEMO_DUNES` in two places — the cluster range it published as `dunes_clusters`
+and the per-level bucket list it published as `dunes_level_buckets` — so with
+the check simply deleted, a one-mesh description **panicked** out of `build`
+rather than being refused. Both are per-description-mesh now: the fields are
+`mesh_clusters` / `mesh_level_buckets` and the accessors are
+`ForwardRenderer::cluster_range(mesh)` and
+`ForwardRenderer::level_buckets(mesh)`, whose only callers are
+`vk_e2e/mesh.rs`'s `read_cut` and `selected_dunes_level`. `forward`'s
+`a_description_smaller_than_the_demo_is_a_scene` is the test, and it was shown
+red both ways — against a restored floor, and against the positional indexing,
+where it fails with `index out of bounds: the len is 1 but the index is 3`.
+
+Nothing in `crcbl-render`'s non-test code names a `DEMO_*` constant any more.
+
+### Where the capacity slice drew the line, and what it left to the pool
+
+`check_scene` owns what only the whole description knows — the four totals
+(vertices, indices, mesh table entries, material rows) against `Capacities`, and
+the cross-references between page, rows and DAG levels. What one mesh's _bytes_
+say stays the pool's: `MeshPoolError::VertexStrideMismatch` and `EmptyMesh` are
+still raised from inside `build_geometry`, mesh by mesh, and arrive as
+`HalError::Backend` carrying their numbers.
+
+**Considered and declined: hoisting those two into `check_scene` as well.** It
+would make every description refusal free, and it would also make the
+self-cleaning branch of `build_geometry` unreachable from any description — dead
+code with a test that could no longer drive it. Left where it is deliberately,
+so `a_refused_description_creates_nothing_at_all`'s last arm is a real path: it
+appends one byte to the open box's vertices, which is refused on the third of
+four meshes with the pool created, its buffers live and two meshes already
+staged into them, and asserts both that something _was_ created (or the arm
+proves nothing about the rollback) and that the live-object count came back.
+Shown red by removing `pool.destroy(device)` from `build_geometry` — 8 objects
+leaked, and that arm was the **only** failure in the whole `crcbl-render` suite.
+
+The four capacity refusals are `HalError::InvalidDescriptor` like every other
+`check_scene` answer, each asserted against a fragment of its own message so an
+arm cannot pass on another check's refusal, and each shown red by deleting its
+row from the table — every one of them then reached the pool and came back as
+`Backend`. The opposite mistake has its own test, because nothing else in the
+tree could fail on it: every other scene reserves far more than it holds, so a
+comparison written `>=` would pass the entire suite and refuse only the
+application that had sized its pools exactly right.
+`a_description_that_exactly_fits_its_capacities_is_built` is what fails there.
+
+(`Capacities::lights`, which nothing drives, is in `docs/backlog.md` under this
+heading.)
+
+### What the cook slice actually had to move, and what was already there
+
+`ClusterDag::cook` was **already** in `crcbl-scene` (landed with
+`crcbl lod gen`), so the `cook`/`sphere` pair in
+`crates/crcbl-shaders/tools/cook-clusters.rs` was a second copy of the same
+transcription with nothing between them. The example calls `built.cook()` now
+and its own copy is gone;
+`cargo run -p crcbl-shaders --example cook-clusters -- --check` is what says the
+move changed no byte, and it was shown red by perturbing one cooked vertex index
+(`they first differ at byte 4972`).
+
+New is `MeshletBuild::into_clusters`, which is the flat-mesh half an application
+needs and had no spelling at all: `build_meshlets` produces three private `Vec`s
+and `crcbl_render::scene::Geometry::Flat` takes a
+`crcbl_shaders::meshlet::MeshClusters`. `ClusterDag::cook` goes through it now
+too (`level.clusters.clone().into_clusters()`, the same three allocations the
+three `to_vec`s cost), so the mapping lives in one place.
+
+## Screen-space reflections: the slice plan (decided 2026-08-14)
+
+Record; the one coverage gap left is in `docs/backlog.md` under this heading.
+
+The design and its refusals are in `docs/plan/18-render-features.md`'s SSR
+section. This is the slice order and what each one's observable is.
+
+**The attachment, march, blur, probe fallback and rough-surface integration have
+landed.** The cutoff remains at 0.5 because it gates marching rather than probe
+environment specular; the measured cutoff raise below remains a declined
+alternative, not pending work.
+
+What those slices found on the way, and what a reader of the design should know
+before writing the next one:
+
+- **The reach had to become a share of the frame.** The design said a fixed
+  pixel stride and a fixed loop bound, which a first cut read as a fixed pixel
+  _reach_ — and a reflection that shrinks as the window grows is the same defect
+  the design refuses one level down. `ssr.slang`'s `REACH_FRACTION` is the fix
+  and `docs/plan/18-render-features.md` carries the amendment.
+- **The forward pass stores its depth now.** `PassBuilder::clear_depth` is
+  `StoreOp::Discard`, and a discarded attachment is undefined rather than
+  "whatever was written": radv and llvmpipe handed the values back and wgpu
+  handed back the clear, so the same build reflected on one backend and not the
+  other with no error anywhere. Anything else that wants to read the depth
+  _after_ the forward pass inherits this.
+- **`Scene::PointShadow` earned a geometry-path budget.** Its caster carries the
+  tinted row, the only demo material under the cutoff, so it is the first scene
+  whose pixels come from a march rather than from shading the fragment the
+  rasteriser handed over — which makes the depth buffer's last bits visible in
+  the picture. One channel, off by one, on llvmpipe alone, stable across runs.
+  See `path_lsb_channels` in `crates/crcbl/tests/render_e2e.rs`.
+- **The cross-driver evidence, which the design asked for and had none of.**
+  `ssr.png` blessed on llvmpipe compares on radv and on wgpu at **max channel
+  delta 1, zero pixels over `Tolerance::RASTERISER`** — a _less_ divergent frame
+  than `cube.png`, which has no reflection in it and differs on 60% of its
+  pixels at the same delta. The structural ratio reads 92.8 against 64.0 on all
+  three, to the decimal. `lantern`'s room is where the exposure is visible: of
+  the nine pixels over tolerance between llvmpipe and radv, five are in the
+  panel's reflecting band and two of those are gross (deltas 66 and 33). That is
+  one fixture's worth of evidence, not a general argument, and the design's
+  recorded resolution — flatten the reflected content or drop the golden and
+  keep the ratio — has not had to be used.
+- **The stepping is gone, and it is measured rather than eyeballed.**
+  `the_reflection_does_not_step_down_the_band` in
+  `crates/crcbl/tests/render_e2e.rs` takes the **second** difference of the
+  reflection down single rows of `Scene::Ssr`, so a reflection that merely fades
+  down the band scores zero and only the alternation counts: 17.7 levels per row
+  with `ssr_blur.slang`'s kernel cut down to its centre tap, 2.8 with the real
+  one, limit 8. A block average hides it, which is why every other claim on that
+  scene cannot see it and why the review PNG was the only evidence before.
+- **The blur reduced cross-driver divergence where it mattered.** On the 192
+  pixels of `lantern`'s room the blur changed, llvmpipe and radv disagree by at
+  most **8** and 27 are over `Tolerance::RASTERISER`; the unfiltered march's
+  worst inside the panel's band was 66. The pixels over tolerance that remain
+  gross (worst 134) are **bit-identical to the pre-blur frame** on llvmpipe, so
+  they are triangle-edge divergence and not the reflection's. A sixteen-tap
+  denominator turning one whole-pixel disagreement into a spread of small ones
+  is exactly what the AO pair's design predicts.
+
+### lantern's mirror panel is close to SSR's worst case
+
+Worked out by hand before the slice and **measured** by it since. The panel
+faces `+Z` at the camera, so its rays point back past the viewer and its centre
+reflects a point on the front wall behind the camera — off screen, a miss. Only
+where the panel point is below eye height do rays go downward, and the band that
+reaches the floor _while still inside the frame_ is narrower than the hand
+estimate: `y = 0.45` up to about `0.607`, an eighth of the face rather than two
+thirds, because the vertical frustum edge binds before the geometry does.
+`room.rs`'s `the_mirror_panel_reflects_at_its_foot_and_not_at_its_head` bisects
+for that height rather than writing it down.
+
+So the observable is a block hung on the panel's **bottom edge** against one
+further up the same face — same material row, same normal, same `F0`, same
+roughness, same absence of direct light, differing only in whether the ray finds
+anything. It reads about 22/255 against exactly 0 at 256×192 and 18 against 0 at
+1280×960.
+
+**`METAL_DARKNESS` is gone, not kept** — this entry said it survived at
+`MIRROR_MISSES` with its number unmoved, and that was wrong on every count;
+`71ef3e2 feat(render): fill SSR misses from probes` deleted it, and it resolves
+nowhere in the tree (checked 2026-08-23). What stands at that control point is
+`MIRROR_FRACTION_OF_PLASTER` in `apps/lantern/tests/golden.rs`, which asserts
+the opposite sense — a floor on the brightness a miss retains, rather than a
+ratio by which it must be darker, because a miss is filled from the probes now
+instead of going black. `MIRROR_GRADIENT` is the central claim beside it, and
+`reflecting > LIT_FLOOR` is the floor that stops a ratio against zero from being
+a check that cannot fail.
+
+**Considered, and for the sample's owner rather than the SSR slice:** if lantern
+wants a mirror showing the room, the panel wants angling or moving to a side
+wall. That is a change to the sample's content and should not be done on the way
+past.
+
+### The cutoff raise: what it costs, measured before it was declined
+
+The blur slice was written with `ROUGHNESS_CUTOFF` at **0.75** first, run
+end-to-end, and then split back out — so the cost below is measured on this tree
+rather than estimated, and slice 1 above starts from an answer instead of a
+guess.
+
+**Two questions to settle before writing it.**
+
+- **Is 0.75 the smallest cutoff that gets `ROUGH_METAL` reflecting?** It was not
+  derived; it was placed between `lantern`'s brass at 0.55 and its plaster at
+  0.9. The ramp is `1 - roughness/cutoff`, so brass weighs 0.083 at a cutoff of
+  0.6, 0.214 at 0.7 and 0.267 at 0.75 — and the falloff comparison needs the
+  brass reflection to clear `LIT_FLOOR` and to turn that face's own downward
+  gradient around, which at 0.083 it may not. **Unmeasured below 0.75**, and
+  worth measuring: a lower cutoff buys nothing in blast radius (any value over
+  0.5 takes `UNTINTED` in) but it does keep more of the frame's arithmetic near
+  zero.
+- **Does any cutoff over 0.5 cost the determinism claim?** Yes, and it should go
+  on the record as a decision rather than arrive as a side effect.
+  `GpuMaterial::UNTINTED`'s roughness is exactly 0.5, no monotone ramp passes
+  0.55 and stops at 0.5, and the design's one _unconditional_ determinism
+  statement is that a pixel shaded through that row weighs exactly zero on four
+  rasterisers. Raising the cutoff at all trades that for "the rough end —
+  plaster, a fully rough conductor, `crcbl_scene`'s imported glTF default —
+  weighs exactly zero", which is a real claim and a narrower one.
+
+**What it moved, at 0.75, on llvmpipe.** Nine goldens: `ao` 41.3% of its pixels
+at delta 3, `dunes` 6.6% at 9, `spot_shadow` 5.5% at 16, `cube` 0.07% at 1,
+`lights` 0.04% at 1, `crcbl-vk/mesh_clusters` 12% at 5 — all of those purely
+because `UNTINTED` entered the ramp — plus `ssr` and `point_shadow` moving
+further than the blur alone moved them (0.25 weighs 0.667 where it weighed 0.5)
+and `lantern/room` gaining the brass block's reflection. `ui`, `sprite`, `spot`
+and every sprite and UI golden in `crcbl-vk` stayed byte-identical.
+
+**What it broke.** Two byte-exact geometry-path comparisons: `Scene::Ao` in
+`render_e2e` (four channels, off by one, llvmpipe only, stable over three runs)
+and `crcbl-vk`'s open box in
+`a_multi_cluster_mesh_draws_the_same_frame_through_both_geometry_paths` (one
+channel, off by one, llvmpipe only). Both for `Scene::PointShadow`'s recorded
+reason — a marching pass makes the depth buffer's last bits visible in the
+picture, and the two paths compute the same world position through different
+arithmetic. **If that slice re-adds a budget to `crcbl-vk`, it should be the
+measured value per comparison and not `render_e2e`'s 16**: that constant is
+per-scene there and zero everywhere it holds, and handing a second suite a
+blanket sixteen is slack nobody measured.
+
+**What the observable would be.** A sixth claim in
+`apps/lantern/tests/golden.rs`, in the shape of `render_e2e`'s
+`the_smooth_pyramid_holds_a_tighter_highlight_than_the_rough_one`: two blocks up
+each conductor's face, hung off its bottom edge five half-extents apart, and the
+brass block's falloff asserted above one while the panel's is not. It reads
+1.211 at 256×192 and 1.156 at 1280×960 with the cutoff at 0.75, against 1.007
+and 0.897 with no reflection on that row — so a threshold near 1.08 has about a
+fifteenth of margin either side. **The block's own shading runs the other way**,
+which is what makes the measurement a claim about the reflection: the sun
+reaches that face at a glancing angle and it darkens towards the floor, so a
+build with no reflection on it reads _under_ one. It needs `BLOCK_FOOT` in
+`room.rs` — the middle of the block's bottom edge — and a no-GPU bisection
+beside `the_mirror_panel_reflects_at_its_foot_and_not_at_its_head` showing that
+the block reflects across most of its face where the panel reflects across an
+eighth of its own.
+
+### One shared-code hazard
+
+`ssr.slang` re-declares `depth_at`, `view_position` and `normal_at` verbatim and
+`ssr_blur.slang` re-declares `depth_at` and `view_z`, because this repo has no
+include mechanism by design — the manifest hashes one source per artifact.
+`crcbl_shaders::ssr`'s `the_shared_screen_space_helpers_have_not_drifted`
+compares the bodies as text and holds all of them: four copies of `depth_at`,
+two each of `view_z`, `view_position` and `normal_at`. (The plan said three
+copies of `normal_at`; `ssao_blur.slang` carries `depth_at` and a `view_z` cut
+down from `view_position`, not a normal.)
+
+Two shader **constants** are copied as well, and each has a guard beside that
+one: `DEPTH_FAR`, which every screen-space source declares and
+`the_far_plane_matches_the_constant_the_reflection_pair_declares` checks against
+`crcbl_shaders::ssao::DEPTH_FAR`; and `THICKNESS_FLOOR`, which the march and its
+blur both declare and `the_thickness_floor_matches_the_one_the_march_declares`
+holds together. The blur has no ray, so that floor is the only length the march
+owns which it can still evaluate — which is why it is a copy rather than a
+uniform field.
+
+Making that an equality rather than a substitution cost one rename: all three
+files bind the projection block as `camera` rather than as `ssao`, because
+`view_position`'s body names it. No compiled instruction moved and no golden
+did.
+
+## Left over from packing draw args into eight storage buffers
+
+Record; the `crcbl-dx12` register case list is in `docs/backlog.md` under this
+heading.
+
+- **Settled — `ssr` and `ui` are excused by name on SwiftShader, and widening
+  the tolerance was declined.** The choice this entry posed was between widening
+  `Tolerance::RASTERISER` for those scenes and recording them as known
+  software-rasteriser differences. The second was taken: the `render-harness`
+  job's Linux and Windows legs pass `--expect-fail ssr,ui`, both scenes still
+  render and still print their numbers every run, and
+  `web/tools/render-harness-verdict.mjs` fails the job the moment either starts
+  matching or anything else stops. Widening instead would have quietly weakened
+  all eleven scenes to excuse two. The macOS leg carries **no** excuse list and
+  gates all eleven, which is what says these are a rasteriser limit rather than
+  a backend defect. The reasoning is in `.github/workflows/pages.yml` above the
+  `render-harness:` job, which is where someone re-opening it will be standing.
+
+## Hardware line width is one pixel, and the layer takes that (2026-08-31)
+
+**Considered and taken deliberately**, against the earlier prediction that
+`crcbl_ui::draw_list`'s triangle expansion would be lifted and shared. The
+pipeline is `PrimitiveTopology::LineList` with no line-width state: one
+entry-point pair over a storage buffer and no CPU-side expansion, so a box is
+twelve `line()` calls and 24 vertices rather than twelve quads and 144. All four
+backends already map `LineList`, so nothing at the seam changed.
+
+**What it costs, plainly.** No width control, no dashed or thick lines, and the
+exact texels a diagonal covers differ between rasterisers — D3D12's diamond-exit
+rule and Vulkan's parallelogram rule disagree at a line's last pixel.
+`crates/crcbl/tests/mesh_e2e/debug_draw.rs` is written around that: the sharp
+per-texel assertion is on a segment that is horizontal in screen space, and the
+twelve-edge and six-face assertions allow one texel of slack and say why.
+
+**When to revisit.** If a caller wants width, the expansion is a vertex-stage
+change — two triangles per segment, expanded in NDC by a pixel width from a
+constant — not a new pass. `push_stroke`'s bevel logic is a screen-space helper
+that does not transfer to a world-space segment whose two ends have different
+depths, so "lift `push_stroke`" is probably still not the answer.
