@@ -220,6 +220,62 @@ likewise keeps the two volumes separate and composes them rather than merging
 them. The rest — ground black, the rough lobe's azimuth, the ramp share, Metal
 and D3D12 — stays as recorded.
 
+**OPEN 2026-09-07 — where the third LUT is marched, and the user's call before
+it is built.** A read of the tree ahead of the slice found the decision's
+"camera froxel volume" pulling against a fact it was taken without: the
+atmosphere here is marched on the host. `crcbl_shaders::atmosphere`'s
+transmittance and multiple-scattering tables are `include_bytes!` host data that
+`TRANSMITTANCE_WIDTH`'s doc says is never uploaded, and the sky-view LUT is
+`SkyView::build` on the CPU, striped by `SkyViewBuild::step` and uploaded as a
+storage buffer that `sky.slang` filters by hand — `crcbl_render::sky_pass`'s
+header argues that a hardware filter's weights differ per rasteriser and the
+goldens are compared across four. A camera froxel volume is camera-dependent, so
+it is rebuilt every frame, so it is a GPU pass — which means uploading both
+tables, spelling `sample_transmittance`, `sample_multiscatter`, both phase
+functions and the three density profiles a second time in Slang (each is held to
+the host by a source-text test today), and either the renderer's first 3D
+storage image on four backends (no `.slang` in the tree declares an `RWTexture`;
+`docs/plan/51-volumetrics.md` reserves that first for its rung 3) or a
+32768-entry storage buffer with the trilinear read spelled out.
+
+- **(A) As decided:** the camera froxel volume, as a compute pass `aerial-march`
+  writing a storage buffer (not a 3D image, for the filter argument above).
+  Hillaire's and Unreal's shape exactly. Cost: the Slang re-spelling of the
+  march and the two table uploads, a new shader and pass on four backends and
+  the browser, and the pricing rows for all of them. The volume is per frame, so
+  it never lags the sun.
+- **(B) The same LUT on the host:** an `AerialView` beside `SkyView` — 32×32×32
+  over the sky-view LUT's own two direction axes and a linear distance axis to
+  `AERIAL_MAX_DISTANCE`, marched by the existing `march` split to emit
+  transmittance and radiance at each of 32 checkpoints instead of discarding the
+  transmittance at the end, striped by `SkyViewBuild` alongside the sky-view
+  rows, uploaded as a fourth 512 KB ring in `sky_pass` and read by
+  `volumetric_composite.slang` with the trilinear blend spelled out. Aerial
+  perspective is a function of direction and distance from the eye and not of
+  where the eye looks, so the parameterisation loses nothing at scene scale;
+  what it loses is altitude, which the sky-view LUT already ignores between
+  rebuilds. No new pass, binding kind, shader file or browser work. It inherits
+  the striped march's lag behind a moving sun, which is unmeasured (below).
+  Estimated at a fifth of (A)'s work; the host build is estimated at about 4 ms
+  per sun move by scaling `SkyView::build`'s measured 24.57 ms by sample count —
+  an estimate, not a measurement.
+
+Everything else in the draft is common to both — Hillaire's
+`float4(in-scatter, mean transmittance)` stored as the transmittance itself so
+it composes with `volumetric_composite.slang`'s existing `scene * a + rgb`; a
+`km_per_unit` on `Atmosphere` because the engine's unit is the metre and every
+coefficient is per kilometre, which also says the plaza's 25 m is an optical
+depth of 8e-4 and no sundial golden should move; the air composed first and the
+local fog over it; the sky pixel excluded because `sky.slang` already integrates
+the whole ray; a five-assertion render_e2e test whose fixture turns
+`km_per_unit` up so a 100-unit plate spans tens of kilometres. The
+recommendation is **(B)**: it is the industry's answer (Bruneton's precomputed
+scattering yields aerial perspective from the same tables; Hillaire's froxels
+are screen-shaped because a GPU pass is, not because the physics asks) and it
+lands none of (A)'s firsts. The rest of the draft is `docs/notes/rendering.md`'s
+"Aerial perspective, drafted and not built"; nothing is built until this is
+answered.
+
 The demo half of that decision is done: **`apps/sundial` draws under the
 atmosphere**, `crcbl_sundial::sun::Sky::atmosphere` is where its sun becomes
 one, five of its goldens were re-blessed on lavapipe and the suite is green on

@@ -2590,3 +2590,84 @@ magnitude past the top of an eight-bit frame and the fixture measures a white
 circle, which is true of any disc of any profile. At 6.5e-5 the centre reads
 233.00/194.75/143.00 on radv and the limb is inside the range, so the frame
 carries Hillaire's curve and the transmittance's reddening both.
+
+## Aerial perspective, drafted and not built (2026-09-07)
+
+The decision's fork — where the third LUT is marched — is the backlog's **OPEN
+2026-09-07** paragraph under "What the atmosphere shipped without". This is the
+rest of the draft, common to both answers, so the slice starts from it rather
+than from the paper.
+
+**What is stored.** Hillaire's `float4(in-scatter, mean transmittance)`, with
+the transmittance itself in `a` rather than `1 - T`, because
+`volumetric_composite.slang` already composes `scene * a + rgb` and the two
+volumes should be one arithmetic. The scalar alpha loses chromatic extinction —
+the reddening of a far surface under a low sun — which is Hillaire's own
+compromise and is worth saying rather than inheriting; the chromatic in-scatter
+carries the blue haze, which dominates at scene scale.
+
+**Units.** The engine's unit is the metre — `apps/sundial`'s plaza is 24 m
+across, `crcbl_render::camera` talks in hundreds of metres — and every
+coefficient in `crcbl_shaders::atmosphere` is per kilometre, with
+`Atmosphere::altitude_km` already flagged as the one field not in engine units.
+So `crcbl_render::Atmosphere` and its shader mirror gain a `km_per_unit`
+(default 0.001; a public field, so a `Breaking` entry), and every distance the
+march takes is scaled by it. The consequence decides the fixture: over the
+plaza's 25 m the Rayleigh optical depth in blue is 0.0331/km × 0.025 km ≈ 8e-4,
+under a level of an eight-bit encode, so **no `plaza-*` golden should move** — a
+moved one is the term applied at the wrong scale, to be investigated before any
+bless. `AERIAL_MAX_DISTANCE` defaults to `CLUSTER_FAR`, the far end the local
+column already stops at, so the two volumes end at one number. Slices are linear
+in distance — Hillaire's, unlike the local column's exponential split — because
+extinction is near-constant over a kilometre at an 8 km scale height; inclusive
+at the slice centre with a trilinear read; a surface past the last slice takes
+the last slice's value and is under-fogged there.
+
+**The composite.** A `StructuredBuffer<float4> aerial` appended past `lighting`
+(never inserted, on `sky_pass`'s Metal ordering rule); `fog_params.w`, the pad
+lane `volumetric.rs` writes as zero, becomes the local column's switch; a
+`float4 aerial_params` is appended last in the block with the max distance in
+`x` and the aerial switch in `w`, so a frame with no atmosphere composes the
+bytes it composed before. Order: the air first, then the fog over it —
+`((scene * T_A + S_A) * T_F) + S_F` — because the fog is the near medium and its
+glow must not be attenuated by kilometres of air behind it. The aerial term is
+skipped where the depth is still the clear value: `sky.slang`'s
+`atmosphere_radiance` already integrates the whole ray through the sky-view LUT,
+and charging its first kilometre twice is the double-fog this excludes. Three
+asymmetries to write beside it: the local fog still fogs the sky and the aerial
+does not, on purpose; `mesh.slang`'s analytic fog stays keyed off
+`VOLUMETRIC_FOG` alone, so on an atmosphere-only frame the composite's local
+half is the identity; and the composite now runs on every atmosphere frame
+(`forward.rs`'s `scene-fogged` gate becomes "fog effect or atmosphere") with the
+scatter and integrate dispatches still gated on the effect, which splits
+`Volumetric::PASSES` and moves the full-screen pass count.
+
+**The test.** Nothing in the tree draws an atmosphere and `VOLUMETRIC_FOG` in
+one frame, so the seam has no coverage. A `render_e2e` fixture on the
+`AtmosphereMirror` plate's arrangement with a Lambertian material, a low level
+eye, every effect refused, and `km_per_unit` turned up so a 100-unit plate spans
+tens of kilometres — a real field, said loudly, and what makes the assertion a
+prediction against the host LUT rather than "looks hazier". Five assertions: the
+far band gains at least a measured `MIN_AERIAL_LEVELS` over the no-atmosphere
+arm; the near band moves less than a tenth of that (a uniform or depth-blind
+term passes the first and fails this); far light-minus-dark contrast falls
+(in-scatter without transmittance passes both and fails this); a sky band is
+byte-identical with and without the composite (the double-fog guard); and a
+`Cube` frame with the fog effect and no atmosphere is byte-identical before and
+after (the off position). Slice and angular counts are swept before they are
+fixed, on `the_march_has_converged_at_the_shipped_step_count`'s model.
+
+**Pricing** is plan 43's protocol:
+`apps/lantern --headless --frames 400 --size 1920x1080`, medians of three p50s
+off `PassStats`, radv and lavapipe, with a temporary `set_atmosphere` in lantern
+as the sky was priced; the composite before and after, the whole frame with and
+without, the host build and one stripe if the host answer is taken. The browser
+has no per-pass budget; what moves is the per-demo slowdown table in
+`docs/notes/browser.md`.
+
+**Unverified in the draft:** Unreal's composition order and Hillaire's alpha
+convention are from memory; every cost is an estimate; the golden predictions
+are arithmetic, not runs; whether the graph can import an image (it imports
+buffers) is unread; per-backend `Rgba16Float` storage-image support is unread;
+Slang has never lowered an `RWTexture` in this tree; the striped march's lag
+behind a moving sun is unmeasured and the host answer doubles it.
