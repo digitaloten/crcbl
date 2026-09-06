@@ -1,0 +1,84 @@
+// Shard's item table, in the form `crcbl_inventory::Catalog::from_ron` reads.
+//
+// Five items, and between them they cover every shape the panel and the
+// placement algorithm have to handle: a stacking 1x1, a plain 1x1, a 1x2, a
+// solid 2x2 and an L that is not its own mirror. `docs/plan/34-inventory.md`'s
+// container table is what the sizes are drawn from — the pocket is 1x2 and a
+// helmet slot is 1x1 — and `crate::loot` is what turns a felled foe into one of
+// these.
+//
+// `letter` and `colour` are the placeholder cell `apps/shard/src/panel.rs`
+// draws. There is no icon atlas: `crcbl icon bake` is not a verb yet, and that
+// plan's Presentation section is where it is owed.
+Catalog(
+    items: [
+        Item(
+            name: "bandage",
+            shape: [
+                "#",
+            ],
+            tags: [
+                "medical",
+            ],
+            stack_max: 5,
+            weight_g: 30,
+            letter: 'b',
+            colour: (0.86, 0.84, 0.78, 1.0),
+        ),
+        Item(
+            name: "ember shard",
+            shape: [
+                "#",
+            ],
+            tags: [
+                "shard",
+            ],
+            stack_max: 8,
+            weight_g: 45,
+            letter: 's',
+            colour: (0.98, 0.62, 0.24, 1.0),
+        ),
+        Item(
+            name: "husk brand",
+            shape: [
+                "#",
+                "#",
+            ],
+            tags: [
+                "weapon",
+            ],
+            stack_max: 1,
+            weight_g: 900,
+            letter: 'd',
+            colour: (0.62, 0.34, 0.28, 1.0),
+        ),
+        Item(
+            name: "warden plate",
+            shape: [
+                "##",
+                "##",
+            ],
+            tags: [
+                "armour",
+            ],
+            stack_max: 1,
+            weight_g: 2400,
+            letter: 'p',
+            colour: (0.42, 0.52, 0.62, 1.0),
+        ),
+        Item(
+            name: "shrine key",
+            shape: [
+                "#.",
+                "##",
+            ],
+            tags: [
+                "key",
+            ],
+            stack_max: 1,
+            weight_g: 180,
+            letter: 'k',
+            colour: (0.85, 0.72, 0.30, 1.0),
+        ),
+    ],
+)

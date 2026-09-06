@@ -8,14 +8,22 @@
 //!                     └──▶ RenderState ──▶ crate::app, crate::page, crate::gpu
 //! ```
 //!
-//! # Two verbs, and they are *explore* and *fight*
+//! # Three verbs: *explore*, *fight* and *loot*
 //!
 //! `docs/plan/sample/15-shard.md`'s milestone 1 is "explore, fight, loot, level,
-//! save, resume". This file is the first two of those and nothing else: there is
-//! no item, no rarity, no experience and no inventory. What there is is a
-//! character, a zone with stone in it, gravity, three archetypes of foe with one
-//! ability each, and a blow that answers them. `docs/backlog.md` carries the
-//! rest with what each would take.
+//! save, resume". This file is the first three of those: a character, a zone
+//! with stone in it, gravity, three archetypes of foe with one ability each, a
+//! blow that answers them, and what they leave when they go down. There is no
+//! rarity and no experience — a drop is one of [`crate::loot`]'s table, rolled
+//! from the seed and the foe's index, and there is nothing to level.
+//! `docs/backlog.md` carries the rest with what each would take.
+//!
+//! **The loot moves inside the tick.** Which stack is in reach and whether it
+//! fits the character's grid are the stage's answers, so the pickup crosses the
+//! wire as one intent bit and is applied where every other rule is —
+//! `docs/plan/34-inventory.md`'s "clients never assert item state", in the
+//! smallest form a single-process sample can hold it in. The one exception is
+//! the panel's drag, and [`Game::drag`] says why.
 //!
 //! Save and resume are the other two verbs this sample now has, and neither is
 //! in here: [`crate::save`] owns the format and the platform, and what this file
@@ -70,6 +78,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use crcbl::ecs::{ClientInputs, GameModule, World};
+use crcbl::inventory::{Cell, Grid, Stack};
 use crcbl::math::DVec3;
 use crcbl::net::ProtocolCompatibility;
 use crcbl::phys::{CharacterConfig, CharacterController, MoveOutcome, PhysicsWorld};
@@ -77,6 +86,7 @@ use crcbl::session::Loopback;
 
 use crate::camera::walk_direction;
 use crate::foe::{self, Foe, FoeView, Kind};
+use crate::loot;
 use crate::zone;
 
 /// Distinct from every other sample's, because they are distinct protocols: a
@@ -143,6 +153,13 @@ pub struct Controls {
     /// held key swings once per [`foe::STRIKE_PERIOD_S`] rather than once a
     /// tick.
     pub strike: bool,
+    /// Whether the character is reaching for what is on the floor this tick.
+    ///
+    /// A request too, and one the *simulation* answers: what is within
+    /// [`loot::LOOT_REACH_M`] and whether it fits the grid are the stage's to
+    /// know, so a held key takes at most one stack a tick and takes nothing at
+    /// all where there is nothing to take.
+    pub pickup: bool,
     /// Where the view is pointing, in [`crate::camera::Iso::yaw`]'s measure.
     pub yaw: f32,
 }
@@ -155,6 +172,7 @@ struct Intent {
     left: bool,
     right: bool,
     strike: bool,
+    pickup: bool,
     yaw: f32,
 }
 
@@ -166,13 +184,23 @@ const INTENT_RIGHT: u8 = 1 << 3;
 /// a client that sent this every tick still swings once per
 /// [`foe::STRIKE_PERIOD_S`].
 const INTENT_STRIKE: u8 = 1 << 4;
+/// Reaching for what is on the floor. A request like the blow above, and for
+/// the same reason: which stack is in reach and whether it fits is the
+/// **server's** answer, and a client that decided it would be a client
+/// inventing items.
+const INTENT_PICKUP: u8 = 1 << 5;
 
 /// Every bit the flag byte defines. One set outside this mask is a frame
 /// something other than [`Intent::to_wire`] wrote.
-const INTENT_FLAGS: u8 = INTENT_FORWARD | INTENT_BACK | INTENT_LEFT | INTENT_RIGHT | INTENT_STRIKE;
+const INTENT_FLAGS: u8 =
+    INTENT_FORWARD | INTENT_BACK | INTENT_LEFT | INTENT_RIGHT | INTENT_STRIKE | INTENT_PICKUP;
 
 /// How many bytes one sealed intent is: a flag byte and one IEEE-754 binary32
 /// bearing, little-endian.
+///
+/// Unchanged by the pickup bit: the flag byte still had room in it, so the loot
+/// verb costs the wire nothing. [`INTENT_FLAGS`] is what says which bits this
+/// build defines.
 const INTENT_BYTES: usize = 1 + core::mem::size_of::<f32>();
 
 impl Intent {
@@ -197,6 +225,7 @@ impl Intent {
             (self.left, INTENT_LEFT),
             (self.right, INTENT_RIGHT),
             (self.strike, INTENT_STRIKE),
+            (self.pickup, INTENT_PICKUP),
         ] {
             if set {
                 flags |= bit;
@@ -234,6 +263,7 @@ impl Intent {
             left: flags & INTENT_LEFT != 0,
             right: flags & INTENT_RIGHT != 0,
             strike: flags & INTENT_STRIKE != 0,
+            pickup: flags & INTENT_PICKUP != 0,
             yaw,
         })
     }
@@ -268,6 +298,7 @@ impl Intent {
             merged.left |= frame.left;
             merged.right |= frame.right;
             merged.strike |= frame.strike;
+            merged.pickup |= frame.pickup;
             merged.yaw = frame.yaw;
         }
         merged
@@ -288,6 +319,24 @@ struct Stage {
     player: CharacterController,
     /// The zone's foes, one per [`foe::POSTS`] row, in that order.
     foes: Vec<Foe>,
+    /// Which loot this zone leaves. See [`loot::drop_of`]: the item a foe
+    /// leaves is a function of this and the foe's index, so the same seed
+    /// clears to the same haul however the fight went.
+    seed: u32,
+    /// What the character is carrying — the kit's one container primitive,
+    /// [`loot::GRID_W`] by [`loot::GRID_H`].
+    grid: Grid,
+    /// What is lying on the floor, in the order it fell.
+    ///
+    /// **Every instance in this zone is in exactly one of `floor` and `grid`**,
+    /// and both are keyed by the foe that left it — a stack leaves this vector
+    /// only once [`Grid::insert`] has answered that it is in the grid, which is
+    /// the ordering `docs/plan/34-inventory.md` calls the anti-dupe rule: never
+    /// remove and then add.
+    floor: Vec<Dropped>,
+    /// How many stacks have been taken off the floor. **Monotone**, which is
+    /// what a reader polling the heartbeat late needs of it.
+    picked: u64,
     /// What the character has left, out of [`foe::HEALTH_MAX`].
     health: u32,
     /// How many times they have been put down and returned to the spawn.
@@ -351,6 +400,29 @@ struct Stage {
     climbed: u64,
 }
 
+/// One stack lying where a foe fell.
+///
+/// The foe's index rather than a fresh id: the roster is what bounds how many
+/// instances this zone can ever hold, and [`loot::stack_id`] is the one place
+/// an id is minted from it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dropped {
+    /// Which foe left it, as an index into [`foe::POSTS`].
+    pub foe: usize,
+    /// What it is, and how many of it.
+    pub stack: Stack,
+    /// Where it lies, in metres: **the fallen body's feet**.
+    ///
+    /// Where it fell rather than the post it was standing on, because a foe
+    /// that noticed the character walked at them and a loot verb that sent the
+    /// player back across the room for the drop would be a worse game. A
+    /// *resumed* session lies it on the post, and that is not a second rule: a
+    /// felled foe is restored onto its post — [`Foe::restore`] puts back its
+    /// health and nothing else — so "the loot lies with the body" holds either
+    /// way, and it is the body that moved.
+    pub at: DVec3,
+}
+
 /// Where the character's feet are, given where their capsule's centre is.
 fn feet_of(player: &CharacterController) -> f64 {
     let config = player.config();
@@ -360,7 +432,7 @@ fn feet_of(player: &CharacterController) -> f64 {
 impl Stage {
     /// The character on the zone's spawn, ungrounded until the first move finds
     /// the floor.
-    fn new() -> Self {
+    fn new(seed: u32) -> Self {
         let config = CharacterConfig::default();
         let lift = DVec3::Y * (config.radius + config.half_height);
         let mut world = zone::world();
@@ -369,6 +441,10 @@ impl Stage {
             world,
             player: CharacterController::new(config, zone::spawn() + lift),
             foes,
+            seed,
+            grid: loot::carried(),
+            floor: Vec::new(),
+            picked: 0,
             health: foe::HEALTH_MAX,
             downs: 0,
             engaged: 0,
@@ -394,6 +470,106 @@ impl Stage {
         self.foes.iter().filter(|foe| foe.is_alive()).count()
     }
 
+    /// The nearest stack on the floor the character could reach, as an index
+    /// into [`Stage::floor`].
+    ///
+    /// Nearest rather than first, for [`cleave_target`]'s reason: the verb
+    /// answers the thing a player would expect it to. Measured from the
+    /// character's **feet**, because a stack lies on the floor and the capsule's
+    /// centre is chest height — measuring from there would make the reach depend
+    /// on how tall the character is.
+    fn loot_in_reach(&self) -> Option<usize> {
+        let position = self.player.position();
+        let feet = DVec3::new(position.x, feet_of(&self.player), position.z);
+        let mut nearest: Option<(usize, f64)> = None;
+        for (index, dropped) in self.floor.iter().enumerate() {
+            let gap = (dropped.at - feet).length();
+            if gap > loot::LOOT_REACH_M {
+                continue;
+            }
+            if nearest.is_none_or(|(_, best)| gap < best) {
+                nearest = Some((index, gap));
+            }
+        }
+        nearest.map(|(index, _)| index)
+    }
+
+    /// Puts what foe `index` was carrying on the floor at `at`.
+    ///
+    /// Called once, on the tick it falls: a foe is felled exactly once — the
+    /// blow that would take it to zero puts it down instead, and there is no
+    /// revive — so nothing here has to guard against a second drop.
+    fn drop_loot(&mut self, index: usize, at: DVec3) {
+        let stack = loot::drop_of(self.seed, index);
+        crcbl::log::info!(
+            "loot: the {} left {} x{} at {:.2} {:.2}",
+            foe::POSTS[index].kind.label(),
+            loot::catalog()
+                .get(stack.item())
+                .map_or("something", crcbl::inventory::ItemDef::name),
+            stack.count(),
+            at.x,
+            at.z,
+        );
+        self.floor.push(Dropped {
+            foe: index,
+            stack,
+            at,
+        });
+    }
+
+    /// The nearest stack in reach, into the grid.
+    ///
+    /// **The order is the whole of the anti-dupe rule.** The stack is taken off
+    /// the floor only once [`Grid::insert`] has answered that it is in the grid;
+    /// a refusal leaves it lying exactly where it was, which is the state a
+    /// player with a full grid is in and not an item this function dropped on
+    /// the way through.
+    fn take_loot(&mut self) {
+        let Some(index) = self.loot_in_reach() else {
+            return;
+        };
+        let dropped = self.floor[index];
+        if let Err(error) = loot::stow(&mut self.grid, dropped.stack) {
+            crcbl::log::debug!("loot: nothing was taken ({error})");
+            return;
+        }
+        self.floor.remove(index);
+        self.picked += 1;
+    }
+
+    /// Puts back on the floor every stack a felled foe left that the character
+    /// is not carrying.
+    ///
+    /// What a resumed session's floor is, and it is **derived** rather than
+    /// saved: an instance is on the floor exactly when the foe that left it is
+    /// down and its stack is not in the grid. Saving the floor as well would be
+    /// a second copy of the same fact, and a save whose two copies disagreed
+    /// would be a save that duplicates an item or loses one.
+    fn restore_floor(&mut self) {
+        self.floor.clear();
+        for index in 0..self.foes.len() {
+            if self.foes[index].is_alive() {
+                continue;
+            }
+            let id = loot::stack_id(index);
+            if self
+                .grid
+                .slots()
+                .any(|(_, placement)| placement.stack().id() == id)
+            {
+                continue;
+            }
+            let stack = loot::drop_of(self.seed, index);
+            let at = self.foes[index].feet();
+            self.floor.push(Dropped {
+                foe: index,
+                stack,
+                at,
+            });
+        }
+    }
+
     /// Puts the stage into the state a previous session left.
     ///
     /// **Every field here is one [`crate::save`]'s own decoder has already
@@ -415,6 +591,10 @@ impl Stage {
         for (foe, health) in self.foes.iter_mut().zip(character.foes) {
             foe.restore(&mut self.world, health);
         }
+        self.grid = character.grid.clone();
+        // After the foes, because what is left on the floor is a function of
+        // which of them are down. See `Stage::restore_floor`.
+        self.restore_floor();
     }
 
     /// What this session would leave for the next.
@@ -430,6 +610,7 @@ impl Stage {
             foes,
             playtime_secs: self.playtime,
             tick: self.ticks,
+            grid: self.grid.clone(),
         }
     }
 }
@@ -498,6 +679,7 @@ fn swing(stage: &mut Stage) {
     stage.next_strike_at = stage.elapsed + foe::STRIKE_PERIOD_S;
     stage.swings += 1;
     let centre = stage.player.position();
+    let mut fell: Vec<(usize, DVec3)> = Vec::new();
     let Stage {
         world,
         foes,
@@ -505,13 +687,20 @@ fn swing(stage: &mut Stage) {
         dealt,
         ..
     } = stage;
-    for foe in foes.iter_mut() {
+    for (index, foe) in foes.iter_mut().enumerate() {
         if !foe::can_see(world, centre, foe, foe::STRIKE_REACH_M) {
             continue;
         }
         *hits += 1;
         *dealt += u64::from(foe::STRIKE_DAMAGE.min(foe.health()));
-        foe.wounded(world, foe::STRIKE_DAMAGE);
+        if foe.wounded(world, foe::STRIKE_DAMAGE) {
+            fell.push((index, foe.feet()));
+        }
+    }
+    // After the loop, because the drop reads the seed and the floor off the
+    // stage the loop is holding pieces of.
+    for (index, at) in fell {
+        stage.drop_loot(index, at);
     }
 }
 
@@ -553,6 +742,16 @@ fn run_tick(stage: &mut Stage, intent: Intent, dt: f64) {
     // nothing by it.
     if intent.strike && stage.elapsed >= stage.next_strike_at {
         swing(stage);
+    }
+
+    // **The loot moves inside the tick and nowhere else.** What is in reach and
+    // whether it fits are questions about the stage, so a client that decided
+    // either would be a client asserting item state — which is the one thing
+    // `docs/plan/34-inventory.md` says a client never does. There is no
+    // cadence on it: taking one stack a tick is already bounded by how many
+    // are within `loot::LOOT_REACH_M`.
+    if intent.pickup {
+        stage.take_loot();
     }
 
     // **The character can lose.** Running out returns them to the spawn with
@@ -645,6 +844,12 @@ pub struct RenderState {
     pub health: u32,
     /// How many foes are still on their feet.
     pub alive: usize,
+    /// How many stacks the character is carrying.
+    pub carried: usize,
+    /// How many are lying on the floor.
+    pub floor: usize,
+    /// Whether one of those is close enough to take.
+    pub in_reach: bool,
 }
 
 /// The stage's numbers, for the debug overlay and the `[HUD]` line.
@@ -691,6 +896,16 @@ pub struct Stats {
     /// Which archetype the cleave would answer, or `None` for a swing that would
     /// reach nothing.
     pub target: Option<Kind>,
+    /// How many stacks the character is carrying, and what they weigh in grams
+    /// — [`crcbl::inventory::Grid::weight_g`], which is the kit's flat sum over
+    /// one grid.
+    pub carried: usize,
+    pub weight_g: u64,
+    /// How many stacks are lying on the floor.
+    pub floor: usize,
+    /// How many have been taken off it. **Monotone**, so a reader that polls
+    /// the heartbeat late cannot miss one.
+    pub picked: u64,
 }
 
 impl crcbl::ui::DebugModule for Stats {
@@ -721,6 +936,14 @@ impl crcbl::ui::DebugModule for Stats {
         section.row_str("target", self.target_label());
         section.row("swings", format_args!("{}/{}", self.hits, self.swings));
         section.row("damage", format_args!("{} / {}", self.dealt, self.taken));
+        section.row(
+            "carried",
+            format_args!("{} ({} g)", self.carried, self.weight_g),
+        );
+        section.row(
+            "loot",
+            format_args!("{} down, {} taken", self.floor, self.picked),
+        );
         section.row("elapsed", format_args!("{:.1} s", self.elapsed));
     }
 }
@@ -781,7 +1004,8 @@ impl std::fmt::Debug for Game {
 impl Game {
     /// Builds the server, its client and the stage between them.
     ///
-    /// `restore` is what a previous session left, or `None` for a zone that
+    /// `seed` is what the zone's loot is rolled from — see [`loot::drop_of`] —
+    /// and `restore` is what a previous session left, or `None` for a zone that
     /// opens fresh. It is applied to the stage **before** the server is built
     /// and therefore before any tick has run, so the first tick a resumed
     /// session takes is one from the state that was saved rather than one from
@@ -796,9 +1020,13 @@ impl Game {
     /// # Panics
     ///
     /// If `tick_hz` is zero.
-    pub fn new(tick_hz: u32, restore: Option<crate::save::Character>) -> Result<Self, GameError> {
+    pub fn new(
+        tick_hz: u32,
+        seed: u32,
+        restore: Option<crate::save::Character>,
+    ) -> Result<Self, GameError> {
         assert!(tick_hz > 0, "tick rate must be positive");
-        let mut stage = Stage::new();
+        let mut stage = Stage::new(seed);
         if let Some(character) = &restore {
             stage.restore(character);
         }
@@ -860,6 +1088,7 @@ impl Game {
             left: controls.left,
             right: controls.right,
             strike: controls.strike,
+            pickup: controls.pickup,
             yaw: controls.yaw,
         };
     }
@@ -910,6 +1139,9 @@ impl Game {
             foes: foe::views(&stage.foes, stage.elapsed),
             health: stage.health,
             alive: stage.alive(),
+            carried: stage.grid.len(),
+            floor: stage.floor.len(),
+            in_reach: stage.loot_in_reach().is_some(),
         }
     }
 
@@ -948,20 +1180,69 @@ impl Game {
             dealt: stage.dealt,
             taken: stage.taken,
             target: stage.target.map(|index| stage.foes[index].kind()),
+            carried: stage.grid.len(),
+            weight_g: loot::weight_g(&stage.grid),
+            floor: stage.floor.len(),
+            picked: stage.picked,
         }
+    }
+
+    /// What the character is carrying, for the panel that draws it.
+    ///
+    /// A clone rather than a borrow, for [`RenderState`]'s reason: the grid is
+    /// behind the tick's lock and a panel that read through it would hold the
+    /// lock for the length of a draw. It is [`loot::GRID_W`] by
+    /// [`loot::GRID_H`] cells and at most [`foe::FOES`] placements, and
+    /// [`crate::app`] takes it only on the frames the panel is open.
+    #[must_use]
+    pub fn grid(&self) -> Grid {
+        lock(&self.shared).grid.clone()
+    }
+
+    /// Moves whatever is under `from` so that the cell the pointer let go over
+    /// is `to`. Answers whether anything moved.
+    ///
+    /// **This is the one mutation that does not cross the wire**, and the
+    /// reason is that there is no wire command to carry it: `Intent` is a flag
+    /// byte and a bearing, and a cell pair is neither. `docs/plan/34-inventory.md`'s
+    /// `Move` command and its server-side validation are the kit's server half,
+    /// which is not built — so a drag here reaches the stage through the same
+    /// lock a snapshot does, in a process where the client and the server are
+    /// the same memory. `docs/backlog.md` carries it as what breach's adoption
+    /// has to force.
+    ///
+    /// The move itself is [`crcbl::inventory::Grid::move_within`], which is
+    /// atomic: a refused drag leaves the grid exactly as it was, down to the
+    /// slot id the panel is holding.
+    pub fn drag(&mut self, from: Cell, to: Cell) -> bool {
+        let mut stage = lock(&self.shared);
+        let Some(slot) = stage.grid.at(from) else {
+            return false;
+        };
+        let Some(placement) = stage.grid.slot(slot) else {
+            return false;
+        };
+        let Some(at) = loot::dragged_origin(placement.at(), from, to) else {
+            return false;
+        };
+        stage
+            .grid
+            .move_within(loot::catalog(), slot, at, placement.rotation())
+            .is_ok()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crcbl::inventory::StackId;
 
     /// One tick at the default rate.
     const DT: f64 = 1.0 / DEFAULT_TICK_HZ as f64;
 
     /// A stage that has already found the floor.
     fn ready() -> Stage {
-        let mut stage = Stage::new();
+        let mut stage = Stage::new(loot::DEFAULT_SEED);
         run_tick(&mut stage, Intent::default(), DT);
         assert!(stage.outcome.grounded, "the spawn has no floor under it");
         stage
@@ -983,6 +1264,7 @@ mod tests {
         left: false,
         right: false,
         strike: false,
+        pickup: false,
         yaw: 0.0,
     };
 
@@ -993,6 +1275,7 @@ mod tests {
         left: false,
         right: false,
         strike: false,
+        pickup: false,
         yaw: 0.0,
     };
 
@@ -1003,6 +1286,18 @@ mod tests {
         left: false,
         right: false,
         strike: true,
+        pickup: false,
+        yaw: 0.0,
+    };
+
+    /// Reaching for what is on the floor, standing still.
+    const REACH: Intent = Intent {
+        forward: false,
+        back: false,
+        left: false,
+        right: false,
+        strike: false,
+        pickup: true,
         yaw: 0.0,
     };
 
@@ -1114,6 +1409,7 @@ mod tests {
                 left: true,
                 right: true,
                 strike: true,
+                pickup: true,
                 yaw: -2.5,
                 ..Intent::default()
             },
@@ -1121,6 +1417,10 @@ mod tests {
                 strike: true,
                 ..Intent::default()
             },
+            // The bit this slice added, on its own: a build that sealed it and
+            // did not read it back would hand the simulation a pickup that
+            // never happened.
+            REACH,
         ] {
             let wire = intent.to_wire();
             assert_eq!(wire.len(), INTENT_BYTES);
@@ -1130,8 +1430,12 @@ mod tests {
         assert_eq!(Intent::from_wire(&[]), None, "an empty frame");
         assert_eq!(Intent::from_wire(&[0; INTENT_BYTES + 1]), None, "too long");
         let mut spurious = Intent::default().to_wire();
-        spurious[0] = 0xF0;
-        assert_eq!(Intent::from_wire(&spurious), None, "a flag we never write");
+        spurious[0] = 0xC0;
+        assert_eq!(
+            Intent::from_wire(&spurious),
+            None,
+            "a flag we never write: {INTENT_FLAGS:#04x} is every bit this build seals",
+        );
         let mut nan = Intent::default().to_wire();
         nan[1..].copy_from_slice(&f32::NAN.to_le_bytes());
         assert_eq!(Intent::from_wire(&nan), None, "a bearing that is not one");
@@ -1260,7 +1564,7 @@ mod tests {
         assert!(saved.centre.z < zone::spawn().z - 1.0, "it never walked");
 
         // ---- the stage, where the comparison can be exact --------------------
-        let mut restored = Stage::new();
+        let mut restored = Stage::new(loot::DEFAULT_SEED);
         restored.restore(&saved);
         assert_eq!(
             restored.snapshot(),
@@ -1269,7 +1573,7 @@ mod tests {
                 // which tick wrote the save, and a session that resumes one
                 // counts its own ticks from zero.
                 tick: 0,
-                ..saved
+                ..saved.clone()
             },
             "a field did not survive the round trip",
         );
@@ -1282,7 +1586,8 @@ mod tests {
         assert_eq!(restored.playtime, saved.playtime_secs);
 
         // ---- and through the facade, which spends one tick on the handshake --
-        let resumed = Game::new(DEFAULT_TICK_HZ, Some(saved)).expect("the loopback comes up");
+        let resumed = Game::new(DEFAULT_TICK_HZ, loot::DEFAULT_SEED, Some(saved.clone()))
+            .expect("the loopback comes up");
         let stats = resumed.stats();
         assert!(
             (stats.position.x - saved.centre.x).abs() < 1e-9
@@ -1295,7 +1600,8 @@ mod tests {
         assert_eq!(stats.downs, saved.downs);
         assert_eq!(stats.alive, foe::FOES - 1, "the felled foe was back up");
 
-        let fresh = Game::new(DEFAULT_TICK_HZ, None).expect("the loopback comes up");
+        let fresh =
+            Game::new(DEFAULT_TICK_HZ, loot::DEFAULT_SEED, None).expect("the loopback comes up");
         let opened = fresh.stats();
         assert_eq!(
             opened.alive,
@@ -1323,7 +1629,8 @@ mod tests {
     /// stage are all joined up.
     #[test]
     fn the_loopback_carries_a_held_key_to_the_controller() {
-        let mut game = Game::new(DEFAULT_TICK_HZ, None).expect("the loopback always comes up");
+        let mut game = Game::new(DEFAULT_TICK_HZ, loot::DEFAULT_SEED, None)
+            .expect("the loopback always comes up");
         for _ in 0..30 {
             game.tick();
         }
@@ -1359,5 +1666,282 @@ mod tests {
         // spends a tick bringing the loopback session up before the player can
         // move, which the module sees and the caller's counter does not.
         assert_eq!(game.stats().ticks, game.ticks_run() + 1);
+    }
+
+    // ---- the loot loop -----------------------------------------------------
+
+    /// Walks into the zone with the blow held until something falls, and
+    /// answers how long that took. Panics rather than looping forever on a
+    /// build where nothing can be felled.
+    fn until_something_falls(stage: &mut Stage) -> f64 {
+        let mut seconds = 0.0;
+        while stage.alive() == foe::FOES {
+            assert!(seconds < 30.0, "nothing fell in 30 s of charging");
+            run_tick(stage, CHARGE, DT);
+            seconds += DT;
+        }
+        seconds
+    }
+
+    /// How many instances this zone has produced: one per felled foe, and there
+    /// is no other source.
+    fn felled(stage: &Stage) -> usize {
+        foe::FOES - stage.alive()
+    }
+
+    /// **A felled foe leaves a stack on the floor, and it is the one the seed
+    /// says.** The first half of the loot loop: without it the pickup verb has
+    /// nothing to answer.
+    ///
+    /// The control is the run before the kill — the floor is empty for every
+    /// tick of the walk up the corridor, so this is a drop rather than a zone
+    /// that opened with items lying in it.
+    #[test]
+    fn a_felled_foe_leaves_something_on_the_floor() {
+        let mut stage = ready();
+        hold(&mut stage, AHEAD, 1.0);
+        assert!(stage.floor.is_empty(), "the zone opened with loot on it");
+
+        until_something_falls(&mut stage);
+        assert_eq!(
+            stage.floor.len(),
+            felled(&stage),
+            "{} foe(s) went down and {} stack(s) are on the floor",
+            felled(&stage),
+            stage.floor.len(),
+        );
+
+        let dropped = stage.floor[0];
+        assert_eq!(
+            dropped.stack,
+            loot::drop_of(loot::DEFAULT_SEED, dropped.foe),
+            "the drop is not the one this seed rolls for that foe",
+        );
+        assert!(
+            dropped.at.y.abs() < 1.0,
+            "the stack is at {:?}, which is not on the floor",
+            dropped.at,
+        );
+
+        // …and every id is its own, which is what makes a grid holding two of
+        // them holding two items rather than one twice.
+        let mut ids: Vec<_> = stage.floor.iter().map(|held| held.stack.id()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), stage.floor.len(), "two stacks share an id");
+    }
+
+    /// **The stack moves off the floor inside a tick and nowhere else, and the
+    /// zone still holds exactly what it dropped.**
+    ///
+    /// Two claims, and the second is the one that cannot be faked: the total
+    /// across the floor and the grid is the number of felled foes before the
+    /// pickup and after it. A `take_loot` written as remove-then-insert passes
+    /// the first and fails this the moment the insert is refused; one that
+    /// forgot to take the stack off the floor fails it the other way.
+    #[test]
+    fn a_pickup_moves_a_stack_into_the_grid_only_inside_a_tick() {
+        let mut stage = ready();
+        until_something_falls(&mut stage);
+        let held = felled(&stage);
+        assert_eq!(stage.floor.len() + stage.grid.len(), held);
+        assert!(stage.grid.is_empty(), "the character opened carrying loot");
+        assert!(
+            stage.loot_in_reach().is_some(),
+            "the body fell out of reach of the character that felled it",
+        );
+
+        // Standing on it takes nothing: the stage moves loot in `run_tick` and
+        // in no other call, which is what `a_pickup_key_reaches_the_simulation`
+        // in `crate::app` asserts from the other end.
+        run_tick(&mut stage, Intent::default(), DT);
+        assert!(stage.grid.is_empty(), "a tick with no reach took the stack");
+
+        run_tick(&mut stage, REACH, DT);
+        assert_eq!(stage.grid.len(), 1, "the pickup tick took nothing");
+        assert_eq!(stage.picked, 1);
+        assert_eq!(
+            stage.floor.len() + stage.grid.len(),
+            felled(&stage),
+            "the zone gained or lost an instance across the pickup",
+        );
+
+        // The stack that arrived is the one that was lying there, id and all —
+        // not a fresh instance of the same item.
+        let carried = stage
+            .grid
+            .slots()
+            .next()
+            .expect("the grid holds the stack")
+            .1
+            .stack();
+        assert_eq!(
+            carried,
+            loot::drop_of(loot::DEFAULT_SEED, carried_foe(carried))
+        );
+
+        // …and a second reach with nothing left in range takes nothing rather
+        // than the same stack again.
+        let after = stage.grid.len();
+        run_tick(&mut stage, REACH, DT);
+        assert_eq!(stage.grid.len(), after, "the same stack was taken twice");
+    }
+
+    /// Which foe minted `stack`, which every stack in this zone has.
+    fn carried_foe(stack: Stack) -> usize {
+        loot::foe_of(stack.id(), foe::FOES).expect("every stack names a foe")
+    }
+
+    /// **A grid with no room leaves the stack where it fell.** The refusal path,
+    /// and the one that would duplicate an item if the pickup took it off the
+    /// floor first and then found nowhere to put it.
+    #[test]
+    fn a_full_grid_leaves_the_stack_on_the_floor() {
+        let mut stage = ready();
+        until_something_falls(&mut stage);
+        let down = stage.floor.len();
+        assert!(down > 0);
+
+        // Filled with something that is not this zone's, so the ids cannot be
+        // confused with a drop's.
+        let filler = loot::catalog()
+            .id_of("bandage")
+            .expect("the shipped table has a bandage in it");
+        let mut spare = 0u32;
+        while loot::stow(
+            &mut stage.grid,
+            Stack::new(filler, StackId(1_000 + spare), 1),
+        )
+        .is_ok()
+        {
+            spare += 1;
+            assert!(spare < 1_000, "a 4x4 grid took a thousand items");
+        }
+        let full = stage.grid.len();
+
+        run_tick(&mut stage, REACH, DT);
+        assert_eq!(stage.floor.len(), down, "a refused pickup took the stack");
+        assert_eq!(stage.grid.len(), full, "a full grid took one more");
+        assert_eq!(stage.picked, 0, "a refused pickup counted as one");
+    }
+
+    /// **A drag moves an item between two cells, and a drag onto an occupied
+    /// one puts it back.**
+    ///
+    /// The second is the control and it is the sharper claim: `Grid::move_within`
+    /// is atomic, so a refused drag has to leave the item exactly where it was
+    /// — a panel built on remove-then-place would pass the first assertion and
+    /// leave the grid holding nothing after the second.
+    #[test]
+    fn a_drag_moves_an_item_between_cells_and_a_taken_cell_refuses_it() {
+        use crcbl::inventory::Rotation;
+
+        let bandage = loot::catalog().id_of("bandage").expect("a bandage");
+        let mut grid = loot::carried();
+        grid.place(
+            loot::catalog(),
+            Stack::new(bandage, loot::stack_id(0), 1),
+            Cell::new(0, 0),
+            Rotation::Deg0,
+        )
+        .expect("an empty grid takes a 1x1");
+        grid.place(
+            loot::catalog(),
+            Stack::new(bandage, loot::stack_id(1), 1),
+            Cell::new(2, 2),
+            Rotation::Deg0,
+        )
+        .expect("and a second one, elsewhere");
+
+        let mut stage = ready();
+        stage.grid = grid;
+        let carrying = stage.snapshot();
+        let mut game = Game::new(DEFAULT_TICK_HZ, loot::DEFAULT_SEED, Some(carrying))
+            .expect("the loopback comes up");
+
+        assert!(
+            game.drag(Cell::new(0, 0), Cell::new(1, 0)),
+            "a drag onto an empty cell was refused",
+        );
+        let moved = game.grid();
+        assert!(moved.at(Cell::new(0, 0)).is_none(), "it did not leave");
+        assert!(moved.at(Cell::new(1, 0)).is_some(), "it did not arrive");
+
+        assert!(
+            !game.drag(Cell::new(1, 0), Cell::new(2, 2)),
+            "a drag onto a taken cell was accepted",
+        );
+        let back = game.grid();
+        assert!(
+            back.at(Cell::new(1, 0)).is_some(),
+            "a refused drag lost the item it was carrying",
+        );
+        assert_eq!(back.len(), 2, "a refused drag changed what the grid holds");
+        assert_eq!(
+            back.slot(back.at(Cell::new(2, 2)).expect("the other item"))
+                .expect("its placement")
+                .stack()
+                .id(),
+            loot::stack_id(1),
+            "the drag overwrote what it was dropped onto",
+        );
+    }
+
+    /// **A resumed session carries what the last one picked up, and what it
+    /// left on the floor is still there.**
+    ///
+    /// The floor is derived rather than saved — see `Stage::restore_floor` — so
+    /// this is the check that the derivation and the save agree: one felled foe
+    /// looted, one felled foe not, and the session that comes back holds
+    /// exactly one of each with the same [`crcbl::inventory::StackId`]s.
+    #[test]
+    fn a_session_that_looted_comes_back_carrying_it() {
+        let mut played = ready();
+        // Two foes down by hand, so the state is exact rather than whatever a
+        // charge produced, and one of the two drops taken.
+        for index in [0, 1] {
+            played.foes[index].wounded(&mut played.world, foe::HEALTH_MAX);
+            let at = played.foes[index].feet();
+            played.drop_loot(index, at);
+        }
+        assert_eq!(played.floor.len(), 2);
+        let taken = played.floor[0].stack;
+        loot::stow(&mut played.grid, taken).expect("an empty grid takes the first drop");
+        played.floor.remove(0);
+
+        let saved = played.snapshot();
+        let mut restored = Stage::new(loot::DEFAULT_SEED);
+        restored.restore(&saved);
+
+        assert_eq!(
+            restored.grid.len(),
+            1,
+            "the resumed character is not carrying what they took",
+        );
+        assert_eq!(
+            restored
+                .grid
+                .slots()
+                .next()
+                .expect("the one stack")
+                .1
+                .stack(),
+            taken,
+            "the stack came back as a different instance",
+        );
+        assert_eq!(
+            restored.floor.len(),
+            1,
+            "what was left lying is not on the floor of the resumed zone",
+        );
+        assert_eq!(
+            restored.floor[0].stack, played.floor[0].stack,
+            "the floor came back holding something else",
+        );
+        assert_eq!(
+            restored.floor.len() + restored.grid.len(),
+            felled(&restored),
+            "the resumed zone holds a different number of instances",
+        );
     }
 }

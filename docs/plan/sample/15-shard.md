@@ -46,8 +46,13 @@ far comes from a 2D sample.
 - **Persistence that is a structure rather than a score**: character, inventory
   and stash through topic 14, natively in the platform data dir and in the
   browser through OPFS.
-- **The grid-inventory kit gets a second consumer.** Topic 34 is written for
-  breach; a kit with one consumer is that consumer's shape wearing a kit's name.
+- **The grid-inventory kit gets a consumer.** Topic 34 was written for breach,
+  and this doc used to say shard should be its _second_ consumer — a kit with
+  one consumer is that consumer's shape wearing a kit's name. `docs/backlog.md`
+  settled it the other way on 2026-09-06, because breach's inventory sits in
+  milestones that are native-only by that sample's own reasoning and nothing was
+  forcing the kit at all: shard builds it, breach adopts it, and **breach's
+  adoption is what the original sentence was really asking for**.
 - **A real browser budget for real 3D content**, including how close the build
   comes to the wasm32 address-space ceiling — the first sample whose content
   could plausibly approach it.
@@ -140,15 +145,24 @@ grid, so what looks solid is solid. There is no roof, because the camera is
 above one. This is the modular kit this doc asks for deliberately — the pieces
 `docs/plan/25-lod.md`'s border locking has to hold together — at its first size.
 
-**Four of milestone 1's six verbs are here: explore, fight, save, resume.**
-There is no item, no rarity, no experience and no inventory grid — and the save
-format has **no field reserved for one, deliberately**, because who forces
-`docs/plan/34-inventory.md`'s kit is an open question in `docs/backlog.md` and a
-reserved field would answer it by accident. So milestone 1's "grid-inventory kit
-gets a second consumer" claim is entirely unstarted, and the exit criterion that
-depends on it with it. There is no sector streaming and no networking of any
-kind — the plan says milestone 1 ships none, and the loopback here is sample
-rule 2 rather than a network. The golden frames per `GeometryPath`, the recorded
+**Five of milestone 1's six verbs are here: explore, fight, loot, save,
+resume.** A felled foe leaves a stack where it falls, `F` takes it into a `4×4`
+grid on the character, `I` opens the panel that draws it, a pointer drag moves
+items between cells, and the save carries the grid — placements, rotations,
+counts and stack ids — across a resume at payload version 2. That grid is
+`docs/plan/34-inventory.md`'s kit, `crates/crcbl-inventory`, and **shard is its
+first consumer rather than its second**: `docs/backlog.md`'s decision of
+2026-09-06 is that shard forces the kit and breach adopts it later, which is the
+one place this doc's original plan was overtaken. The exit criterion that
+depends on it — "used without a single engine change made on its behalf" — is
+**met**: nothing in `crcbl-inventory`, `crcbl-ui` or `crcbl` changed for this
+slice, and what shard wanted from them is filed as topic 34 findings.
+
+**The missing verb is level**, and with it rarity: there is no experience,
+nothing to spend it on, and a drop is one of a five-item table rather than a
+tier with affixes. There is no sector streaming and no networking of any kind —
+the plan says milestone 1 ships none, and the loopback here is sample rule 2
+rather than a network. The golden frames per `GeometryPath`, the recorded
 browser budget and the peak wasm memory figure are all not taken.
 
 **One absence is in the picture rather than in the feature list: the character
@@ -171,8 +185,12 @@ run over.
 - Golden frames per `GeometryPath` from a fixed camera set, plus the
   human-reviewed comparison recorded here.
 - Recorded browser budget for real 3D content, and the peak wasm memory figure.
-- The inventory kit used without a single engine change made on its behalf;
-  anything it needed filed as a topic 34 finding instead.
+- ✅ The inventory kit used without a single engine change made on its behalf;
+  anything it needed filed as a topic 34 finding instead. Met 2026-09-07: the
+  kit is consumed through `crcbl::inventory`, the drag is built inside the
+  sample out of `UiState`'s press capture, and the findings — a typed drag-drop
+  capability, a `PointerUpdate::pixels` to match `TouchUpdate`'s, a
+  `Grid::relink` for a loaded grid — are in `docs/backlog.md`.
 
 **Milestone 2**
 

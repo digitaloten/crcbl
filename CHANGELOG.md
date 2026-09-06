@@ -100,6 +100,26 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
   non-default `inventory` feature, on the `vfx` feature's terms: a game whose
   player carries nothing links no container model. Every crate it pulls in is
   already in `crcbl`'s tree, so turning it on adds no third-party dependency.
+- **`apps/shard` gets milestone 1's loot verb, on the grid-inventory kit.** A
+  felled foe leaves a stack where it falls; `F` takes what is within
+  `loot::LOOT_REACH_M` into a `4×4` grid on the character; `I` opens
+  `src/panel.rs`, which draws that grid and moves an item between cells on a
+  pointer drag; and the save carries it across a resume with the same
+  `StackId`s. Which item a foe leaves is a hash of the seed and the foe's index
+  — new `--seed`, shard's one flag of its own — so the same seed clears to the
+  same haul however the fight went, and `data/items.ron` is the table it is
+  drawn from. The pickup is a new intent bit applied inside the tick, because
+  what is in reach and whether it fits are the simulation's answers;
+  `INTENT_BYTES` is unchanged, the flag byte had room. `save::PAYLOAD_VERSION`
+  is **2**: the payload is a fixed head followed by a bounded variable-length
+  block of placements (item key, stack id, count, cell, rotation), and a version
+  1 file reads as no save with a logged reason — there is no migration seam in
+  `crcbl-store` to give it one. The `[HUD]` heartbeat gains `floor`, `carried`
+  and `picked`, the overlay gains a `LOOT` and a `CARRIED` reading, and the
+  panel is **closed by default** with nothing on it that ticks. Not one line of
+  the engine changed for any of it, which is `docs/plan/sample/15-shard.md`'s
+  exit criterion; what shard wanted from `crcbl-ui` is in `docs/backlog.md` as
+  topic-34 findings.
 - **`crcbl_golden::srgb::decode`**, re-exported at the crate root as
   `srgb_decode` — the sRGB electro-optical transfer function, the way back from
   a readback byte to the linear light behind it, beside the `srgb_encode` that

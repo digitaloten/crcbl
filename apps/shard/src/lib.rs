@@ -37,6 +37,10 @@
 //!                                                    │
 //!                            zone::LAYOUT ──▶ world ─┴──▶ where the character can go
 //!
+//!    F ──▶ Intent::pickup ──▶ the tick ──▶ Grid::insert ──▶ what they carry
+//!                                                    │
+//!    I ──▶ panel ──▶ pointer drag ──────────────▶ Grid::move_within
+//!
 //!    L ──▶ torches_lit ──┐
 //!                        ├──▶ light::torches(elapsed, lit) ──▶ ForwardRenderer::set_lights
 //!    tick clock ─────────┘
@@ -71,10 +75,22 @@
 //! carry real content", and a browser's frame goes through `IndirectPerBatch`,
 //! `ArrayPages` and `LightingPath::Rasterised` by construction.
 //!
+//! # The loot loop
+//!
+//! [`loot`] is the item table, the grid the character carries and the roll that
+//! decides what a felled foe leaves; [`panel`] is the grid drawn, with a pointer
+//! drag built out of `crcbl-ui`'s press capture. Everything about *where an item
+//! fits* is [`crcbl::inventory`] — `docs/plan/34-inventory.md`'s kit, of which
+//! this sample is the first consumer — and **not one line of the engine changed
+//! for it**, which is that plan's own exit criterion. What the kit did not offer
+//! is filed as a topic-34 finding rather than built here: `docs/backlog.md`
+//! carries the list.
+//!
 //! # What the character keeps
 //!
 //! [`save`] is where they are, what they have left, how many times they have
-//! been put down and which foes are felled, written through
+//! been put down, which foes are felled and **what they are carrying**, written
+//! through
 //! [`crcbl::store::save::SaveWriter`]'s container — the platform data directory
 //! natively, the Origin Private File System in a browser. Nothing in
 //! `crcbl-store` gained a line for it; what is this sample's is the payload
@@ -82,11 +98,11 @@
 //!
 //! # What is not here yet
 //!
-//! **Four of milestone 1's six verbs are here: explore, fight, save, resume.**
-//! There is no item, no rarity, no experience and no inventory grid — and the
-//! save format has no field reserved for one, deliberately, because who forces
-//! `docs/plan/34-inventory.md`'s kit is an open question in `docs/backlog.md`
-//! and a reserved field would answer it by accident. There is no sector
+//! **Five of milestone 1's six verbs are here: explore, fight, loot, save,
+//! resume.** What is missing from the six is **level**: there is no experience
+//! and nothing to spend it on. The loot that is here is one item per felled foe
+//! with no rarity — the table is a handful of items and the roll picks one of
+//! them, so there is no tier, no affix and no quality. There is no sector
 //! streaming and no networking of any kind — the plan says milestone 1 ships
 //! none, and the loopback here is sample rule 2 rather than a network. The
 //! golden frames per `GeometryPath` that milestone 1's exit criteria ask for are
@@ -120,8 +136,10 @@ pub mod foe;
 pub mod game;
 mod gpu;
 pub mod light;
+pub mod loot;
 pub mod menu;
 pub mod page;
+pub mod panel;
 pub mod save;
 pub mod zone;
 
@@ -132,9 +150,11 @@ pub use app::{Loop, PendingLoop, Shard, ShardError, Summary, run, start, with_sh
 pub use args::{Invocation, Options, USAGE, parse};
 pub use camera::{Iso, walk_direction};
 pub use foe::{Foe, FoeView, Kind};
-pub use game::{Controls, DEFAULT_TICK_HZ, Game, GameError, RenderState, Stats};
+pub use game::{Controls, DEFAULT_TICK_HZ, Dropped, Game, GameError, RenderState, Stats};
 pub use gpu::{Gpu, Paths};
+pub use loot::{DEFAULT_SEED, GRID_H, GRID_W, LOOT_REACH_M};
 pub use menu::{MenuKind, Menus};
 pub use page::PageStats;
+pub use panel::PanelStats;
 pub use save::{Character, SaveStats, Vault};
 pub use zone::Cell;

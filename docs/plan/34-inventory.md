@@ -8,27 +8,44 @@ grids, equipment slots, weapon attachments. Kit rules follow the player kit
 (30): first-class, optional, zero engine privileges. Drag-drop lands wave 1 (the
 editor asset browser wants it); the kit is FPS-era with breach.
 
-> **Status, 2026-08-27.** Neither half is built, and the two have different
-> distances to go.
+> **Status, 2026-09-07.** Part 2 is built and has its first consumer; part 1 is
+> still the engine's to build.
 >
-> **Part 1, drag-drop:** `crcbl-ui` has a drag, but only the one a slider has —
-> `menu.rs` tracks a `dragging: Option<usize>` for the row the pointer is
-> pulling, and `widget.rs` handles press-A / drag-onto-B / release. There is no
-> drag source, no drop target, no typed payload and no `can_accept`. **The
-> styling half has a harder dependency than the mechanism does**: this section
-> hangs feedback on `:drop-ok` / `:drop-bad` pseudo-classes "like everything
-> else (topic 7)", and there is no stylesheet system in `crcbl-ui` at all — no
-> CSS parser, no selectors, no pseudo-classes, and the only `.css` file in the
-> repo is `web/style.css`, which belongs to the Pages site. Whoever builds the
-> drag capability either builds it against the styling that exists or waits for
-> topic 7's, and should say which.
+> **Part 1, drag-drop: not in `crcbl-ui`.** There is still no drag source, no
+> drop target, no typed payload and no `can_accept`. What there _is_ is
+> `widget.rs`'s press capture — `UiState::interact` latches the widget a press
+> started over — and `apps/shard/src/panel.rs` builds a working grid drag out of
+> it, inside one `draw` function. That is the measurement this section was
+> missing: a game can have a drag today, and what it cannot have is a **typed**
+> one a second panel reuses without copying that function's hit-test and its
+> capture bookkeeping.
+>
+> **The styling half still has the harder dependency.** This section hangs
+> feedback on `:drop-ok` / `:drop-bad` pseudo-classes "like everything else
+> (topic 7)", and there is no stylesheet system in `crcbl-ui` at all — no CSS
+> parser, no selectors, no pseudo-classes, and the only `.css` file in the repo
+> is `web/style.css`, which belongs to the Pages site. `docs/backlog.md`'s
+> 2026-09-06 decision settles it: the capability is built against widget state,
+> egui's and imgui's shape, rather than waiting for topic 7.
 >
 > Also unbuilt: the first consumer named below. There is no editor asset browser
 > because there is no editor.
 >
-> **Part 2, the grid kit:** there is no `crcbl-inventory` crate, and no
-> inventory of any kind in the workspace — `apps/shard` and `apps/breach` both
-> mention one only to say they do not have it.
+> **Part 2, the grid kit: built, and consumed.** `crates/crcbl-inventory` is the
+> model half — one `Grid` with an occupancy map and an optional tag filter,
+> footprints as `8×8` bitmasks in a `u64`, four rotations, deterministic
+> first-fit placement, atomic moves, stacking with split and merge, and a RON
+> catalogue. `apps/shard` is its first consumer and the sample that forced it:
+> `src/loot.rs` (the item table, the carried grid, the drop roll),
+> `src/panel.rs` (the grid drawn and dragged), a pickup intent bit through the
+> wire, and the grid inside its save payload. **Not one line of the engine
+> changed on that sample's behalf**, which is `sample/15-shard.md`'s own exit
+> criterion; what shard wanted and did not get is in `docs/backlog.md` as topic
+> 34 findings.
+>
+> What of this document is still unbuilt is the Delivery table below: nesting
+> and the rollup through it, mounts and coverage, items as entities, the command
+> protocol and access grants, the stash, and client optimism.
 >
 > **Icon bake:** `crcbl icon bake` is not a verb. `crcbl-cli`'s parser accepts
 > `new`, `run`, `build`, `screenshot`, `replay`, `crpix`, `lod`, `import`,
@@ -237,40 +254,59 @@ UI just doesn't wait to look responsive.
 
 ## Testing (topic 12)
 
+**Built, in `crates/crcbl-inventory` and `apps/shard`:**
+
+- Placement: occupancy never overlaps, and a refused move leaves the grid
+  untouched down to the slot id (`a_refused_move_leaves_the_grid_as_it_was`).
+  The one written as a **property**, over proptest-generated shapes and grids,
+  is first-fit: it finds a placement whenever a brute-force sweep can, and the
+  same one. **Rotation is four-fold rather than an involution** — that is this
+  crate's one departure from the sketch above and the crate docs argue it: a
+  bitmask footprint admits an L, whose quarter turn is not its three-quarter
+  turn, so `an_l_turned_four_times_is_the_shape_it_started_as` is written on an
+  L and not on the `1×2` pocket item, and it is what catches a `turned_once`
+  written as a bare transpose.
+- **Conservation, from a consumer**: `apps/shard`'s floor plus its carried grid
+  is the number of felled foes, before and after every pickup — a refused insert
+  leaves the stack on the floor rather than losing it.
+- **Persistence roundtrip**: `apps/shard` writes placements, cells, rotations,
+  counts and `StackId`s into its save and reads them back; the ids are
+  identical, and a payload claiming a stack no foe could have left, one stack
+  twice, or two items in one cell reads as no save.
+- **Scripted pointer drag through `HeadlessShell`**: press over one cell,
+  release over another, and the placement is where the pointer let go.
+
+**Not built, and each waits on the slice it belongs to:**
+
 - **No-dupe property (the headline)**: fuzzed concurrent move/split/merge
-  streams from N clients against shared containers → total item count and
-  per-item identity invariant holds; every rejected move leaves state untouched.
-- Placement properties: occupancy never overlaps; **rotation is an involution**
-  (1×2 ↔ 2×1, twice = identity) and a rotated item fits exactly where its
-  transposed footprint has space; first-fit deterministic and rotation-complete
-  (if any placement exists, auto-place finds one); nesting depth/cycle
-  rejection.
-- **Coverage-conflict property**: for a fuzzed loadout set, an equip succeeds
-  iff coverage sets are pairwise disjoint — asserted against a hand-written
-  truth table for the shipped vocabulary (helmet/hat/headset/rig/carrier/ armor
-  combinations), so a data change that breaks layering fails CI.
-- **Persistence roundtrip**: save → load → identical grid state (positions,
-  rotations, stacks, nesting, item ids); stash survives a server restart;
-  store-crossing moves (stash ↔ match) are atomic under injected failure.
+  streams from N clients against shared containers. Needs the command protocol —
+  there is no server-side inventory transaction to fuzz.
+- Nesting depth and cycle rejection; weight/volume rollup under deep nesting.
+- **Coverage-conflict property** against a hand-written truth table for the
+  shipped vocabulary: needs mounts and coverage.
+- Stash survives a server restart; store-crossing moves are atomic under
+  injected failure.
 - Access property: container contents never appear in any message before a grant
-  or after a revoke (rides the schema position/leak tagging from 31).
-- Weight/volume rollup correctness under deep nesting.
-- **Drag e2e on every device**: scripted pointer _and_ pad/keyboard drags
-  through HeadlessShell complete the same moves (the four-device claim, as a
-  test); golden frames for grid rendering and drop-state styling.
+  or after a revoke.
+- The other three devices: pad, keyboard and touch drags completing the same
+  moves. The pointer one is scripted; the four-device claim is part 1's.
+- Golden frames for grid rendering and drop-state styling.
 
 ## Delivery
 
-| Slice                                                                                                                    | Phase                                               |
-| ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------- |
-| UI drag-drop capability (sources/targets/ghost/`:drop-ok`), pointer + pad/keyboard/touch paths                           | wave 1 (editor asset browser is the first consumer) |
-| Uniform grid model (+ filters) + placement/rotation + nesting + stacking                                                 | FPS-era                                             |
-| Persistence: world/carried via saves, **server-side PlayerId stash store**, stable item ids, store-crossing transactions | FPS-era                                             |
-| Command protocol + server validation + atomic moves + access grants                                                      | FPS-era                                             |
-| Client optimism + pending/rollback UX                                                                                    | FPS-era                                             |
-| Icon bake (`crcbl icon bake`) + grid UI + 3D inspect view                                                                | FPS-era                                             |
-| Weight/volume rollup → player-kit encumbrance                                                                            | FPS-era                                             |
-| Contested-loot policy hooks, container types (mag-only, quick-slots)                                                     | breach-driven                                       |
+| Slice                                                                                                                                                                                                                  | Phase                                               |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| UI drag-drop capability (sources/targets/ghost/`:drop-ok`), pointer + pad/keyboard/touch paths                                                                                                                         | wave 1 (editor asset browser is the first consumer) |
+| ✅ Uniform grid model (+ filters) + placement/rotation + stacking — `crcbl-inventory`, consumed by `apps/shard`                                                                                                        | shipped 2026-09-07                                  |
+| Nesting: grids inside grids, depth cap and cycle rejection                                                                                                                                                             | FPS-era                                             |
+| Mounts and coverage; gear as the grids it provides                                                                                                                                                                     | FPS-era                                             |
+| Persistence: **server-side PlayerId stash store** and store-crossing transactions. A carried grid in a game's own save is shipped — `apps/shard/src/save.rs` writes placements, ids and rotations at payload version 2 | FPS-era                                             |
+| Items as entities: stable identity as replicated components                                                                                                                                                            | FPS-era                                             |
+| Command protocol + server validation + atomic moves + access grants                                                                                                                                                    | FPS-era                                             |
+| Client optimism + pending/rollback UX                                                                                                                                                                                  | FPS-era                                             |
+| Icon bake (`crcbl icon bake`) + 3D inspect view. A grid UI exists as a _game's_, in `apps/shard/src/panel.rs`; the engine's is part 1                                                                                  | FPS-era                                             |
+| Weight/volume rollup → player-kit encumbrance. `Grid::weight_g` is the flat sum over one grid; the rollup needs nesting                                                                                                | FPS-era                                             |
+| Contested-loot policy hooks, container types (mag-only, quick-slots)                                                                                                                                                   | breach-driven                                       |
 
 ## Risks
 
@@ -287,36 +323,24 @@ UI just doesn't wait to look responsive.
 - **Icon bake pipeline** adds a content step; mitigated by it being automatic
   (part of `crcbl bake`) rather than an artist chore.
 
-## Open decision: which sample forces this kit (2026-08-27)
+## Decided: shard forced the kit (2026-09-06, built 2026-09-07)
 
 Sample rule 13 — a topic that can name no adopting sample is not ready to be
-built — is the thing to settle before any of the above is written, and the tree
-now has two candidates that have both **deliberately declined to answer it**:
+built — was the question this document waited on, and the answer is in
+`docs/backlog.md` under the same heading: **option 1, the kit is built from
+`apps/shard` and `apps/breach` adopts it later as the second consumer.** Growing
+a kit from the consumer that needs it first and then proving it with a second is
+how every engine's UI kit arrives; the risk both plans name — "a kit with one
+consumer is that consumer's shape wearing a kit's name" — is real and is what
+breach's adoption is for.
 
-- `apps/shard`'s save module says in as many words that there is no inventory
-  field in its payload and that its absence is _a decision not yet taken rather
-  than an oversight_: `docs/plan/sample/15-shard.md`'s milestone 1 wants loot,
-  rarity and a grid inventory through this kit, and reserving a field would
-  answer the question by accident. Its container is versioned, so adding one
-  later costs a version bump and nothing else — the cost of waiting is genuinely
-  low.
-- `apps/breach` lists the grid inventory's item icons and the buy menu among the
-  things it does not have.
-
-The bind is that **this document is written for breach and `sample/15-shard.md`
-is explicit that shard is meant to be the kit's _second_ consumer** — "a kit
-with one consumer is that consumer's shape wearing a kit's name". Breach's
-inventory sits in its milestone 1 and later, which are native-only by that
-sample's own reasoning, so nothing has forced the kit yet and shard would be
-forcing it alone: exactly the case both plans say to avoid. Shard has already
-taken the one deferral available to it — its fight slice shipped with no item,
-no currency and no equipped weapon — so the next verb in its milestone 1 is
-loot, and loot is where the kit is forced.
-
-**`docs/backlog.md` carries this as a decision needed, with three options and
-their real costs.** Read it there rather than re-deriving them; what belongs
-here is only that the kit's design is finished and its first consumer is not
-chosen.
+What that risk looks like in the built crate, so the second consumer knows where
+to push: the shipped model is everything shard's loot loop needed and nothing it
+did not. Filters exist and shard sets none, because it equips nothing. `split`
+and `merge` exist and shard calls neither, because nothing it carries is worth
+splitting. Nesting is absent because a `4×4` pocket has nowhere to nest. The
+parts most likely to be shard-shaped are therefore the ones with **no** consumer
+yet, and breach is what will find them.
 
 ## Correction (design review, 2026-07-27)
 

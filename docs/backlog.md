@@ -4897,14 +4897,55 @@ not exist and neither does the editor.
 **What it blocks:** the grid kit's entire interaction model, and outliner
 reparenting and VFX curve handles in an editor that does not exist yet.
 
+**Measured from a consumer, 2026-09-07.** `apps/shard/src/panel.rs` builds a
+working grid drag on `UiState::interact`'s press capture alone: read
+`UiState::active()` before the cells interact (the capture is cleared on the
+frame the button comes up), hit-test each cell, and the drag is the captured
+cell plus the hovered one. So a game can have a drag today; what it cannot have
+is a **typed** one — no payload, no `can_accept`, no drop-state feedback — that
+a second panel reuses without copying that hit test and its bookkeeping. **Hoist
+it when breach adopts the kit**: two consumers of the same hand-rolled drag is
+the moment, and shard's `panel::draw` is the shape to hoist.
+
+### `PointerUpdate` has no `pixels`, and `TouchUpdate` does (2026-09-07)
+
+`crcbl::engine::TouchUpdate::pixels(extent)` converts a contact's normalised
+position back to framebuffer pixels; `PointerUpdate` has no such method, and the
+engine's own `surface_pixels` is private. A game hit-testing a panel against a
+pointer therefore re-derives the conversion — `apps/shard/src/app.rs`'s
+`surface_pixels` is that copy, and it is a copy that goes wrong silently if the
+loop's Y flip ever changes. The fix is one inherent method beside the one that
+exists; it was not made because it is an engine change with a single caller, and
+shard's exit criterion is that it made none.
+
+### A save's grid is rebuilt by placing, not by deserialising (2026-09-07)
+
+`apps/shard/src/save.rs` writes each placement's item key, stack id, count, cell
+and rotation and replays them through `Grid::place` on the way back in, so the
+kit paints the occupancy map itself and refuses an overlap. That is a consumer's
+answer to the entry below and not the entry's fix: a consumer that serialises a
+`Grid` still needs `relink`. Worth knowing that the hand-rolled path costs about
+a dozen lines and buys the validation.
+
 ### The grid-inventory kit (2026-08-27)
 
 The record behind this — the argument, the options and the measurements — is in
 `docs/notes/simulation.md` under this heading.
 
-**Not built.** No `crcbl-inventory` crate and no inventory of any kind in the
-workspace. `apps/shard` and `apps/breach` both mention one only to say they do
-not have it.
+**Built 2026-09-07, and consumed.** `crates/crcbl-inventory` is the model half
+and `apps/shard` is its first consumer — `src/loot.rs`, `src/panel.rs`,
+`data/items.ron`, a pickup intent bit and the grid in its save payload — with no
+engine change made on its behalf.
+
+**What is still owed**, each of it in the plan and none of it built: nesting
+(grids inside grids, the depth cap and cycle rejection) and the weight/volume
+rollup through it; mounts and coverage, and gear declared as the grids it
+provides; items as entities with replicated identity; the command protocol
+(`Move`/`Split`/`Merge`/`Equip`/`Drop`/`TakeAll`) with server-side validation of
+reach, line of sight and space; access grants, so contents replicate only while
+a container is open; the server-side PlayerId stash and store-crossing
+transactions; and client optimism with pending/rollback. The no-dupe _property_
+is unwritten because there is no server-side transaction to fuzz.
 
 **DECIDED 2026-09-06 —** option 1: `crcbl-inventory` is built from shard,
 data-driven — grid dimensions, item shapes as bitmasks, stacking and rotation,
@@ -4913,13 +4954,16 @@ Growing a kit from the consumer that needs it first, then proving it by a
 second, is how every engine's UI kit arrives. It schedules the crate, shard's
 use of it, and breach's adoption as the thing that validates it.
 
-**Constraint worth carrying whoever builds it:** `apps/shard`'s save module
-deliberately reserves **no** inventory field, because reserving one would answer
-the consumer question by accident. Its payload is versioned, so adding a field
-later costs a version bump and nothing else. Do not "helpfully" reserve it.
+**The constraint that has now been discharged:** shard's save reserved no
+inventory field while the consumer question was open. It has one, at payload
+version 2, and the version bump was the whole cost — as predicted.
 
-**What it blocks:** shard milestone 1's exit criterion (a complete session:
-explore, fight, loot, level, save, resume) and breach's buy menu.
+**What it blocks:** breach's adoption, which is what turns a kit with one
+consumer into a kit. The shipped model is everything shard's loot loop needed
+and nothing it did not: filters exist and shard sets none, `split`/`merge` exist
+and shard calls neither, nesting is absent because a `4×4` pocket has nowhere to
+nest. The parts most likely to be shard-shaped are the ones with no consumer
+yet.
 
 ### A loaded `Grid`'s occupancy map is not re-derived
 
@@ -4937,6 +4981,10 @@ map from the placements and refuses an overlap, called by whatever loads a save
 wants a decision: `relink` at the load site, or a `LoadedGrid` newtype that only
 becomes a `Grid` by going through it. Not urgent while the only producer of a
 serialised grid is the same build that reads it back.
+
+**Still open, and still not urgent:** the only producer of a serialised grid in
+the workspace is `crcbl-inventory`'s own tests. `apps/shard` does not use serde
+for its save — see the finding above — so the first consumer has not hit it.
 
 ### `crcbl icon bake` (2026-08-27)
 
@@ -5420,28 +5468,6 @@ milestone 4 asks for is also unrecorded, though the page exists
 
 ## shard (`docs/plan/sample/15-shard.md`)
 
-### Two of milestone 1's six verbs, and its whole inventory claim, are unbuilt (2026-08-27)
-
-**Partly built.** Explore, fight, save and resume ship. There is **no item, no
-rarity, no experience and no inventory grid** — and the save format has **no
-field reserved for one, deliberately**, because who forces
-`docs/plan/34-inventory.md`'s kit is an open question and a reserved field would
-answer it by accident. So milestone 1's "the grid-inventory kit gets a second
-consumer" claim is entirely unstarted, along with the exit criterion that
-depends on it ("the inventory kit used without a single engine change made on
-its behalf").
-
-**What it would take:** deciding whether shard or breach forces topic 34, then
-building it. **What it blocks:** topic 34's own validity — a kit with one
-consumer is that consumer's shape wearing a kit's name, which is this doc's
-phrasing.
-
-**DECIDED 2026-09-06 —** shard forces `docs/plan/34-inventory.md`'s kit:
-`crcbl-inventory` is built from shard, data-driven, and breach adopts it later
-as the second consumer. It schedules the kit, shard's item, rarity, experience
-and inventory-grid work, and the save field that was deliberately left
-unreserved while the question was open.
-
 ### Shard's milestone 1 measurements are all untaken (2026-08-27)
 
 **Not measured:** golden frames per `GeometryPath` from a fixed camera set, the
@@ -5677,24 +5703,20 @@ fix, if it ever bites, is to release the lock when a touch contact arrives — t
 poll re-arms on the next frame, so a later mouse click takes it back — rather
 than to drop the contact or report it somewhere the finger is not.
 
-### `apps/shard` covers four verbs of milestone 1's six (2026-08-26)
+### `apps/shard` covers five verbs of milestone 1's six (2026-09-07)
 
 `docs/plan/sample/15-shard.md`'s milestone 1 loop is explore, fight, loot,
-level, save, resume. Slices 1 to 3 are **explore**, **fight**, and **save and
-resume**, deliberately, and nothing else is started. What each of the others
-needs, so the next slice does not have to re-derive it:
+level, save, resume. Five are built — **loot** landed 2026-09-07 on
+`crcbl-inventory`. What the rest needs, so the next slice does not re-derive it:
 
-- **Loot and rarity.** Nothing exists. It is a table and a roll, and the roll
-  has to be a hash of a seed and an index rather than a draw from a stream, for
-  `apps/sparks`' reason.
-- **Level.** Nothing exists.
+- **Rarity.** The drop is one of a five-item table with one roll; there is no
+  tier, no affix and no quality. The roll is already a hash of the seed and the
+  foe's index (`loot::drop_of`), so a rarity table hangs off the same roll.
+- **Level.** Nothing exists, and it is the missing verb.
 - **Sector streaming.** The zone is one fixed `zone::LAYOUT`. The plan wants
   modular pieces "assembled per seed", and the pieces are the part slice 1 built
   — a seeded assembler over them, and the border locking `docs/plan/25-lod.md`
   describes, are what is missing.
-- **The inventory kit.** Topic 34's grid is not used anywhere in this sample.
-  Milestone 1's exit criteria ask for it to be used **with no engine change**,
-  which is the claim nobody has tested.
 
 ### What `apps/shard`'s save slice left out, and why (2026-08-26)
 
@@ -5703,11 +5725,14 @@ needs, so the next slice does not have to re-derive it:
 position, a health, a down count and a health per foe. What was considered and
 left out:
 
-- **No inventory field, and no field reserved for one.** Deliberate, and it is
-  the decision recorded below: reserving one would answer "who forces the
-  grid-inventory kit" by accident. The payload carries its own
-  `PAYLOAD_VERSION`, so adding a field later is a version bump and a `decode`
-  arm, not a format change.
+- **The inventory field arrived, at payload version 2 (2026-09-07).** It was
+  deliberately unreserved while "who forces the grid-inventory kit" was open;
+  the answer was shard, and adding it cost a version bump and a `decode` arm,
+  exactly as predicted. The payload is now a fixed head plus a bounded
+  variable-length block of placements — the count is refused before anything is
+  computed from it — and what is on the _floor_ is not written at all: it is
+  derived from which foes are down and which stacks the grid holds, because two
+  copies of one fact is what a save that duplicates an item looks like.
 - **No engine change on this sample's behalf.** In particular `crcbl-store`'s
   `record::Backing::platform` was **not** extended: it answers with the _config_
   directory, which is where a high score belongs, and it hands out a path rather
@@ -5715,11 +5740,12 @@ left out:
   data-directory twin of that rule and lives in the sample. **A second consumer
   of the data-directory rule is the moment to hoist it into `crcbl-store`**, and
   the shape to hoist is `Vault::open` plus `Vault::source`.
-- **No migration seam.** `docs/plan/14-persistence.md` owes `crcbl-store` a
-  `fn migrate(old_ver, bytes)` and that is still unbuilt; shard's own payload
-  version is refused rather than migrated, so a bump orphans every save written
-  before it. Acceptable for a sample with no players; not acceptable for the
-  engine, and that entry is the topic-14 one rather than this one.
+- **No migration seam, and it now has a casualty.**
+  `docs/plan/14-persistence.md` still owes `crcbl-store` a
+  `fn migrate(old_ver, bytes)`. Shard's version bump to 2 orphaned every save
+  written at version 1: they read as no save, with a logged reason, and the zone
+  opens fresh. Acceptable for a sample with no players; the entry that must
+  close is topic 14's, not this one.
 - **No save on teardown.** `crcbl::engine::HostedGame` has no hook that runs on
   the way out and takes `&mut self` — `summary` takes `&self` and is a getter —
   so the autosave cadence is the whole of when a save happens. A tab or a window
@@ -5832,6 +5858,12 @@ stacking and rotation, the Diablo and Tarkov grid — with breach adopting it
 later. A kit grown from its first consumer and then validated by a second is the
 shape every engine's UI kit arrives in. It schedules the crate and shard's use
 of it, and makes breach's adoption the check on whether it is a kit at all.
+
+**Outcome, 2026-09-07:** built and consumed. `crates/crcbl-inventory` landed
+first, then `apps/shard`'s loot loop on top of it with no engine change, which
+is milestone 1's exit criterion for the kit. The check that remains is the one
+this decision named: breach's adoption is what says it is a kit rather than
+shard's inventory wearing a kit's name.
 
 Related and unchanged: none of milestone 1's three recorded figures exist yet —
 no golden frames per `GeometryPath`, no browser frame budget, no peak wasm

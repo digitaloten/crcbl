@@ -26,8 +26,13 @@ path = "src/main.rs"
 # character is a `crcbl::greybox::capsule` rather than an authored rig — slice 1
 # has no animation, so a skinned asset would be a second character system with
 # nothing to drive it.
+# One engine dependency, and two of its optional kits. `inventory` is
+# `crcbl-inventory`, the grid-inventory kit of `docs/plan/34-inventory.md`: this
+# sample is its first consumer, and it consumes it through `crcbl::inventory`
+# rather than by naming the crate itself, so a game that takes the kit takes it
+# the way every other kit here is taken.
 [dependencies]
-crcbl = { workspace = true, features = ["greybox"] }
+crcbl = { workspace = true, features = ["greybox", "inventory"] }
 
 [lints]
 workspace = true

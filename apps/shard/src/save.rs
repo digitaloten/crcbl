@@ -41,17 +41,23 @@
 //! # What is in the payload, and what is deliberately not
 //!
 //! Where the character is standing, what they have left, how many times they
-//! have been put down, and how much health each foe has — which is what says
-//! who is felled, because [`crate::foe::Foe`] is never alive at zero.
+//! have been put down, how much health each foe has — which is what says who is
+//! felled, because [`crate::foe::Foe`] is never alive at zero — and **what they
+//! are carrying**.
 //!
-//! **There is no inventory field, and its absence is a decision not yet taken
-//! rather than an oversight.** `docs/plan/sample/15-shard.md`'s milestone 1
-//! wants loot, rarity and a grid inventory through `docs/plan/34-inventory.md`'s
-//! kit; `docs/backlog.md` carries an open question about who forces that kit,
-//! and reserving a field here would answer it by accident. The container absorbs
-//! an added field the way any versioned format does — `PAYLOAD_VERSION` is
-//! what a reader checks — so the cost of adding one later is a version bump and
-//! nothing else.
+//! The inventory arrived in `PAYLOAD_VERSION` 2 and it is the reason the
+//! payload is no longer a fixed length: a grid holds between nothing and one
+//! stack per foe. **What is on the floor is not written**, and that is not an
+//! omission — an instance is on the floor exactly when the foe that left it is
+//! down and its stack is not in the grid, so `crate::game`'s `Stage::restore`
+//! derives it. A second copy of the same fact is a second copy that can
+//! disagree, and a save whose two halves disagreed would be one that duplicates
+//! an item or loses one.
+//!
+//! **A version 1 payload reads as no save**, with the reason logged. There is no
+//! migration seam — `docs/plan/14-persistence.md` owes `crcbl-store` one and it
+//! is not built — so a bump orphans the saves written before it, which for a
+//! sample with no players is the honest trade and for the engine is not.
 //!
 //! Nor is the **clock** restored. [`SaveHeader::playtime_secs`] accumulates
 //! across sessions and is read back, but the simulation's own tick counter and
@@ -60,7 +66,8 @@
 //!
 //! # The payload's bytes
 //!
-//! Little-endian throughout, `PAYLOAD_BYTES` of them:
+//! Little-endian throughout, `PAYLOAD_HEAD` bytes and then one block per
+//! placement:
 //!
 //! | Offset | Size | Field |
 //! | --- | --- | --- |
@@ -71,25 +78,47 @@
 //! | 34 | 8 | how many times they have been put down, `u64` |
 //! | 42 | 4 | how many foes follow, `u32` |
 //! | 46 | 4 each | each foe's health, `u32`, in [`crate::foe::POSTS`] order |
+//! | `PAYLOAD_HEAD` − 4 | 4 | how many placements follow, `u32` |
+//! | then | 13 each | one placement, `PLACEMENT_BYTES` |
+//!
+//! …and one placement is the item's stable key (`u32`, [`Catalog::key`]), its
+//! [`StackId`] (`u32`), how many of it (`u16`), the cell it starts at (two
+//! `u8`) and how far it is turned (`u8`).
+//!
+//! **The count is bounded before anything is allocated.** It is read, checked
+//! against `PLACEMENTS_MAX` — one stack per foe, because a stack is only ever
+//! minted by a foe falling — and only then is the rest of the payload measured
+//! against it. Reading a length and reserving it is how a corrupt four-byte
+//! field becomes a four-gigabyte allocation.
 //!
 //! **Every field is decoded through this module's `decode`, which refuses anything
 //! it cannot stand behind** rather than clamping it: a wrong length, a foreign magic, an
 //! unknown version, a roster that is not this zone's, a health above the
-//! archetype's maximum, or a position that is not a finite number inside
-//! `POSITION_LIMIT_M`. A refused save reads as *no save* and the zone opens
-//! fresh, which is the only safe reading — a `NaN` position would reach
-//! [`crcbl::phys::CharacterController::set_position`] and put the character
-//! somewhere nothing recovers from.
+//! archetype's maximum, a position that is not a finite number inside
+//! `POSITION_LIMIT_M`, a placement count past the roster, an item key no
+//! catalogue holds, a stack no foe could have left, two placements claiming one
+//! stack, or a cell the item does not fit in. A refused save reads as *no save*
+//! and the zone opens fresh, which is the only safe reading — a `NaN` position
+//! would reach [`crcbl::phys::CharacterController::set_position`] and put the
+//! character somewhere nothing recovers from.
+//!
+//! **The grid is rebuilt through [`Grid::place`] rather than deserialised**, and
+//! that is what keeps a tampered payload from producing an occupancy map that
+//! disagrees with its own placements: the kit paints the map itself and refuses
+//! an overlap, so the grid a resumed session holds is one that was actually
+//! placeable. `docs/backlog.md` carries the serde path's version of this.
 
 use std::path::Path;
 
 use crcbl::core::TickId;
+use crcbl::inventory::{Catalog, Cell, Grid, Rotation, Stack, StackId};
 use crcbl::math::DVec3;
 use crcbl::net::types::SectorId;
 use crcbl::store::StorageSource;
 use crcbl::store::save::{SaveData, SaveHeader, SaveReader, SaveWriter, SectorSave};
 
 use crate::foe::{self, FOES, HEALTH_MAX};
+use crate::loot;
 
 // ---------------------------------------------------------------------------
 // Where, and how often
@@ -152,14 +181,36 @@ const PAYLOAD_MAGIC: &[u8; 4] = b"SHRD";
 /// laid out; this says how *this* sample's sector bytes are, which is the
 /// per-system version `docs/plan/14-persistence.md` asks the header to carry and
 /// it does not. Bump it when a field is added, moved or reinterpreted.
-const PAYLOAD_VERSION: u16 = 1;
+///
+/// **1 → 2** added what the character is carrying. A version 1 file reads as no
+/// save: there is no migration seam anywhere in `crcbl-store` yet, and inventing
+/// one here would be an engine decision taken in a sample.
+const PAYLOAD_VERSION: u16 = 2;
 
 /// The fixed part of the payload: magic, version, centre, health, downs and the
 /// foe count.
 const PAYLOAD_FIXED: usize = 4 + 2 + 3 * 8 + 4 + 8 + 4;
 
-/// How long one payload is, in bytes, for this zone's roster.
-const PAYLOAD_BYTES: usize = PAYLOAD_FIXED + FOES * 4;
+/// Everything before the first placement: the fixed part, this zone's roster,
+/// and the count of placements that follow.
+const PAYLOAD_HEAD: usize = PAYLOAD_FIXED + FOES * 4 + 4;
+
+/// One placement: the item's stable key, the stack's id, its count, the cell it
+/// starts at and how far it is turned.
+const PLACEMENT_BYTES: usize = 4 + 4 + 2 + 1 + 1 + 1;
+
+/// The most placements a payload may claim.
+///
+/// **One per foe, and it is a bound rather than a guess:** the only thing that
+/// mints a stack in this zone is a foe falling, and there is no revive. It is
+/// checked before the placements are read, so a corrupt count is refused rather
+/// than reserved.
+const PLACEMENTS_MAX: usize = FOES;
+
+/// How long a payload carrying `placements` of them is, in bytes.
+const fn payload_bytes(placements: usize) -> usize {
+    PAYLOAD_HEAD + placements * PLACEMENT_BYTES
+}
 
 /// How far from the origin a restored position may be, in metres.
 ///
@@ -174,7 +225,7 @@ const POSITION_LIMIT_M: f64 = 1.0e4;
 /// [`crcbl::phys::CharacterController::set_position`] takes and what
 /// `Stage::snapshot` reads — a save that stored the feet would have to add the
 /// lift back on, in a second place, from a config it did not store.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Character {
     /// The centre of the character's capsule, in metres.
     pub centre: DVec3,
@@ -189,11 +240,18 @@ pub struct Character {
     /// The tick the writing session was on. Provenance rather than state: a
     /// resumed session's own counter starts again at zero.
     pub tick: u64,
+    /// What they are carrying: the kit's one container, cells, rotations,
+    /// counts and [`StackId`]s.
+    ///
+    /// This is what costs [`Character`] its `Copy` — a [`Grid`] owns two
+    /// `Vec`s — and the clones that fell out of that are all at session
+    /// boundaries: a snapshot, a restore, a decode.
+    pub grid: Grid,
 }
 
 /// The payload bytes for one sector.
 fn encode(character: &Character) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(PAYLOAD_BYTES);
+    let mut bytes = Vec::with_capacity(payload_bytes(character.grid.len()));
     bytes.extend_from_slice(PAYLOAD_MAGIC);
     bytes.extend_from_slice(&PAYLOAD_VERSION.to_le_bytes());
     for axis in [character.centre.x, character.centre.y, character.centre.z] {
@@ -209,8 +267,58 @@ fn encode(character: &Character) -> Vec<u8> {
     for health in character.foes {
         bytes.extend_from_slice(&health.to_le_bytes());
     }
-    debug_assert_eq!(bytes.len(), PAYLOAD_BYTES, "the payload changed size");
+
+    // The variable half. The count is written before the placements for the
+    // reason `decode` reads it that way: a reader must know how many are coming
+    // before it commits to anything, and deriving the number from the length
+    // would make a truncated file look like a shorter grid.
+    let placements: Vec<_> = character.grid.slots().collect();
+    let count = u32::try_from(placements.len()).unwrap_or(u32::MAX);
+    bytes.extend_from_slice(&count.to_le_bytes());
+    for (_, placement) in &placements {
+        let stack = placement.stack();
+        // The stable key rather than the `ItemId`, which is a position in the
+        // file and moves the moment `data/items.ron` is edited. `Catalog::key`
+        // is what the kit provides for exactly this.
+        let key = loot::catalog().key(stack.item()).unwrap_or_default();
+        bytes.extend_from_slice(&key.to_le_bytes());
+        bytes.extend_from_slice(&stack.id().0.to_le_bytes());
+        bytes.extend_from_slice(&stack.count().to_le_bytes());
+        bytes.push(placement.at().x);
+        bytes.push(placement.at().y);
+        bytes.push(rotation_byte(placement.rotation()));
+    }
+    debug_assert_eq!(
+        bytes.len(),
+        payload_bytes(placements.len()),
+        "the payload changed size",
+    );
     bytes
+}
+
+/// How a rotation is spelled on disk: quarter turns clockwise, `0` to `3`.
+///
+/// Written out rather than taken from the enum's discriminant, because a
+/// discriminant is not something the kit promises to keep — it is a memory
+/// layout, and this is a file format.
+const fn rotation_byte(rotation: Rotation) -> u8 {
+    match rotation {
+        Rotation::Deg0 => 0,
+        Rotation::Deg90 => 1,
+        Rotation::Deg180 => 2,
+        Rotation::Deg270 => 3,
+    }
+}
+
+/// [`rotation_byte`] undone, or `None` for a byte this build never wrote.
+const fn rotation_of(byte: u8) -> Option<Rotation> {
+    match byte {
+        0 => Some(Rotation::Deg0),
+        1 => Some(Rotation::Deg90),
+        2 => Some(Rotation::Deg180),
+        3 => Some(Rotation::Deg270),
+        _ => None,
+    }
 }
 
 /// Reads eight bytes at `at` as an `f64`, which the caller has bounds-checked.
@@ -244,9 +352,10 @@ fn decode(data: &SaveData) -> Option<Character> {
         return None;
     }
     let bytes = sector.snapshot_data.as_slice();
-    if bytes.len() != PAYLOAD_BYTES {
+    if bytes.len() < PAYLOAD_HEAD {
         crcbl::log::warn!(
-            "save: {} payload bytes, not {PAYLOAD_BYTES}; starting fresh",
+            "save: {} payload bytes, short of the {PAYLOAD_HEAD} every save has; \
+             starting fresh",
             bytes.len(),
         );
         return None;
@@ -300,6 +409,8 @@ fn decode(data: &SaveData) -> Option<Character> {
         return None;
     }
 
+    let grid = decode_grid(bytes, &foes)?;
+
     Some(Character {
         centre,
         health,
@@ -307,7 +418,110 @@ fn decode(data: &SaveData) -> Option<Character> {
         foes,
         playtime_secs,
         tick: data.header.tick.get(),
+        grid,
     })
+}
+
+/// The grid the variable half of `bytes` holds, or `None` for one this build
+/// will not stand behind.
+///
+/// `foes` is this zone's roster as the fixed half gave it, and it is what makes
+/// a stack checkable: an instance exists because a foe fell, so a placement
+/// naming a foe that is still standing is one no session could have written.
+///
+/// **The count is bounded before the placements are measured**, which is the
+/// whole reason this is a function of its own: a corrupt `u32` here is four
+/// gigabytes reserved by a `Vec::with_capacity` a line later, and refusing it
+/// costs one comparison.
+fn decode_grid(bytes: &[u8], foes: &[u32; FOES]) -> Option<Grid> {
+    let count = read_u32(bytes, PAYLOAD_HEAD - 4) as usize;
+    if count > PLACEMENTS_MAX {
+        crcbl::log::warn!(
+            "save: {count} placements in a zone that can drop {PLACEMENTS_MAX}; starting fresh",
+        );
+        return None;
+    }
+    let expected = payload_bytes(count);
+    if bytes.len() != expected {
+        crcbl::log::warn!(
+            "save: {} payload bytes for {count} placement(s), not {expected}; starting fresh",
+            bytes.len(),
+        );
+        return None;
+    }
+
+    let catalog: &Catalog = loot::catalog();
+    let mut grid = loot::carried();
+    let mut seen: Vec<StackId> = Vec::with_capacity(count);
+    for index in 0..count {
+        let at = PAYLOAD_HEAD + index * PLACEMENT_BYTES;
+        let key = read_u32(bytes, at);
+        let Some(item) = catalog.by_key(key) else {
+            crcbl::log::warn!("save: no item with key {key:#010x} in this build; starting fresh");
+            return None;
+        };
+        let stack_id = StackId(read_u32(bytes, at + 4));
+        // Which foe minted it, and whether that foe is actually down. Together
+        // they are what says an instance came from somewhere: the roster bounds
+        // the ids, and a felled foe is the only thing that produces one.
+        let Some(foe) = loot::foe_of(stack_id, FOES) else {
+            crcbl::log::warn!(
+                "save: stack {} is not one a {FOES}-foe zone mints; starting fresh",
+                stack_id.0,
+            );
+            return None;
+        };
+        if foes[foe] != 0 {
+            crcbl::log::warn!(
+                "save: stack {} came from a {} that is still standing; starting fresh",
+                stack_id.0,
+                foe::POSTS[foe].kind.label(),
+            );
+            return None;
+        }
+        if seen.contains(&stack_id) {
+            crcbl::log::warn!(
+                "save: stack {} is in the grid twice; starting fresh",
+                stack_id.0,
+            );
+            return None;
+        }
+        seen.push(stack_id);
+
+        let count_held = u16::from_le_bytes(bytes[at + 8..at + 10].try_into().expect("two bytes"));
+        let ceiling = catalog
+            .get(item)
+            .map_or(0, crcbl::inventory::ItemDef::stack_max);
+        if count_held == 0 || count_held > ceiling {
+            crcbl::log::warn!(
+                "save: a stack of {count_held} is not one to {ceiling} of it; starting fresh",
+            );
+            return None;
+        }
+        let Some(rotation) = rotation_of(bytes[at + 12]) else {
+            crcbl::log::warn!(
+                "save: {} is not a quarter turn; starting fresh",
+                bytes[at + 12],
+            );
+            return None;
+        };
+
+        // The placement itself is the kit's to accept or refuse: out of bounds,
+        // overlapping something already placed, or an item this grid's filter
+        // does not take all read as no save. That is also what re-derives the
+        // occupancy map, which is why nothing here writes one.
+        let cell = Cell::new(bytes[at + 10], bytes[at + 11]);
+        if let Err(error) = grid.place(
+            catalog,
+            Stack::new(item, stack_id, count_held),
+            cell,
+            rotation,
+        ) {
+            crcbl::log::warn!("save: a placement this grid refuses ({error}); starting fresh");
+            return None;
+        }
+    }
+    Some(grid)
 }
 
 // ---------------------------------------------------------------------------
@@ -498,7 +712,27 @@ mod tests {
             foes: [0, 20, 100],
             playtime_secs: 62.5,
             tick: 3750,
+            // …and carrying what the husk left, which is the one drop this
+            // roster can have produced.
+            grid: carrying(),
         }
+    }
+
+    /// A grid holding the husk's drop.
+    ///
+    /// Foe 0 is the one `walked` has felled, and `decode` refuses a stack from a
+    /// foe that is still standing — so this is not an arbitrary grid, it is the
+    /// only one that payload could honestly carry.
+    fn carrying() -> Grid {
+        let mut grid = loot::carried();
+        loot::stow(&mut grid, loot::drop_of(loot::DEFAULT_SEED, 0))
+            .expect("an empty grid takes one drop");
+        grid
+    }
+
+    /// Where placement `index` starts in a payload.
+    fn placement_at(index: usize) -> usize {
+        PAYLOAD_HEAD + index * PLACEMENT_BYTES
     }
 
     /// A [`SaveData`] holding `bytes` as this zone's one sector.
@@ -532,6 +766,13 @@ mod tests {
         assert_eq!(read.foes, character.foes);
         assert_eq!(read.playtime_secs, character.playtime_secs);
         assert_eq!(read.tick, character.tick);
+        assert_eq!(read.grid, character.grid);
+        // …and the stack came back as the same instance rather than as another
+        // one of the same item, which is what `docs/plan/34-inventory.md` means
+        // by ids that survive persistence.
+        let (_, placement) = read.grid.slots().next().expect("the one placement");
+        assert_eq!(placement.stack().id(), loot::stack_id(0));
+        assert_eq!(placement.stack(), loot::drop_of(loot::DEFAULT_SEED, 0));
     }
 
     /// **The payload is exactly as long as the table says**, so a field added
@@ -539,7 +780,18 @@ mod tests {
     /// bytes.
     #[test]
     fn the_payload_is_the_length_the_format_documents() {
-        assert_eq!(encode(&walked()).len(), PAYLOAD_BYTES);
+        let character = walked();
+        assert_eq!(character.grid.len(), 1, "this fixture carries one stack");
+        assert_eq!(encode(&character).len(), payload_bytes(1));
+
+        // …and an empty grid is the head and nothing after it, which is what
+        // says the variable half is genuinely variable rather than padded.
+        let empty = Character {
+            grid: loot::carried(),
+            ..character
+        };
+        assert_eq!(encode(&empty).len(), PAYLOAD_HEAD);
+        assert_eq!(payload_bytes(0), PAYLOAD_HEAD);
     }
 
     /// **Every refusal is a refusal.** Each of these is a byte a corrupt or
@@ -608,6 +860,156 @@ mod tests {
         assert!(decode(&elsewhere).is_none(), "another sector");
     }
 
+    /// **A payload version 1 could have written reads as no save.** There is no
+    /// migration seam, so the honest answer to a file this build cannot read is
+    /// a fresh zone and a logged reason — not a grid guessed from a format that
+    /// had none.
+    ///
+    /// The control is the length: a version 1 payload is exactly the fixed half
+    /// plus this roster, which is a length version 2 also accepts for an empty
+    /// grid — so a build that checked only the length would read it as a
+    /// character carrying nothing.
+    #[test]
+    fn a_payload_from_version_one_reads_as_no_save() {
+        let mut old = encode(&Character {
+            grid: loot::carried(),
+            ..walked()
+        });
+        assert_eq!(old.len(), PAYLOAD_HEAD, "a v1 payload is a v2 empty one");
+        old[4..6].copy_from_slice(&1u16.to_le_bytes());
+        assert!(
+            decode(&saved(old, 1.0, 1)).is_none(),
+            "a version this build cannot stand behind was read anyway",
+        );
+    }
+
+    /// **Every way a payload can lie about what is in the grid is refused**, and
+    /// the count is refused *before* it is believed.
+    ///
+    /// Each of these is a byte a corrupt or hand-made file could hold, and each
+    /// would otherwise reach the kit — or an allocator — as a number nobody
+    /// checked.
+    #[test]
+    fn a_grid_this_zone_could_not_have_produced_reads_as_no_save() {
+        let good = encode(&walked());
+        assert!(
+            decode(&saved(good.clone(), 1.0, 1)).is_some(),
+            "the control"
+        );
+
+        // A count past one stack per foe, refused before the length is measured
+        // against it — this is the four-byte field that would otherwise become
+        // a reservation.
+        let mut many = good.clone();
+        many[PAYLOAD_HEAD - 4..PAYLOAD_HEAD].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(
+            decode(&saved(many, 1.0, 1)).is_none(),
+            "a count past the roster"
+        );
+
+        // A count this zone could produce, on a payload that does not carry
+        // that many.
+        let mut lying = good.clone();
+        lying[PAYLOAD_HEAD - 4..PAYLOAD_HEAD]
+            .copy_from_slice(&(PLACEMENTS_MAX as u32).to_le_bytes());
+        assert!(decode(&saved(lying, 1.0, 1)).is_none(), "a count that lies");
+
+        let mut unknown = good.clone();
+        let at = placement_at(0);
+        unknown[at..at + 4].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+        assert!(decode(&saved(unknown, 1.0, 1)).is_none(), "no such item");
+
+        let mut stranger = good.clone();
+        stranger[at + 4..at + 8].copy_from_slice(&0u32.to_le_bytes());
+        assert!(
+            decode(&saved(stranger, 1.0, 1)).is_none(),
+            "no foe mints that"
+        );
+
+        // A stack from the warden, which this payload says is untouched: an
+        // instance no session could have produced, because nothing but a foe
+        // falling mints one.
+        let mut standing = good.clone();
+        standing[at + 4..at + 8].copy_from_slice(&loot::stack_id(2).0.to_le_bytes());
+        assert!(
+            decode(&saved(standing, 1.0, 1)).is_none(),
+            "a drop from a foe that never fell",
+        );
+
+        let mut none_of_it = good.clone();
+        none_of_it[at + 8..at + 10].copy_from_slice(&0u16.to_le_bytes());
+        assert!(
+            decode(&saved(none_of_it, 1.0, 1)).is_none(),
+            "a stack of none"
+        );
+
+        let mut hoard = good.clone();
+        hoard[at + 8..at + 10].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert!(
+            decode(&saved(hoard, 1.0, 1)).is_none(),
+            "over the stack max"
+        );
+
+        let mut off_the_grid = good.clone();
+        off_the_grid[at + 10] = crate::loot::GRID_W;
+        assert!(
+            decode(&saved(off_the_grid, 1.0, 1)).is_none(),
+            "off the grid"
+        );
+
+        let mut turned = good.clone();
+        turned[at + 12] = 4;
+        assert!(
+            decode(&saved(turned, 1.0, 1)).is_none(),
+            "not a quarter turn"
+        );
+    }
+
+    /// **Two placements cannot claim one stack, and two cannot claim one cell.**
+    ///
+    /// The duplication check, from the side a save can reach: a payload holding
+    /// the same id twice is the file form of an item that was copied, and the
+    /// kit's own placement rule is what refuses the overlap.
+    #[test]
+    fn a_payload_cannot_hold_one_stack_twice() {
+        // Two foes down, and the character carrying both drops.
+        let mut grid = loot::carried();
+        loot::stow(&mut grid, loot::drop_of(loot::DEFAULT_SEED, 0)).expect("the first fits");
+        loot::stow(&mut grid, loot::drop_of(loot::DEFAULT_SEED, 1)).expect("and the second");
+        let character = Character {
+            foes: [0, 0, 100],
+            grid,
+            ..walked()
+        };
+        let good = encode(&character);
+        assert!(
+            decode(&saved(good.clone(), 1.0, 1)).is_some(),
+            "the control"
+        );
+
+        // The second placement re-labelled with the first's id: same item, same
+        // cell as itself, but now two placements claiming one instance.
+        let mut twice = good.clone();
+        let first = placement_at(0);
+        let second = placement_at(1);
+        let id: [u8; 4] = twice[first + 4..first + 8].try_into().expect("four bytes");
+        twice[second + 4..second + 8].copy_from_slice(&id);
+        assert!(
+            decode(&saved(twice, 1.0, 1)).is_none(),
+            "one stack was in the grid twice",
+        );
+
+        // …and the second placement moved onto the first's cell, which the kit
+        // refuses rather than painting over.
+        let mut stacked = good;
+        stacked[second + 10] = stacked[first + 10];
+        stacked[second + 11] = stacked[first + 11];
+        assert!(
+            decode(&saved(stacked, 1.0, 1)).is_none(),
+            "two items were placed in one cell",
+        );
+    }
+
     /// **A save lands on a heartbeat**, at the rate every run that is not asked
     /// for another one uses.
     ///
@@ -669,7 +1071,7 @@ mod tests {
         // container's own checksum, which is the half `decode` cannot see.
         let file = dir.join(SAVE_FILE);
         let mut bytes = std::fs::read(&file).expect("the save this test wrote");
-        let last = bytes.len() - 1 - PAYLOAD_BYTES;
+        let last = bytes.len() - 1 - payload_bytes(walked().grid.len());
         bytes[last] ^= 0xFF;
         std::fs::write(&file, &bytes).expect("the scratch directory is writable");
         assert!(

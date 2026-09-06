@@ -1,19 +1,22 @@
 //! Argument parsing for the shard sample.
 //!
 //! ```text
-//! shard [--headless] [--frames N] [--size WxH] [--tick-hz N] …
+//! shard [--headless] [--frames N] [--size WxH] [--tick-hz N] [--seed N] …
 //! ```
 //!
-//! # There is nothing here but the shared half
+//! # There is one flag, and it is the loot seed
 //!
 //! [`crcbl::args::Common`] owns `--headless`, `--frames`, `--tick-hz`,
-//! `--backend`, `--size`, `--screenshot` and the debug-overlay pair, and this
-//! sample has no flag of its own to add to them: there is one zone, one
-//! character, one authored set of posts and no seed, so everything a player can
-//! change is a key rather than an argument.
-//! This file is still a file rather than a call into the engine's parser, because
-//! the usage prose is this sample's and because the moment a second zone or a
-//! seed arrives there is a place to put it.
+//! `--backend`, `--size`, `--screenshot` and the debug-overlay pair, because
+//! those are the *engine's* vocabulary. Everything else about this sample is
+//! authored — one zone, one character, one set of posts — and a flag per
+//! parameter would be a level editor written as argv.
+//!
+//! The seed is the exception, for `apps/sparks/src/args.rs`' reason: it is the
+//! *replay*. Which item a felled foe leaves is a hash of this and the foe's
+//! index ([`crate::loot::drop_of`]), so a fixed seed and a fixed `--tick-hz`
+//! reproduce the run — and a haul nobody can name the seed of cannot be
+//! compared with another.
 //!
 //! `docs/backlog.md` records the one flag rule 12 still owes — a way to hold a
 //! render path below what the device offers, which `apps/quarry`'s `Forced` has
@@ -38,6 +41,8 @@ CONTROLS:
     W/A/S/D              Walk, relative to where the camera is looking
     Q / E                Swing the camera a quarter turn about the character
     SPACE                Strike everything within reach that is not behind stone
+    F                    Take what a felled foe left, if it is within reach
+    I                    Open the inventory panel; drag an item between cells
     L                    Put the torches out, and light them again
     ESC                  Pause, F3 the debug panel, F11 fullscreen
 
@@ -62,6 +67,10 @@ OPTIONS:
     --size <WxH>         Window size in pixels, WxH (default 960x720). The
                          headless offscreen ring renders at exactly this extent,
                          which is what makes a scale measurement reproducible.
+    --seed <N>           Loot seed. The same seed leaves the same items: what a
+                         felled foe drops is a hash of this and which foe it
+                         was, so a fixed seed and a fixed --tick-hz replay the
+                         run's whole haul.
     --screenshot <PATH>  Write the run's last presented frame to PATH as a PNG.
                          Turns --headless on: the frame is read back off the
                          offscreen ring, which is the only surface every backend
@@ -76,6 +85,9 @@ OPTIONS:
 pub struct Options {
     /// The flags every sample has.
     pub common: Common,
+    /// What this zone's loot is rolled from. The same seed leaves the same
+    /// items — see [`crate::loot`].
+    pub seed: u32,
 }
 
 impl Default for Options {
@@ -89,6 +101,7 @@ impl Default for Options {
             common: Common::new(crate::game::DEFAULT_TICK_HZ).with_screenshot(),
             #[cfg(target_arch = "wasm32")]
             common: Common::new(crate::game::DEFAULT_TICK_HZ),
+            seed: crate::loot::DEFAULT_SEED,
         }
     }
 }
@@ -98,8 +111,9 @@ pub type Invocation = crcbl::args::Invocation<Options>;
 
 /// Parses a flat `["--flag", "value", "--flag2"]` iterator.
 ///
-/// Every argument is offered to the shared set, and what comes back as
-/// [`Consumed::No`] is the unknown-argument rejection.
+/// Every argument is offered to the shared set first; what comes back as
+/// [`Consumed::No`] is this sample's to claim, and what it does not claim
+/// either is the unknown-argument rejection.
 pub fn parse(args: impl Iterator<Item = String>) -> Invocation {
     let mut options = Options::default();
     let mut args = args.peekable();
@@ -109,7 +123,25 @@ pub fn parse(args: impl Iterator<Item = String>) -> Invocation {
             Consumed::Yes => continue,
             Consumed::Help => return Invocation::Help,
             Consumed::Bad(message) => return Invocation::BadUsage(message),
-            Consumed::No => return Invocation::BadUsage(format!("unknown argument: {arg}")),
+            Consumed::No => {}
+        }
+
+        match arg.as_str() {
+            "--seed" => match crcbl::args::number("--seed", &mut args, "seed") {
+                // The roll takes a 32-bit key, so a wider number is refused
+                // rather than truncated: a seed that is not the seed the run
+                // used names a haul that does not exist.
+                Ok(seed) => match u32::try_from(seed) {
+                    Ok(seed) => options.seed = seed,
+                    Err(_) => {
+                        return Invocation::BadUsage(format!(
+                            "not a seed the loot roll can take: {seed} does not fit 32 bits"
+                        ));
+                    }
+                },
+                Err(message) => return Invocation::BadUsage(message),
+            },
+            other => return Invocation::BadUsage(format!("unknown argument: {other}")),
         }
     }
 
@@ -144,6 +176,19 @@ mod tests {
         assert_eq!(options.common.tick_hz, crate::game::DEFAULT_TICK_HZ);
         assert_eq!(options.common.frame_budget(), None);
         assert_eq!(options.common.backend, None);
+        assert_eq!(options.seed, crate::loot::DEFAULT_SEED);
+    }
+
+    /// **The seed reaches the run, and a number no roll can take is refused.**
+    /// A seed silently truncated is a run nobody can reproduce, which is the
+    /// whole reason the flag exists.
+    #[test]
+    fn the_loot_seed_is_this_samples_own_flag() {
+        assert_eq!(parsed(&["--seed", "7"]).seed, 7);
+        assert_eq!(parsed(&["--seed", "4294967295"]).seed, u32::MAX);
+        assert!(rejected(&["--seed", "4294967296"]).contains("32 bits"));
+        assert!(rejected(&["--seed", "shiny"]).contains("seed"));
+        assert!(rejected(&["--seed"]).contains("seed"));
     }
 
     /// The shared flags still work *through this parser*, which is the join the
@@ -215,7 +260,7 @@ mod tests {
     /// would never guess.
     #[test]
     fn every_control_this_sample_binds_is_in_the_help_text() {
-        for line in ["W/A/S/D", "Q / E", "SPACE", "L ", "ESC"] {
+        for line in ["W/A/S/D", "Q / E", "SPACE", "F ", "I ", "L ", "ESC"] {
             assert!(USAGE.contains(line), "{line} is not in --help");
         }
     }

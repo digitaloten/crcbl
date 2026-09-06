@@ -57,17 +57,21 @@
 //! and for the same reason.
 
 use crcbl::core::input::KeyCode;
-use crcbl::engine::{Booted, Clock, FrameInfo, HostedGame, RunSummary, wait_for_configure};
+use crcbl::engine::{
+    Booted, Clock, FrameInfo, HostedGame, PointerUpdate, RunSummary, wait_for_configure,
+};
 use crcbl::input::{ActionDecl, ActionKind, ActionMap, Binding};
-use crcbl::math::Vec3;
+use crcbl::math::{Vec2, Vec3};
 use crcbl::prelude::*;
 use crcbl::shell::{DisplayMode, WindowId};
+use crcbl::ui::widget::{PointerInput, UiState};
 
 use crate::camera::Iso;
 use crate::game::{Controls, Game, RenderState, Stats};
 use crate::gpu::{Gpu, Paths};
 use crate::menu::{MenuKind, Menus};
 use crate::page::PageStats;
+use crate::panel::PanelStats;
 use crate::save::{SaveStats, Vault};
 
 pub use crate::args::Options;
@@ -100,6 +104,23 @@ const ACTION_TURN_RIGHT: &str = "turn-right";
 /// cursor's position — which for this rig is not even an aim, because the cleave
 /// answers everything in reach rather than something pointed at.
 const ACTION_STRIKE: &str = "strike";
+/// Take what is lying within [`crate::loot::LOOT_REACH_M`].
+///
+/// In the [`ActionMap`] and not beside the torch key below, because it is the
+/// one loot verb that is **not** presentation: what is in reach and whether it
+/// fits the character's grid are the simulation's answers, so this crosses the
+/// wire as an intent bit and is applied inside a tick. See
+/// [`crate::game::Controls::pickup`].
+const ACTION_PICKUP: &str = "pickup";
+
+/// The key that opens and closes the inventory panel.
+///
+/// **Not in the [`ActionMap`]**, for the torch key's reason: which panels are
+/// on screen is presentation, nothing about it crosses the wire, and it works
+/// on a paused frame — a player who has stopped the zone should still be able
+/// to look at what they are carrying. [`crate::panel`] is what it opens, and it
+/// is closed until it does.
+const PANEL_KEY: KeyCode = KeyCode::KeyI;
 
 /// The key that puts the torches out and lights them again.
 ///
@@ -124,6 +145,7 @@ fn action_map() -> ActionMap {
         (ACTION_TURN_LEFT, vec![Binding::Key(KeyCode::KeyQ)]),
         (ACTION_TURN_RIGHT, vec![Binding::Key(KeyCode::KeyE)]),
         (ACTION_STRIKE, vec![Binding::Key(KeyCode::Space)]),
+        (ACTION_PICKUP, vec![Binding::Key(KeyCode::KeyF)]),
     ] {
         map.declare(ActionDecl {
             name: name.into(),
@@ -153,6 +175,11 @@ fn controls(actions: &ActionMap, yaw: f32) -> Controls {
         // a release the shell pump can deliver inside one tick — so reading
         // only `button_held` would drop it entirely.
         strike: actions.button_held(ACTION_STRIKE) || actions.just_pressed(ACTION_STRIKE),
+        // The same pair, and for the same reason: a tap is a press and a
+        // release the shell pump can deliver inside one tick, and reading only
+        // the held state would drop it. A held key takes one stack a tick,
+        // which is what "hold F to loot the pile" means.
+        pickup: actions.button_held(ACTION_PICKUP) || actions.just_pressed(ACTION_PICKUP),
         yaw,
     }
 }
@@ -200,6 +227,11 @@ pub struct Summary {
     pub resumed: bool,
     /// How many times the character was written out.
     pub saves: u64,
+    /// How many stacks the character was carrying when the run ended, how many
+    /// were still lying on the floor, and how many were taken off it.
+    pub carried: usize,
+    pub floor: usize,
+    pub picked: u64,
     /// Which selectors and effects the frames were drawn through — rule 12's
     /// "says which it took", in the summary line as well as in the panel.
     pub paths: Paths,
@@ -237,6 +269,26 @@ pub struct Shard {
     /// Whether the zone's torches are burning. Presentation too — see the module
     /// docs for why this is not a thing the server owns.
     torches_lit: bool,
+    /// Whether the inventory panel is open. **Closed on arrival**, which
+    /// `crate::panel` argues: the browser gate's still-frame control looks at a
+    /// canvas with nothing on it but the zone.
+    panel_open: bool,
+    /// Which cell of that panel owns the pointer press, across frames. The one
+    /// piece of state an immediate-mode drag cannot do without.
+    ui: UiState,
+    /// Where the pointer was last seen, normalised to the surface.
+    ///
+    /// Kept because [`PointerUpdate::at`] is `Some` only on the frames it
+    /// moved, and a drag needs a position on the frame the button comes *up*.
+    pointer_at: Vec2,
+    /// Whether the primary button is down, and whether it came up since the
+    /// last frame was drawn. The second is consumed by the draw that reads it,
+    /// because a release is an edge and a panel that saw it twice would finish
+    /// the same drag twice.
+    pointer_down: bool,
+    pointer_released: bool,
+    /// What the last frame's inventory panel drew.
+    panel: PanelStats,
     /// Where this run's saves go. [`Vault::None`] for a headless run, which is
     /// what keeps the test suite and CI out of a real data directory.
     vault: Vault,
@@ -316,6 +368,12 @@ impl Shard {
     /// * `target` — what the cleave would answer, which is what makes a blow
     ///   deliberate rather than lucky. The same reading the trigger resolves
     ///   with, so the line cannot disagree with the swing.
+    /// * `floor`, `carried` and `picked` — the loot loop, and the three are one
+    ///   claim: `floor + carried` is the number of felled foes, because nothing
+    ///   but a foe falling mints a stack and nothing destroys one. `picked` is
+    ///   **monotone** and is the half a reader polling late needs — `floor`
+    ///   rises on a kill and falls on a pickup, so a reader that missed both
+    ///   would see it back where it started.
     /// * `geometry`, `binding`, `lighting` and `effects` — rule 12, and the claim
     ///   `docs/plan/sample/15-shard.md` says matters here more than anywhere: a
     ///   browser has no mesh stage, no bindless and no ray query, so these are the
@@ -335,7 +393,8 @@ impl Shard {
             "[HUD] tick: {}  px: {:.2}  py: {:.2}  pz: {:.2}  bearing: {:.3}  \
              ground: {}  blocked: {}  climbed: {}  foes: {}  engaged: {}  \
              hp: {}  downs: {}  swings: {}  hits: {}  dealt: {}  taken: {}  \
-             target: {}  torches: {}  flame: {:.3}  \
+             target: {}  floor: {}  carried: {}  picked: {}  \
+             torches: {}  flame: {:.3}  \
              resumed: {}  saves: {}  \
              geometry: {:?}  binding: {:?}  lighting: {:?}  effects: {}",
             stats.ticks,
@@ -355,6 +414,9 @@ impl Shard {
             stats.dealt,
             stats.taken,
             stats.target_label(),
+            stats.floor,
+            stats.carried,
+            stats.picked,
             if self.torches_lit { "lit" } else { "out" },
             self.flame(),
             if self.resumed { "yes" } else { "no" },
@@ -443,6 +505,36 @@ impl Shard {
     pub const fn page(&self) -> &PageStats {
         &self.page
     }
+
+    /// Whether the inventory panel is open, for this crate's own tests.
+    pub const fn panel_open(&self) -> bool {
+        self.panel_open
+    }
+
+    /// What the last frame's inventory panel drew, for this crate's own tests.
+    pub const fn panel(&self) -> &PanelStats {
+        &self.panel
+    }
+}
+
+/// The −1…1 [`PointerUpdate`] reports back to framebuffer pixels, Y down from
+/// the top-left.
+///
+/// The inverse of the normalisation the loop applied, and it is here rather
+/// than in the engine because the engine's own copy — the one
+/// [`crcbl::engine::TouchUpdate::pixels`] is written on — is private and has no
+/// pointer-side twin. That is the `crcbl-ui` finding
+/// `docs/plan/sample/15-shard.md`'s exit criterion asks for rather than an
+/// engine change made on shard's behalf: two multiplies in a sample beat a hook
+/// the engine grew for one caller.
+fn surface_pixels(at: Vec2, extent: (u32, u32)) -> Vec2 {
+    let width = extent.0.max(1) as f32;
+    let height = extent.1.max(1) as f32;
+    Vec2::new(
+        (at.x + 1.0) * 0.5 * width,
+        // The Y flip the loop applied, undone.
+        (1.0 - at.y) * 0.5 * height,
+    )
 }
 
 /// The loop shard runs in.
@@ -560,7 +652,8 @@ fn assemble<S: Shell + ?Sized>(
             character.playtime_secs,
         );
     }
-    let game = Game::new(options.common.tick_hz, restored).map_err(ShardError::Game)?;
+    let game =
+        Game::new(options.common.tick_hz, options.seed, restored).map_err(ShardError::Game)?;
     Ok(Loop::new(
         booted,
         Shard {
@@ -571,6 +664,12 @@ fn assemble<S: Shell + ?Sized>(
             // A zone whose torches were out on arrival is a zone a visitor reads
             // as broken, and the whole subject here is what they light.
             torches_lit: true,
+            panel_open: false,
+            ui: UiState::new(),
+            pointer_at: Vec2::ZERO,
+            pointer_down: false,
+            pointer_released: false,
+            panel: PanelStats::default(),
             vault,
             resumed,
             saves: 0,
@@ -668,7 +767,38 @@ impl HostedGame for Shard {
             }
             return;
         }
+        if key == PANEL_KEY {
+            if pressed {
+                self.panel_open = !self.panel_open;
+                // A panel torn down mid-press is exactly what `UiState::clear`
+                // is for: without it the capture outlives the panel and the
+                // next drag starts already holding a cell.
+                self.ui.clear();
+            }
+            return;
+        }
         self.pending_keys.push((key, pressed));
+    }
+
+    /// The pointer, kept for the inventory panel and used by nothing else.
+    ///
+    /// The position is [`PointerUpdate`]'s normalised surface coordinates and
+    /// the panel is laid out in pixels, so the conversion happens in
+    /// [`HostedGame::draw`] where the extent is known. It is arithmetic this
+    /// sample would rather not own — `TouchUpdate::pixels` is the same
+    /// conversion, on the finger's side of the same struct pair — and
+    /// `docs/backlog.md` carries it as the `crcbl-ui` finding it is.
+    fn pointer_event(&mut self, pointer: PointerUpdate) {
+        if let Some(at) = pointer.at {
+            self.pointer_at = at;
+        }
+        if pointer.pressed {
+            self.pointer_down = true;
+        }
+        if pointer.released {
+            self.pointer_down = false;
+            self.pointer_released = true;
+        }
     }
 
     /// The map the console's `bind` and `unbind` rebind.
@@ -729,6 +859,33 @@ impl HostedGame for Shard {
             &self.render_state,
             self.torches_lit,
         );
+
+        // **Drawn last, so it is in front of the readout**, and drawn at all
+        // only while it is open — `crate::panel` is where that matters.
+        if self.panel_open {
+            let extent = gpu.extent();
+            let grid = self.game.grid();
+            self.panel = crate::panel::draw(
+                draw_list,
+                gpu.atlas(),
+                extent,
+                &grid,
+                &mut self.ui,
+                PointerInput {
+                    pos: surface_pixels(self.pointer_at, extent),
+                    down: self.pointer_down,
+                    // Taken rather than read: a release is an edge, and a panel
+                    // handed it twice would finish one drag twice.
+                    released: std::mem::take(&mut self.pointer_released),
+                },
+            );
+            if let Some((from, to)) = self.panel.dragged {
+                self.game.drag(from, to);
+            }
+        } else {
+            self.panel = PanelStats::default();
+            self.pointer_released = false;
+        }
     }
 
     /// **Shard's two modules, and no third.**
@@ -764,6 +921,9 @@ impl HostedGame for Shard {
             torches_lit: self.torches_lit,
             resumed: self.resumed,
             saves: self.saves,
+            carried: self.stats.carried,
+            floor: self.stats.floor,
+            picked: self.stats.picked,
             paths: self.paths,
             commands: self.page.commands,
         }
@@ -773,7 +933,8 @@ impl HostedGame for Shard {
         crcbl::log::info!(
             "shard: {} frames, {} ticks, feet at {:.2} {:.2} {:.2}, \
              {} blocked and {} climbed, {}/{} foes standing, {} health left, \
-             {}/{} blows landed for {} against {} taken, torches {}, \
+             {}/{} blows landed for {} against {} taken, \
+             {} stack(s) carried and {} on the floor after {} taken, torches {}, \
              {} save(s) written to the {}, \
              {} overlay commands, \
              geometry {:?}, binding {:?}, lighting {:?}, effects {} ({:?})",
@@ -791,6 +952,9 @@ impl HostedGame for Shard {
             summary.swings,
             summary.dealt,
             summary.taken,
+            summary.carried,
+            summary.floor,
+            summary.picked,
             if summary.torches_lit { "lit" } else { "out" },
             summary.saves,
             if summary.resumed {
@@ -876,8 +1040,12 @@ impl<S: Shell + ?Sized> PendingLoop<S> {
 mod tests {
     use super::*;
     use crcbl::args::Common;
+    use crcbl::core::input::PointerButton;
     use crcbl::engine::{ExitReason, PAUSE_KEY};
-    use crcbl::shell::{HeadlessShell, ShellBackend as Backend};
+    use crcbl::inventory::Cell;
+    use crcbl::shell::{
+        ButtonState as PointerState, HeadlessShell, PhysicalPoint, ShellBackend as Backend,
+    };
 
     fn scripted(options: &Options) -> Loop<HeadlessShell> {
         with_shell(Box::new(HeadlessShell::new()), options).expect("headless always starts")
@@ -891,6 +1059,7 @@ mod tests {
                 frames: Some(frames),
                 ..Common::new(crate::game::DEFAULT_TICK_HZ)
             },
+            seed: crate::loot::DEFAULT_SEED,
         }
     }
 
@@ -1187,8 +1356,8 @@ mod tests {
 
         let drawn = ui_text(&engine);
         for row in [
-            "tick", "climbed", "health", "foes", "engaged", "target", "state", "writes", "where",
-            "geometry", "lighting", "effects",
+            "tick", "climbed", "health", "foes", "engaged", "target", "carried", "loot", "state",
+            "writes", "where", "geometry", "lighting", "effects",
         ] {
             assert!(drawn.iter().any(|t| t == row), "missing {row}: {drawn:?}");
         }
@@ -1225,6 +1394,292 @@ mod tests {
         assert!(
             ui_text(&engine).iter().any(|t| t == "TORCHES"),
             "the overlay is drawn behind the panel",
+        );
+        engine.finish(ExitReason::FrameBudget).expect("teardown");
+    }
+
+    // ---- the loot loop -----------------------------------------------------
+
+    /// Holds a key down, runs frames until `ready` answers, and releases it.
+    /// Panics rather than looping forever on a build where it never does.
+    fn hold_until(
+        engine: &mut Loop<HeadlessShell>,
+        keys: &[KeyCode],
+        what: &str,
+        ready: impl Fn(&Loop<HeadlessShell>) -> bool,
+    ) {
+        let window = engine.window();
+        for key in keys {
+            engine
+                .shell_mut()
+                .key_press(window, *key)
+                .expect("the window is live");
+        }
+        let mut frames_run = 0;
+        while !ready(engine) {
+            assert!(frames_run < 2_000, "{what} did not happen in 2000 frames");
+            engine.frame().expect("a frame");
+            frames_run += 1;
+        }
+        for key in keys {
+            engine
+                .shell_mut()
+                .key_release(window, *key)
+                .expect("the window is live");
+        }
+        frames(engine, 2);
+    }
+
+    /// Where the pointer is, and what the button is doing.
+    fn pointer(engine: &mut Loop<HeadlessShell>, at: Vec2, button: Option<PointerState>) {
+        let window = engine.window();
+        let point = PhysicalPoint {
+            x: f64::from(at.x),
+            y: f64::from(at.y),
+        };
+        engine
+            .shell_mut()
+            .move_pointer(window, point, (0.0, 0.0))
+            .expect("the window is live");
+        if let Some(state) = button {
+            engine
+                .shell_mut()
+                .button(window, PointerButton::Left, state, Some(point))
+                .expect("the window is live");
+        }
+        engine.frame().expect("a frame");
+    }
+
+    /// The middle of `cell`, in framebuffer pixels.
+    fn cell_centre(engine: &Loop<HeadlessShell>, cell: Cell) -> Vec2 {
+        let (at, to) = crate::panel::cell_bounds(engine.gpu().extent(), cell);
+        (at + to) * 0.5
+    }
+
+    /// **The pickup key reaches the simulation and moves the stack into the
+    /// grid**, and standing on the loot without pressing it moves nothing.
+    ///
+    /// The whole path, from the other end of `crate::game`'s own tests: shell
+    /// event → action map → intent bit → wire → module → `Grid::insert`. The
+    /// control is the run before the key: the character stands over the body
+    /// for sixty frames carrying nothing, so this is the key rather than
+    /// proximity.
+    #[test]
+    fn a_pickup_key_reaches_the_simulation_and_moves_the_item_into_the_grid() {
+        let mut engine = scripted(&headless(4_000));
+        frames(&mut engine, 8);
+        assert_eq!(
+            engine.game().game().stats().floor,
+            0,
+            "the zone opened looted"
+        );
+
+        hold_until(
+            &mut engine,
+            &[KeyCode::KeyW, KeyCode::Space],
+            "a foe fell",
+            |engine| engine.game().game().stats().floor > 0,
+        );
+        let stats = engine.game().game().stats();
+        assert_eq!(stats.carried, 0, "something was picked up by walking");
+        assert_eq!(stats.picked, 0);
+
+        // Sixty frames of standing on it, with nothing held.
+        frames(&mut engine, 60);
+        assert_eq!(
+            engine.game().game().stats().carried,
+            0,
+            "the loot walked into the character's grid on its own",
+        );
+
+        hold_until(
+            &mut engine,
+            &[KeyCode::KeyF],
+            "the pickup landed",
+            |engine| engine.game().game().stats().carried > 0,
+        );
+        let after = engine.game().game().stats();
+        assert_eq!(
+            after.carried, 1,
+            "the key took more than the stack in reach"
+        );
+        assert_eq!(after.picked, 1);
+        assert_eq!(
+            after.floor + after.carried,
+            crate::foe::FOES - after.alive,
+            "the zone holds a different number of instances than it felled",
+        );
+        engine.finish(ExitReason::FrameBudget).expect("teardown");
+    }
+
+    /// **The inventory panel is closed until `I` opens it, and it opens on a
+    /// paused frame.**
+    ///
+    /// The closed half is what `web/tools/browser-e2e.mjs`'s still-canvas
+    /// control rests on, and the paused half is what says the panel is
+    /// presentation — a player who has stopped the zone can still look at what
+    /// they are carrying.
+    #[test]
+    fn the_inventory_panel_is_closed_until_it_is_asked_for() {
+        let mut engine = scripted(&headless(200));
+        let window = engine.window();
+        frames(&mut engine, 4);
+        assert!(!engine.game().panel_open(), "the panel opened itself");
+        assert!(
+            !ui_text(&engine).iter().any(|t| t == "INVENTORY"),
+            "a closed panel drew itself: {:?}",
+            ui_text(&engine),
+        );
+        assert_eq!(engine.game().panel().commands, 0);
+
+        engine
+            .shell_mut()
+            .key_press(window, PAUSE_KEY)
+            .expect("the window is live");
+        frames(&mut engine, 2);
+        let stalled = engine.game().game().ticks_run();
+
+        engine
+            .shell_mut()
+            .key_press(window, KeyCode::KeyI)
+            .expect("the window is live");
+        frames(&mut engine, 2);
+        assert!(engine.game().panel_open(), "I did not reach a paused frame");
+        assert_eq!(
+            engine.game().game().ticks_run(),
+            stalled,
+            "opening the panel ran a tick, so it is not presentation",
+        );
+        assert!(
+            ui_text(&engine).iter().any(|t| t == "INVENTORY"),
+            "an open panel drew nothing: {:?}",
+            ui_text(&engine),
+        );
+        assert!(engine.game().panel().commands > 0);
+
+        // …and a second press closes it, which is what makes it a switch.
+        engine
+            .shell_mut()
+            .key_release(window, KeyCode::KeyI)
+            .expect("the window is live");
+        engine
+            .shell_mut()
+            .key_press(window, KeyCode::KeyI)
+            .expect("the window is live");
+        frames(&mut engine, 2);
+        assert!(!engine.game().panel_open(), "it would not close again");
+        engine.finish(ExitReason::FrameBudget).expect("teardown");
+    }
+
+    /// **A pointer drag moves an item between two cells of the panel.**
+    ///
+    /// The claim `docs/plan/34-inventory.md`'s part 1 is about, made with the
+    /// press capture `crcbl-ui` already has: press over one cell, release over
+    /// another, and the item is where the pointer let go. The control is the
+    /// cell it left — a panel that drew the item at the pointer without moving
+    /// the placement would pass "it is there now" and fail "it is not there any
+    /// more".
+    #[test]
+    fn a_pointer_drag_moves_an_item_between_two_cells() {
+        let mut engine = scripted(&headless(4_000));
+        frames(&mut engine, 8);
+        hold_until(
+            &mut engine,
+            &[KeyCode::KeyW, KeyCode::Space],
+            "a foe fell",
+            |engine| engine.game().game().stats().floor > 0,
+        );
+        hold_until(
+            &mut engine,
+            &[KeyCode::KeyF],
+            "the pickup landed",
+            |engine| engine.game().game().stats().carried > 0,
+        );
+
+        let window = engine.window();
+        engine
+            .shell_mut()
+            .key_press(window, KeyCode::KeyI)
+            .expect("the window is live");
+        frames(&mut engine, 2);
+        assert!(engine.game().panel_open());
+
+        let grid = engine.game().game().grid();
+        let (slot, placement) = grid.slots().next().expect("the one stack");
+        let shape = crate::loot::catalog()
+            .get(placement.stack().item())
+            .expect("the item it carries")
+            .shape()
+            .rotated(placement.rotation());
+        let from = placement.at();
+        // The one place in the grid nothing else is: this grid holds one stack,
+        // so any cell its footprint fits in is free.
+        let to = Cell::new(from.x, crate::loot::GRID_H - shape.height());
+        assert_ne!(from, to, "the item already fills the grid's height");
+
+        let took_hold = cell_centre(&engine, from);
+        let let_go = cell_centre(&engine, to);
+        pointer(&mut engine, took_hold, None);
+        pointer(&mut engine, took_hold, Some(PointerState::Pressed));
+        pointer(&mut engine, let_go, None);
+        pointer(&mut engine, let_go, Some(PointerState::Released));
+
+        let moved = engine.game().game().grid();
+        assert_eq!(
+            moved.slot(slot).expect("the stack is still held").at(),
+            to,
+            "the drag left the item at {from:?}",
+        );
+        assert_eq!(
+            moved.at(from),
+            None,
+            "the item is in both cells, which is the shape of a duplicate",
+        );
+        assert_eq!(moved.len(), 1, "the drag changed what the grid holds");
+        assert_eq!(
+            moved.slot(slot).expect("the stack").stack(),
+            placement.stack(),
+            "the drag replaced the stack rather than moving it",
+        );
+        engine.finish(ExitReason::FrameBudget).expect("teardown");
+    }
+
+    /// **Two frames the player did nothing in draw the identical list, with the
+    /// panel open.**
+    ///
+    /// `crate::page`'s still-frame rule applied to the whole overlay rather than
+    /// to one module of it: `web/tools/browser-e2e.mjs` douses the torches and
+    /// asserts the canvas stops changing, and a panel that drew a clock — or a
+    /// hover highlight that followed a pointer nobody moved — would make that
+    /// control impossible to pass on a working build.
+    #[test]
+    fn the_overlay_is_identical_between_two_frames_with_the_panel_open() {
+        // The debug panel off: it is where every moving number in this sample
+        // lives — `crate::page` argues that split — and a run in a debug build
+        // opens with it visible.
+        let mut options = headless(200);
+        options.common.debug_overlay = Some(false);
+        let mut engine = scripted(&options);
+        let window = engine.window();
+        frames(&mut engine, 8);
+        engine
+            .shell_mut()
+            .key_press(window, KeyCode::KeyI)
+            .expect("the window is live");
+        engine
+            .shell_mut()
+            .key_release(window, KeyCode::KeyI)
+            .expect("the window is live");
+        frames(&mut engine, 4);
+        assert!(engine.game().panel_open());
+
+        let drawn = |engine: &Loop<HeadlessShell>| format!("{:?}", engine.gpu().draw_list());
+        let first = drawn(&engine);
+        frames(&mut engine, 30);
+        assert_eq!(
+            first,
+            drawn(&engine),
+            "the overlay drew something that ticks",
         );
         engine.finish(ExitReason::FrameBudget).expect("teardown");
     }

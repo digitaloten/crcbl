@@ -15,12 +15,15 @@
 //! no value it could ever be handed.
 //!
 //! There is nothing else to put on it yet. Walking, turning the camera,
-//! striking and putting the torches out are keys rather than rows, and the save
-//! is not a row either — [`crate::save`] writes on a cadence the simulation
-//! owns, so there is no button to press and nothing for a player to remember.
-//! An inventory and a character sheet are the rows this menu will eventually
-//! want, and both belong to a later slice of
-//! `docs/plan/sample/15-shard.md`'s milestone 1.
+//! striking, taking what is on the floor, opening the pack and putting the
+//! torches out are all keys rather than rows, and the save is not a row either
+//! — [`crate::save`] writes on a cadence the simulation owns, so there is no
+//! button to press and nothing for a player to remember. The inventory is a
+//! panel of its own ([`crate::panel`], on `I`) rather than a menu, because a
+//! menu here stops the zone and looking at what you are carrying should not.
+//! A character sheet is the row this menu will eventually want, and it belongs
+//! to the *level* verb, which is the one part of
+//! `docs/plan/sample/15-shard.md`'s milestone 1 that is not built.
 
 use crcbl::engine::{DEBUG_OVERLAY_ID, FULLSCREEN_ID, RESUME_ID};
 use crcbl::ui::menu::{Menu, MenuItem, MenuSet};

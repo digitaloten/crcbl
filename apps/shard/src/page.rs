@@ -6,10 +6,12 @@
 //!  │ FOOTING   floor    │
 //!  │ HEALTH    100/100  │
 //!  │ FOES      3        │
+//!  │ LOOT      1 down   │
+//!  │ CARRIED   2        │
 //!  │ TORCHES   LIT      │
 //!  └────────────────────┘
 //!
-//!    W/A/S/D walk   Q/E turn   SPACE strike   L douses the torches
+//!    W/A/S/D walk   Q/E turn   SPACE strike   F loots   I the pack
 //! ```
 //!
 //! # Nothing on this panel ticks, and that is load-bearing
@@ -23,7 +25,10 @@
 //! frame and make that control impossible to pass on a working build.
 //!
 //! The two fight readings are safe on that test for the same reason the position
-//! is: they move when the *world* does and hold still when it does not.
+//! is: they move when the *world* does and hold still when it does not. So are
+//! the two loot readings: what is lying on the floor and what the character is
+//! carrying both change when a player fells something or presses `F`, and never
+//! between two frames they did nothing in.
 //! [`crate::foe::POSTS`] puts every foe out of notice range of where the gate
 //! stands the character to take those samples, and
 //! `no_foe_can_reach_the_character_where_the_zone_opens` is what holds it there.
@@ -37,9 +42,12 @@
 //! # The panel is small on purpose
 //!
 //! The subject of this sample is what the torches do to the stone, and anything
-//! drawn over that is in the way of it. `docs/plan/sample/15-shard.md`'s
-//! milestone 1 eventually wants a grid inventory in front of this frame; there
-//! is no item to put in one yet, and topic 34's kit is a later slice's job.
+//! drawn over that is in the way of it. The grid inventory
+//! `docs/plan/sample/15-shard.md`'s milestone 1 wants in front of this frame is
+//! [`crate::panel`], and it is **closed until `I` opens it** for exactly this
+//! reason. What is left here is the two-line readout of it: how many stacks are
+//! on the floor and how many the character is carrying, which is what tells a
+//! player there is something to press `F` for.
 //!
 //! **Nothing about the save is drawn here either, and that is the same rule.**
 //! An autosave counter would change every `crate::save::SAVE_PERIOD_S` of
@@ -93,7 +101,8 @@ const BORDER_WIDTH: f32 = 1.0;
 const NATURAL_SCALE: f32 = 1.0;
 
 /// The control hint, which is the whole of what a first-time visitor needs.
-const HINT: &str = "W/A/S/D walk   Q/E turn the camera   SPACE strikes   L douses the torches";
+const HINT: &str = "W/A/S/D walk   Q/E turn   SPACE strikes   F loots   I the pack   \
+                    L douses the torches";
 
 /// What the page drew, for the loop's own tests and its summary line.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -147,6 +156,15 @@ pub fn draw(
             format!("{}", state.alive),
             if state.alive > 0 { HURT } else { VALUE },
         ),
+        (
+            "LOOT",
+            format!("{}", state.floor),
+            // Lit while something is close enough to take, which is the whole
+            // of what the loot key needs a player to know. A colour rather than
+            // a second row, because the panel is small on purpose.
+            if state.in_reach { LIT } else { VALUE },
+        ),
+        ("CARRIED", format!("{}", state.carried), VALUE),
         (
             "TORCHES",
             if torches_lit { "LIT" } else { "OUT" }.to_string(),
@@ -210,6 +228,9 @@ mod tests {
             foes: [crate::foe::FoeView::default(); crate::foe::FOES],
             health: crate::foe::HEALTH_MAX,
             alive: crate::foe::FOES,
+            carried: 0,
+            floor: 0,
+            in_reach: false,
         }
     }
 
@@ -235,7 +256,9 @@ mod tests {
         assert!(stats.commands > 0, "the page drew nothing at all");
 
         let drawn = text(&list);
-        for reading in ["POSITION", "FOOTING", "dais", "TORCHES", "LIT"] {
+        for reading in [
+            "POSITION", "FOOTING", "dais", "TORCHES", "LIT", "LOOT", "CARRIED",
+        ] {
             assert!(
                 drawn.contains(&reading),
                 "the {reading} reading is missing: {drawn:?}",
@@ -301,6 +324,50 @@ mod tests {
             commands(0.0),
             commands(97.5),
             "the overlay draws something that ticks",
+        );
+    }
+
+    /// **The two loot readings follow the stage rather than the frame.** What
+    /// tells a player there is something to press `F` for, and the reason the
+    /// panel can stay closed by default.
+    ///
+    /// The control is the pair: a build that drew a constant would pass "the
+    /// row is there" and fail this, and one that drew the *carried* count in
+    /// the loot row would pass both halves of a single-reading check.
+    #[test]
+    fn the_loot_readings_follow_what_is_on_the_floor_and_in_the_grid() {
+        let atlas = FontAtlas::built_in();
+        let readings = |state: &RenderState| {
+            let mut list = DrawList::new();
+            draw(&mut list, &atlas, (960, 720), state, true);
+            list.commands()
+                .iter()
+                .filter_map(|command| match command {
+                    DrawCommand::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let empty_handed = readings(&on_the_dais());
+        assert_eq!(
+            empty_handed.iter().filter(|word| *word == "0").count(),
+            2,
+            "an empty-handed character in a zone with nothing down: {empty_handed:?}",
+        );
+
+        let looting = readings(&RenderState {
+            floor: 2,
+            carried: 5,
+            in_reach: true,
+            ..on_the_dais()
+        });
+        assert!(
+            looting.contains(&"2".to_string()),
+            "no floor count: {looting:?}"
+        );
+        assert!(
+            looting.contains(&"5".to_string()),
+            "no carried count: {looting:?}"
         );
     }
 

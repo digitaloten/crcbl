@@ -81,15 +81,16 @@ and Safari, so it is a capability check and never a requirement.
 
 Decision record; the decision is in `docs/backlog.md`.
 
-**Decision needed — already in `docs/backlog.md` with three costed options.**
-The bind: this document is written for breach, and `sample/15-shard.md` is
-explicit that shard is meant to be the kit's _second_ consumer ("a kit with one
-consumer is that consumer's shape wearing a kit's name"). Breach's inventory
-sits in milestones that are native-only by that sample's own reasoning, so
-nothing has forced the kit and shard would force it alone — the exact case both
-plans say to avoid. Shard has already taken the one deferral available to it
-(its fight slice shipped with no item, no currency, no equipped weapon), so its
-next verb is loot, and loot is where the kit is forced.
+**Decided 2026-09-06, built 2026-09-07.** The bind was: topic 34 is written for
+breach, and `sample/15-shard.md` was explicit that shard is meant to be the
+kit's _second_ consumer ("a kit with one consumer is that consumer's shape
+wearing a kit's name"). Breach's inventory sits in milestones that are
+native-only by that sample's own reasoning, so nothing had forced the kit and
+shard would force it alone — the exact case both plans said to avoid. Shard had
+already taken the one deferral available to it (its fight slice shipped with no
+item, no currency, no equipped weapon), so its next verb was loot, and loot is
+where the kit was forced. Option 1 was taken: build it from shard, breach adopts
+it as the second consumer. The record of what that produced is below.
 
 ### The kit's model decisions, as built (2026-09-07)
 
@@ -127,6 +128,83 @@ mints no ids and "re-id it afterwards" is a comment rather than a safeguard. And
 a `Grid`'s occupancy map is serialised rather than rebuilt on load, because
 rebuilding it needs the footprints, which live in the catalogue, and a
 `Deserialize` has none.
+
+### Shard's loot loop, as built (2026-09-07)
+
+The kit's first consumer, and the measurements and decisions it produced.
+`apps/shard/src/loot.rs` and `src/panel.rs` are the new modules; the drop is in
+`src/game.rs`, the grid is in `src/save.rs`'s payload at version 2.
+
+**What the engine gained: nothing.** That is `sample/15-shard.md`'s exit
+criterion, and it held — no line of `crcbl-inventory`, `crcbl-ui` or `crcbl`
+changed for this slice. What shard wanted and worked around is in
+`docs/backlog.md` as topic 34 findings: a typed drag-drop capability (shard
+builds one out of `UiState::interact`'s press capture, inside `panel::draw`, and
+would delete it the day part 1 exists), a `PointerUpdate::pixels` to match
+`TouchUpdate::pixels` (the engine's own `surface_pixels` is private, so shard
+re-derives it), and the `Grid::relink` question below.
+
+**The floor is derived, not saved.** An instance is on the floor exactly when
+the foe that left it is down and its stack is not in the character's grid, so
+`Stage::restore_floor` recomputes it after a load and the save carries only the
+grid. Two copies of one fact is what a save that duplicates an item or loses one
+looks like; deriving it is why `a_session_that_looted_comes_back_carrying_it`
+can assert the total across floor and grid is the number of felled foes on both
+sides of a resume. The sabotage — dropping the "is it already carried" check —
+brings the looted stack back on the floor _and_ in the grid.
+
+**The save writes placements and replays them through `Grid::place`** rather
+than serialising a `Grid`. That sidesteps the backlog's "a loaded grid's
+occupancy map is not re-derived" entirely: the kit paints the map itself and
+refuses an overlap, so a payload's grid is one that was actually placeable.
+Nothing about that closes the entry — a consumer using serde still needs
+`relink` — but it is the shape a consumer can use today.
+
+**Measured: the loot reach is 2.5 m, and 2.0 was wrong.** A living foe's
+collider stops the walk, so the character is held about 2.14 m from its centre
+by the two capsules' radii, and the cleave reaches 2.2 m
+(`foe::STRIKE_REACH_M`). A loot reach below that is one a player cannot use
+without stepping onto a corpse first; the first draft used 2.0 and the scripted
+pickup test could not reach the body it had just felled. The reach is a distance
+only: there is no line of sight on the pickup, so a stack behind a doorpost
+within the radius can be taken through the stone — the reach-and-line-of-sight
+validation topic 34 asks a server for is not built anywhere.
+
+**The drag does not cross the wire, and the pickup does.** The pickup is one
+intent bit (`INTENT_PICKUP`, the sixth of eight in a byte that had three spare,
+so `INTENT_BYTES` did not move) applied inside the tick, because what is in
+reach and whether it fits are the stage's answers. The drag reaches the stage
+through its mutex instead: `Intent` is a flag byte and a bearing, and a cell
+pair is neither. Topic 34's `Move` command and its server-side validation are
+the kit's server half and are not built; in a single-process loopback the two
+sides are the same memory, so this is a seam that is _named_ rather than a rule
+that is broken.
+
+**The drop lands where the body falls, not on the foe's post.** A foe that
+noticed the character walked at them, so its post is where the fight started. A
+resumed session lies the drop on the post, and that is not a second rule: a
+felled foe is restored onto its post (`Foe::restore` puts back its health and
+nothing else), so "the loot lies with the body" holds either way and it is the
+body that moved.
+
+**The drop roll is `lowbias32`.** Which item foe `i` leaves on seed `s` is
+`mix(s ^ i.wrapping_mul(0x9E3779B9))` reduced modulo the catalogue's length,
+with a second, salted roll for the count — a hash rather than a draw from a
+stream, for `apps/sparks/src/show.rs`'s reason: a stream depends on how many
+draws came before it, so a zone cleared in a different order would leave
+different loot. Measured over 64 seeds: more than eight distinct hauls, and
+fewer than 32 of 256 seeds give all three foes the same item.
+
+**The count bound in the save is defence in depth, and this host cannot show it
+red.** `decode_grid` refuses a placement count past one per foe before it
+computes anything from it. Removing that check turns no test red on a 64-bit
+host: the exact-length check catches every large count a file can carry, and the
+per-placement checks (a stack id outside the roster, a foe still standing, an id
+twice) catch the rest. What the bound owns is the multiply on a **32-bit**
+target — `count * PLACEMENT_BYTES` in `usize` wraps for a large `u32` on wasm32,
+and a wrapped length that happened to match would index past the slice. It
+stays, and this paragraph is why the sabotage log for that slice shows the
+length check going red instead.
 
 ### Cross-fleet stash: decided and out of scope (2026-08-27)
 

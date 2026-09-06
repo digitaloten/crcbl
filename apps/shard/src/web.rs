@@ -18,16 +18,22 @@
 //! demos can be open in one browser and the exports must not collide, so the macro
 //! takes each name as an argument rather than building it from a prefix.
 //!
-//! # This page is `docs/plan/sample/15-shard.md`'s milestone 1, four verbs in
+//! # This page is `docs/plan/sample/15-shard.md`'s milestone 1, five verbs in
 //!
 //! That doc's milestone 1 is "a complete play session — explore, fight, loot,
 //! level, save, resume — in a browser, from the same build that runs natively".
-//! **Four of those six are here.** A visitor walks a torch-lit zone, puts its
-//! torches out, fights what is standing in it, and comes back to a character
-//! where they left them: the save goes into the Origin Private File System
-//! through [`crate::save`], on the same build that writes it to the platform
-//! data directory natively. There is no item and no level, and
-//! `docs/backlog.md` carries the rest with what each would take.
+//! **Five of those six are here.** A visitor walks a torch-lit zone, puts its
+//! torches out, fights what is standing in it, takes what it leaves into a grid
+//! inventory they can drag items around in, and comes back to a character where
+//! they left them *still carrying it*: the save goes into the Origin Private
+//! File System through [`crate::save`], on the same build that writes it to the
+//! platform data directory natively. **Level** is the one that is missing —
+//! there is no experience and nothing to spend it on — and `docs/backlog.md`
+//! carries it with what it would take.
+//!
+//! The grid is `docs/plan/34-inventory.md`'s kit, which links into the wasm
+//! module like any other: it has no IO, no clock and no `glam`, which is what
+//! lets a browser build take it whole. See [`crate::loot`].
 //!
 //! # And it is the sample the fallback paths were built for
 //!
