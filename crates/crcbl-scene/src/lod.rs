@@ -184,7 +184,7 @@ impl LodLevel {
 /// Build a LOD chain: LOD0 plus one decimated level per ratio.
 ///
 /// `positions` and `indices` are a triangle list exactly as
-/// [`GltfPrimitive`](crate::GltfPrimitive) holds them, and become LOD0
+/// `GltfPrimitive` holds them, and become LOD0
 /// verbatim. Each ratio is a fraction of LOD0's *triangle* count, rounded, and
 /// must be inside `(0, 1)` and below the one before it; [`DEFAULT_LOD_RATIOS`]
 /// is the plan's chain. The result has `ratios.len() + 1` levels, so an empty

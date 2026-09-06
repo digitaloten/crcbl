@@ -545,7 +545,7 @@ fn cook_sphere(bounds: &GroupBounds) -> crcbl_shaders::cluster_dag::GroupBounds 
 /// Build a mesh's cluster DAG.
 ///
 /// `positions` and `indices` are a triangle list exactly as
-/// [`GltfPrimitive`](crate::GltfPrimitive) holds them, and become level 0 — its
+/// `GltfPrimitive` holds them, and become level 0 — its
 /// positions verbatim, and its triangles permuted into the order its clusters
 /// hold them, which is what [`DagLevel::indices`] means at every level.
 /// Levels are added until one of them fails to hold fewer clusters

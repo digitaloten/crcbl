@@ -241,7 +241,7 @@ impl Simplified {
 /// Decimate a triangle list to at most `target_triangles` triangles.
 ///
 /// `positions` and `indices` are a triangle list exactly as
-/// [`GltfPrimitive`](crate::GltfPrimitive) holds them; taking the two arrays
+/// `GltfPrimitive` holds them; taking the two arrays
 /// rather than the primitive is what lets this be driven from literals. A
 /// target *count* rather than a ratio is the primitive here — the plan's
 /// ~50/25/12/6% chain is the caller multiplying and rounding.

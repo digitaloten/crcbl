@@ -11,7 +11,7 @@
 //! crcbl::shell     → crcbl-shell     the windowing seam and its backends
 //! crcbl::hal       → crcbl-hal       the GPU seam, plus the recording null backend
 //! crcbl::render    → crcbl-render    the render graph, cameras, the forward frame
-//! crcbl::scene     → crcbl-scene     glTF import and the mesh bakes (feature `scene`)
+//! crcbl::scene     → crcbl-scene     the `.scn/` format (`scn`), glTF import (`scene`)
 //! crcbl::shaders   → crcbl-shaders   the engine's shaders, as SPIR-V
 //! crcbl::ui        → crcbl-ui        draw lists, the glyph atlas, HUD widgets
 //! crcbl::vfx       → crcbl-vfx       particle effects, pooled and hashed (feature `vfx`)
@@ -207,10 +207,20 @@ pub use crcbl_render as render;
 /// [`ClusterDag::cook`](crcbl_scene::ClusterDag::cook), and hands the result to
 /// [`ForwardRenderer::with_scene`](crcbl_render::ForwardRenderer::with_scene).
 ///
-/// Behind the non-default `scene` feature, because this crate depends on `gltf`
-/// and a game that ships cooked meshes links no parser for the source format —
-/// the same split, for the same reason, as [`sprite`]'s `load` and `bake`.
-#[cfg(feature = "scene")]
+/// **And the `.scn/` scene directory**, which is the other half of the crate and
+/// is reached by a different feature. `crcbl_scene::scn` is the one content
+/// format the engine owns — a header, an environment and one RON chunk file per
+/// system — with a loader over [`assets::AssetSource`] and a deterministic
+/// writer. It reads no glTF, so the non-default `scn` feature turns it on
+/// *without* the parser: that is what a browser build of a game whose level is
+/// a `.scn/` wants, and `cargo check -p crcbl --features scn --target
+/// wasm32-unknown-unknown` is what says it links none.
+///
+/// Behind a feature at all — `scene` for the bake side, `scn` for the format,
+/// either of which re-exports the crate here — because a game that ships cooked
+/// meshes links no parser for the source format: the same split, for the same
+/// reason, as [`sprite`]'s `load` and `bake`.
+#[cfg(any(feature = "scene", feature = "scn"))]
 pub use crcbl_scene as scene;
 /// [`crcbl-server`](crcbl_server): the authoritative simulation, its fixed
 /// timestep and the state hash the determinism harness compares.

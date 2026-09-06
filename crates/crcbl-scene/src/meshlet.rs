@@ -20,7 +20,7 @@
 //! `crcbl-render` has to read them and must not depend on this crate — it would
 //! pull `gltf` into the renderer — so the record sits in the one crate both
 //! sides already share, beside `GpuMaterial` and `MeshVertex`, and the builder
-//! stays here where its first producer ([`GltfPrimitive`](crate::GltfPrimitive))
+//! stays here where its first producer (`GltfPrimitive`)
 //! is.
 //!
 //! # The layout
@@ -303,7 +303,7 @@ impl MeshletBuild {
 /// Cluster a triangle list into meshlets.
 ///
 /// `indices` is a triangle list over `positions`, exactly as
-/// [`GltfPrimitive`](crate::GltfPrimitive) holds them; taking the two arrays
+/// `GltfPrimitive` holds them; taking the two arrays
 /// rather than the primitive is what lets this be driven from literals.
 ///
 /// The result is deterministic: the same two arrays produce byte-identical

@@ -4021,35 +4021,6 @@ The ten documents `docs/plan/06-assets-scenes.md`, `07-ui-debug.md`,
 against the tree on 2026-08-27. What follows is what they still describe and the
 tree does not have.
 
-### The scene format does not exist, and five plans wait on it (2026-08-27)
-
-**Not built.** There is no `.scn/` directory format, no deterministic scene
-writer, no chunk load/save and no dirty-chunk tracking.
-`docs/plan/06-assets-scenes.md` task 4 is the whole of it. What this entry used
-to say about RON — no reader of any kind, zero dependency lines — was corrected
-by "RON is read and written by `crcbl_render::stack`" below: `ron` is a
-workspace dependency and `crcbl_render::stack::CameraStack` both parses and
-writes it. What is missing is the scene format, not the serialiser crate.
-
-**What it would take:** the canonical writer with the invariants the plan
-already fixes — stable entity IDs persisted and never regenerated, canonical
-field order, shortest-roundtrip float formatting, no timestamps — and the
-load→save→byte-identical property test the plan names as the gate.
-
-**What it blocks:**
-
-- `crcbl import --out <dir>` — refused by name today in
-  `crates/crcbl-cli/src/import_cmd.rs`, which says there is nothing to write to.
-- `crcbl bake`, and the `PackSource` asset source behind it.
-- `crcbl sim <scene>` and `crcbl sim --input script.ron` — both refused by name
-  in `crates/crcbl-cli/src/args.rs`.
-- `crcbl-scene`'s save→load→hash roundtrip test, a topic-12 anchor.
-- The stage 8 editor's features 5 and 6 (scene IO, asset browser).
-
-**Evidence:** `crates/crcbl-scene/src/` contains `gltf_import`, `gltf_check`,
-`gltf_render`, `simplify`, `meshlet`, `cluster_dag`, `lod`, `lod_resolve`,
-`gltf_fixture` — no scene serialiser among them.
-
 ### Asset hot reload is still entirely future tense (2026-08-27)
 
 **Not built.** No file watcher exists: `notify` appears in no `Cargo.toml`.
@@ -4420,19 +4391,23 @@ and the deterministic writer the scene format needs came with it rather than
 being the part that was not free. The TOML half of the format rule was already
 built (`crcbl-store`'s `settings.rs` through the `toml` crate).
 
-**What still has no RON file**, which is what is left of this entry — four
-features across four documents, each with its own entry here:
+**What still has no RON file**, which is what is left of this entry — three
+features across three documents, each with its own entry here:
 
-- the `.scn/` scene format (`docs/plan/06-assets-scenes.md`),
 - `crcbl save dump` / `save diff` (topic 14),
 - `crcbl audio render`'s script input (`crcbl sim --input script.ron`, topic
   13),
 - topic 20's RON effect assets.
 
-None of them is blocked on a reader any more. What each still needs is its own
-schema — a set of serde types with the same "one type, one file shape" property
-`CameraStack` has — and, for the scene format, a decision about what a stable
-document order is when the thing being written is a graph rather than a struct.
+The `.scn/` scene format came off this list on 2026-09-07: `crcbl_scene::scn` is
+the schema, with the same "one type, one file shape" property `CameraStack` has,
+and it answers the question this entry left open about document order for a
+graph rather than a struct — the order is the manifest for files, struct order
+for fields, and `SceneEntityId` order for rows, all three of them properties of
+the file rather than of the run that wrote it.
+
+None of the remaining three is blocked on a reader or on a writer. What each
+still needs is its own schema.
 
 ### towers and arena do not exist, and exit criteria all over the plan name them (2026-08-27)
 

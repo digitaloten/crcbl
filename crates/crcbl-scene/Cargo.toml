@@ -27,7 +27,27 @@ repository.workspace = true
 # (It reaches `crcbl-render` anyway, through the `crcbl` umbrella. The feature is
 # about what a *direct* dependant is forced to take, not about that binary.)
 [features]
-render = ["dep:crcbl-render", "dep:crcbl-sprite"]
+# `crcbl_scene::gltf_import`, `gltf_check`, `gltf_render`, `gltf_fixture` and
+# `lod_resolve` — everything that reads a glTF document or is spelled in terms
+# of one. **On by default**, because every consumer of this crate that existed
+# before `scn` wanted the importer, and a default that has to be remembered is
+# one that will be forgotten.
+#
+# Off, what is left is the half that reads no source format: `meshlet`,
+# `simplify`, `lod`, `cluster_dag` — host builders over plain vertex and index
+# arrays — and `scn`, the engine's own scene directory. That is the build a
+# browser wants: `crcbl`'s `scn` feature reaches this crate through the
+# workspace entry's `default-features = false`, so a demo that loads a `.scn/`
+# links no glTF parser at all, which is the argument `crcbl/Cargo.toml`'s
+# `scene` feature has always made about a shipped game.
+#
+# `lod_resolve` is in the list and is not obvious: `resolve_lod` takes a
+# `&GltfScene`, so the hand-authored precedence `docs/plan/25-lod.md` describes
+# is a glTF reading and cannot compile without the parser.
+default = ["gltf"]
+gltf = ["dep:gltf"]
+
+render = ["gltf", "dep:crcbl-render", "dep:crcbl-sprite"]
 
 # `crcbl_scene::gltf_fixture` — the triangle document and the `.glb` container
 # this crate's own tests are built out of, compiled outside `cfg(test)` so that
@@ -45,7 +65,7 @@ render = ["dep:crcbl-render", "dep:crcbl-sprite"]
 # **dev**-dependencies, and a feature does not reach them — which is the same
 # line the module draws for its own reasons: only the four items that make one
 # whole document become public.
-gltf-fixture = []
+gltf-fixture = ["gltf"]
 
 [dependencies]
 # The IO seam every byte arrives through, and `StorageError`, which is this
@@ -53,6 +73,12 @@ gltf-fixture = []
 # rather than a second error enum for callers to match on twice.
 crcbl-assets = { workspace = true }
 crcbl-core = { workspace = true }
+# `World`, `System<T>` and `Schedule`, which is what `scn` loads a scene *into*
+# and reads one back *out of*. The arrow is this direction because a scene is a
+# file that describes entities: `crcbl-ecs` depends on `crcbl-core` and nothing
+# else, and it must keep doing so — the serde bound `scn` needs sits on
+# `chunk_of`, so no `serde` reaches the entity crate. See `src/scn.rs`.
+crcbl-ecs = { workspace = true }
 # `GpuMaterial` is what a glTF PBR material's factors *are*: its
 # `base_color_factor` is linear RGBA and so is `GpuMaterial::base_color`, so the
 # importer produces the shader's own record rather than a parallel copy of it.
@@ -70,7 +96,7 @@ glam = { workspace = true }
 # those. It costs nothing but a `cfg`: both `gltf`'s and `gltf-json`'s
 # `extensions` feature list is empty, and the `serde_json` the map is made of is
 # already a non-optional dependency of both.
-gltf = { workspace = true, features = ["extensions"] }
+gltf = { workspace = true, features = ["extensions"], optional = true }
 # The scene vocabulary `gltf_render` converts *into* — `SceneDesc`, `MeshDesc`,
 # `PageDesc`, `InstanceDesc` — behind the `render` feature above.
 crcbl-render = { workspace = true, optional = true }
@@ -83,6 +109,13 @@ crcbl-sprite = { workspace = true, features = ["load"], optional = true }
 # `MeshletError`, which is not a `StorageError`: the meshlet builder reads no
 # bytes, so every storage variant but `Other` is unreachable from it and
 # `Other(String)` would erase which caller bug it hit.
+# The `.scn/` chunk format itself. `ron` is the workspace's data format — see
+# `[workspace.dependencies]` for the decision — and `scn` writes it through the
+# same pinned `PrettyConfig` `crcbl_render::stack` and `crcbl_inventory::catalog`
+# do, because `PrettyConfig`'s default newline is `\r\n` on Windows and a scene
+# directory lives in git.
+ron = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
 
 # The writer half of the `gltf-fixture` feature: it puts those bytes on disk and

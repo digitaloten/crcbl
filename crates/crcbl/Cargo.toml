@@ -324,7 +324,26 @@ windowed-e2e = ["crcbl-shell/x11-e2e"]
 # to a build that has the umbrella is the module. Turning on the glTF importer
 # and leaving out the one thing that renders what it imports would be a switch
 # nobody wants either half of.
-scene = ["dep:crcbl-scene", "crcbl-scene/render"]
+scene = ["dep:crcbl-scene", "crcbl-scene/gltf", "crcbl-scene/render"]
+
+# `crcbl::scene`, the scene *format* half alone — `crcbl_scene::scn`, the `.scn/`
+# directory of RON chunk files, its loader over `crcbl_assets::AssetSource` and
+# its deterministic writer. **Off by default**, like `scene` above, and the
+# difference between the two is the parser: `scene` turns on `crcbl-scene/gltf`
+# and links the glTF importer, this does not, because the workspace entry for
+# that crate sets `default-features = false`.
+#
+# That is the whole reason it exists rather than being folded into `scene`. A
+# browser demo that loads its level from a `.scn/` directory reads no glTF at
+# run time — the plan's cooked formats are ours, the source formats are a bake
+# step — so a build that had to take `gltf` to reach the loader would link a
+# parser it never calls. `cargo check -p crcbl --features scn --target
+# wasm32-unknown-unknown` is what says so.
+#
+# Both features together are fine and are what a tool wants: they select the
+# same crate with the union of its features, and `src/lib.rs` re-exports it
+# under either.
+scn = ["dep:crcbl-scene"]
 
 # `crcbl::greybox` — `crcbl-greybox`, the blockout kit. **Off by default**, on
 # the `scene` feature's terms: a game that ships authored geometry has no use

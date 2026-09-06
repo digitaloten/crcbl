@@ -46,4 +46,7 @@ crcbl-store = { workspace = true }
 # through it: the importer takes an `AssetSource`, and `DirSource` is what a
 # path typed on a command line becomes.
 crcbl-assets = { workspace = true }
-crcbl-scene = { workspace = true }
+# `features = ["gltf"]` because the workspace entry turns that crate's defaults
+# off — see the root `Cargo.toml`. This binary is the one that reads the source
+# format, so it is the one that asks for the parser.
+crcbl-scene = { workspace = true, features = ["gltf"] }

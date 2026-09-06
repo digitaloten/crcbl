@@ -77,6 +77,22 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **`crcbl_scene::scn`, the `.scn/` scene directory** — the one content format
+  the engine owns: a `scene.ron` header (`format: 0`, a name, the system
+  manifest), an `env.ron` camera and ambient light, and one `sys/<system>.ron`
+  entity array per manifest entry. `Scene::load` reads them through a
+  `crcbl_assets::AssetSource` — `DirSource` natively, a `MemorySource` seeded
+  from `include_str!` in a browser — and spawns into a `crcbl_ecs::World`
+  through caller-registered `chunk_of::<T>(name)` codecs; `Scene::save` returns
+  the byte-stable text of every file it would write, so no engine crate performs
+  synchronous IO. `SceneEntityId` is the file's own dense id and `IdMap` joins
+  it to the live `Entity`, because a handle's bits are a function of spawn
+  history and never of the file. The loader refuses, each naming the key: a
+  `format` this build does not read, a manifest system with no codec, a chunk
+  file that declares another system, an unknown field (every file type sets
+  `deny_unknown_fields`), a repeated `SceneEntityId`, and a save of an entity
+  that was never given one. `crcbl`'s new non-default `scn` feature reaches the
+  loader **without** the glTF parser. No sample loads a `.scn/` yet.
 - **`crcbl-inventory`, the grid-inventory kit** — part 2 of
   `docs/plan/34-inventory.md`, headless and renderer-free. `Grid` is the one
   container primitive: a `W×H` field of cells with an occupancy map and an
@@ -1141,6 +1157,13 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- **`crcbl-scene` gained an on-by-default `gltf` feature** gating `gltf_import`,
+  `gltf_check`, `gltf_render`, `gltf_fixture` and `lod_resolve`. The workspace
+  entry for the crate sets `default-features = false` (cargo silently ignores
+  the switch on a member's `workspace = true` line), so a member that wants the
+  importer asks for it: `crcbl-cli` and `crcbl`'s `scene` feature now name
+  `crcbl-scene/gltf` explicitly, and `crcbl-shaders`' dev dependency on the
+  crate stops pulling a glTF parser it never used.
 - **`crcbl-mtl` binds only what a pipeline's reflection reads.** Every raster
   and compute pipeline is created with `MTLPipelineOption::BindingInfo`, and any
   argument-table `set*` the pipeline's own reflection reports as unread

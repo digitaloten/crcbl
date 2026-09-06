@@ -325,9 +325,14 @@ validation-report assertion once, for all of them.
   opens each fetched model and asserts it, so a re-pin or an importer change has
   to be blessed rather than absorbed. What that does not catch is a model that
   still imports and looks worse; that wants a golden, and
-  `crates/crcbl/tests/gltf_e2e.rs` is still one synthetic textured quad. The
-  scene save→load→hash roundtrip cannot exist yet either — there is no scene
-  format to save ([06-assets-scenes.md](06-assets-scenes.md)).
+  `crates/crcbl/tests/gltf_e2e.rs` is still one synthetic textured quad. **The
+  scene save→load→hash roundtrip exists as of 2026-09-07**:
+  `crates/crcbl-scene/tests/scn_roundtrip.rs` loads a two-system `.scn/`
+  directory, writes it back through a real temp directory, byte-compares every
+  file and then compares `crcbl_ecs::World::hash_state` across the reload — plus
+  the two diff-shape properties the format's own section names
+  ([06-assets-scenes.md](06-assets-scenes.md)). What it does not cover is a
+  scene a _sample_ loads; the fixture is synthetic.
 - `crcbl-ui`: draw-list snapshot tests (widget tree → draw-command list compare
   — no GPU needed); hit-test unit grid.
 - Editor: random-command/undo property test (stage 8 exit criterion) runs
@@ -343,7 +348,7 @@ validation-report assertion once, for all of them.
 | lavapipe render e2e + golden-image tooling (`CRCBL_BLESS`) | P1                  |
 | Determinism harness + sim e2e pattern                      | P2                  |
 | Phys analytic/property/CCD suites                          | P3, grows P6/P8/P11 |
-| glTF corpus + scene roundtrip                              | P9                  |
+| glTF corpus (P9) + scene roundtrip (P11C, landed)          | P9, P11C            |
 | Editor command/undo property suite                         | P12                 |
 
 ## Exit criteria (MVP)
