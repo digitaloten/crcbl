@@ -13928,13 +13928,43 @@ goes to `assert` per "Metal's debug layer is on `nslog`, and `assert` is the
 follow-up" above, the cap comes back down to the measured envelope, and the
 "price" tests on Metal become a number worth reading.
 
-Also open, and cheap: `crcbl-mtl` fails `cargo doc --document-private-items` on
-`aarch64-apple-darwin` with 14 pre-existing errors (`device.rs` ×7, `draw.rs`,
-`fault.rs`, `pipeline.rs`, `swapchain.rs`, `binding.rs`'s module header,
-`command.rs`'s `buffer_fill_word` docs) — unresolved links to
-`crcbl_hal::Capability::BufferFillWord` and `ValidationReport::assert_clean`,
-and redundant explicit link targets. CI does not run that form on this crate on
-purpose, which is why they have survived; clearing them is what would let it.
+### `crcbl-dx12` fails `cargo doc --document-private-items` on msvc
+
+The Metal half of this was cleared 2026-09-06 and `.github/workflows/ci.yml`'s
+"Document the platform backends on their own targets" step now passes
+`--document-private-items` on the `crcbl-mtl` line, so that crate cannot rot
+again. `crcbl-dx12` was measured the same day and deliberately left alone.
+
+```
+RUSTDOCFLAGS="-D warnings" cargo doc -p crcbl-dx12 --all-features --no-deps \
+    --locked --document-private-items --target x86_64-pc-windows-msvc
+```
+
+exits 101 with 20 errors in three classes:
+
+- **Ten redundant explicit link targets** — `[`Name`](path::to::Name)` where the
+  label alone already resolves, the shape `docs/notes/ci.md` describes. In
+  `binding.rs`, `buffer.rs`, `command.rs`, `conv.rs`, `device.rs`,
+  `instance.rs`, `pipeline.rs`, `present.rs`.
+- **Nine unresolved links.** Four are `ValidationReport::assert_clean` in
+  `debug.rs`, and the cause is the same one Metal had: the method is
+  `#[cfg(test)]`, so no doc build has an item to link to — the fix is to name it
+  in plain code font and say so, not to widen the flag. One is
+  `CommandEncoder::fill_buffer` in `command.rs`'s module header, which is real
+  rot rather than a link slip: the seam verb lost its `value` on 2026-08-19 and
+  is `clear_buffer` now, so that whole paragraph documents a signature and a
+  refusal that no longer exist, exactly as `crcbl-mtl`'s `clear_buffer` did. The
+  rest are `D3D12_MAX_SHADER_VISIBLE_DESCRIPTOR_HEAP_SIZE_TIER_2`
+  (`adapter.rs`), `StoreOp::Store` and
+  `crate::device::DeviceInner::dispatch_signature` (`command.rs`), and
+  `crate::Dx12CommandEncoder` (`device.rs`).
+- **One ambiguous link**: `` `write` is both a function and a macro `` in
+  `root.rs`.
+
+Clearing them is what would let the D3D12 line carry the flag too. The Metal
+slice is the worked example of what that takes, and the `fill_buffer` case says
+to read each unresolved link rather than de-linking it: two of the thirteen
+found there were sentences describing code that had changed.
 
 ### `a_copy_d3d12_cannot_place_is_refused_by_name` provokes a real layer error
 

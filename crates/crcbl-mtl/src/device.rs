@@ -95,8 +95,7 @@ use crate::instance::{AdapterRecord, InstanceInner, next_owner_id};
 /// reports it unconditionally.
 pub(crate) const MAX_SAMPLER_ANISOTROPY: f32 = 16.0;
 
-/// Why a [`QueryKind::Timestamp`](crcbl_hal::QueryKind::Timestamp) set is
-/// refused on a device that has one.
+/// Why a [`QueryKind::Timestamp`] set is refused on a device that has one.
 ///
 /// One constant per kind, because [`Device::supports`] and
 /// [`Device::create_query_set`] must not drift: the declaration and the refusal
@@ -125,8 +124,8 @@ const NO_TIMESTAMP_COUNTER_SET: &str = "this device advertises no MTLCommonCount
      to sample one. crcbl_mtl::adapter withholds Features::TIMESTAMP_QUERY from such a device. The \
      occlusion kind is a plain MTLBuffer and is served on every Mac";
 
-/// Why a [`QueryKind::PipelineStatistics`](crcbl_hal::QueryKind::PipelineStatistics)
-/// set is refused on a device that has one.
+/// Why a [`QueryKind::PipelineStatistics`] set is refused on a device that has
+/// one.
 ///
 /// The sibling of [`NO_TIMESTAMP_COUNTER_SET`], and **one term shorter on
 /// purpose**: this kind is gated on the counter set alone. Nothing in
@@ -840,7 +839,8 @@ impl MetalDevice {
     /// There is no `vkCreateDevice` equivalent: the `MTLDevice` already exists
     /// from enumeration, so opening a device means taking a reference to it and
     /// creating the queue every submission will go through. Both steps are
-    /// synchronous, which is why [`crate::MetalInstance::request_device`]
+    /// synchronous, which is why
+    /// [`Instance::request_device`](crcbl_hal::Instance::request_device)
     /// completes on its first poll.
     pub(crate) fn open(
         instance: Arc<InstanceInner>,
@@ -1825,12 +1825,11 @@ impl Device for MetalDevice {
     /// A [`MemoryLocation::DeviceLocal`] buffer is `MTLStorageMode::Private`
     /// and has no `contents` pointer at all — Metal's only route into one is a
     /// blit from a staging buffer, which is
-    /// [`CommandEncoder::copy_buffer_to_buffer`](crcbl_hal::CommandEncoder::copy_buffer_to_buffer)
-    /// and not this call. So this refuses with
-    /// [`HalError::InvalidDescriptor`] naming the location,
-    /// which is both what the seam documents ("`InvalidDescriptor` … if the
-    /// buffer is not host-visible") and what `crcbl-vk` answers for the same
-    /// call, so the two backends disagree about nothing.
+    /// [`CommandEncoder::copy_buffer_to_buffer`] and not this call. So this
+    /// refuses with [`HalError::InvalidDescriptor`] naming the location, which
+    /// is both what the seam documents ("`InvalidDescriptor` … if the buffer is
+    /// not host-visible") and what `crcbl-vk` answers for the same call, so the
+    /// two backends disagree about nothing.
     ///
     /// The alternative — accepting the call and writing nothing — is the shape
     /// this workspace treats as a defect: a caller would upload a mesh, draw
@@ -2575,8 +2574,7 @@ impl Device for MetalDevice {
     ///
     /// # Errors
     ///
-    /// [`HalError::Unsupported`] for
-    /// [`QueryKind::Occlusion`](crcbl_hal::QueryKind::Occlusion) and for a
+    /// [`HalError::Unsupported`] for [`QueryKind::Occlusion`] and for a
     /// counter-sampled kind this device does not report the feature for,
     /// [`HalError::InvalidDescriptor`] for a set of no queries, and
     /// [`HalError::OutOfDeviceMemory`] if the allocation fails.
@@ -2832,10 +2830,10 @@ impl Device for MetalDevice {
     ///
     /// This is what makes a submit-time wait on a value nothing has encoded
     /// satisfiable on a one-queue backend
-    /// ([`Capability::TimelineWaitBeforeSignal`](crcbl_hal::Capability::TimelineWaitBeforeSignal)):
-    /// the value arrives from outside the queue, so the queue does not have to
-    /// reach a later submission to produce it. [`Device::submit`] refused such a
-    /// wait until this call existed, and no longer does.
+    /// ([`Capability::TimelineWaitBeforeSignal`]): the value arrives from
+    /// outside the queue, so the queue does not have to reach a later
+    /// submission to produce it. [`Device::submit`] refused such a wait until
+    /// this call existed, and no longer does.
     ///
     /// # The floor is what has been *encoded*, not what has been signalled
     ///
@@ -3008,13 +3006,12 @@ impl Device for MetalDevice {
     /// refused here rather than left to stop the queue in silence.
     ///
     /// [`Device::signal_semaphore`] is where it comes from now, and the refusal
-    /// is gone with it — which is what
-    /// [`Capability::TimelineWaitBeforeSignal`](crcbl_hal::Capability::TimelineWaitBeforeSignal)
+    /// is gone with it — which is what [`Capability::TimelineWaitBeforeSignal`]
     /// claims on this backend. A caller that submits such a wait and never
     /// signals the value still stops this queue, exactly as the same mistake
-    /// stops a Vulkan queue; the seam's own use avoids it by construction, since
-    /// a frames-in-flight timeline waits on the value the *previous* frame
-    /// signalled.
+    /// stops a Vulkan queue; the seam's own use avoids it by construction,
+    /// since a frames-in-flight timeline waits on the value the *previous*
+    /// frame signalled.
     ///
     /// # Timeline values may not go backwards
     ///

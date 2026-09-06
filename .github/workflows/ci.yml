@@ -222,8 +222,15 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: |
           set -euo pipefail
+          # `--document-private-items` on the Metal line and not the D3D12 one.
+          # `crcbl-mtl`'s private items were cleared 2026-09-06 — 13 errors, all
+          # of them links to something renamed, made `#[cfg(test)]` or given a
+          # redundant explicit target — so it carries the flag now and cannot
+          # rot again. `crcbl-dx12` had 20 of the same shapes on that date and
+          # nobody has cleared them, so it stays on the public pass; turning the
+          # flag on there today would only pin a red job.
           cargo doc --locked --all-features --no-deps -p crcbl-mtl \
-            --target aarch64-apple-darwin
+            --document-private-items --target aarch64-apple-darwin
           cargo doc --locked --all-features --no-deps -p crcbl-dx12 \
             --target x86_64-pc-windows-msvc
           # `crcbl-shell` rides here for the same reason and needs
@@ -231,9 +238,7 @@ jobs:
           # almost entirely private, so the public pass above reads hardly any
           # of them. Cleaned 2026-08-22 — 46 broken links on msvc and 82 on
           # darwin, none of which any gate could see — and this is what stops
-          # them coming back. Not `--workspace`: `crcbl-mtl` and `crcbl-dx12`
-          # still have private-item rot of their own, and they are deferred, so
-          # widening this would pin a failure nobody is going to clear.
+          # them coming back.
           cargo doc --locked --all-features --no-deps -p crcbl-shell \
             --document-private-items --target aarch64-apple-darwin
           cargo doc --locked --all-features --no-deps -p crcbl-shell \

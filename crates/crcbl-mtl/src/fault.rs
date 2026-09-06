@@ -57,8 +57,10 @@
 //! * **Execution faults** — a page fault, a hang, a timeout. Also a failed
 //!   command buffer, and the thing the rest of this module was written for.
 //!
-//! So the honest Metal equivalent of `assert_clean` is
-//! [`ValidationReport::assert_clean`], and it asserts two things:
+//! So the honest Metal equivalent of `assert_clean` is this module's own
+//! `ValidationReport::assert_clean`, which is `#[cfg(test)]` — its only caller
+//! is a device test's teardown, so it is not an item any doc build can link —
+//! and it asserts two things:
 //!
 //! 1. the API validation layer really was interposed on this device, and
 //! 2. no command buffer this device submitted ended in

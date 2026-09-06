@@ -32,11 +32,10 @@
 //!   pass a **CPU-known** `draw_count`. Metal's
 //!   `drawPrimitives:indirectBuffer:indirectBufferOffset:` emits one draw from
 //!   GPU-written arguments, so N of them emit N draws from N argument
-//!   structures — which is exactly what
-//!   [`DrawIndirect`](crcbl_hal::DrawIndirect) means. The count is CPU-side by
-//!   definition, so the loop is not an approximation of multi-draw-indirect; it
-//!   *is* multi-draw-indirect, at the cost of N encoder calls instead of one.
-//!   That is what earns
+//!   structures — which is exactly what [`DrawIndirect`] means. The count is
+//!   CPU-side by definition, so the loop is not an approximation of
+//!   multi-draw-indirect; it *is* multi-draw-indirect, at the cost of N encoder
+//!   calls instead of one. That is what earns
 //!   [`MULTI_DRAW_INDIRECT`](crcbl_hal::Features::MULTI_DRAW_INDIRECT).
 //! * [`draw_indirect_count`](crcbl_hal::CommandEncoder::draw_indirect_count)
 //!   and its indexed sibling read the count from GPU memory, and they are the

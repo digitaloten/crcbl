@@ -52,12 +52,11 @@
 //!
 //! # Metal splits pipeline state in two, so a pipeline entry carries both
 //!
-//! An `MTLRenderPipelineState` is only *half* of what
-//! [`GraphicsPipelineDesc`](crcbl_hal::GraphicsPipelineDesc) describes. Metal
-//! puts the shader functions, attachment formats, blend state and sample count
-//! in the pipeline object, and leaves the rasteriser knobs — cull mode,
-//! winding, fill mode, depth clip, depth bias — plus the depth/stencil test
-//! itself on the **encoder**, as calls made between draws.
+//! An `MTLRenderPipelineState` is only *half* of what [`GraphicsPipelineDesc`]
+//! describes. Metal puts the shader functions, attachment formats, blend state
+//! and sample count in the pipeline object, and leaves the rasteriser knobs —
+//! cull mode, winding, fill mode, depth clip, depth bias — plus the
+//! depth/stencil test itself on the **encoder**, as calls made between draws.
 //!
 //! Vulkan bakes all of it into one `VkPipeline`, and the seam is Vulkan-shaped,
 //! so this backend stores the encoder half in [`RasterState`] beside the

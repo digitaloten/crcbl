@@ -51,10 +51,10 @@
 //!   reads them.
 //! * **`DESCRIPTOR_INDEXING` goes back on.** It came off when this module bound
 //!   flat tables and nothing else, because `crcbl_hal::pipeline` is explicit
-//!   that a backend which refuses [`BindingFlags`](crcbl_hal::BindingFlags)
-//!   must not report the feature. [`plan_set`] now honours the bindless flags,
-//!   so the feature is reportable again; `crcbl_mtl::adapter` carries the full
-//!   argument and the device query it is gated on.
+//!   that a backend which refuses [`BindingFlags`] must not report the feature.
+//!   [`plan_set`] now honours the bindless flags, so the feature is reportable
+//!   again; `crcbl_mtl::adapter` carries the full argument and the device query
+//!   it is gated on.
 //! * **[`BindingFlags::UPDATE_AFTER_BIND`] is still refused, and now for a
 //!   sharper reason than "the values were copied onto the encoder".** They
 //!   still are, for a flat binding. For a table, the *addresses* live in a

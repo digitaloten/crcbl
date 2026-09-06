@@ -845,7 +845,7 @@ impl MetalDevice {
     /// `ForeignObject` here exactly as it is on a backend that has a real
     /// answer to give. See
     /// [`Device::display_timing`](crcbl_hal::Device::display_timing) on
-    /// [`MetalDevice`](crate::MetalDevice) for why the answer is `Unknown`.
+    /// [`MetalDevice`] for why the answer is `Unknown`.
     pub(crate) fn display_timing_impl(
         &self,
         swapchain: SwapchainHandle,

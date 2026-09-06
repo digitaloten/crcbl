@@ -1496,28 +1496,24 @@ impl CommandEncoder for MetalCommandEncoder {
         }
     }
 
-    /// Fills a buffer range with a repeating 32-bit value.
+    /// Zeroes a buffer range with `fillBuffer:range:value:`.
     ///
-    /// **Metal's `fillBuffer:range:value:` takes a byte, not a word.** So a
-    /// `u32` whose four bytes are not identical has no Metal encoding at all,
-    /// and this refuses it by name rather than filling with the low byte and
-    /// leaving a caller to find out from a corrupt indirect count. Every value
-    /// the seam's own reason for existing needs — "the idiomatic way to zero an
-    /// indirect count buffer" — is a repeated byte, and `0` most of all.
+    /// **Metal's fill repeats a byte, not a word**, which is the reason the
+    /// seam's verb has no `value` to refuse: a `u32` whose four bytes are not
+    /// identical had no Metal encoding at all, so this backend used to reject
+    /// most of them rather than fill with the low byte and leave a caller to
+    /// find out from a corrupt indirect count. Zero is the same byte four times
+    /// over, so the verb that is left encodes exactly on every device — which
+    /// is why
+    /// [`Capability::BufferFillZero`](crcbl_hal::Capability::BufferFillZero)
+    /// is answered `Yes` here with nothing withheld.
     ///
-    /// # Which refusal, and why they differ
+    /// # The one refusal left
     ///
-    /// The two failures below are the two halves of the seam's own split, and
-    /// they are deliberately different variants:
-    ///
-    /// * A word whose bytes differ is
-    ///   [`Capability::BufferFillWord`](crcbl_hal::Capability::BufferFillWord) —
-    ///   a thing Metal's API has not got, on every device — so it is
-    ///   [`HalError::Unsupported`], which is the variant a caller matches on to
-    ///   take the clear-dispatch fallback `crcbl-render` already has.
-    /// * A range running past the end of the buffer is the caller's arithmetic,
-    ///   so it stays [`HalError::InvalidDescriptor`] naming the range: no
-    ///   fallback would help, and the same call with a smaller `size` works.
+    /// A range running past the end of the buffer is the caller's arithmetic,
+    /// so it is [`HalError::InvalidDescriptor`] naming the range: no fallback
+    /// would help, and the same call with a smaller `size` works. An empty
+    /// range is not an error — it encodes nothing and returns.
     fn clear_buffer(&mut self, buffer: BufferHandle, offset: u64, size: u64) {
         // **The refusal that used to open this function is gone with the
         // seam's `value`.** `fillBuffer:range:value:` repeats a single byte, so
