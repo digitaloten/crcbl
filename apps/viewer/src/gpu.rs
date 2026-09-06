@@ -1182,6 +1182,7 @@ mod tests {
     use super::*;
     use crcbl::render::{Antialiasing, EffectOverride, EffectRequest, OrbitCamera, Projection};
     use crcbl::screenshot::{ForwardScene, OffscreenSetup};
+    use crcbl::shaders::tonemap::TonemapCurve;
 
     /// The frame the grid proof below is drawn at.
     ///
@@ -1479,6 +1480,10 @@ mod tests {
                     })
                     .expect("one instance fits in any pool");
                 without_the_resolve(&mut renderer);
+                // The claim below is a ratio in linear light, so the frame stays
+                // scene-referred: the clamp is the identity on `0..=1` and the
+                // fit the renderer starts on is not.
+                renderer.set_tonemap_curve(TonemapCurve::Clamp);
                 if let Some(exposure) = exposure {
                     renderer.set_exposure(exposure);
                 }
@@ -1767,6 +1772,10 @@ mod tests {
                     })
                     .expect("one instance fits in any pool");
                 without_the_resolve(&mut renderer);
+                // The shaded frame is only this test's background reference, and
+                // a debug view resolves to the clamp whatever the renderer starts
+                // on, so the shaded arm pins the same operator to share a clear.
+                renderer.set_tonemap_curve(TonemapCurve::Clamp);
                 renderer.set_normals_view(on);
                 Ok(ForwardScene {
                     camera,

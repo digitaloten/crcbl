@@ -76,7 +76,8 @@
 use crcbl::adapter::{ADAPTER_ENV_VAR, device_type_from_name};
 use crcbl::backend::{BACKEND_ENV_VAR, GpuBackend};
 use crcbl::hal::{Features, Format, GeometryPath};
-use crcbl::screenshot::{OffscreenSetup, Scene};
+use crcbl::screenshot::{ForwardScene, OffscreenSetup, Scene};
+use crcbl::shaders::tonemap::TonemapCurve;
 use crcbl_golden::{ChannelOrder, Golden, Image};
 use crcbl_render::{Antialiasing, RenderEffects};
 
@@ -85,6 +86,59 @@ use crcbl_render::{Antialiasing, RenderEffects};
 /// Read by `tests/offscreen/verdict.rs`, which is shared with `tiling_e2e.rs`
 /// and `gltf_e2e.rs` and therefore cannot name any of them.
 const SUITE: &str = "crcbl render e2e";
+
+/// The same scene with `tonemap.slang`'s exposure-and-clamp selected, which is
+/// the operator a claim that predicts a **code value** has to be measured under.
+///
+/// `ForwardRenderer` draws with the ACES fit by default, and every host model in
+/// this file — `crcbl_shaders::probe::irradiance_at`, a sky-view LUT's
+/// irradiance, a trilinear blend of probe rows — predicts a swapchain level from
+/// the radiance the shading computed, through an sRGB encode and nothing else.
+/// The clamp is the identity on `0..=1`, so it is the operator that leaves that
+/// prediction the whole of the transform; the fit is a further monotone remap
+/// the model does not carry, and under it every one of those budgets would be
+/// measuring the curve.
+///
+/// **The goldens are not drawn through this.** They are the frame the engine
+/// draws by default, and a fixture that needs both — the probe room, the
+/// specular plate, the gradient mirror — draws two frames rather than choosing.
+fn scene_referred(mut scene: ForwardScene) -> ForwardScene {
+    scene.renderer.set_tonemap_curve(TonemapCurve::Clamp);
+    scene
+}
+
+/// Which frame a scene's `inspect` claim is measured on.
+///
+/// A [`Scene`] is built inside `crcbl::screenshot`, so a fixture drawing one
+/// cannot hand its renderer [`scene_referred`] on the way past — it asks for the
+/// operator afterwards, and the scenes whose claim is a host-model comparison
+/// need a frame of their own to ask it of.
+#[derive(Clone, Copy)]
+enum ClaimFrame {
+    /// The frame the golden is compared against: what the engine draws by
+    /// default, and what a claim about *where* the frame is bright reads.
+    TheOneTheGoldenIs,
+    /// A second frame of the same scene under the clamp, for a claim that
+    /// predicts a **code value** — [`scene_referred`] is the argument.
+    ASecondOneUnderTheClamp,
+}
+
+/// One more frame of `scene`, drawn under the clamp — [`scene_referred`]'s
+/// argument for a [`Scene`] this fixture does not build itself.
+fn a_clamped_frame_of(scene: Scene, extent: (u32, u32), name: &str) -> Image {
+    let setup = OffscreenSetup::open(extent.0, extent.1, scene)
+        .unwrap_or_else(|why| panic!("a GPU backend opens for the {name} scene: {why}"));
+    let mut setup = Offscreen::guard(SUITE, setup);
+    assert!(
+        setup.set_tonemap_curve(TonemapCurve::Clamp),
+        "the {name} scene draws through a forward renderer, so the pin has to reach one"
+    );
+    let format = setup.format();
+    let ((width, height), pixels) = setup.draw_and_readback().expect("the frame renders");
+    setup.finish();
+    Image::from_readback(width, height, &pixels, channel_order(format))
+        .expect("the readback is exactly one image")
+}
 
 // The teardown, out of `tests/offscreen/` rather than in here, because the other
 // two suites tear the same fixture down and a second copy is a second place a
@@ -2435,12 +2489,13 @@ fn the_double_sided_scene_draws_the_same_frame_on_every_geometry_path() {
 #[test]
 #[ignore = "needs a real GPU and a backend pin; run tests/run-render-e2e.sh"]
 fn the_specular_aa_scene_regularises_its_corrugation_and_matches_its_golden() {
-    draw_scene_and_match_its_golden(
+    draw_scene_and_match_its_golden_measuring(
         Scene::SpecularAa,
         "specular_aa",
         EXTENT,
         MIN_COLORS_SPECULAR_AA,
         the_corrugation_is_regularised_and_the_flat_band_is_not_touched,
+        ClaimFrame::ASecondOneUnderTheClamp,
     );
 }
 
@@ -2459,11 +2514,12 @@ fn the_specular_aa_scene_regularises_its_corrugation_and_matches_its_golden() {
 #[test]
 #[ignore = "needs a real GPU and a backend pin; run tests/run-render-e2e.sh"]
 fn the_specular_aa_scene_draws_the_same_frame_on_every_geometry_path() {
-    draw_scene_on_every_geometry_path(
+    draw_scene_on_every_geometry_path_measuring(
         Scene::SpecularAa,
         "specular_aa",
         MIN_COLORS_SPECULAR_AA,
         the_corrugation_is_regularised_and_the_flat_band_is_not_touched,
+        ClaimFrame::ASecondOneUnderTheClamp,
     );
 }
 /// The anti-vacuity floor for [`Scene::Ao`].
@@ -3692,7 +3748,7 @@ fn the_resolve_is_what_puts_the_soft_pixels_there() {
     let frame = |effects| {
         let setup =
             OffscreenSetup::open_forward(EXTENT.0, EXTENT.1, move |device, queue, format| {
-                crcbl::screenshot::aa_forward(device, queue, format, effects)
+                crcbl::screenshot::aa_forward(device, queue, format, effects).map(scene_referred)
             })
             .unwrap_or_else(|why| panic!("a GPU backend opens for the aa scene: {why}"));
         let mut setup = Offscreen::guard(SUITE, setup);
@@ -4547,7 +4603,7 @@ fn a_fragment_crossing_a_clipmap_level_fades_into_it() {
     crcbl_core::log::init_logging();
 
     let setup = OffscreenSetup::open_forward(EXTENT.0, EXTENT.1, |device, queue, format| {
-        crcbl::screenshot::probe_clipmap_forward(device, queue, format)
+        crcbl::screenshot::probe_clipmap_forward(device, queue, format).map(scene_referred)
     })
     .unwrap_or_else(|why| panic!("a GPU backend opens for the probe clipmap scene: {why}"));
     let mut setup = Offscreen::guard(SUITE, setup);
@@ -4744,6 +4800,7 @@ fn a_scrolled_volume_reads_the_rows_the_mirror_does() {
     for steps in SCROLL_STEPS {
         let setup = OffscreenSetup::open_forward(EXTENT.0, EXTENT.1, |device, queue, format| {
             crcbl::screenshot::probe_scroll_forward(device, queue, format, steps)
+                .map(scene_referred)
         })
         .unwrap_or_else(|why| panic!("a GPU backend opens for the probe scroll scene: {why}"));
         let mut setup = Offscreen::guard(SUITE, setup);
@@ -4943,7 +5000,7 @@ fn a_scroll_recaptures_the_slab_it_exposed_and_nothing_else() {
 
     let draw = |follow: bool| {
         let setup = OffscreenSetup::open_forward(EXTENT.0, EXTENT.1, |device, queue, format| {
-            crcbl::screenshot::probe_slab_forward(device, queue, format, follow)
+            crcbl::screenshot::probe_slab_forward(device, queue, format, follow).map(scene_referred)
         })
         .unwrap_or_else(|why| panic!("a GPU backend opens for the probe slab scene: {why}"));
         let mut setup = Offscreen::guard(SUITE, setup);
@@ -5081,6 +5138,7 @@ fn a_probe_cell_sealed_on_every_side_keeps_the_plain_blend() {
         let setup =
             OffscreenSetup::open_forward(EXTENT.0, EXTENT.1, move |device, queue, format| {
                 crcbl::screenshot::probe_sealed_forward(device, queue, format, both)
+                    .map(scene_referred)
             })
             .unwrap_or_else(|why| panic!("a GPU backend opens for the sealed probe scene: {why}"));
         let mut setup = Offscreen::guard(SUITE, setup);
@@ -5152,23 +5210,25 @@ fn a_probe_cell_sealed_on_every_side_keeps_the_plain_blend() {
 #[test]
 #[ignore = "needs a real GPU and a backend pin; run tests/run-render-e2e.sh"]
 fn the_probes_scene_lights_its_room_and_matches_its_golden() {
-    draw_scene_and_match_its_golden(
+    draw_scene_and_match_its_golden_measuring(
         Scene::Probes,
         "probes",
         EXTENT,
         MIN_COLORS_PROBES,
         the_probe_grid_lights_each_end_of_the_room_in_its_own_colour,
+        ClaimFrame::ASecondOneUnderTheClamp,
     );
 }
 
 #[test]
 #[ignore = "needs a real GPU and a backend pin; run tests/run-render-e2e.sh"]
 fn the_probes_scene_draws_the_same_frame_on_every_geometry_path() {
-    draw_scene_on_every_geometry_path(
+    draw_scene_on_every_geometry_path_measuring(
         Scene::Probes,
         "probes",
         MIN_COLORS_PROBES,
         the_probe_grid_lights_each_end_of_the_room_in_its_own_colour,
+        ClaimFrame::ASecondOneUnderTheClamp,
     );
 }
 
@@ -5675,6 +5735,28 @@ fn draw_scene_and_match_its_golden(
     min_colors: usize,
     inspect: fn(&Image),
 ) {
+    draw_scene_and_match_its_golden_measuring(
+        scene,
+        golden,
+        extent,
+        min_colors,
+        inspect,
+        ClaimFrame::TheOneTheGoldenIs,
+    );
+}
+
+/// [`draw_scene_and_match_its_golden`] saying which frame `inspect` reads.
+///
+/// The golden is always the frame the engine draws by default; `claim` is only
+/// about the measurement in front of it — see [`ClaimFrame`].
+fn draw_scene_and_match_its_golden_measuring(
+    scene: Scene,
+    golden: &str,
+    extent: (u32, u32),
+    min_colors: usize,
+    inspect: fn(&Image),
+    claim: ClaimFrame,
+) {
     // **Install a logger before opening anything.** Without one, every
     // `log::info!` a backend emits on the way to a device — the adapter it
     // chose, the surface it built, whether a validation layer loaded — goes
@@ -5788,7 +5870,12 @@ fn draw_scene_and_match_its_golden(
         "a {golden} frame with {colors} distinct colour(s) (counted to {min_colors}) is not \
          evidence — nothing drew, or only the clear did"
     );
-    inspect(&image);
+    match claim {
+        ClaimFrame::TheOneTheGoldenIs => inspect(&image),
+        ClaimFrame::ASecondOneUnderTheClamp => {
+            inspect(&a_clamped_frame_of(scene, extent, golden));
+        }
+    }
 
     let reference = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/golden")
@@ -5941,6 +6028,27 @@ fn draw_scene_on_every_geometry_path(
     min_colors: usize,
     inspect: fn(&Image),
 ) {
+    draw_scene_on_every_geometry_path_measuring(
+        scene,
+        name,
+        min_colors,
+        inspect,
+        ClaimFrame::TheOneTheGoldenIs,
+    );
+}
+
+/// [`draw_scene_on_every_geometry_path`] saying which frame `inspect` reads.
+///
+/// The two arms compared are always the frames the engine draws by default —
+/// that comparison is the test — and `claim` is only about the measurement that
+/// says either arm holds the scene at all. See [`ClaimFrame`].
+fn draw_scene_on_every_geometry_path_measuring(
+    scene: Scene,
+    name: &str,
+    min_colors: usize,
+    inspect: fn(&Image),
+    claim: ClaimFrame,
+) {
     crcbl_core::log::init_logging();
 
     let mut frames: Vec<(GeometryPath, Image)> = Vec::new();
@@ -6010,7 +6118,12 @@ fn draw_scene_on_every_geometry_path(
         "a {name} frame with {colors} distinct colour(s) (counted to {min_colors}) is not \
          evidence — comparing it against another frame like it proves nothing"
     );
-    inspect(best);
+    match claim {
+        ClaimFrame::TheOneTheGoldenIs => inspect(best),
+        ClaimFrame::ASecondOneUnderTheClamp => {
+            inspect(&a_clamped_frame_of(scene, EXTENT, name));
+        }
+    }
     assert_eq!(
         best_path != lesser_path,
         adapter_offers_mesh,
@@ -6053,7 +6166,7 @@ fn draw_scene_on_every_geometry_path(
 /// How many channels the two geometry paths may disagree about on `scene`, and
 /// even then only ever by one.
 ///
-/// **Zero for every scene but the four that march, and that is the point.** The
+/// **Zero for every scene but the ones named below, and that is the point.** The
 /// two paths are meant to draw the same picture, so a budget handed to every
 /// scene would be slack nobody measured — the exact comparison is what has
 /// caught a path drawing something else, and it keeps its teeth everywhere it
@@ -6123,7 +6236,35 @@ fn draw_scene_on_every_geometry_path(
 /// every offset back to `1.0` — the old march — takes llvmpipe to zero too,
 /// which is what says the offsets are the cause and not the two geometry paths.
 ///
-/// All five budgets are two orders of magnitude under anything a level that
+/// `AlphaMask` is the sixth, and it is the first of them whose cause is above
+/// the shading rather than inside it. It read zero until
+/// `RenderEffects::DEFAULT_STACK` moved the resolve slot onto CMAA2, and the
+/// mechanism is a **hypothesis** rather than a measurement: CMAA2 classifies an
+/// edge by comparing lumas against a threshold, which is a discontinuous
+/// decision where FXAA's blend was a smooth one, so a sub-level luma difference
+/// between the two arms can flip one pixel's classification. What is measured is
+/// the disagreement itself: one channel, off by one, out of the frame's 196608 —
+/// the red of `(90, 130)`, `59` against `60` — on the Ubuntu runner's llvmpipe,
+/// Mesa 25.2.8-0ubuntu0.24.04.2 / LLVM 20.1.2. Arch's Mesa 26.2.2 / LLVM 22.1.8
+/// answers zero on the same comparison and radv answers zero, so nothing here
+/// can test the mechanism: the difference does not exist on either driver this
+/// workspace can run. **This is a guard that got weaker, and it is recorded as
+/// one rather than absorbed:** what is gone is this scene's ability to catch a
+/// one-level cross-path regression in the alpha-masked draw.
+///
+/// `DoubleSided` is the seventh, and its cause is above the shading too — the
+/// tonemap operator, which makes it the only one of these that is not about a
+/// pass at all. It read zero until `ForwardRenderer` started on the ACES fit.
+/// Exposure-and-clamp has unit
+/// slope on `0..=1`, so an HDR difference in the last place rounds to the same
+/// eight-bit level; the fit's toe is steeper than one, so the same difference
+/// can now land two levels apart in the encode. Measured at **one** channel, off
+/// by one, out of the frame's 196608 — the red of `(93, 159)`, `83` against
+/// `82` — reproducibly over three runs on Arch's lavapipe, and radv answers
+/// zero. It is the frames' own difference that is unchanged; what changed is
+/// whether the encode can still see it.
+///
+/// All seven budgets are two orders of magnitude under anything a level that
 /// failed to draw would produce — the failure this exists for moves whole
 /// clusters, not one channel.
 ///
@@ -6145,8 +6286,8 @@ fn draw_scene_on_every_geometry_path(
 /// a step instead of dimming it — a first-order change where the scalar's was
 /// second-order. Measured at **9 channels, worst by 2**, out of the frame's
 /// 196608: identical on the Ubuntu runner's Mesa 25.2.8 / LLVM 20.1.2 and on
-/// Arch's Mesa 26.2.1 / LLVM 22.1.8, and radv answers zero as it does for all
-/// five.
+/// Arch's Mesa 26.2.1 / LLVM 22.1.8, and radv answers zero as it does for every
+/// row above.
 ///
 /// **The sensitive pixels moved rather than grew, which is worth stating
 /// because the obvious guess is wrong.** The pre-rung pair above is at
@@ -6170,6 +6311,8 @@ const fn path_lsb_channels(scene: Scene) -> (usize, u8) {
         Scene::Ssr => (16, 1),
         Scene::Probes => (16, 2),
         Scene::Ao => (16, 1),
+        Scene::AlphaMask => (16, 1),
+        Scene::DoubleSided => (16, 1),
         _ => (0, 1),
     }
 }
@@ -6916,6 +7059,13 @@ fn an_atmosphere_mirror_reflects_the_luts_limb() {
     let setup = OffscreenSetup::open(EXTENT.0, EXTENT.1, Scene::AtmosphereMirror)
         .unwrap_or_else(|why| panic!("a GPU backend opens for the atmosphere mirror scene: {why}"));
     let mut setup = Offscreen::guard(SUITE, setup);
+    // The limb is compared against the host's own LUT, so the frame has to stay
+    // scene-referred — see `scene_referred`. The golden this scene also has is
+    // blessed under the default and is not drawn here.
+    assert!(
+        setup.set_tonemap_curve(TonemapCurve::Clamp),
+        "the atmosphere mirror is a forward scene, so the pin has to reach a renderer"
+    );
     let format = setup.format();
     let ((width, height), pixels) = setup.draw_and_readback().expect("the frame renders");
     setup.finish();
@@ -7213,12 +7363,13 @@ fn the_mirror_reflects_its_gradients_own_bands(image: &Image) {
 #[test]
 #[ignore = "needs a real GPU and a backend pin; run tests/run-render-e2e.sh"]
 fn the_gradient_mirror_scene_reflects_its_bands_and_matches_its_golden() {
-    draw_scene_and_match_its_golden(
+    draw_scene_and_match_its_golden_measuring(
         Scene::GradientMirror,
         "gradient_mirror",
         EXTENT,
         MIN_COLORS_GRADIENT_MIRROR,
         the_mirror_reflects_its_gradients_own_bands,
+        ClaimFrame::ASecondOneUnderTheClamp,
     );
 }
 
@@ -7251,7 +7402,7 @@ fn an_atmosphere_frame_is_the_host_lut() {
     let mut worst_at = (0usize, (0u32, 0u32), 0usize);
     for sun in 0..crcbl::screenshot::ATMOSPHERE_SUNS.len() {
         let setup = OffscreenSetup::open_forward(EXTENT.0, EXTENT.1, |device, queue, format| {
-            crcbl::screenshot::atmosphere_forward(device, queue, format, sun)
+            crcbl::screenshot::atmosphere_forward(device, queue, format, sun).map(scene_referred)
         })
         .unwrap_or_else(|why| panic!("a GPU backend opens for the atmosphere scene: {why}"));
         let mut setup = Offscreen::guard(SUITE, setup);
@@ -7503,6 +7654,7 @@ fn an_atmospheres_ambient_rows_light_a_floor() {
         let setup =
             OffscreenSetup::open_forward(EXTENT.0, EXTENT.1, move |device, queue, format| {
                 crcbl::screenshot::sky_ambient_forward(device, queue, format, atmosphere)
+                    .map(scene_referred)
             })
             .unwrap_or_else(|why| panic!("a GPU backend opens for the sky-ambient scene: {why}"));
         let mut setup = Offscreen::guard(SUITE, setup);
@@ -7673,6 +7825,7 @@ fn an_atmospheres_ambient_rows_light_a_wall() {
         let setup =
             OffscreenSetup::open_forward(EXTENT.0, EXTENT.1, move |device, queue, format| {
                 crcbl::screenshot::sky_ambient_wall_forward(device, queue, format, atmosphere)
+                    .map(scene_referred)
             })
             .unwrap_or_else(|why| {
                 panic!("a GPU backend opens for the sky-ambient wall scene: {why}")

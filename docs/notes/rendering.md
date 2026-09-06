@@ -2312,3 +2312,119 @@ Browser, on SwiftShader at load 9.3: the render-harness drive took 74.5 s of its
 alone without an A/B nobody ran. The lantern demo gate's first run reddened on
 `web/tools/browser-e2e.mjs`'s pinned effects row, not on load, and the row moved
 to `shadows ao ssr vfog cmaa2`.
+
+## The ACES default flip: what moved and where it was blessed (2026-09-06)
+
+`ForwardRenderer::new` took `TonemapCurve::Aces` in place of
+`TonemapCurve::Clamp`. **The seam is the renderer's own default, and no
+`CameraStack` field was added**: the 2D samples do not build a `ForwardRenderer`
+at all. `apps/asteroids`, `apps/breakout`, `apps/flappy`, `apps/horde` and
+`apps/hud` name the type only for the associated helper
+`ForwardRenderer::present_target`, and draw through `crcbl_render::sprite_pass`
+and `crcbl_render::ui_pass`; the sprite and UI scenes in
+`crcbl::screenshot::Scene` build their own `SpriteRenderer` and `UiRenderer`. So
+"3D defaults to the fit, 2D keeps the clamp" is true of the renderer's own
+default with nothing else said, and the five 2D golden suites came back green at
+0.0000% before anything was blessed.
+
+Thirty-nine goldens moved: twenty-four under `crates/crcbl/tests/golden/`, six
+under `apps/quarry/tests/golden/`, four under `apps/sundial/tests/golden/`,
+three under `apps/alcove/tests/golden/` and two under
+`apps/lantern/tests/golden/`. The `crcbl`, `lantern` and `quarry` sets were
+blessed on radv and the `alcove` and `sundial` sets on lavapipe — each where its
+own previous bless was — and every harness script under `crates/crcbl/tests/`,
+`apps/*/tests/` and `crates/crcbl-vk/tests/` was then run green on both drivers.
+Every golden that moved moved on 100.00% of its pixels, the curve being a remap
+of every channel; what separates them is the magnitude. On radv the largest
+maximum channel deltas were `cube` 155, `dunes` 106, `point_shadow` and
+`spot_shadow` 80, `lights` and quarry's dolly-end trio 77; the smallest were
+`gradient_mirror` 30 and `area_light`, `atmosphere_mirror` and `ao` 34. Mean
+absolute error sat between 15.4 (`bloom`) and 23.7 (`ao`) across the whole set,
+and the share "grossly wrong" ran from `bloom`'s 8.63% and `ssr`'s 50.76% up to
+100% on `ao`, `gradient_mirror` and `probes`. lavapipe reported the same maximum
+delta on every `crcbl` golden and agreed on the rest to within a few tenths of a
+point; the one figure that parted company is quarry's `mesh-shader-dolly-start`,
+71 on radv against 53 on lavapipe, which is the two drivers disagreeing about
+that frame rather than about the operator.
+
+## The CMAA2 default cost one cross-path guard a budget (2026-09-06)
+
+`crates/crcbl/tests/render_e2e.rs`'s `path_lsb_channels` gained a
+`Scene::AlphaMask` row at 16 channels and one level, where that scene was held
+to zero. `the_alpha_mask_scene_draws_the_same_frame_on_every_geometry_path`
+reddened on CI run 34018142030, job "vk e2e (lavapipe)", on `6377ed1` — the
+commit that moved `RenderEffects::DEFAULT_STACK`'s resolve slot onto CMAA2 —
+with one channel differing by one out of the frame's 196608: the red of
+`(90, 130)`, `59` against `60`. That runner is Ubuntu's llvmpipe, Mesa
+25.2.8-0ubuntu0.24.04.2 / LLVM 20.1.2.
+
+**The mechanism is a hypothesis and is recorded as one.** CMAA2 classifies an
+edge by comparing lumas against a threshold, a discontinuous decision where
+FXAA's blend was a smooth one, so a sub-level luma difference between the
+mesh-shader and indirect-count arms can flip one pixel's classification where it
+previously washed out. Nothing in this workspace can test that: Arch's Mesa
+26.2.2 / LLVM 22.1.8 answers **zero** channels on the same comparison and so
+does radv, before and after the ACES default flip — the whole render e2e suite
+was run on both drivers at each state. The difference does not exist on either
+driver here, with the resolve on, so there is no A/B to run against it.
+
+The ACES default does not move this scene further:
+`alpha_mask on MeshShader against IndirectCount` reports
+`0 channel(s) differ, worst by 0` on Arch lavapipe and on radv with the fit in
+force. If the runner's disagreement ever grows past one level the row's second
+figure is what would have to move, and that is a measurement nobody here can
+take.
+
+## The ACES default cost one cross-path guard a budget (2026-09-06)
+
+`crates/crcbl/tests/render_e2e.rs`'s `path_lsb_channels` gained a
+`Scene::DoubleSided` row at 16 channels and one level, where that scene was held
+to zero. Its cause is the tonemap operator, which makes it the only row there
+that is about no pass at all. Exposure-and-clamp has unit slope on `0..=1`, so
+an HDR difference in the last place between the mesh-shader and indirect-count
+arms rounded to the same eight-bit level; the fit's toe is steeper than one, so
+the same difference can land two levels apart in the encode. Measured at one
+channel, off by one, out of the frame's 196608 — the red of `(93, 159)`, `83`
+against `82` — over three consecutive runs on Arch's lavapipe, with radv
+answering zero on the same comparison. The frames' own difference is unchanged;
+what changed is whether the encode can still see it.
+
+## Where the clamp is pinned, and why it is not a threshold move (2026-09-06)
+
+A fixture that predicts a **code value** from a host model of the shading is not
+a test of the tonemap operator, so it asks for the clamp on the renderer it
+drives rather than having its budget re-derived. Three shapes of pin, one rule:
+
+- `render_e2e.rs`'s `scene_referred` maps a `ForwardScene` on the way into
+  `OffscreenSetup::open_forward`, and eight fixtures use it — the aa resolve's
+  soft-pixel control, the probe clipmap, scroll, slab and sealed-cell scenes,
+  the atmosphere LUT frame and the two sky-ambient rows.
+- `crcbl::screenshot::OffscreenSetup::set_tonemap_curve` is new, for a built-in
+  `Scene` whose renderer a fixture never sees. It returns whether it reached a
+  renderer, because the sprite and UI scenes run no tonemap pass and a silent
+  no-op is exactly the shape of a pin that never arrived.
+- `Arm::scene_referred` in `apps/alcove`, `apps/sundial` and `apps/lantern`'s
+  golden suites, which is a field on the arm each fixture already describes
+  itself with.
+
+The scenes that both bless a golden and make such a claim draw **two** frames:
+the golden is what the engine draws by default, and the claim reads a second
+frame under the clamp. `render_e2e.rs`'s `ClaimFrame` is that choice for
+`Scene::Probes`, `Scene::SpecularAa` and `Scene::GradientMirror`;
+`apps/lantern`'s `draw_scene_referred` is it for the room's fixed-camera golden,
+its below-the-device path pair and its presentation-size claims; `apps/alcove`'s
+presentation-size test redraws its four crease arms. `apps/sundial`'s speckle
+counts and `apps/lantern`'s effect-toggle frames bless nothing, so those draw
+one frame under the clamp and the saved review pictures are scene-referred with
+them.
+
+Found by the parent's own workspace run with `CRCBL_GPU=vk`, not by the slice's:
+`apps/viewer/src/gpu.rs`'s
+`the_exposure_scales_the_frame_the_way_an_exposure_does` and
+`the_normals_view_paints_each_face_the_encoding_of_its_world_normal` skip unless
+a driver is pinned, and CI's "Run the viewer's suite against lavapipe" step pins
+one. Under the fit the first read a clear ratio of 14.47 where the exposures
+differ by 4, and the second read a shaded background of `[29, 34, 48]` against
+the normals view's `[5, 8, 17]`, because a debug view resolves to the clamp
+whatever the renderer starts on. Both fixtures pin the clamp beside
+`without_the_resolve`; both suites are green on radv and lavapipe.

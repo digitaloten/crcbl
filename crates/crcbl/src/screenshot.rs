@@ -7017,6 +7017,37 @@ impl OffscreenSetup {
         self.scene.counters()
     }
 
+    /// Which tonemap operator this scene's forward renderer runs, for the frames
+    /// drawn after this call.
+    ///
+    /// **What it exists for is a fixture that predicts a code value.** A frame
+    /// leaves this module as eight-bit sRGB, so a test comparing it against a
+    /// host model of the shading — `crcbl_shaders::probe::irradiance_at`, a
+    /// sky-view LUT, the linear drop an occlusion pass takes off a crease — is
+    /// modelling the whole path down to the encode. The operator is part of that
+    /// path, and
+    /// [`TonemapCurve::Clamp`](crate::shaders::tonemap::TonemapCurve::Clamp) is
+    /// the one those models assume: it is the identity on `0..=1`, so the frame
+    /// stays scene-referred and a decode of it is the radiance the shading
+    /// computed. The default is the fit, which is what every golden here is
+    /// blessed under.
+    ///
+    /// Returns whether it reached a renderer: the sprite and UI scenes run no
+    /// tonemap pass at all, so there is nothing for a curve to select there and
+    /// a caller asking is asking about a frame this cannot change. It is
+    /// `#[must_use]` for that reason — a silent no-op is exactly the shape of a
+    /// pin that never arrived.
+    #[must_use]
+    pub fn set_tonemap_curve(&mut self, curve: crate::shaders::tonemap::TonemapCurve) -> bool {
+        match &mut self.scene {
+            SceneState::Forward { renderer, .. } => {
+                renderer.set_tonemap_curve(curve);
+                true
+            }
+            SceneState::Sprite { .. } | SceneState::Ui { .. } => false,
+        }
+    }
+
     /// Records, submits, and reads back one frame, blocking until it lands.
     ///
     /// Returns the swapchain image's bytes as `((width, height), Vec<u8>)`,

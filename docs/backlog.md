@@ -869,6 +869,47 @@ records what is now true. What is owed:
 - **Not reviewed:** whether the maps' memory — `EXTENT² × 8` bytes a probe, 25
   KiB for the 60 here — needs a cap once the clipmap decides the probe count.
 
+## The CMAA2 default weakened one cross-path guard, and it is recorded (2026-09-06)
+
+The record behind this — the measurement and the mechanism — is in
+`docs/notes/rendering.md` under "The CMAA2 default cost one cross-path guard a
+budget".
+
+`crates/crcbl/tests/render_e2e.rs`'s `path_lsb_channels` now has a
+`Scene::AlphaMask` row at 16 channels and one level, where that scene was held
+to zero. `the_alpha_mask_scene_draws_the_same_frame_on_every_geometry_path`
+reddened on CI's lavapipe alone at one channel off by one — the red of
+`(90, 130)` — and both Mesa drivers here answer zero, so the mechanism is
+written as a hypothesis: CMAA2's edge classification is a threshold decision
+where FXAA's blend was a smooth one. What is gone is that scene's ability to
+catch a one-level cross-path regression; the failure the guard exists for moves
+whole triangles.
+
+**Not done:** nothing here can reproduce the runner's disagreement, so nothing
+here can narrow the mechanism or retire the row. Arch's Mesa 26.2.2 / LLVM
+22.1.8 and radv both answer zero, before and after the ACES default flip. The
+way to retire it is to set it back to zero and watch a CI run on the Ubuntu
+image.
+
+## The ACES default weakened one cross-path guard, and it is recorded (2026-09-06)
+
+The record behind this — the measurement and the mechanism — is in
+`docs/notes/rendering.md` under "The ACES default cost one cross-path guard a
+budget".
+
+`crates/crcbl/tests/render_e2e.rs`'s `path_lsb_channels` now has a
+`Scene::DoubleSided` row at 16 channels and one level, where that scene was held
+to zero. `the_double_sided_scene_draws_the_same_frame_on_every_geometry_path`
+reddened on lavapipe alone at one channel off by one; radv answers zero. The
+fit's toe is steeper than the clamp's unit slope, so a last-place difference
+between the two geometry arms that used to round to the same eight-bit level can
+now land one apart. What is gone is that scene's ability to catch a one-level
+cross-path regression; the failure the guard exists for moves whole triangles.
+
+**Not done:** nothing re-measures whether the row is still needed if the arms
+ever agree bit for bit again. The row is measured, not argued from theory, and
+the way to retire it is to set it back to zero and watch lavapipe.
+
 ## The bent normals weakened one cross-path guard, and it is recorded (2026-09-02)
 
 The record behind this — the argument, the options and the measurements — is in
@@ -3126,36 +3167,6 @@ Found auditing `docs/plan/`'s eight rendering documents on 2026-08-27. Those
 docs had already been annotated inline as work landed, so the audit's yield was
 mostly **false claims corrected** rather than plans closed; what follows is the
 work they name that the tree does not have.
-
-### Which stacks default to the filmic curve is undecided (2026-08-27)
-
-**DECIDED 2026-08-30 — the filmic curve becomes the default in the same re-bless
-as CMAA2's default**, so the goldens move once for both. Until that slice the
-clamp stays the default. The ACES fit shipped on 2026-08-27 and **nothing
-renders with it**: `crcbl_shaders::tonemap::TonemapCurve::Clamp` is what
-`ForwardRenderer` starts on, so the curve only runs for a caller that names it
-and no caller does.
-
-That is deliberate — the clamp is the identity on `0..=1` and every 2D sample in
-the tree is display-referred, so a curve applied engine-wide would move colours
-an artist chose and re-bless the 2D suite for a change nobody asked for.
-`docs/plan/48-post-processing.md` carries the argument.
-
-**What is left is the decision, not the code.** Either the 3D samples each ask
-for the curve (a line per app, no shared policy, and the samples drift), or
-`RenderEffects` grows a bit and `DEFAULT_STACK` carries it (one place, and every
-3D golden in `crates/crcbl`, `apps/lantern` and `apps/quarry` re-blesses in the
-commit that flips it — the shape the FXAA resolve landed in). The second is the
-better one and it is the user's call when to spend the re-bless.
-
-**Evidence.** `ForwardRenderer::set_tonemap_curve` and its `tonemap_curve`
-field; `the_tonemap_block_carries_the_curve_a_caller_selected` in
-`crates/crcbl-render/src/forward.rs` is what proves the lane reaches the GPU,
-and `the_aces_curve_keeps_the_shading_the_clamp_flattens` in
-`crates/crcbl/tests/mesh_e2e/hdr.rs` is what proves the branch runs on a device.
-
-**DECIDED 2026-09-06 —** which stacks default to the filmic curve is folded into
-the CMAA2 flip's bless, which is in flight, rather than decided separately here.
 
 ### Camera-relative rendering: the f64 sector offset table (2026-08-27)
 

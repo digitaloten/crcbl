@@ -975,6 +975,53 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- **A 3D view's tonemap operator defaults to the ACES fit.**
+  `ForwardRenderer::new` starts on `crcbl_shaders::tonemap::TonemapCurve::Aces`
+  where it started on `Clamp`, so a view that has asked for nothing is drawn
+  through the filmic roll-off `docs/plan/48-post-processing.md`'s tonemap rung
+  was built for. The clamp is still what a caller asks _for_, through
+  `ForwardRenderer::set_tonemap_curve`, and it is still the identity on `0..=1`.
+
+  **The seam is the renderer's own default, not a `CameraStack` field**, because
+  the 2D samples never reach this pass: `apps/asteroids`, `apps/breakout`,
+  `apps/flappy`, `apps/horde` and `apps/hud` draw through
+  `crcbl_render::sprite_pass` and `crcbl_render::ui_pass` and touch
+  `ForwardRenderer` only through the associated helper
+  `ForwardRenderer::present_target`. Their goldens are byte-identical, and so
+  are the `sprite*` and `ui*` references under `crates/crcbl/tests/golden/`. A
+  debug view is unaffected for the reason it always was —
+  `ForwardRenderer::resolved_tonemap_curve` runs the clamp for a readout
+  whatever a caller selected, because a readout's pixels are data.
+
+  **Thirty-nine goldens moved**: twenty-four under `crates/crcbl/tests/golden/`,
+  six under `apps/quarry/tests/golden/`, four under
+  `apps/sundial/tests/golden/`, three under `apps/alcove/tests/golden/` and two
+  under `apps/lantern/tests/golden/`. Each set was re-blessed where its own
+  previous bless was — `crcbl`, `lantern` and `quarry` on radv, `alcove` and
+  `sundial` on lavapipe — and every harness suite was then run green on both
+  drivers.
+
+  **No lighting threshold moved.** A fixture whose assertion predicts a _code
+  value_ from a host model of the shading —
+  `crcbl_shaders::probe::irradiance_at`, a sky-view LUT's irradiance, an
+  occlusion pass's drop in linear light, a speckle contrast — now asks for the
+  clamp on the renderer it drives, so its frame stays scene-referred and its
+  budgets keep the meaning they were measured with.
+  `crcbl::screenshot::OffscreenSetup::set_tonemap_curve` is new for the fixtures
+  that draw a built-in `Scene` and cannot reach its renderer on the way past; a
+  fixture that both blesses a golden and makes such a claim draws a second frame
+  rather than choosing. `apps/viewer`'s exposure-ratio and normals-view proofs
+  pin it the same way, since one claims a ratio in linear light and the other
+  reads its background off a shaded frame beside a debug view that already
+  resolves to the clamp.
+
+  One guard did get weaker and is recorded in `docs/backlog.md`:
+  `render_e2e.rs`'s `path_lsb_channels` now allows `Scene::DoubleSided` one
+  level on 16 channels where it allowed none. The fit's toe is steeper than the
+  clamp's unit slope, so a last-place difference between the two geometry paths
+  that used to round to the same eight-bit level can land one apart — measured
+  at one channel on lavapipe, with radv answering zero.
+
 - **The default antialiasing tier is CMAA2.** `RenderEffects::DEFAULT_STACK`
   carries `RenderEffects::CMAA2` where it carried `RenderEffects::ANTIALIASING`,
   so every view that declares no render stack is resolved by the morphological
@@ -994,6 +1041,13 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
   `apps/lantern/tests/golden/`. Each set was re-blessed where its own previous
   bless was — `crcbl`, `lantern` and `quarry` on radv, `alcove` and `sundial` on
   lavapipe — and every e2e suite was then run green on both drivers.
+
+  **One cross-path guard gave up a level**: `path_lsb_channels` in
+  `crates/crcbl/tests/render_e2e.rs` now allows `Scene::AlphaMask` one level on
+  16 channels, because the Ubuntu runner's llvmpipe answers one channel off by
+  one between the mesh-shader and indirect-count arms with the morphological
+  resolve in force, where the two Mesa drivers on the development machine answer
+  zero.
 
   **`Antialiasing::SLOT` is public**, because a caller that wants no resolve has
   to name the whole slot. A dozen fixtures had asked for none by forcing

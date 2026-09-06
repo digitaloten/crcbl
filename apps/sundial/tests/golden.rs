@@ -29,6 +29,7 @@ use crcbl::hal::{AdapterInfo, Format};
 use crcbl::math::Vec3;
 use crcbl::render::{Camera, EffectOverride, EffectRequest, ForwardRenderer, RenderEffects};
 use crcbl::screenshot::{ForwardScene, OffscreenSetup};
+use crcbl::shaders::tonemap::TonemapCurve;
 use crcbl_golden::{ChannelOrder, Golden, Image};
 use crcbl_sundial::{filter, plaza, sun};
 
@@ -142,6 +143,9 @@ struct Arm {
     bias_millitexels: Option<u32>,
     /// The sun's normal offset, in the same thousandths.
     offset_millitexels: Option<u32>,
+    /// Whether the frame is drawn under `TonemapCurve::Clamp` rather than the
+    /// operator the sample ships — see [`Self::scene_referred`].
+    scene_referred: bool,
 }
 
 /// A count of cascade texels as the thousandths an [`Arm`] keeps.
@@ -188,6 +192,27 @@ impl Arm {
             cascades: false,
             bias_millitexels: None,
             offset_millitexels: None,
+            scene_referred: false,
+        }
+    }
+
+    /// **The same arm under `tonemap.slang`'s exposure-and-clamp**, which is
+    /// what [`speckle_percent`] has to count on.
+    ///
+    /// That count is a **contrast** in code values: a pixel is a dot when it
+    /// sits more than [`SPECKLE_LUMA`] below the median of its own
+    /// neighbourhood. `ForwardRenderer` draws with the ACES fit, whose whole
+    /// purpose is to compress contrast, so the same acne under it counts fewer
+    /// dots — and every figure in this file's swept tables was measured on a
+    /// scene-referred frame. The clamp is the identity on `0..=1`, so it is the
+    /// operator those tables describe.
+    ///
+    /// **No golden is drawn through this.** The plaza's references are the frame
+    /// the sample ships; the arms that ask for this make no picture claim.
+    const fn scene_referred(self) -> Self {
+        Self {
+            scene_referred: true,
+            ..self
         }
     }
 
@@ -434,6 +459,9 @@ fn build(
     // multiplies the shaded picture by `cascade_tint` — so an arm that does not
     // ask for it draws the frame it always drew, byte for byte.
     renderer.set_cascade_view(arm.cascades);
+    if arm.scene_referred {
+        renderer.set_tonemap_curve(TonemapCurve::Clamp);
+    }
     Ok(renderer)
 }
 
@@ -1895,8 +1923,11 @@ fn the_grazing_sun_leaves_the_open_pavement_as_smooth_as_the_steep_one_does() {
         steep_sky.elevation.to_degrees(),
     );
 
-    let (grazing, paths, _) = draw(extent, Arm::shipped().at_tick(sun::GRAZING_TICK));
-    let (steep, _, _) = draw(extent, Arm::shipped().at_tick(sun::NOON_TICK));
+    // **Scene-referred**, because `speckle_percent` counts a contrast in code
+    // values — see `Arm::scene_referred`.
+    let smooth = Arm::shipped().scene_referred();
+    let (grazing, paths, _) = draw(extent, smooth.at_tick(sun::GRAZING_TICK));
+    let (steep, _, _) = draw(extent, smooth.at_tick(sun::NOON_TICK));
     assert!(
         grazing.pixels() != steep.pixels(),
         "the two ticks drew one frame, so every reading below is the same reading twice"
@@ -2696,7 +2727,9 @@ fn the_two_bias_counts_trade_acne_against_the_plinths_own_contact() {
          this pair reads at its own offset is a rung nothing runs and the exclusion excludes \
          nothing"
     );
-    let grazing = Arm::shipped().at_tick(sun::GRAZING_TICK);
+    // **Scene-referred**, because every row below is read by `speckle_percent`,
+    // which counts a contrast in code values — see `Arm::scene_referred`.
+    let grazing = Arm::shipped().scene_referred().at_tick(sun::GRAZING_TICK);
 
     // One row per rung, at the offset the sample ships. The rung whose kernel
     // that offset already covers reads the constant bias's clause a row further

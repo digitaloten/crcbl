@@ -68,11 +68,11 @@ What is real today:
   normals, the packed occlusion-roughness-metallic map and emissive, each its
   own array page in its own format, with occlusion scaling the indirect terms
   alone; specular antialiasing that widens the lobe by the screen-space variance
-  of the shading normal, tonemapping and a screen-space grid, with mesh shaders
-  and bindless where the device has them; and a split-screen comparison seam
-  that resolves one frame's data two ways either side of a vertical line — two
-  occlusion algorithms, or two shadow filters — each side carrying its own timer
-  row in the debug panel.
+  of the shading normal, an ACES-fitted tonemap and a screen-space grid, with
+  mesh shaders and bindless where the device has them; and a split-screen
+  comparison seam that resolves one frame's data two ways either side of a
+  vertical line — two occlusion algorithms, or two shadow filters — each side
+  carrying its own timer row in the debug panel.
 - **glTF import** with meshlet building, a cluster DAG and QEM simplification.
 - **A server-authoritative game stack** — fixed-tick simulation, snapshots,
   interpolation, an ECS, physics, input mapping, audio, persistence and a job

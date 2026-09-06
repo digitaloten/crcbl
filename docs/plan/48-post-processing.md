@@ -46,21 +46,22 @@ request.
   moment real lighting exists). Fixed exposure MVP; auto-exposure (histogram,
   GPU reduce) **built 2026-08-29** — see the rung below.
 - **Tonemap (MVP)**: filmic/ACES-fitted curve + sRGB encode. One combined
-  fullscreen pass with exposure. **Built 2026-08-27, and the clamp stayed the
+  fullscreen pass with exposure. **Built 2026-08-27, and the fit is the
   default.** `tonemap.slang` carries two operators behind a `uint curve` lane of
   its block — exposure-and-clamp, and Stephen Hill's fit of the ACES RRT and ODT
   — and `crcbl_render::ForwardRenderer::set_tonemap_curve` is what a view asks
   with. Fixed exposure is still a runtime uniform, and auto-exposure is the lane
   beside it rather than a replacement for it — the rung below says why.
 
-  **The default is the clamp for the reason P1 chose it**, and that reason
-  outlived the curve arriving: exposure-and-clamp is the identity on `[0, 1]`,
-  so display-referred content — every 2D sample in this tree — reaches the
-  swapchain exactly. A filmic curve over a sprite an artist already graded moves
-  colours somebody chose, and it would have re-blessed the whole 2D suite for a
-  picture nobody asked to change. So the operator is per view, not per engine,
-  and flipping which one a 3D stack defaults to is a separate change whose whole
-  content is the re-bless — exactly the shape the FXAA rung landed in.
+  **The operator is per view, not per engine.** `ForwardRenderer` starts on the
+  fit because it shades in linear HDR, and what a caller asks _for_ is usually
+  the clamp: it is the identity on `[0, 1]`, so display-referred content reaches
+  the swapchain exactly, and a fixture predicting a code value from a host model
+  of the shading needs the frame to stay scene-referred. Every 2D sample in this
+  tree draws through the sprite and UI passes and never reaches this one at all.
+  A debug view resolves to the clamp whatever a caller set —
+  `ForwardRenderer::resolved_tonemap_curve` — because a readout's pixels are
+  data and a curve is a monotone remapping of every one of them.
 
   **ACES rather than AgX**, which is otherwise the newer answer and the one
   Blender and Filament moved to. AgX takes a `log2` and a `pow` per channel, and

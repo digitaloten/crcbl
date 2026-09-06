@@ -24,10 +24,13 @@ pub const DEFAULT_EXPOSURE: f32 = 1.0;
 
 /// Which operator `tonemap.slang` runs, mirroring its `CURVE_*` constants.
 ///
-/// **The clamp is the default and the identity on `0..=1`.** Every 2D sample in
-/// the tree is display-referred already, so a curve applied to it would move
-/// colours an artist chose; a curve is something a view asks for, the way an
-/// effect bit is — see `crcbl_render::ForwardRenderer::set_tonemap_curve`.
+/// **The clamp is this type's own default and the identity on `0..=1`**, so a
+/// block built without an opinion — see [`TonemapParams::default`] — is the one
+/// this pass shipped with. What a *view* draws with is
+/// `crcbl_render::ForwardRenderer::set_tonemap_curve`'s own default, which is
+/// the fit: the renderer shades in linear HDR. The clamp is what a
+/// display-referred view asks for, and what a fixture predicting a code value
+/// from a host model of the shading asks for.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(u32)]
 pub enum TonemapCurve {

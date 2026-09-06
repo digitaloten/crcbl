@@ -2195,9 +2195,13 @@ pub struct ForwardRenderer {
     /// Which operator the tonemap pass runs — see
     /// [`set_tonemap_curve`](ForwardRenderer::set_tonemap_curve).
     ///
-    /// [`TonemapCurve::Clamp`](crcbl_shaders::tonemap::TonemapCurve::Clamp)
-    /// until a caller says otherwise, which is what keeps a renderer nobody has
-    /// configured drawing the frame it drew before the selector existed.
+    /// [`TonemapCurve::Aces`](crcbl_shaders::tonemap::TonemapCurve::Aces) until
+    /// a caller says otherwise: this renderer shades in linear HDR, so the
+    /// filmic roll-off is what a view that has said nothing wants. A
+    /// display-referred view — a 2D sample, or a fixture whose assertions
+    /// predict a code value — asks for
+    /// [`TonemapCurve::Clamp`](crcbl_shaders::tonemap::TonemapCurve::Clamp),
+    /// which is the identity on `0..=1`.
     tonemap_curve: tonemap::TonemapCurve,
 
     /// The format the tonemap pipeline was built for. A swapchain format change
@@ -5868,8 +5872,10 @@ impl ForwardRenderer {
             // wrote before the block existed.
             exposure: tonemap::DEFAULT_EXPOSURE,
             exposure_adaptation: None,
-            // And the operator that constant is the identity under.
-            tonemap_curve: tonemap::TonemapCurve::Clamp,
+            // And the filmic roll-off over it: this renderer shades in linear
+            // HDR, so a view that has asked for nothing gets the operator that
+            // range was shaded for.
+            tonemap_curve: tonemap::TonemapCurve::Aces,
             target_format,
             ambient_occlusion_placeholder,
             contact_shadow_placeholder,
@@ -11084,11 +11090,14 @@ impl ForwardRenderer {
 
     /// Which operator the tonemap pass runs on the exposed scene colour.
     ///
-    /// **Off by default, and that is the whole of why nothing re-blessed when
-    /// the curve landed.** `tonemap.slang`'s clamp is the identity on `0..=1`,
-    /// so display-referred content — every 2D sample in this tree — reaches the
-    /// swapchain exactly; a filmic curve applied to it would move colours
-    /// somebody chose. A 3D view is the one that wants the roll-off, and asks.
+    /// **The ACES fit by default**, because this renderer shades in linear HDR
+    /// and the roll-off is what that range is for. What a caller asks *for* here
+    /// is therefore usually the other one: `tonemap.slang`'s clamp is the
+    /// identity on `0..=1`, so display-referred content reaches the swapchain
+    /// exactly, and a fixture that predicts a code value from a host model of
+    /// the shading needs the frame to stay scene-referred. Every 2D sample in
+    /// this tree draws through `crate::sprite_pass` and `crate::ui_pass`
+    /// instead, so none of them reaches this pass at all.
     ///
     /// It takes effect on the next [`begin_frame`](Self::begin_frame), for
     /// [`set_exposure`](Self::set_exposure)'s reason: the block is written
@@ -13558,10 +13567,10 @@ mod tests {
     /// is that the number reaches the buffer `tonemap.slang` reads, and only the
     /// null recorder's write log can say so.
     ///
-    /// The default is checked first, and it is the check that says every golden
-    /// image is unmoved — a renderer nobody has called
+    /// The default is checked first — a renderer nobody has called
     /// [`ForwardRenderer::set_exposure`] on writes the value the shader's
-    /// `EXPOSURE` constant held.
+    /// `EXPOSURE` constant held, under
+    /// [`ForwardRenderer::set_tonemap_curve`]'s own default.
     #[test]
     fn the_tonemap_block_holds_the_exposure_and_rotates_with_the_frame() {
         let (recorder, device, queue) = open();
@@ -13579,12 +13588,12 @@ mod tests {
                 .expect("begin_frame wrote the block"),
             crcbl_shaders::tonemap::TonemapParams {
                 exposure: crcbl_shaders::tonemap::DEFAULT_EXPOSURE,
-                curve: crcbl_shaders::tonemap::TonemapCurve::Clamp,
+                curve: crcbl_shaders::tonemap::TonemapCurve::Aces,
                 auto_exposure: false,
             }
             .to_bytes(),
             "an untouched renderer must write the exposure the constant used to hold, \
-             under the operator that constant is the identity for",
+             under the operator this renderer starts on",
         );
 
         // A value that is neither the default nor a bound, so a block left at
@@ -13602,7 +13611,7 @@ mod tests {
                     .expect("begin_frame wrote the block"),
                 crcbl_shaders::tonemap::TonemapParams {
                     exposure: 3.5,
-                    curve: crcbl_shaders::tonemap::TonemapCurve::Clamp,
+                    curve: crcbl_shaders::tonemap::TonemapCurve::Aces,
                     auto_exposure: false,
                 }
                 .to_bytes(),
@@ -13618,14 +13627,17 @@ mod tests {
         renderer.destroy(device.as_ref());
     }
 
-    /// **The curve reaches the block, and the default one does not move it.**
+    /// **The curve reaches the block, and a caller can move it off the
+    /// default.**
     ///
     /// The selector is a lane of the same ring the exposure rides in, and a lane
     /// nothing wrote would read as
     /// [`TonemapCurve::Clamp`](crcbl_shaders::tonemap::TonemapCurve::Clamp)
     /// whatever a caller asked for — a setter that compiles, a frame that looks
-    /// right, and a curve that never runs. So the check is that setting it
-    /// changes the bytes, on every frame of the ring.
+    /// right, and a curve that never runs. Since the renderer now *starts* on
+    /// the fit, that failure would read as a working default, so the check runs
+    /// in both directions: the untouched block carries the fit, and asking for
+    /// the clamp changes the bytes on every frame of the ring.
     #[test]
     fn the_tonemap_block_carries_the_curve_a_caller_selected() {
         use crcbl_shaders::tonemap::TonemapCurve;
@@ -13638,12 +13650,18 @@ mod tests {
 
         assert_eq!(
             renderer.tonemap_curve(),
-            TonemapCurve::Clamp,
+            TonemapCurve::Aces,
             "a renderer nobody configured must run the operator the goldens were blessed under",
         );
+        renderer
+            .begin_frame(device.as_ref(), &camera, &light, (64, 48))
+            .expect("write");
+        let by_default = recorder
+            .buffer_bytes(renderer.tonemap_uniforms[renderer.frame])
+            .expect("begin_frame wrote the block");
 
-        renderer.set_tonemap_curve(TonemapCurve::Aces);
-        assert_eq!(renderer.tonemap_curve(), TonemapCurve::Aces);
+        renderer.set_tonemap_curve(TonemapCurve::Clamp);
+        assert_eq!(renderer.tonemap_curve(), TonemapCurve::Clamp);
         for _ in 0..FRAMES_IN_FLIGHT * 2 {
             renderer
                 .begin_frame(device.as_ref(), &camera, &light, (64, 48))
@@ -13655,22 +13673,23 @@ mod tests {
                 written,
                 crcbl_shaders::tonemap::TonemapParams {
                     exposure: crcbl_shaders::tonemap::DEFAULT_EXPOSURE,
-                    curve: TonemapCurve::Aces,
+                    curve: TonemapCurve::Clamp,
                     auto_exposure: false,
                 }
                 .to_bytes(),
                 "every frame of the ring must carry the selected curve",
             );
             assert_ne!(
-                written,
-                crcbl_shaders::tonemap::TonemapParams::default().to_bytes(),
+                written, by_default,
                 "and it must differ from the block a default renderer writes",
             );
         }
 
         // **A readout runs the clamp whatever was selected**, and the selection
         // survives it: the caller's curve is still the caller's, the frame's is
-        // the identity, and the shaded frame after gets the curve back.
+        // the identity, and the shaded frame after gets the curve back. Asked of
+        // the fit, which is the selection a readout has something to lose under.
+        renderer.set_tonemap_curve(TonemapCurve::Aces);
         renderer.set_normals_view(true);
         assert_eq!(renderer.tonemap_curve(), TonemapCurve::Aces);
         assert_eq!(renderer.resolved_tonemap_curve(), TonemapCurve::Clamp);

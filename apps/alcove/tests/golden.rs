@@ -28,6 +28,7 @@ use crcbl::hal::{AdapterInfo, Format};
 use crcbl::math::Vec3;
 use crcbl::render::{Camera, EffectOverride, EffectRequest, ForwardRenderer, RenderEffects};
 use crcbl::screenshot::{ForwardScene, OffscreenSetup};
+use crcbl::shaders::tonemap::TonemapCurve;
 use crcbl_alcove::{court, occlusion};
 use crcbl_golden::{ChannelOrder, Golden, Image};
 
@@ -81,6 +82,9 @@ struct Arm {
     /// Whether the frame is taken from [`court::rim_camera`] rather than
     /// [`court::fixed_camera`].
     rim: bool,
+    /// Whether the frame is drawn under `TonemapCurve::Clamp` rather than the
+    /// operator the sample ships — see [`Self::scene_referred`].
+    scene_referred: bool,
 }
 
 impl Arm {
@@ -104,6 +108,27 @@ impl Arm {
             bent_normals: true,
             sunless: false,
             rim: false,
+            scene_referred: false,
+        }
+    }
+
+    /// **The same arm under `tonemap.slang`'s exposure-and-clamp**, so a decode
+    /// of the frame is the radiance the shading computed.
+    ///
+    /// `ForwardRenderer` draws with the ACES fit, which is a further monotone
+    /// remap of every channel — so `linear_brightness` on a shipped frame is not
+    /// scene-referred, and the crease claim is a *subtraction* in linear light:
+    /// what the occlusion pass takes off a surface with the sun there has to be
+    /// what it takes off the same surface with the sun gone, and the fit is not
+    /// additive. The clamp is the identity on `0..=1`, which is what makes the
+    /// two drops comparable at all.
+    ///
+    /// **No golden is drawn through this.** The court's references are the frame
+    /// the sample ships; the arms that ask for this make no picture claim.
+    const fn scene_referred(self) -> Self {
+        Self {
+            scene_referred: true,
+            ..self
         }
     }
 
@@ -320,6 +345,9 @@ fn build(
     });
     renderer.set_occlusion_view(arm.occlusion_view);
     renderer.set_bent_normal_view(arm.bent_normal_view);
+    if arm.scene_referred {
+        renderer.set_tonemap_curve(TonemapCurve::Clamp);
+    }
     if let Err(error) = court::place(&mut renderer) {
         renderer.destroy(device);
         return Err(crcbl::screenshot::OffscreenError::Hal(
@@ -598,10 +626,13 @@ fn occlusion_scales_the_ambient_term_and_leaves_direct_light_alone() {
     let block = block_for(EXTENT);
     let at = project(&court::fixed_camera(), EXTENT, court::crease_lit());
 
-    let (sun_on, paths, _) = draw(EXTENT, Arm::shipped());
-    let (sun_on_flat, _, _) = draw(EXTENT, Arm::shipped().without_occlusion());
-    let (sun_off, _, _) = draw(EXTENT, Arm::shipped().sunless());
-    let (sun_off_flat, _, _) = draw(EXTENT, Arm::shipped().sunless().without_occlusion());
+    // **Scene-referred, all four**, because what follows is a subtraction in
+    // linear light — see `Arm::scene_referred`.
+    let shipped = Arm::shipped().scene_referred();
+    let (sun_on, paths, _) = draw(EXTENT, shipped);
+    let (sun_on_flat, _, _) = draw(EXTENT, shipped.without_occlusion());
+    let (sun_off, _, _) = draw(EXTENT, shipped.sunless());
+    let (sun_off_flat, _, _) = draw(EXTENT, shipped.sunless().without_occlusion());
 
     let lit = linear_brightness(&sun_on_flat, at, block);
     let ambient = linear_brightness(&sun_off_flat, at, block);
@@ -1822,7 +1853,6 @@ fn the_court_reads_the_same_at_presentation_size() {
     let (occluded, paths, _) = draw(extent, Arm::shipped());
     let (flat, _, _) = draw(extent, Arm::shipped().without_occlusion());
     let (sunless, _, _) = draw(extent, Arm::shipped().sunless());
-    let (sunless_flat, _, _) = draw(extent, Arm::shipped().sunless().without_occlusion());
     let (channel, _, _) = draw(extent, Arm::shipped().as_channel());
     save(&occluded, "shaded", extent);
     save(&flat, "no-occlusion", extent);
@@ -1869,11 +1899,21 @@ fn the_court_reads_the_same_at_presentation_size() {
         extent.1,
     );
 
+    // **The crease claim redraws all four arms scene-referred**, because it is a
+    // subtraction in linear light and the frames above are the shipped ones —
+    // see `Arm::scene_referred`. The four saved pictures stay the shipped
+    // frames: they are what a reviewer looks at.
+    let referred = Arm::shipped().scene_referred();
+    let (crease_occluded, _, _) = draw(extent, referred);
+    let (crease_flat, _, _) = draw(extent, referred.without_occlusion());
+    let (crease_sunless, _, _) = draw(extent, referred.sunless());
+    let (crease_sunless_flat, _, _) = draw(extent, referred.sunless().without_occlusion());
+
     let crease = project(&camera, extent, court::crease_lit());
-    let lit = linear_brightness(&flat, crease, block);
-    let ambient = linear_brightness(&sunless_flat, crease, block);
-    let with_sun = lit - linear_brightness(&occluded, crease, block);
-    let without_sun = ambient - linear_brightness(&sunless, crease, block);
+    let lit = linear_brightness(&crease_flat, crease, block);
+    let ambient = linear_brightness(&crease_sunless_flat, crease, block);
+    let with_sun = lit - linear_brightness(&crease_occluded, crease, block);
+    let without_sun = ambient - linear_brightness(&crease_sunless, crease, block);
     let disagreement = (with_sun - without_sun).abs() / with_sun.max(without_sun).max(1e-6);
     eprintln!(
         "alcove golden: the crease at {}x{} on {paths} — sunlit {lit:.4} ambient {ambient:.4}, \

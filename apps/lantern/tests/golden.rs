@@ -40,6 +40,7 @@ use crcbl::math::Vec3;
 use crcbl::render::{Camera, EffectOverride, EffectRequest, Fog, ForwardRenderer, RenderEffects};
 use crcbl::screenshot::{ForwardScene, OffscreenSetup};
 use crcbl::shaders::probe::GpuProbe;
+use crcbl::shaders::tonemap::TonemapCurve;
 use crcbl_golden::{ChannelOrder, Golden, Image};
 use crcbl_lantern::{Forced, room};
 
@@ -505,6 +506,9 @@ struct Arm {
     stack: RenderEffects,
     /// The medium the frame is drawn through.
     fog: Fog,
+    /// Whether the frame is drawn under `TonemapCurve::Clamp` rather than the
+    /// operator the room ships — see [`Self::scene_referred`].
+    scene_referred: bool,
 }
 
 impl Arm {
@@ -515,6 +519,29 @@ impl Arm {
             view,
             stack: view.stack(),
             fog: Fog::NONE,
+            scene_referred: false,
+        }
+    }
+
+    /// **The same arm under `tonemap.slang`'s exposure-and-clamp**, which is
+    /// what [`inspect`]'s claims are levels of.
+    ///
+    /// Every one of them is a reading out of 255 held to a floor or to a
+    /// fraction of a second reading — the SSR miss against nearby plaster, the
+    /// shaded floor against the shaft. `ForwardRenderer` draws with the ACES fit,
+    /// which is a further monotone remap of every channel and compresses the
+    /// dark end hardest, so those levels are not the ones the numbers were
+    /// measured against. The clamp is the identity on `0..=1`, so a frame drawn
+    /// under it carries the radiance the shading computed, through the sRGB
+    /// encode and nothing else.
+    ///
+    /// **No golden is drawn through this**, and neither is the picture a
+    /// reviewer looks at in [`the_room_reads_the_same_at_presentation_size`]:
+    /// both are the room as the sample draws it.
+    const fn scene_referred(self) -> Self {
+        Self {
+            scene_referred: true,
+            ..self
         }
     }
 
@@ -563,6 +590,19 @@ fn draw(extent: (u32, u32), effects: RenderEffects) -> (Image, String) {
         Arm::of(room::View::Main),
     );
     (image, paths)
+}
+
+/// [`draw`] under the clamp — the frame [`inspect`] reads, and
+/// [`Arm::scene_referred`] is the argument.
+fn draw_scene_referred(extent: (u32, u32), effects: RenderEffects) -> Image {
+    draw_with_probes(
+        extent,
+        effects,
+        OffscreenSetup::OPTIONAL_FEATURES,
+        false,
+        Arm::of(room::View::Main).scene_referred(),
+    )
+    .0
 }
 
 /// [`draw`] opening the device with `optional_features` instead of
@@ -723,6 +763,9 @@ fn build(
     // drawn without it would be a picture of a different room — see `Arm::fog`
     // for the one arm that takes it out on purpose.
     renderer.set_fog(arm.fog);
+    if arm.scene_referred {
+        renderer.set_tonemap_curve(TonemapCurve::Clamp);
+    }
     if let Err(error) = room::place(device, queue, &mut renderer, arm.view) {
         renderer.destroy(device);
         return Err(crcbl::screenshot::OffscreenError::Hal(
@@ -1012,7 +1055,14 @@ fn inspect(image: &Image, extent: (u32, u32), block: (u32, u32)) {
 #[ignore = "needs a real GPU and a backend pin; run tests/run-lantern-golden.sh"]
 fn the_fixed_camera_draws_the_room_and_matches_its_golden() {
     let (image, paths) = draw(EXTENT, RenderEffects::all());
-    inspect(&image, EXTENT, BLOCK);
+    // **The claims read a second frame**, drawn under the clamp — the golden is
+    // the room as the sample draws it, and `inspect` is levels the fit moves.
+    // See `Arm::scene_referred`.
+    inspect(
+        &draw_scene_referred(EXTENT, RenderEffects::all()),
+        EXTENT,
+        BLOCK,
+    );
     check_golden(&image, &paths);
 }
 
@@ -1025,14 +1075,22 @@ fn the_fixed_camera_draws_the_room_and_matches_its_golden() {
 #[ignore = "needs a real GPU and a backend pin; run tests/run-lantern-golden.sh"]
 fn zero_probes_only_remove_the_ssr_and_rough_fallbacks() {
     let effects = RenderEffects::all();
-    let (authored, _, authored_adapter) =
-        draw_with(EXTENT, effects, OffscreenSetup::OPTIONAL_FEATURES);
+    // **Both arms scene-referred**, because every reading below is a level out
+    // of 255 held to a floor — see `Arm::scene_referred`. Nothing here is
+    // blessed.
+    let (authored, _, authored_adapter) = draw_with_probes(
+        EXTENT,
+        effects,
+        OffscreenSetup::OPTIONAL_FEATURES,
+        false,
+        Arm::of(room::View::Main).scene_referred(),
+    );
     let (zeroed, _, zeroed_adapter) = draw_with_probes(
         EXTENT,
         effects,
         OffscreenSetup::OPTIONAL_FEATURES,
         true,
-        Arm::of(room::View::Main),
+        Arm::of(room::View::Main).scene_referred(),
     );
     assert_eq!(
         authored_adapter, zeroed_adapter,
@@ -1166,8 +1224,20 @@ fn the_room_draws_the_same_on_a_path_below_the_devices_own() {
     // claims in front of it are what say the frame holds the room at all, so an
     // arm that lost a mesh or a material row on the way down its lesser tail
     // fails on the claim rather than on a diff nobody can read.
-    for (image, paths) in [(&best, &best_paths), (&lesser, &lesser_paths)] {
-        inspect(image, EXTENT, BLOCK);
+    for (image, paths, optional) in [
+        (&best, &best_paths, OffscreenSetup::OPTIONAL_FEATURES),
+        (&lesser, &lesser_paths, below),
+    ] {
+        // The claims read a second frame off the same request, under the clamp
+        // — see `Arm::scene_referred`. The golden stays the arm's own frame.
+        let (claim, _, _) = draw_with_probes(
+            EXTENT,
+            RenderEffects::all(),
+            optional,
+            false,
+            Arm::of(room::View::Main).scene_referred(),
+        );
+        inspect(&claim, EXTENT, BLOCK);
         check_golden(image, paths);
     }
 }
@@ -1204,10 +1274,13 @@ fn check_golden(image: &Image, label: &str) {
 #[test]
 #[ignore = "needs a real GPU and a backend pin; run tests/run-lantern-golden.sh"]
 fn the_room_reads_the_same_at_presentation_size() {
-    let image = review(RenderEffects::all(), "fixed-camera");
+    // The reviewer's picture: the room as the sample draws it, operator and all.
+    review(RenderEffects::all(), "fixed-camera");
 
-    // The blocks grow with the frame, so each covers the same patch of the room
-    // rather than a twenty-fifth of it.
+    // The claims read a second frame of the same size, drawn under the clamp —
+    // see `Arm::scene_referred`. The blocks grow with the frame, so each covers
+    // the same patch of the room rather than a twenty-fifth of it.
+    let image = draw_scene_referred(REVIEW_EXTENT, RenderEffects::all());
     inspect(&image, REVIEW_EXTENT, review_block());
 }
 
@@ -1226,7 +1299,11 @@ fn the_room_reads_the_same_at_presentation_size() {
 /// brighter — a lost tonemap, a different exposure — fails the control half.
 ///
 /// Nothing here is blessed. One frame per state is written for a reviewer, at
-/// the size a shadow's edge can be judged at.
+/// the size a shadow's edge can be judged at — **under the clamp**, because
+/// every claim above is a pair of levels out of 255 and
+/// [`Arm::scene_referred`] is what leaves them the radiance the shading
+/// computed. The room as the sample draws it is
+/// [`the_room_reads_the_same_at_presentation_size`]'s picture.
 #[test]
 #[ignore = "needs a real GPU and a backend pin; run tests/run-lantern-golden.sh"]
 fn every_effect_toggles_and_the_frame_says_so() {
@@ -1234,16 +1311,16 @@ fn every_effect_toggles_and_the_frame_says_so() {
     let camera = room::fixed_camera();
     let at = |point: Vec3| project(&camera, REVIEW_EXTENT, point);
 
-    let all_on = review(RenderEffects::all(), "all-effects");
-    let no_shadows = review(
+    let all_on = review_scene_referred(RenderEffects::all(), "all-effects");
+    let no_shadows = review_scene_referred(
         RenderEffects::all().difference(RenderEffects::SHADOWS),
         "no-shadows",
     );
-    let no_ao = review(
+    let no_ao = review_scene_referred(
         RenderEffects::all().difference(RenderEffects::AMBIENT_OCCLUSION),
         "no-ao",
     );
-    let no_reflections = review(
+    let no_reflections = review_scene_referred(
         RenderEffects::all().difference(RenderEffects::REFLECTIONS),
         "no-reflections",
     );
@@ -1747,6 +1824,11 @@ fn check_live_golden(image: &Image, backend: &str) {
 /// a save after the assertions is a save a failure skips.
 fn review(effects: RenderEffects, name: &str) -> Image {
     review_in(effects, Arm::of(room::View::Main), name)
+}
+
+/// [`review`] under the clamp — see [`Arm::scene_referred`].
+fn review_scene_referred(effects: RenderEffects, name: &str) -> Image {
+    review_in(effects, Arm::of(room::View::Main).scene_referred(), name)
 }
 
 /// [`review`] of an arm that is not the room's own — the air-free control.
