@@ -1048,6 +1048,21 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- **`crcbl-mtl` no longer re-issues a `set*` whose argument is already in the
+  slot.** A per-encoder cache — `crcbl_mtl::bind_cache`, the state cache
+  wgpu-hal's Metal `CommandState` and MoltenVK's
+  `MVKResourcesCommandEncoderState` both carry — remembers what each stage's
+  buffer, texture and sampler slot last had put in it, and `binding::apply`,
+  `binding::apply_compute` and `push_constants` make the Metal call only when it
+  differs. So a bind group re-bound between two draws and a push-constant block
+  re-sent unchanged now cost nothing, where each used to cost a message send
+  and, under `MTL_DEBUG_LAYER_WARNING_MODE=nslog`, a "redundant setting of
+  <object>" finding with a full descriptor dump under it. Inline blocks are
+  compared by their bytes, because `setBytes:length:atIndex:` copies its
+  argument; `setBuffer:` and `setBytes:` share one table entry in the model,
+  because they share one on the encoder. The cache is emptied whenever an
+  encoder ends, since Metal's argument tables belong to the encoder. No frame
+  changes.
 - **A read-only depth attachment no longer declares that it writes.**
   `crcbl_hal::ResourceState::is_write` answers `false` for `DepthStencilRead`
   and `crcbl-vk`'s `conv::state_masks` expands it to

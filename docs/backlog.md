@@ -13897,19 +13897,33 @@ the paravirtual device itself; the way to know is one run of the mesh step with
 `MTL_DEBUG_LAYER_WARNING_MODE=ignore`, which nobody has taken because the
 warnings are the point of the step.
 
-**The fix is at the source, in two halves, and then the mode moves.** (1)
-`crcbl-mtl`'s encoder tracks what is bound per stage and slot and skips a `set*`
-whose argument is already there — the state cache every Metal backend carries
-(wgpu-hal's `CommandState`, MoltenVK's `MVKResourcesCommandEncoderState`) —
-which removes the "redundant setting" class. (2) The "unused binding" class is a
-bind-layout question: the renderer binds every slot of a fixed layout and a
-pipeline that reads a subset gets a warning per slot it ignores; either the
-placeholder binds are skipped for pipelines whose reflection says the slot is
-unread, or the warning is accepted and said so in the record. Once the log is
-clean, `MTL_DEBUG_LAYER_WARNING_MODE` goes to `assert` per "Metal's debug layer
-is on `nslog`, and `assert` is the follow-up" above, the cap comes back down to
-the measured envelope, and the "price" tests on Metal become a number worth
-reading.
+**Half (1) is built; half (2) and the mode move are open.** `crcbl-mtl`'s
+encoder now tracks what is bound per stage and slot and skips a `set*` whose
+argument is already there — `crcbl_mtl::bind_cache`, landed 2026-09-06, recorded
+in `docs/notes/backends.md`. That removes the "redundant setting" class in
+principle and **nothing measured it**: this workspace has no Metal, so the
+change is verified only by the crate's host unit tests and by `clippy`/`rustdoc`
+on `aarch64-apple-darwin`. The next `mtl e2e (macos-latest)` run is the verdict,
+and what to read in it is the per-step durations against the 37 / 29 / 25 / 22
+minutes above and the count of `Set Vertex Texture Validation` lines in the mesh
+step against the 161,289 above.
+
+(2) The "unused binding" class is untouched and is a bind-layout question: the
+renderer binds every slot of a fixed layout and a pipeline that reads a subset
+gets a warning per slot it ignores; either the placeholder binds are skipped for
+pipelines whose reflection says the slot is unread, or the warning is accepted
+and said so in the record. Once the log is clean, `MTL_DEBUG_LAYER_WARNING_MODE`
+goes to `assert` per "Metal's debug layer is on `nslog`, and `assert` is the
+follow-up" above, the cap comes back down to the measured envelope, and the
+"price" tests on Metal become a number worth reading.
+
+Also open, and cheap: `crcbl-mtl` fails `cargo doc --document-private-items` on
+`aarch64-apple-darwin` with 14 pre-existing errors (`device.rs` ×7, `draw.rs`,
+`fault.rs`, `pipeline.rs`, `swapchain.rs`, `binding.rs`'s module header,
+`command.rs`'s `buffer_fill_word` docs) — unresolved links to
+`crcbl_hal::Capability::BufferFillWord` and `ValidationReport::assert_clean`,
+and redundant explicit link targets. CI does not run that form on this crate on
+purpose, which is why they have survived; clearing them is what would let it.
 
 ### `a_copy_d3d12_cannot_place_is_refused_by_name` provokes a real layer error
 

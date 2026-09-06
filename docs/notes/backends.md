@@ -3,6 +3,79 @@
 Records kept so they are not re-derived: measurements, investigations, ideas
 considered and declined, and lessons. Open work lives in `docs/backlog.md`.
 
+### SHIPPED — `crcbl-mtl` stops re-binding what the encoder already holds
+
+Half (1) of "Metal's debug layer warns on every bind, and the mesh suite pays
+for it", built 2026-09-06. The other half — the "unused binding" class, which is
+a bind-layout question — is untouched and stays in `docs/backlog.md`.
+
+**What is in the tree now.** `crates/crcbl-mtl/src/bind_cache.rs` is a plain
+Rust mirror of one encoder's argument tables: a `Stage` (vertex, fragment,
+compute — Metal's three independent table sets), a slot number, and what that
+slot last had put in it. `crcbl_mtl::binding`'s `apply` and `apply_compute` and
+`crcbl_mtl::command`'s `push_constants` ask it before every `set*` and make the
+call only when the answer differs, which is the state cache wgpu-hal's Metal
+`CommandState` and MoltenVK's `MVKResourcesCommandEncoderState` both carry.
+
+Four decisions in it are worth not re-deriving:
+
+- **A resource is its address.** `ResourceId` holds the object's pointer as a
+  `usize` and nothing else, which is what keeps the module free of Objective-C
+  and therefore testable on a Linux host. The reuse hazard — a freed object's
+  address handed to the next allocation, so a stale entry matches a different
+  resource — cannot arise, because an address only enters the cache when its
+  object is passed to a `set*` on an encoder of this command buffer, and an
+  `MTLCommandBuffer` retains every resource it references. That is the same fact
+  `crcbl_mtl::device`'s header already rests on when it explains why this
+  backend has no deletion queue; the cache adds no new assumption.
+- **`setBytes:` is compared by its bytes.** It copies its argument into the
+  encoder and leaves no object to key on, so two calls are interchangeable
+  exactly when the blocks are equal — same length, same contents. The
+  alternative, not caching inline blocks at all, was declined: the push-constant
+  block is re-sent whole at every write (`crcbl_mtl::argument` says why), so an
+  unchanged block is exactly the repeat this is for, and the comparison is a
+  `memcmp` over a block bounded by `Limits::max_push_constant_size`.
+- **`setBuffer:` and `setBytes:` share one table.** They write the same
+  argument-table entry, so the cache models a buffer slot as one of the two
+  rather than as two independent entries. Without that, a pipeline layout whose
+  push-constant block lands at the index the previous layout bound a buffer at
+  would find the buffer's record there and skip a write it has to make.
+  `an_inline_block_and_a_buffer_share_one_slot` is the test.
+- **`useResource:usage:` is not cached, and neither is the pack encoder.**
+  Residency is a declaration rather than a table slot, and the debug layer has
+  no "redundant" finding for it; the count-limited draw's prologue
+  (`encode_pack`) binds three buffers per dispatch on a compute encoder of its
+  own and is not part of what the job's log was counting.
+
+The cache lives exactly as long as the encoder it mirrors, because Metal's
+argument tables do: `endEncoding` takes them and the next encoder starts empty.
+So `encode_render_pass` keeps one on the stack beside the
+`MTLRenderCommandEncoder` it opens and ends there, and
+`MetalCommandEncoder::binds` holds the compute pass's, cleared by `close_open`
+with the rest of the state an encoder takes with it.
+
+`RenderCommand::PushConstants` now carries `slot: u32` where it carried an
+already-widened `NSUInteger`, because the cache keys on the seam's own width and
+`to_ns` is what the Metal call takes.
+
+**What was verified, and where.** This machine has no Metal, so nothing here is
+a measurement of the flood. What ran green:
+`cargo clippy -p crcbl-mtl --all-targets --all-features --locked --target aarch64-apple-darwin -- -D warnings`
+and the same crate's `cargo doc` with `-D warnings` on that target, which is
+what type-checks every call site; and nine host unit tests in `bind_cache`,
+which `cargo test -p crcbl-mtl` runs on any host. Both directions of the cache
+were shown to fail: made to never report a hit, four of the nine go red; made to
+always report one, eight do.
+
+**What the reviewer has to read to close this.** The `mtl e2e (macos-latest)`
+job, and two numbers in it. First the per-step durations, against the 37 / 29 /
+25 / 22 minutes the backlog entry recorded for "Draw the lit mesh on Metal".
+Second the count of `Set Vertex Texture Validation` lines in that step's log,
+against the 161,289 the entry counted for its first twenty minutes — and of the
+five other finding texts beside it. A drop in the "redundant setting" texts is
+this change; whatever remains is the "unused binding" half, which is still there
+by design.
+
 ### SHIPPED — a read-only depth state that said it writes
 
 Record of the decision and of what landed. Both narrowings were taken on

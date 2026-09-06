@@ -145,6 +145,7 @@ use objc2_metal::{
 };
 
 use crate::argument::BUFFER_TABLE_ENTRIES;
+use crate::bind_cache::{BindCache, ResourceId, Stage};
 use crate::device::{
     DeviceInner, DeviceState, MetalDevice, Owned, lookup, lookup_mut, owned, take_owned, to_ns,
 };
@@ -879,7 +880,19 @@ fn buffer_offset_alignment(uniform: bool, limits: &Limits) -> u64 {
     alignment.max(1)
 }
 
-/// Sets every binding of a resolved group on the open **compute** encoder.
+/// The identity [`crate::bind_cache`] keys an argument-table slot on.
+///
+/// The object's own address, which is what makes two `Retained` handles to one
+/// Metal object compare equal — the same thing `crcbl_mtl::device`'s
+/// `a_pipeline_without_depth_state_binds_the_devices_default_rather_than_nil`
+/// asks `std::ptr::eq` for. Why an address cannot be recycled under the cache is
+/// on [`ResourceId`].
+fn identity<P: ?Sized>(object: &Retained<ProtocolObject<P>>) -> ResourceId {
+    ResourceId::new(Retained::as_ptr(object).addr())
+}
+
+/// Sets every binding of a resolved group on the open **compute** encoder,
+/// skipping the slots that already hold what the bind would put there.
 ///
 /// Metal gives the compute stage one set of three argument tables rather than
 /// the render encoder's two sets, so this is `setBuffer:offset:atIndex:` and
@@ -888,32 +901,53 @@ fn buffer_offset_alignment(uniform: bool, limits: &Limits) -> u64 {
 /// declarations per table and knows nothing about which stage reads them. A
 /// binding not visible to [`ShaderStages::COMPUTE`] sets nothing, mirroring
 /// what [`apply`] does with a compute-only one.
+///
+/// `binds` is the caller's mirror of this encoder's tables; [`crate::bind_cache`]
+/// argues what it is for and why it belongs to the encoder rather than to the
+/// command buffer. `useResource:usage:` is **not** cached: it declares
+/// residency rather than filling a table slot, and the debug layer has no
+/// "redundant" finding for it.
 pub(crate) fn apply_compute(
     bindings: &[BoundBinding],
     encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+    binds: &mut BindCache,
 ) {
     for binding in bindings {
         if !binding.visibility.contains(ShaderStages::COMPUTE) {
             continue;
         }
-        let index = to_ns(u64::from(binding.index));
+        let slot = binding.index;
+        let index = to_ns(u64::from(slot));
         match &binding.resource {
-            // SAFETY: as `apply` — the index was bounded by `Table::capacity`
-            // when the pipeline layout was planned, the offset was checked
-            // against the buffer's own length when the group was created and
-            // again against the dynamic offset in `bind_group_raw`, and every
-            // resource is kept alive by the `Retained` the group holds.
-            BoundResource::Buffer { raw, offset, .. } => unsafe {
-                encoder.setBuffer_offset_atIndex(Some(raw), to_ns(*offset), index);
-            },
-            // SAFETY: as above, minus the offset.
-            BoundResource::Texture(raw) => unsafe {
-                encoder.setTexture_atIndex(Some(raw), index);
-            },
-            // SAFETY: as above, against the sampler table's capacity.
-            BoundResource::Sampler(raw) => unsafe {
-                encoder.setSamplerState_atIndex(Some(raw), index);
-            },
+            BoundResource::Buffer { raw, offset, .. } => {
+                if binds.buffer_changed(Stage::Compute, slot, identity(raw), *offset) {
+                    // SAFETY: as `apply` — the index was bounded by
+                    // `Table::capacity` when the pipeline layout was planned,
+                    // the offset was checked against the buffer's own length
+                    // when the group was created and again against the dynamic
+                    // offset in `bind_group_raw`, and every resource is kept
+                    // alive by the `Retained` the group holds.
+                    unsafe {
+                        encoder.setBuffer_offset_atIndex(Some(raw), to_ns(*offset), index);
+                    }
+                }
+            }
+            BoundResource::Texture(raw) => {
+                if binds.texture_changed(Stage::Compute, slot, identity(raw)) {
+                    // SAFETY: as above, minus the offset.
+                    unsafe {
+                        encoder.setTexture_atIndex(Some(raw), index);
+                    }
+                }
+            }
+            BoundResource::Sampler(raw) => {
+                if binds.sampler_changed(Stage::Compute, slot, identity(raw)) {
+                    // SAFETY: as above, against the sampler table's capacity.
+                    unsafe {
+                        encoder.setSamplerState_atIndex(Some(raw), index);
+                    }
+                }
+            }
             BoundResource::Bindless {
                 raw,
                 resident,
@@ -929,12 +963,15 @@ pub(crate) fn apply_compute(
                         table_usage(*writable),
                     );
                 }
-                // SAFETY: as the buffer arm above — the index was bounded by
-                // `Table::capacity` when the pipeline layout was planned, the
-                // table is bound whole so there is no offset to check, and it
-                // is kept alive by the `Retained` this binding holds.
-                unsafe {
-                    encoder.setBuffer_offset_atIndex(Some(raw), 0, index);
+                if binds.buffer_changed(Stage::Compute, slot, identity(raw), 0) {
+                    // SAFETY: as the buffer arm above — the index was bounded
+                    // by `Table::capacity` when the pipeline layout was
+                    // planned, the table is bound whole so there is no offset
+                    // to check, and it is kept alive by the `Retained` this
+                    // binding holds.
+                    unsafe {
+                        encoder.setBuffer_offset_atIndex(Some(raw), 0, index);
+                    }
                 }
             }
         }
@@ -974,22 +1011,32 @@ const fn render_stages(visibility: ShaderStages) -> MTLRenderStages {
     stages
 }
 
-/// Sets every binding of a resolved group on the open render encoder.
+/// Sets every binding of a resolved group on the open render encoder, skipping
+/// the slots that already hold what the bind would put there.
 ///
 /// A binding visible only to [`ShaderStages::COMPUTE`] sets nothing here, and
 /// that is correct rather than a gap: a render pass has no compute stage, and
 /// the same declaration is what a compute pass would read.
+///
+/// `binds` is the caller's mirror of this encoder's tables, on
+/// [`apply_compute`]'s terms exactly — with the one difference the render
+/// encoder makes: **the two raster stages are two tables**, so a binding
+/// visible to both is asked about twice and can be skipped on one stage while
+/// still being set on the other.
 pub(crate) fn apply(
     bindings: &[BoundBinding],
     encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
+    binds: &mut BindCache,
 ) {
     for binding in bindings {
-        let index = to_ns(u64::from(binding.index));
+        let slot = binding.index;
+        let index = to_ns(u64::from(slot));
         let vertex = binding.visibility.contains(ShaderStages::VERTEX);
         let fragment = binding.visibility.contains(ShaderStages::FRAGMENT);
         match &binding.resource {
             BoundResource::Buffer { raw, offset, .. } => {
-                let offset = to_ns(*offset);
+                let id = identity(raw);
+                let ns_offset = to_ns(*offset);
                 // SAFETY: `objc2` marks these unsafe because Metal
                 // bounds-checks neither the argument-table index nor the
                 // offset. The index was bounded by `Table::capacity` when the
@@ -997,30 +1044,34 @@ pub(crate) fn apply(
                 // this buffer's own length when the group was created and again
                 // against the dynamic offset in `bind_group_raw`, and the
                 // buffer is kept alive by the `Retained` the group holds.
-                if vertex {
-                    unsafe { encoder.setVertexBuffer_offset_atIndex(Some(raw), offset, index) };
+                if vertex && binds.buffer_changed(Stage::Vertex, slot, id, *offset) {
+                    unsafe { encoder.setVertexBuffer_offset_atIndex(Some(raw), ns_offset, index) };
                 }
-                if fragment {
-                    unsafe { encoder.setFragmentBuffer_offset_atIndex(Some(raw), offset, index) };
+                if fragment && binds.buffer_changed(Stage::Fragment, slot, id, *offset) {
+                    unsafe {
+                        encoder.setFragmentBuffer_offset_atIndex(Some(raw), ns_offset, index);
+                    }
                 }
             }
             BoundResource::Texture(raw) => {
+                let id = identity(raw);
                 // SAFETY: as above, minus the offset — the index was bounded by
                 // the texture table's capacity at layout planning and the
                 // texture is kept alive by the group.
-                if vertex {
+                if vertex && binds.texture_changed(Stage::Vertex, slot, id) {
                     unsafe { encoder.setVertexTexture_atIndex(Some(raw), index) };
                 }
-                if fragment {
+                if fragment && binds.texture_changed(Stage::Fragment, slot, id) {
                     unsafe { encoder.setFragmentTexture_atIndex(Some(raw), index) };
                 }
             }
             BoundResource::Sampler(raw) => {
+                let id = identity(raw);
                 // SAFETY: as above, against the sampler table's capacity.
-                if vertex {
+                if vertex && binds.sampler_changed(Stage::Vertex, slot, id) {
                     unsafe { encoder.setVertexSamplerState_atIndex(Some(raw), index) };
                 }
-                if fragment {
+                if fragment && binds.sampler_changed(Stage::Fragment, slot, id) {
                     unsafe { encoder.setFragmentSamplerState_atIndex(Some(raw), index) };
                 }
             }
@@ -1043,12 +1094,13 @@ pub(crate) fn apply(
                         );
                     }
                 }
+                let id = identity(raw);
                 // SAFETY: as the buffer arm above, and with no offset — the
                 // table is bound whole.
-                if vertex {
+                if vertex && binds.buffer_changed(Stage::Vertex, slot, id, 0) {
                     unsafe { encoder.setVertexBuffer_offset_atIndex(Some(raw), 0, index) };
                 }
-                if fragment {
+                if fragment && binds.buffer_changed(Stage::Fragment, slot, id, 0) {
                     unsafe { encoder.setFragmentBuffer_offset_atIndex(Some(raw), 0, index) };
                 }
             }

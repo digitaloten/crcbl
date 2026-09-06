@@ -143,6 +143,7 @@ use objc2_metal::{
     MTLViewport,
 };
 
+use crate::bind_cache::{BindCache, Stage};
 use crate::conv;
 use crate::device::{CommandBufferEntry, DeviceInner, QuerySetRaw, ResolvedImage, to_ns};
 
@@ -386,7 +387,11 @@ enum RenderCommand {
     /// splices the shadow in place and the two draws either side of it are
     /// meant to see different blocks.
     PushConstants {
-        index: NSUInteger,
+        /// The buffer-table slot the pipeline layout placed the block at, as
+        /// `crate::argument`'s `plan` computed it. Kept in the seam's own width
+        /// rather than widened here: [`crate::bind_cache`] keys a slot on it,
+        /// and `to_ns` is what the Metal call takes.
+        slot: u32,
         bytes: Vec<u8>,
         /// Whether the pipeline layout's range declares the vertex stage. The
         /// caller's `stages` are not consulted; see
@@ -515,7 +520,11 @@ fn encode_pack(encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>, dispatch:
 /// calls and decides nothing. That is deliberate: a check moved down here would
 /// report its failure at `end_render_pass` rather than at the call the caller
 /// made, and `crcbl_hal`'s own recorder tests assert on which call failed.
-fn replay(encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>, command: &RenderCommand) {
+fn replay(
+    encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
+    command: &RenderCommand,
+    binds: &mut BindCache,
+) {
     match command {
         RenderCommand::PushDebugGroup(name) => encoder.pushDebugGroup(name),
         RenderCommand::PopDebugGroup => encoder.popDebugGroup(),
@@ -545,15 +554,22 @@ fn replay(encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>, command: &Rende
             // `crcbl_hal::StencilState`. `encode_render_pass` sets the seam's
             // initial value once, as the encoder opens.
         }
-        RenderCommand::BindGroup(bindings) => crate::binding::apply(bindings, encoder),
+        RenderCommand::BindGroup(bindings) => crate::binding::apply(bindings, encoder, binds),
         RenderCommand::PushConstants {
-            index,
+            slot,
             bytes,
             vertex,
             fragment,
         } => {
+            let index = to_ns(u64::from(*slot));
             let length = to_ns(bytes.len() as u64);
             let source = NonNull::from(&**bytes).cast::<core::ffi::c_void>();
+            // The whole block is re-sent at every write, so a pass that draws
+            // many times through one unchanged block sends it many times; the
+            // cache compares the bytes because `setBytes:` copies them and two
+            // equal blocks are therefore the same argument. See
+            // `crate::bind_cache`'s `bytes_changed`.
+            //
             // SAFETY: `objc2` marks these unsafe because Metal bounds-checks
             // neither the pointer nor the argument-table index. `source` points
             // at `length` initialised bytes of a `Vec` this command owns and
@@ -563,12 +579,12 @@ fn replay(encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>, command: &Rende
             // `crate::argument::plan` bounded by `Limits::max_push_constant_size`,
             // and `index` is the buffer-table entry after the last binding,
             // which the same call bounded by `BUFFER_TABLE_ENTRIES`.
-            if *vertex {
-                unsafe { encoder.setVertexBytes_length_atIndex(source, length, *index) };
+            if *vertex && binds.bytes_changed(Stage::Vertex, *slot, bytes) {
+                unsafe { encoder.setVertexBytes_length_atIndex(source, length, index) };
             }
             // SAFETY: as above, on the fragment stage's table.
-            if *fragment {
-                unsafe { encoder.setFragmentBytes_length_atIndex(source, length, *index) };
+            if *fragment && binds.bytes_changed(Stage::Fragment, *slot, bytes) {
+                unsafe { encoder.setFragmentBytes_length_atIndex(source, length, index) };
             }
         }
         RenderCommand::Draw {
@@ -763,6 +779,17 @@ pub(crate) struct MetalCommandEncoder {
     /// `endEncoding`, so carrying the shadow into the next pass would let a
     /// dispatch there proceed with a block Metal no longer holds.
     push_constants: Option<crate::argument::Shadow>,
+    /// What the open **compute** encoder's argument tables already hold, so a
+    /// `set*` that would change nothing is not made. See
+    /// [`crate::bind_cache`].
+    ///
+    /// Only the compute encoder's, because that is the only encoder whose
+    /// lifetime this type owns: a render pass is recorded rather than encoded,
+    /// and [`Self::encode_render_pass`] keeps a cache of its own beside the
+    /// `MTLRenderCommandEncoder` it opens and ends there. Cleared by
+    /// [`Self::close_open`] with [`Self::push_constants`], and for the same
+    /// reason.
+    binds: BindCache,
 }
 
 impl core::fmt::Debug for MetalCommandEncoder {
@@ -816,6 +843,7 @@ impl MetalCommandEncoder {
             bound_threads: None,
             index: None,
             push_constants: None,
+            binds: BindCache::default(),
         };
         // The queue is checked before the command buffer is taken, so a handle
         // belonging to another device is reported as the crossing it is rather
@@ -944,6 +972,7 @@ impl MetalCommandEncoder {
         self.bound_mesh = None;
         self.bound_threads = None;
         self.push_constants = None;
+        self.binds.reset();
     }
 
     /// Opens the render encoder a recorded pass has been waiting for, replays
@@ -1005,8 +1034,15 @@ impl MetalCommandEncoder {
         // and stating it in code is what keeps it from resting on a default
         // documented somewhere else.
         encoder.setStencilReferenceValue(crcbl_hal::stencil::INITIAL_REFERENCE);
+        // Opened empty with the encoder and dropped with it, which is what
+        // `crate::bind_cache` requires of a mirror of Metal's argument tables:
+        // they belong to the `MTLRenderCommandEncoder` and `endEncoding` takes
+        // them with it. Local rather than `self.binds` for that reason — this
+        // encoder's life begins and ends inside this call, where the compute
+        // encoder's spans seam calls.
+        let mut binds = BindCache::default();
         for command in &recording.commands {
-            replay(&encoder, command);
+            replay(&encoder, command, &mut binds);
         }
         encoder.endEncoding();
     }
@@ -1864,7 +1900,9 @@ impl CommandEncoder for MetalCommandEncoder {
         {
             Ok(bindings) => match target {
                 Target::Render => self.record(RenderCommand::BindGroup(bindings)),
-                Target::Compute(encoder) => crate::binding::apply_compute(&bindings, &encoder),
+                Target::Compute(encoder) => {
+                    crate::binding::apply_compute(&bindings, &encoder, &mut self.binds);
+                }
             },
             Err(error) => self.fail(error),
         }
@@ -1940,7 +1978,6 @@ impl CommandEncoder for MetalCommandEncoder {
             return;
         }
 
-        let index = to_ns(u64::from(block.index));
         match target {
             Target::Render => {
                 let vertex = block.stages.contains(ShaderStages::VERTEX);
@@ -1956,7 +1993,7 @@ impl CommandEncoder for MetalCommandEncoder {
                     // see different blocks.
                     let bytes = shadow.bytes().to_vec();
                     self.record(RenderCommand::PushConstants {
-                        index,
+                        slot: block.index,
                         bytes,
                         vertex,
                         fragment,
@@ -1964,8 +2001,14 @@ impl CommandEncoder for MetalCommandEncoder {
                 }
             }
             Target::Compute(encoder) => {
-                if block.stages.contains(ShaderStages::COMPUTE) {
-                    let bytes = shadow.bytes();
+                let bytes = shadow.bytes();
+                // The bytes decide, because `setBytes:` copies them; see
+                // `crate::bind_cache`'s `bytes_changed` and the render arm's
+                // note above. Asked only when the block would be sent at all,
+                // so a layout that names no compute stage records nothing.
+                if block.stages.contains(ShaderStages::COMPUTE)
+                    && self.binds.bytes_changed(Stage::Compute, block.index, bytes)
+                {
                     let length = to_ns(bytes.len() as u64);
                     let source = NonNull::from(bytes).cast::<core::ffi::c_void>();
                     // SAFETY: `objc2` marks this unsafe because Metal
@@ -1976,11 +2019,17 @@ impl CommandEncoder for MetalCommandEncoder {
                     // returning — that is what "inlined buffer contents" means.
                     // `length` is the shadow's own length, which
                     // `crate::argument::plan` bounded by
-                    // `Limits::max_push_constant_size`, and `index` is the
+                    // `Limits::max_push_constant_size`, and the index is the
                     // buffer-table entry after the last binding, which the same
                     // call bounded by `BUFFER_TABLE_ENTRIES`. The encoder is
                     // kept alive by the `Retained` held across the call.
-                    unsafe { encoder.setBytes_length_atIndex(source, length, index) };
+                    unsafe {
+                        encoder.setBytes_length_atIndex(
+                            source,
+                            length,
+                            to_ns(u64::from(block.index)),
+                        );
+                    }
                 }
             }
         }

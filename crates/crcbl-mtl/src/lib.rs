@@ -383,6 +383,14 @@ mod adapter;
 // reports a wrong index — so `cargo test` on any host runs the arithmetic.
 #[cfg(any(target_os = "macos", test))]
 mod argument;
+// Not macOS-only either, and its reason is the one about consequence rather
+// than about arithmetic: what each argument-table slot already holds is a table
+// of integers, and a wrong answer there is *silent* — a bind wrongly skipped
+// leaves the previous resource in the slot and the draw reads it, which no
+// Metal call fails on and no layer reports. So `cargo test` on any host runs
+// the table.
+#[cfg(any(target_os = "macos", test))]
+mod bind_cache;
 #[cfg(target_os = "macos")]
 mod binding;
 #[cfg(target_os = "macos")]
