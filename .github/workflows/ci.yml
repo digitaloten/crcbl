@@ -281,6 +281,15 @@ jobs:
       - run:
           cargo doc --workspace --all-features --no-deps --locked
           --document-private-items
+      # **`crcbl-scene` with its `gltf` feature off**, which no `--all-features`
+      # pass can see. The crate's scene half is what `crcbl`'s `scn` feature
+      # links into a browser build without the glTF parser, and the doc links
+      # that break in that configuration are exactly the ones pointing at the
+      # gated modules — five of them when the feature was split on 2026-09-07,
+      # every one invisible to the two steps above.
+      - run:
+          cargo doc --locked -p crcbl-scene --no-default-features --no-deps
+          --document-private-items
       # **The one target the two passes above cannot reach.**
       # `crates/crcbl-cli`'s binary sets `doc = false`, because it and the
       # `crcbl` umbrella library would both write `target/doc/crcbl/index.html`
@@ -410,6 +419,13 @@ jobs:
       # The P5 deliverable, named on its own so a failure says which half broke
       # before the workspace sweep buries it in a hundred other crates.
       - run: cargo check --locked --target wasm32-unknown-unknown -p breakout
+      # `crcbl`'s `scn` feature is the scene loader without the glTF parser,
+      # which is the point of `crcbl-scene`'s `gltf` feature split — and a
+      # `--all-features` sweep turns the parser back on, so it cannot say
+      # whether the loader still compiles without it. This can.
+      - run: >-
+          cargo check --locked -p crcbl --features scn --target
+          wasm32-unknown-unknown
       - run: >-
           cargo check --locked --workspace --exclude crcbl-vk --exclude
           crcbl-cli --target wasm32-unknown-unknown
