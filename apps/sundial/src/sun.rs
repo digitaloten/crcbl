@@ -49,7 +49,7 @@
 //! is, and the sweep's grazing end is a tick a golden asks for by name.
 
 use crcbl::math::Vec3;
-use crcbl::render::DirectionalLight;
+use crcbl::render::{Atmosphere, DirectionalLight};
 
 /// How many ticks one sweep of the sun takes.
 ///
@@ -110,26 +110,45 @@ pub const SCRUB_STEP: u64 = SWEEP_TICKS / 60;
 /// How bright the sun is, before its colour.
 ///
 /// Above one, like every other sun in this engine: the scene target is
-/// `Rgba16Float` and the tonemap pass is what brings it back.
+/// `Rgba16Float` and the tonemap pass is what brings it back. It is also the
+/// sun's illuminance above the atmosphere — [`Sky::atmosphere`] reads it off
+/// [`Sky::light`] — so the sky over the plaza is linear in this number too.
 ///
 /// **Set by the goldens' control point rather than by taste.** Open pavement is
 /// what every darkness claim in `tests/golden.rs` is read against, and a control
 /// that sits at 255 out of 255 is a control which cannot answer: it reads the
 /// same whether the frame is correct or twice as bright, so an exposure that ran
-/// away would darken nothing and be caught by nothing. Turned down until
-/// `crate::plaza::OPEN_PAVEMENT` lands clear of the top of the range at the top
+/// away would darken nothing and be caught by nothing. It was turned down until
+/// `crate::plaza::OPEN_PAVEMENT` landed clear of the top of the range at the top
 /// of the sun's arc, which is the brightest the fixture ever gets.
+///
+/// **The atmosphere took that headroom back and this number was not moved to
+/// recover it**, which is a live gap rather than a decision — `docs/backlog.md`
+/// carries it with the measurements. Under `TonemapCurve::Clamp` at
+/// `NOON_TICK`, which is the only place a golden reads a code value, that
+/// pavement now sits at the top of the range: the sky's own ambient is added to
+/// the direct term and the sum clips. The frames the sample ships are drawn
+/// through the ACES fit and are nowhere near it.
 const INTENSITY: f32 = 1.4;
 
 /// The sun's colour at the top of its arc.
 const COLOR: Vec3 = Vec3::new(1.0, 0.97, 0.92);
 
-/// The flat ambient term, and the whole of what lights a shadowed surface.
+/// The flat ambient term.
 ///
 /// Small next to the sun, which is what makes a shadow legible: a plaza whose
 /// ambient came close to its direct light would draw shadows a reader has to
 /// look for. Large enough that a shadowed surface is not black — a shadow at
 /// zero is one no filter can be compared inside.
+///
+/// **No longer the whole of what lights a shadowed surface**, since
+/// [`Sky::atmosphere`]: `crcbl_render::Atmosphere`'s L1 projection is added to
+/// this rather than chosen between, so a shadow here is lit by the sky as well.
+/// `crcbl_render::Sky`'s own doc names zero as what an author sets when the sky
+/// is meant to be the whole environment, and this is deliberately not that —
+/// measured with it at zero, the pavement at the top of the sun's arc still
+/// clips, so the flat term is not what took [`INTENSITY`]'s headroom and
+/// removing it would only darken every shadow in the fixture.
 const AMBIENT: Vec3 = Vec3::new(0.085, 0.093, 0.112);
 
 /// Where the sun stands: an elevation above the horizon and an azimuth about the
@@ -213,6 +232,29 @@ impl Sky {
             direction: self.towards(),
             color: COLOR * INTENSITY,
             ambient: AMBIENT,
+        }
+    }
+
+    /// The **same** sun, as [`crcbl::render::ForwardRenderer::set_atmosphere`]
+    /// takes it.
+    ///
+    /// `docs/plan/43-render-standards.md` §8's Hillaire atmosphere, and this is
+    /// the whole of what sundial hands it. Both fields are read off
+    /// [`Sky::light`] rather than spelled again — the direction is
+    /// [`Sky::towards`] and the illuminance is that light's own `color`, which
+    /// is what makes the sky this fixture draws the sky of the sun it shades
+    /// with. Two spellings of one sun is exactly the mistake this method
+    /// exists to make impossible: the sky would keep drawing a sunset while the
+    /// shadows pointed somewhere else, and no golden reads both.
+    ///
+    /// The plaza stands at sea level, so the viewpoint's altitude is zero.
+    #[must_use]
+    pub fn atmosphere(self) -> Atmosphere {
+        let light = self.light();
+        Atmosphere {
+            sun_direction: light.direction,
+            sun_illuminance: light.color,
+            altitude_km: 0.0,
         }
     }
 

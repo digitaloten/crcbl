@@ -21,9 +21,14 @@
 //! # The sun is written every frame and kept nowhere else
 //!
 //! [`crate::sun::Clock`] lives on the loop's game state and this bundle holds
-//! only the [`DirectionalLight`] the last frame was drawn with, because
-//! [`ForwardRenderer::begin_frame`] takes one as an argument. A second copy of
-//! the tick here would be a second clock.
+//! only the [`crate::sun::Sky`] the last frame was drawn under, because
+//! [`ForwardRenderer::begin_frame`] takes that frame's light as an argument. A
+//! second copy of the tick here would be a second clock.
+//!
+//! **The pose rather than the light**, because a frame reads two things off it:
+//! the [`crcbl::render::DirectionalLight`] the forward pass shades with and the
+//! [`crcbl::render::Atmosphere`] `docs/plan/43-render-standards.md` §8's sky
+//! pass draws. Keeping the pose is what makes those the same sun.
 //!
 //! # What a filter costs, and what it does not
 //!
@@ -44,8 +49,8 @@ use crcbl::hal::{
 };
 use crcbl::prelude::*;
 use crcbl::render::{
-    DirectionalLight, EffectOverride, EffectRequest, ForwardRenderer, MAX_TIMED_PASSES,
-    MenuRenderer, PassTimers, RenderEffects, RenderGraph, TransientPool, UiRenderer,
+    EffectOverride, EffectRequest, ForwardRenderer, MAX_TIMED_PASSES, MenuRenderer, PassTimers,
+    RenderEffects, RenderGraph, TransientPool, UiRenderer,
 };
 use crcbl::shell::WindowId;
 use crcbl::ui::draw_list::DrawList;
@@ -276,9 +281,14 @@ pub struct Gpu {
     /// Where the frame is seen from. Written every tick by [`crate::app`], which
     /// owns the camera; this is only where the frame reads it.
     camera: crcbl::render::Camera,
-    /// The sun the next frame is lit by. Written every frame by [`crate::app`]
-    /// out of the clock — see this module's header.
-    sun: DirectionalLight,
+    /// Where the sun stands for the next frame. Written every frame by
+    /// [`crate::app`] out of the clock — see this module's header.
+    ///
+    /// The pose rather than the light, because two things are read off it: the
+    /// [`crcbl::render::DirectionalLight`] the forward pass shades with and the
+    /// [`crcbl::render::Atmosphere`] the sky is drawn from. One field is what
+    /// keeps the sky over the plaza the sky of the sun casting its shadows.
+    sun: Sky,
     ui: UiRenderer,
     menu: MenuRenderer,
     atlas: FontAtlas,
@@ -451,7 +461,7 @@ impl Gpu {
             timers,
             paths,
             camera: plaza::fixed_camera(),
-            sun: Sky::at(crate::sun::FIXTURE_TICK).light(),
+            sun: Sky::at(crate::sun::FIXTURE_TICK),
             ui,
             menu,
             atlas: FontAtlas::built_in(),
@@ -504,8 +514,9 @@ impl Gpu {
         self.camera = camera;
     }
 
-    /// What the next frame is lit by.
-    pub const fn set_sun(&mut self, sun: DirectionalLight) {
+    /// Where the sun stands for the next frame — what it is lit by, and what
+    /// its sky is.
+    pub const fn set_sun(&mut self, sun: Sky) {
         self.sun = sun;
     }
 
@@ -588,8 +599,16 @@ impl Gpu {
         // from one list, so the windowed run and the golden suite cannot disagree
         // about what is lit — `plaza::lights`' doc carries that argument.
         self.renderer.set_lights(&plaza::lights());
+        // Hillaire's sky, from the same pose the light below is built from —
+        // `docs/plan/43-render-standards.md` §8. Handed over every frame for
+        // the lights' reason and for one of its own: the sun moves once per
+        // fixed step, and `ForwardRenderer` marches a stripe of the sky-view
+        // LUT per frame while it does. A frame whose sun has not moved costs
+        // the comparison that finds nothing to do.
+        self.renderer.set_atmosphere(Some(self.sun.atmosphere()));
+        let sun = self.sun.light();
         self.renderer
-            .begin_frame(self.ctx.device(), &self.camera, &self.sun, extent)?;
+            .begin_frame(self.ctx.device(), &self.camera, &sun, extent)?;
         self.menu
             .begin_frame(self.ctx.device(), extent)
             .map_err(GpuError::Hal)?;

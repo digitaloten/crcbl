@@ -979,6 +979,43 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- **`apps/sundial` draws under the atmosphere.** The shadow fixture's background
+  was the scene target's clear colour and its plaza was lit by a flat ambient
+  alone — the sample never called `ForwardRenderer::set_sky`, so it had no sky
+  at all — and it is now `docs/plan/43-render-standards.md` §8's Hillaire
+  atmosphere: the background the sky pass draws, the L1 term `mesh.slang` adds
+  and the environment a missed reflection falls back to.
+  `crcbl_sundial::sun::Sky::atmosphere` is the new value and it reads both of
+  its fields off `Sky::light`, so the sky the frame draws and the light its
+  shadows are cast by are one sun rather than two spellings of one;
+  `crcbl_sundial::gpu::Gpu::set_sun` takes that `Sky` where it took a
+  `DirectionalLight`, and hands the renderer both. `apps/lantern` and
+  `apps/alcove` keep the skies they had.
+
+  This is the first app in the workspace to drive
+  `ForwardRenderer::set_atmosphere`, so it is the first frame anywhere that
+  marches the sky-view LUT under a sun that actually moves — the striped refresh
+  had only ever been exercised by null-backend tests.
+
+  **Five goldens moved**, all under `apps/sundial/tests/golden/`:
+  `plaza-box.png`, `plaza-disc.png`, `plaza-pcss.png`, `plaza-grazing.png` and
+  `plaza-cascades.png`, re-blessed on lavapipe where sundial's set has always
+  been blessed and then run green on radv as well. `plaza-atlas.png` is
+  untouched: the shadow-atlas viewer replaces the picture. Against the old
+  references the plaza's frames stood a mean absolute error of 18.4 to 20.8
+  levels apart with a structural mismatch, which is what drawing a sky over the
+  clear colour and adding its ambient to every surface does.
+
+  **A new guard comes with it.** `apps/sundial/tests/golden.rs`'s
+  `the_sky_over_the_plaza_is_the_host_lut` reads nine blocks of open sky and
+  holds each against `crcbl_shaders::atmosphere::SkyView` marched on the host
+  from the same `Sky::atmosphere`, on a scene-referred frame; the worst miss is
+  0.06 levels of 255 on radv and 0.13 on lavapipe against a budget of 0.9, the
+  budget `crcbl`'s own `an_atmosphere_frame_is_the_host_lut` uses. Two
+  anti-vacuity clauses go with it: the nine bands span 35 levels, and the band
+  nearest the horizon moves 17 levels between the fixture tick and the grazing
+  one, so the sky is following the clock rather than marched once.
+
 - **`crates/crcbl-vk/tests/run-vk-e2e.sh` pins lavapipe by default.** A bare run
   used to let the Vulkan loader choose the driver — the discrete card on a
   workstation — while printing that it was "what CI sees", so nobody was running

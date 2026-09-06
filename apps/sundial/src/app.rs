@@ -714,7 +714,7 @@ impl HostedGame for Sundial {
         // The fixture draws no HUD of its own: everything it has to say about a
         // frame is a debug-panel row.
         gpu.set_camera(self.camera());
-        gpu.set_sun(self.sky().light());
+        gpu.set_sun(self.sky());
         // Here rather than in `tick`, which does not run while paused: the row
         // that was just pressed is on a panel over a frame that has to change
         // behind it.

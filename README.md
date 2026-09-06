@@ -106,7 +106,7 @@ cargo run -p breakout
 cargo run -p lantern                        # one room, every lighting effect
 cargo run -p lantern -- --stack my.ron      # ...the same room, your own render stack
 cargo run -p alcove                         # one room, every ambient-occlusion knob
-cargo run -p sundial                        # one plaza, a sun on a clock, every shadow filter
+cargo run -p sundial                        # one plaza, a sun on a clock under the sky it lights
 
 # The glTF viewer: Suzanne, or bring your own model.
 cargo run -p viewer

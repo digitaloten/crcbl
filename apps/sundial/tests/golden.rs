@@ -246,6 +246,20 @@ impl Arm {
         }
     }
 
+    /// The same arm with the antialiasing resolve out.
+    ///
+    /// **What makes a per-column claim about a seam possible at all**, and
+    /// [`SEAM_BLEED`] carries the argument: the resolve is the one pass in this
+    /// stack that mixes a pixel with neighbours far enough away to reach across
+    /// a comparison seam, and how far it reaches depends on the contrast of the
+    /// edges it finds rather than on a constant a test can write down.
+    const fn without_antialiasing(self) -> Self {
+        Self {
+            effects: RenderEffects::DEFAULT_STACK.difference(RenderEffects::CMAA2),
+            ..self
+        }
+    }
+
     /// The same arm at a named tick of the clock.
     const fn at_tick(self, tick: u64) -> Self {
         Self { tick, ..self }
@@ -451,6 +465,11 @@ fn build(
     // to — `plaza`'s `every_light_in_the_plaza_is_given_a_run_of_tiles` is what
     // holds the three of them inside the budget with no GPU.
     renderer.set_lights(&plaza::lights());
+    // Hillaire's sky, from the very same pose the frame's light is built from —
+    // `apps/sundial/src/gpu.rs`'s `frame` is the windowed run's copy of these
+    // two lines, and `crate::sun::Sky::atmosphere` is the one place either
+    // spells the sun.
+    renderer.set_atmosphere(Some(arm.sky().atmosphere()));
     // The atlas viewer, which is a **pass** rather than a lane of the frame
     // block — so an arm that does not ask for it records no pass at all and the
     // four goldens blessed before it existed are untouched by its being here.
@@ -910,14 +929,33 @@ fn the_shadow_reaches_the_pavement_the_plinth_stands_on() {
 
 /// How many pixels either side of the seam the column-exact comparison skips.
 ///
-/// **Not slack: the antialiasing's footprint**, and taken from
-/// `crates/crcbl/tests/forward_e2e/shadow.rs`, which measures the same seam on
-/// the engine's own fixture and states the reasoning — the resolve these frames
-/// draw through searches along an edge for a bounded number of texels each way,
-/// so for a band either side of the line a pixel is a mixture of the two
-/// filters and belongs to neither reference frame. A **texel** count and not a
-/// fraction of the frame, so the same constant holds at every extent.
-const SEAM_BLEED: u32 = 32;
+/// **One: the column the split itself lands on**, which belongs to whichever
+/// side `crcbl_render::shadow::split_at` puts it and to neither reference
+/// frame. Everything else in this arm agrees to the byte —
+/// [`Arm::without_antialiasing`] takes the pass that reached across the seam out
+/// of it, and the occlusion and reflection blurs that are left were measured
+/// carrying nothing at all past this column on either adapter.
+///
+/// **That is the whole of why this is one and not a band.** The antialiasing
+/// resolve walks along an edge for up to `crcbl_shaders::cmaa2::MAX_LINE_LENGTH`
+/// texels, so a shadow edge crossing the seam blends pixels that far away
+/// differently in the seamed frame than in either whole-frame reference — and
+/// how far it actually reaches depends on the contrast of the edges it finds
+/// rather than on any constant a test can write down. A band wide enough for
+/// the resolve is also wide enough to swallow the region where the two filters
+/// differ at all from this pose, which is what makes the band the wrong tool:
+/// **swept on both local adapters** at [`CLAIM_EXTENT`], `disc` and the shipped
+/// filter draw a different left half only within 43 columns of the seam, so a
+/// band sized for the resolve leaves that half separating nothing.
+///
+/// The sweep behind that, as the furthest column of the seamed frame that
+/// differs from its own whole-frame reference. With the resolve in the arm it
+/// is 33 columns on lavapipe and 0 on radv under the atmosphere, and 25 on radv
+/// and 15 on lavapipe without one — a reach that moves with how bright the sky
+/// is, because that is what decides whether a blended edge survives the
+/// eight-bit quantisation. With the resolve out it is **nothing at all** on
+/// either adapter: every column outside this one is exact.
+const SEAM_BLEED: u32 = 1;
 
 /// **The seam runs the console's filter on the left and the shipped one on the
 /// right, to the column.**
@@ -934,6 +972,12 @@ const SEAM_BLEED: u32 = 32;
 /// thing being vacuous: two identical references would satisfy the equality half
 /// perfectly.
 ///
+/// **Drawn through [`Arm::without_antialiasing`]**, which is the one thing this
+/// comparison changes about the frame the sample ships, and [`SEAM_BLEED`]
+/// carries the argument: the resolve is what makes a pixel a mixture of both
+/// sides, it reaches further than any band this pose can afford to skip, and it
+/// is not what the filter selector is being asked about.
+///
 /// **Every rung the engine declares, and not the first one that is not the
 /// shipped rung**, which is `docs/plan/sample/18-sundial.md`'s milestone 4: the
 /// filter *ladder* side by side. One pair held would say the selector routes
@@ -943,23 +987,25 @@ const SEAM_BLEED: u32 = 32;
 ///
 /// # How it was shown to fail
 ///
-/// Twice, once per half. Swapping the two references, so each side is compared
-/// against the filter the other side ran, failed at column 469 — the first
-/// column near enough the seam to carry a shadow edge at all. Naming the shipped
-/// filter on both sides left every column exact and both halves 0.000/255 apart,
-/// and the anti-vacuity assertion failed instead, which is the half that catches
-/// a selector wired to one branch.
+/// Twice, once per half, and re-run on radv on 2026-09-06 after the resolve came
+/// out of the arm. Swapping the two references, so each side is compared against
+/// the filter the other side ran, failed at column 469 — the first column near
+/// enough the seam to carry a shadow edge at all. Naming the shipped filter on
+/// both sides left every column exact and both halves 0.000/255 apart, and the
+/// anti-vacuity assertion failed instead — *"the disc and pcss filters draw the
+/// same left half, so the exactness asserted for that side of the seam separates
+/// nothing"* — which is the half that catches a selector wired to one branch.
 ///
 /// # What was measured
 ///
-/// 961 of the 1024 columns are compared per rung — the rest are the bleed band —
-/// and every one of them is exact on both adapters. What the rung and the shipped
-/// filter stand apart down the two halves, in luma out of 255:
+/// Every column of the frame but the one the split lands on is compared per
+/// rung, and every one of them is exact on both adapters. What the rung and the
+/// shipped filter stand apart down the two halves, in luma out of 255:
 ///
 /// | rung | left, radv | right, radv | left, lavapipe | right, lavapipe |
 /// | --- | --- | --- | --- | --- |
-/// | `disc` | `3.110` | `324.498` | `3.101` | `324.678` |
-/// | `box` | `26.417` | `363.250` | `26.267` | `363.425` |
+/// | `disc` | `9.234` | `228.562` | `9.234` | `228.438` |
+/// | `box` | `27.387` | `258.306` | `27.438` | `258.201` |
 ///
 /// so the equality is not an equality of two identical pictures. The left half is
 /// the thinner of the two because it is mostly pavement with no shadow edge
@@ -982,6 +1028,7 @@ fn the_seam_runs_the_console_filter_on_the_left_and_the_shipped_one_on_the_right
     );
 
     let pose = Arm::shipped()
+        .without_antialiasing()
         .framed_on_the_counters()
         .at_tick(sun::NOON_TICK);
     let (whole_shipped, paths, _) = draw(extent, pose.on(shipped));
@@ -1530,6 +1577,323 @@ fn the_cascade_overlay_tints_the_plaza_by_the_cascade_its_shadow_came_from() {
         Ok(line) => eprintln!("sundial golden: {line}"),
         Err(fault) => panic!("{fault}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The sky
+// ---------------------------------------------------------------------------
+
+/// Half-extents of the block each sky band is read over, in pixels.
+///
+/// `crcbl/tests/render_e2e.rs`'s `ATMOSPHERE_BAND`, and for its reason: the sky
+/// is a gradient with a real slope across it, so a wide block averages a curve
+/// the prediction then has to average back. Three square is nine pixels — enough
+/// to take the readback's own noise out, narrow enough that the curve inside it
+/// is nearly a plane.
+const SKY_BAND: (u32, u32) = (3, 3);
+
+/// Where the sky is read, in fractions of [`EXTENT`].
+///
+/// **Three rows by three columns of open sky**, chosen off the frames blessed
+/// before this fixture had a sky at all, where the background was the scene
+/// target's clear colour and so could not be mistaken for anything: every one of
+/// these blocks, grown by a pixel on each side, was that colour exactly in all
+/// four of the lit plazas.
+///
+/// The rows walk from just above the horizon to the top of the frame and the
+/// columns from the camera's own forward to the right edge, which walks both
+/// axes of the LUT — `crcbl_shaders::atmosphere::SkyView` is a table in
+/// elevation and in the azimuth away from the sun, and a band at one point of it
+/// would exercise one texel. Every column is past the middle because the plaza's
+/// parapet and colonnade fill the left half of the frame at these heights.
+const SKY_BANDS: [(f32, f32); 9] = [
+    (0.50, 0.04),
+    (0.66, 0.04),
+    (0.92, 0.04),
+    (0.50, 0.14),
+    (0.66, 0.14),
+    (0.92, 0.14),
+    (0.50, 0.24),
+    (0.66, 0.24),
+    (0.92, 0.24),
+];
+
+/// Levels of 255 the drawn sky may sit from the host's own march of it.
+///
+/// `crcbl/tests/render_e2e.rs`'s `ATMOSPHERE_MIRROR_LEVELS`, taken rather than
+/// invented: this is the same claim that file's
+/// `an_atmosphere_frame_is_the_host_lut` makes, about a plaza instead of an
+/// empty scene, and two budgets for one comparison would drift.
+///
+/// **Swept on both local adapters before it was taken.** Over nine bands and
+/// three channels the worst miss measured **0.06** levels on the discrete
+/// adapter (radv, an RX 7900 XTX) and **0.13** on the software one (lavapipe),
+/// so this is seven times the worse of them. What is left between the two sides
+/// is the frame's own eight-bit quantisation against a prediction that has
+/// none, and the ray, which comes out of two matrix products a device is free
+/// to contract into fused multiply-adds.
+const SKY_LEVELS: f32 = 0.9;
+
+/// How far apart the brightest and dimmest sky bands must sit, in levels of
+/// green.
+///
+/// Anti-vacuity: nine readings of a flat field agree with a host model of a
+/// flat field, and would say nothing about the LUT. **Swept**: the nine bands
+/// span 35.16 levels on radv and 35.06 on lavapipe, so this sits well under
+/// both and a mile over the zero a flat sky answers.
+const SKY_SPREAD: f32 = 20.0;
+
+/// How far the horizon band must move between the fixture tick and the grazing
+/// one, in levels of blue.
+///
+/// The second anti-vacuity clause, and the one that is about *this* fixture: a
+/// renderer marched once from the pose it was built with draws the same sky at
+/// every tick, and every band above would still agree with a host model built
+/// from that one pose. **Swept**: the band moves 17.04 levels on radv and 17.02
+/// on lavapipe between [`sun::FIXTURE_TICK`] and [`sun::GRAZING_TICK`].
+const SKY_TICK_APART: f32 = 10.0;
+
+/// The sRGB transfer function, encoding linear light into the swapchain's
+/// levels.
+///
+/// A transcription of `crcbl`'s own `forward_e2e::depth_probe::srgb_encode`,
+/// which is `pub(crate)` to one test binary and cannot be reached from another —
+/// `apps/alcove/tests/golden.rs` carries the same copy for the same reason.
+fn srgb_encode(value: f32) -> f32 {
+    let encoded = if value <= 0.003_130_8 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    };
+    encoded * 255.0
+}
+
+/// The world direction `sky.slang` shades pixel `(column, row)` along.
+///
+/// The shader's own unprojection restated through `glam`: unproject two points
+/// at different depths, take their difference, and rotate it into world space.
+/// The **difference** rather than the near point normalised, for the reason
+/// `sky.slang` gives — it is the direction under an orthographic projection too.
+fn sky_ray(camera: &Camera, extent: (u32, u32), column: u32, row: u32) -> [f32; 3] {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "an extent and a pixel index are both a few hundred"
+    )]
+    let (width, height) = (extent.0 as f32, extent.1 as f32);
+    let inv_proj = camera.projection.matrix(width / height).inverse();
+    let inv_view = camera.view().inverse();
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a pixel index inside this frame is a few hundred"
+    )]
+    let (u, v) = ((column as f32 + 0.5) / width, (row as f32 + 0.5) / height);
+    let ndc = crcbl::math::Vec2::new(u.mul_add(2.0, -1.0), v.mul_add(-2.0, 1.0));
+    let unproject = |depth: f32| {
+        let point = inv_proj * crcbl::math::Vec4::new(ndc.x, ndc.y, depth, 1.0);
+        point.truncate() / point.w
+    };
+    let along = unproject(0.5) - unproject(1.0);
+    (inv_view * along.extend(0.0))
+        .truncate()
+        .normalize()
+        .to_array()
+}
+
+/// What the host says the block at `centre` reads on `channel`.
+///
+/// Per pixel and then averaged, in that order: the encode below is not linear
+/// and the sky has a slope across the block, so averaging the radiances first
+/// and encoding once would predict a different number than the frame holds.
+///
+/// The chain is short because nothing is between the two ends. The sky pass
+/// writes the LUT's radiance, no surface is in front of it, the arm is
+/// [`Arm::scene_referred`] so the operator is the clamp at
+/// `crcbl::shaders::tonemap::DEFAULT_EXPOSURE`, and the target is sRGB.
+fn predicted_sky_channel(
+    view: &crcbl::shaders::atmosphere::SkyView,
+    camera: &Camera,
+    extent: (u32, u32),
+    centre: (u32, u32),
+    channel: usize,
+) -> f32 {
+    let (mut total, mut count) = (0.0f32, 0u32);
+    let x0 = centre.0.saturating_sub(SKY_BAND.0);
+    let y0 = centre.1.saturating_sub(SKY_BAND.1);
+    let x1 = (centre.0 + SKY_BAND.0).min(extent.0.saturating_sub(1));
+    let y1 = (centre.1 + SKY_BAND.1).min(extent.1.saturating_sub(1));
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let radiance = view.radiance(sky_ray(camera, extent, x, y));
+            total += srgb_encode(radiance[channel].min(1.0));
+            count += 1;
+        }
+    }
+    assert!(count > 0, "an empty block predicts nothing");
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a block of this frame is a few dozen pixels"
+    )]
+    {
+        total / count as f32
+    }
+}
+
+/// The mean of one channel over the block [`predicted_sky_channel`] models.
+fn sky_channel(image: &Image, centre: (u32, u32), channel: usize) -> f32 {
+    let (mut total, mut count) = (0.0f32, 0u32);
+    let x0 = centre.0.saturating_sub(SKY_BAND.0);
+    let y0 = centre.1.saturating_sub(SKY_BAND.1);
+    let x1 = (centre.0 + SKY_BAND.0).min(image.width().saturating_sub(1));
+    let y1 = (centre.1 + SKY_BAND.1).min(image.height().saturating_sub(1));
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let pixel = image
+                .pixel(x, y)
+                .unwrap_or_else(|| panic!("({x}, {y}) is inside the frame"));
+            total += f32::from(pixel[channel]);
+            count += 1;
+        }
+    }
+    assert!(count > 0, "an empty block measures nothing");
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a block of this frame is a few dozen pixels"
+    )]
+    {
+        total / count as f32
+    }
+}
+
+/// Where a band sits in the frame, in pixels.
+fn sky_band_at(extent: (u32, u32), band: (f32, f32)) -> (u32, u32) {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "every band is a fraction inside 0..1 of an extent of a few hundred"
+    )]
+    {
+        (
+            (band.0 * extent.0 as f32) as u32,
+            (band.1 * extent.1 as f32) as u32,
+        )
+    }
+}
+
+/// **The plaza stands under Hillaire's atmosphere, and it is the same sun the
+/// shadows are cast by.**
+///
+/// `docs/plan/43-render-standards.md` §8. The sky over the plaza is not an
+/// authored gradient and not the clear colour: every band of it agrees with
+/// `crcbl_shaders::atmosphere::SkyView` marched on the host from
+/// [`sun::Sky::atmosphere`] — the very value `crate::gpu`'s frame and this
+/// suite's `build` both hand [`ForwardRenderer::set_atmosphere`], and the value
+/// whose direction and illuminance are read straight off
+/// [`sun::Sky::light`].
+///
+/// So the agreement is what says the two are one sun. A sky drawn from a second
+/// spelling of the sun — a different tick, an unnormalised direction, an
+/// illuminance of one where the light carries this sample's own — misses this
+/// by many levels, because the LUT is a table in the azimuth *away from the
+/// sun* and is linear in its illuminance.
+///
+/// Read on [`Arm::scene_referred`], which is what lets a code value be
+/// predicted at all: the shipped operator is the ACES fit, a further monotone
+/// remap this model does not carry.
+///
+/// Two anti-vacuity clauses. The bands must **spread**, so this is a sky with
+/// structure in it rather than nine readings of one flat field; and the sun's
+/// two ticks must **differ** at a band, so the sky follows the clock rather
+/// than being marched once from whatever pose happened to build the renderer.
+///
+/// **Shown red before it was green** (2026-09-06, radv): with
+/// `renderer.set_atmosphere(...)` commented out of [`build`], every reading
+/// failed and the first read `band (128, 7), red measures 29.00 and the host
+/// LUT predicts 59.20, a miss of 30.20 level(s) against a budget of 0.9`. The
+/// measured triple is the plaza's clear colour under the
+/// clamp, identical at all nine bands, which is what sundial's background was
+/// before this — and the spread clause below would have caught it too.
+#[test]
+#[ignore = "needs a real GPU and a backend pin; run tests/run-sundial-golden.sh"]
+fn the_sky_over_the_plaza_is_the_host_lut() {
+    let arm = Arm::shipped().scene_referred();
+    let camera = arm.camera();
+    let view = crcbl::shaders::atmosphere::SkyView::build(&arm.sky().atmosphere().parameters());
+    let (image, paths, _) = draw(EXTENT, arm);
+
+    let mut worst = 0.0f32;
+    let mut worst_at = (SKY_BANDS[0], 0usize);
+    let mut faults = Vec::new();
+    for band in SKY_BANDS {
+        let at = sky_band_at(EXTENT, band);
+        for (name, channel) in [("red", 0), ("green", 1), ("blue", 2)] {
+            let measured = sky_channel(&image, at, channel);
+            let predicted = predicted_sky_channel(&view, &camera, EXTENT, at, channel);
+            let miss = (measured - predicted).abs();
+            if miss > worst {
+                worst = miss;
+                worst_at = (band, channel);
+            }
+            if miss > SKY_LEVELS {
+                faults.push(format!(
+                    "band {at:?}, {name} measures {measured:.2} and the host LUT predicts \
+                     {predicted:.2}, a miss of {miss:.2} level(s) against a budget of \
+                     {SKY_LEVELS}"
+                ));
+            }
+        }
+    }
+    eprintln!(
+        "sundial golden: the sky on {paths} — worst band {:?} channel {} misses the host LUT \
+         by {worst:.2}/255 against a budget of {SKY_LEVELS}",
+        worst_at.0, worst_at.1,
+    );
+    assert!(faults.is_empty(), "{}", faults.join("\n"));
+
+    // The sky has structure in it: nine readings of one flat field would agree
+    // with a host model of a flat field just as well, and say nothing.
+    let greens: Vec<f32> = SKY_BANDS
+        .iter()
+        .map(|band| sky_channel(&image, sky_band_at(EXTENT, *band), 1))
+        .collect();
+    let lowest = greens.iter().copied().fold(f32::INFINITY, f32::min);
+    let highest = greens.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let spread = highest - lowest;
+    eprintln!(
+        "sundial golden: the sky spans {lowest:.2}..{highest:.2} on green, a spread of \
+         {spread:.2}/255"
+    );
+    assert!(
+        spread > SKY_SPREAD,
+        "the nine sky bands span {spread:.2}/255 on green, which is flat enough that a model \
+         of a flat sky would pass this — the bands are not on the LUT's gradient, or the sky \
+         is not being drawn"
+    );
+
+    // And it follows the clock. The whole point of putting the atmosphere on
+    // this fixture is a sun that moves, and a renderer marched once from the
+    // pose it was built with would draw the same sky at every tick.
+    let grazing = Arm::shipped().scene_referred().at_tick(sun::GRAZING_TICK);
+    let (low, _, _) = draw(EXTENT, grazing);
+    let horizon = sky_band_at(EXTENT, SKY_BANDS[8]);
+    let (fixture_band, grazing_band) = (
+        sky_channel(&image, horizon, 2),
+        sky_channel(&low, horizon, 2),
+    );
+    let moved = (fixture_band - grazing_band).abs();
+    eprintln!(
+        "sundial golden: the band at {horizon:?} reads {fixture_band:.2} on blue at tick {} \
+         and {grazing_band:.2} at tick {}, a move of {moved:.2}/255",
+        sun::FIXTURE_TICK,
+        sun::GRAZING_TICK,
+    );
+    assert!(
+        moved > SKY_TICK_APART,
+        "the sky at {horizon:?} moved by {moved:.2}/255 between tick {} and tick {}, which is \
+         a sky that is not following the sun that casts this fixture's shadows",
+        sun::FIXTURE_TICK,
+        sun::GRAZING_TICK,
+    );
 }
 
 // ---------------------------------------------------------------------------

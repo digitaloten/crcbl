@@ -212,19 +212,23 @@ The record behind this — the argument, the options and the measurements — is
 `crcbl_shaders::atmosphere` and `crcbl_render::ForwardRenderer::set_atmosphere`
 landed with `docs/plan/43-render-standards.md` §8's sky. What they left:
 
-**DECIDED 2026-09-06 —** `apps/sundial` takes the atmosphere, because its sun is
-the subject, and is re-blessed on both adapters and in the browser while lantern
-and alcove stay as they are; the sun disc is drawn in `sky.slang` with radiance
-= the `DirectionalLight`'s illuminance divided by the disc's solid angle,
-Hillaire 2020's limb darkening, clamped to `Rgba16Float`'s maximum, with bloom
-and exposure carrying the rest; aerial perspective is Hillaire's third LUT — a
+**DECIDED 2026-09-06 —** the sun disc is drawn in `sky.slang` with radiance =
+the `DirectionalLight`'s illuminance divided by the disc's solid angle, Hillaire
+2020's limb darkening, clamped to `Rgba16Float`'s maximum, with bloom and
+exposure carrying the rest; aerial perspective is Hillaire's third LUT — a
 32×32×32 camera froxel volume of transmittance and in-scatter — built by the
 atmosphere module and composed in `volumetric-composite` beside the local fog.
 That is the shipped form in Unreal's `SkyAtmosphere` and in Hillaire 2020, and
 Unreal likewise keeps the two volumes separate and composes them rather than
-merging them. It schedules the sundial switch and its re-bless, the disc in
-`sky.slang`, and the third LUT with its composite; the rest — ground black, the
-rough lobe's azimuth, the ramp share, Metal and D3D12 — stays as recorded.
+merging them. It schedules the disc in `sky.slang` and the third LUT with its
+composite; the rest — ground black, the rough lobe's azimuth, the ramp share,
+Metal and D3D12 — stays as recorded.
+
+The demo half of that decision is done: **`apps/sundial` draws under the
+atmosphere**, `crcbl_sundial::sun::Sky::atmosphere` is where its sun becomes
+one, five of its goldens were re-blessed on lavapipe and the suite is green on
+both adapters and in the browser gate. It is the only app that drives one, so it
+is where the disc and the third LUT will be looked at.
 
 - **The share between the LUT and the bands is argued, not measured.**
   `sky_environment` takes `sharpness_of`'s ramp because that ramp is already
@@ -248,18 +252,59 @@ rough lobe's azimuth, the ramp share, Metal and D3D12 — stays as recorded.
   There is no Apple or Windows hardware here, so CI's software adapters are the
   only verdict, and `ATMOSPHERE_MIRROR_BAND_LEVELS` carries headroom for them.
 
-- **No app drives an atmosphere, so the stripe is unmeasured against a real
-  frame.** `ForwardRenderer::set_atmosphere` has two callers in the tree, both
-  in `crcbl::screenshot` — `atmosphere_forward` and `Scene::AtmosphereMirror`'s
-  builder — and each draws one frame under a sun that never moves, so the
-  striped march is covered by `crcbl-render`'s null-backend tests
-  (`a_moving_sun_is_marched_a_stripe_per_frame` and the two beside it) and by
-  the shader crate's `a_striped_build_is_the_one_shot_build`, and by nothing
-  that has ever put a moving sun on a screen. `SKY_VIEW_BUILD_ROWS` was picked
-  from the measured cost of one step against a frame budget, not from watching a
-  sweep: whether the lag it buys is the right trade is unverified, and `sundial`
-  is the shape of the demo that would answer it. The same gap as the demo switch
-  at the top of this section.
+- **The striped march now runs under a moving sun, and nobody has looked at
+  it.** `apps/sundial` calls `ForwardRenderer::set_atmosphere` every frame from
+  the tick its clock stands at, so `refresh_sky_view`'s
+  `SKY_VIEW_BUILD_ROWS`-per-frame refresh is exercised by a real sweep for the
+  first time — but only by a golden suite, which reads single frames at fixed
+  ticks and cannot see a sky that lags the sun it is drawn from.
+  `SKY_VIEW_BUILD_ROWS` was picked from the measured cost of one step against a
+  frame budget, not from watching a sweep, and whether the lag it buys is the
+  right trade is still unverified. What would answer it is a windowed run of
+  `cargo run -p sundial` watched through a sweep, or a headless capture of
+  consecutive frames across one, and neither has been done — nothing opens on
+  this machine's live display.
+
+- **`apps/sundial`'s sun has no headroom left at the top of its arc, and nothing
+  decided that.** `crcbl_sundial::sun::INTENSITY` was set so that
+  `plaza::OPEN_PAVEMENT` landed clear of 255 under `TonemapCurve::Clamp` at
+  `NOON_TICK` — its own doc says why: a control at the top of the range reads
+  the same whether the frame is right or twice as bright. The atmosphere's L1
+  ambient is added to the direct term and the sum now clips there, measured on
+  radv; `docs/notes/rendering.md` carries both numbers. The frames the sample
+  ships go through the ACES fit and are nowhere near the top, so this is only
+  about what a scene-referred arm can read — and the arm it costs is the _steep_
+  control of
+  `the_grazing_sun_leaves_the_open_pavement_as_smooth_as_the_steep_one_does`,
+  whose block also reads 255 flat now, so a speckle count there can no longer
+  find a dot however the shadow bias is set. The claim the test is actually
+  about — the grazing sun — is unaffected and still reads 196.7/255.
+
+  **Two ways out, and this is the user's call because both change the picture.**
+  Turn `INTENSITY` down until the clamp has headroom again, which also darkens
+  the sky (the atmosphere's illuminance is read off the same light) and moves
+  every sundial golden a second time; or move the acne pair's steep arm off
+  `NOON_TICK` to a tick whose pavement is not at the top. **Zeroing
+  `crcbl_sundial::sun::AMBIENT` was tried and does not fix it** — measured, the
+  block still reads 255.00 with the flat term gone, so the sky's ambient alone
+  is over the top and removing the flat one would only darken every shadow in
+  the fixture.
+
+- **The seam comparison no longer draws through the shipped resolve.**
+  `apps/sundial/tests/golden.rs`'s
+  `the_seam_runs_the_console_filter_on_the_left_and_the_shipped_one_on_the_right`
+  now uses `Arm::without_antialiasing`, and `SEAM_BLEED` is one column instead
+  of thirty-two. The reason is measured and is in that constant's doc: the
+  resolve walks along an edge for up to `crcbl_shaders::cmaa2::MAX_LINE_LENGTH`
+  texels, so with a sky bright enough to give the shadow edges contrast it
+  carried the seam 33 columns out on lavapipe — one past the old band — while a
+  band wide enough for the resolve swallows the only region where `disc` and the
+  shipped filter differ on the left half at all, which is 43 columns. With the
+  resolve out, every column but the seam's own is exact on both adapters. **What
+  this costs** is that the selector is no longer asserted on the exact effect
+  stack the sample ships. Closing that would want a claim shaped for a pass with
+  no footprint — a per-column budget rather than byte equality, or a pose whose
+  two filters differ far from the seam — and neither was in this slice.
 
 - **The sky's ambient row's `x` lane is unobserved on a device.** `render_e2e`'s
   `an_atmospheres_ambient_rows_light_a_wall` closed the `z` one:

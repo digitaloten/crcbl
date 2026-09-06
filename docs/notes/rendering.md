@@ -2428,3 +2428,90 @@ differ by 4, and the second read a shaded background of `[29, 34, 48]` against
 the normals view's `[5, 8, 17]`, because a debug view resolves to the clamp
 whatever the renderer starts on. Both fixtures pin the clamp beside
 `without_the_resolve`; both suites are green on radv and lavapipe.
+
+## `apps/sundial` took the atmosphere (2026-09-06)
+
+`docs/backlog.md`'s "What the atmosphere shipped without" scheduled the demo
+switch; this is what it moved. `crcbl_sundial::sun::Sky::atmosphere` is the new
+value — `sun_direction` and `sun_illuminance` are read off `Sky::light`, so
+there is one spelling of the sun — and `Gpu::frame` and the golden suite's
+`build` are its two callers. The plaza had no sky before this at all: it never
+called `set_sky`, so its background was the scene target's clear colour and the
+whole of its ambient was `DirectionalLight::ambient`.
+
+**The guard was shown red first**, on radv, with `set_atmosphere` commented out
+of `build`: all twenty-seven readings failed and the first was
+`band (128, 7), red measures 29.00 and the host LUT predicts 59.20, a miss of 30.20 level(s) against a budget of 0.9`.
+`(29, 34, 48)` is the clear colour under the clamp and it read the same at all
+nine bands, which the spread clause would also have caught.
+
+**The sweep behind `SKY_LEVELS`**, over nine bands and three channels on a
+scene-referred `Arm::shipped()` frame: the worst miss is 0.06 levels on radv and
+0.13 on lavapipe. `SKY_LEVELS` is `crcbl/tests/render_e2e.rs`'s own
+`ATMOSPHERE_MIRROR_LEVELS`, 0.9, taken rather than invented. The two
+anti-vacuity clauses measured 35.16 and 35.06 levels of spread across the nine
+bands, and 17.04 and 17.02 levels of movement at the horizon band between
+`FIXTURE_TICK` and `GRAZING_TICK`.
+
+**Five goldens moved and one did not.** Against the old references, on radv:
+`plaza-grazing` a mean absolute error of 18.36 with a structural similarity of
+0.781, `plaza-cascades` 19.74 at 0.852, and `plaza-pcss`, `plaza-disc` and
+`plaza-box` 20.80, 20.82 and 20.84 at 0.762, 0.761 and 0.761 — every one of them
+100% of pixels differing. `plaza-atlas` is byte-identical: the shadow-atlas
+viewer replaces the picture. Re-blessed on lavapipe, where sundial's set has
+always been blessed, and green afterwards on both adapters.
+
+**What the lighting quantities did**, before and after, radv then lavapipe.
+Every assertion held on both; none was re-thresholded.
+
+| reading                                     | before          | after           |
+| ------------------------------------------- | --------------- | --------------- |
+| the plinth contact's darkening              | 0.7088 / 0.7076 | 0.4943 / 0.4938 |
+| open pavement, no shadow term, ACES         | 184.08 / 184.02 | 192.39 / 192.31 |
+| the acne block at `GRAZING_TICK`, clamp     | 185.29 / 185.15 | 196.68 / 196.55 |
+| the acne block at `NOON_TICK`, clamp        | 252.46 / 252.46 | 255.00 / 255.00 |
+| speckle at either tick                      | 0.0000%         | 0.0000%         |
+| the bias pair's contact, fixed pose         | 70.73 / 70.44   | 58.08 / 57.88   |
+| the bias pair's contact, pavement pose      | 69.84 / 69.59   | 57.63 / 57.47   |
+| `OPEN_PAVEMENT` at `NOON_TICK`, clamp, radv | 252.67          | 255.00          |
+
+The PCSS ladder is unchanged on radv — penumbrae 0.0400, 0.0560 and 0.1000 m,
+tallest over lowest 2.500 — and moved by one measurement step on lavapipe, to
+0.1040 m and 2.600. The disc ladder is 0.0400, 0.0440, 0.0400 and 1.000 on both,
+before and after. The cascade overlay's two readings led red over blue by 79.9
+and −74.1 before and 75.0 and −87.4 after, over surfaces that went from 170.59
+and 184.01 to 181.28 and 192.33.
+
+The last row of that table is the one that is a problem rather than a
+measurement, and `docs/backlog.md` carries it: `INTENSITY` exists to keep that
+pavement clear of the top of the range under the clamp, and it no longer is.
+**Zeroing `AMBIENT` was tried and does not recover it** — the block still reads
+255.00 with the flat term gone, so the sky's ambient alone is over the top.
+
+**The seam comparison had to change, and the sweep says why.** Its claim is that
+every column outside a bleed band is byte-identical to its own whole-frame
+reference. Measured at `CLAIM_EXTENT` as the furthest column from the seam that
+differs, on the `box` rung:
+
+| arm                                 | radv | lavapipe |
+| ----------------------------------- | ---- | -------- |
+| shipped stack, no atmosphere        | 25   | 15       |
+| shipped stack, under the atmosphere | 0    | 33       |
+| `REFLECTIONS` cleared, under it     | 33   | 33       |
+| `CMAA2` cleared, under it           | none | none     |
+
+So the antialiasing resolve is the whole of it, which is what `SEAM_BLEED`
+always said — but its 32 columns were never a bound: `cmaa2_shapes.slang` walks
+a run of like boundaries for up to `MAX_LINE_LENGTH` texels, and how far it
+actually reaches depends on the contrast of the edges it finds. A sky bright
+enough took it past the band. **Widening the band is not available**: `disc` and
+the shipped filter draw a different left half only within 43 columns of the seam
+from this pose, so a band sized for the resolve leaves that half's exactness
+separating nothing — measured, at a band of 64 the anti-vacuity assertion fires.
+The arm now clears `CMAA2` and `SEAM_BLEED` is one column, the one the split
+lands on; 1023 of 1024 columns are then exact on both adapters, and the two
+halves stand 9.234 and 228.562 apart on `disc` and 27.387 and 258.306 on `box`
+(radv; lavapipe answers 9.234/228.438 and 27.438/258.201). Both of that test's
+recorded sabotages were re-run on radv under the new arm and still fire — the
+reference swap at column 469, and the shipped filter on both sides through the
+anti-vacuity clause.

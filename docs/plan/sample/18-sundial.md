@@ -321,17 +321,30 @@ hold in their head, and the only honest way to set them is to look.
    heights over one plane, so the only thing differing between their shadows is
    the distance from blocker to receiver, and the widths walked in **metres of
    pavement** rather than pixels so the three are comparable. Under `pcss` they
-   read 0.0440 / 0.0640 / 0.1080 m, a ratio of 2.455; under `disc` 0.0440 /
-   0.0480 / 0.0440, a ratio of 1.000. The `disc` arm is the half that says the
-   widening came from the blocker search rather than from the scene.
+   read 0.0400 / 0.0560 / 0.1000 m on radv and 0.0400 / 0.0560 / 0.1040 on
+   lavapipe, a ratio of 2.500 and 2.600; under `disc` 0.0400 / 0.0440 / 0.0400
+   on both, a ratio of 1.000. The `disc` arm is the half that says the widening
+   came from the blocker search rather than from the scene. (Re-read on
+   **2026-09-06** with the atmosphere: only the tallest `pcss` counter moved,
+   and only on lavapipe, by one step of the walk.)
 
    The **side by side** is the seam claim,
    `the_seam_runs_the_console_filter_on_the_left_and_the_shipped_one_on_the_right`,
    which held one pair — `disc` against `pcss` — until **2026-09-05**. A rung
    wired to its neighbour's branch is exactly the failure one pair cannot see,
-   so it now walks every rung the engine declares: 961 of the 1024 columns exact
-   on both adapters for each of them, with `disc` standing 3.110 and 324.498/255
-   from `pcss` down the two halves and `box` 26.417 and 363.250.
+   so it now walks every rung the engine declares: every column of the frame but
+   the one the split lands on is exact on both adapters for each of them, with
+   `disc` standing 9.234 and 228.562/255 from `pcss` down the two halves and
+   `box` 27.387 and 258.306.
+
+   Those readings are taken with the antialiasing resolve out of the arm, since
+   **2026-09-06** and the atmosphere. `SEAM_BLEED`'s doc in
+   `apps/sundial/tests/golden.rs` carries the sweep: the resolve walks along an
+   edge for up to `crcbl_shaders::cmaa2::MAX_LINE_LENGTH` texels and a sky
+   bright enough to give the shadow edges contrast carried the seam past the
+   band it used to skip, while a band wide enough for the resolve swallows the
+   only region where two filters differ from this pose. What the seam is being
+   asked about is the per-fragment selector, and that is what is left.
 
 5. **Ray-traced shadows**, gated on P7C, and the device clamp.
 
