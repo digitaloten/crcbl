@@ -1098,6 +1098,24 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- **`crcbl-mtl` binds only what a pipeline's reflection reads.** Every raster
+  and compute pipeline is created with `MTLPipelineOption::BindingInfo`, and any
+  argument-table `set*` the pipeline's own reflection reports as unread
+  (`MTLBinding::isUsed`) is skipped. A pipeline whose reflection Metal declines
+  to supply binds everything, as before. This removes the
+  `unused binding in encoder at Buffer index N` findings Metal's debug layer
+  prints per draw; it changes no picture, because a slot no shader reads cannot
+  affect one.
+- **`crcbl-render`'s forward mesh layout declares bindings 1 to 5** — the
+  vertex, instance, draw, mesh and visible-instance tables — visible to the
+  fragment stage as well as the geometry stage. Slang's Metal backend
+  materialises every module global into every entry point, so `mesh.slang`'s
+  fragment stage declares those buffers without reading them, and Metal's debug
+  layer reports the unbound fragment arguments. The layout is now the permission
+  and the reflection above is the decision. **This puts the fragment stage at
+  `PORTABLE_STORAGE_BUFFERS_PER_STAGE` alongside the vertex stage**: a renderer
+  adding a storage buffer to either raster stage of this layout is now refused
+  at `check_portable_storage_buffers`.
 - **Every sample's golden suite now checks that its simulation advanced.**
   `apps/asteroids`, `apps/horde` and `apps/hud` report a simulated tick count in
   their `--frames` summary — `60 frames, 59 ticks (0 simulated)` on a frozen

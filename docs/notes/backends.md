@@ -3,6 +3,102 @@
 Records kept so they are not re-derived: measurements, investigations, ideas
 considered and declined, and lessons. Open work lives in `docs/backlog.md`.
 
+## Metal binds by reflection (2026-09-07)
+
+`crcbl-mtl` now creates every raster and compute pipeline with
+`MTLPipelineOption::BindingInfo`, reduces the reflection's per-stage
+`MTLBinding` list to a bitmask in `crcbl_mtl::binding_mask`, and skips any
+argument-table `set*` the compiled pipeline's own `isUsed` says it cannot read.
+`crcbl_render::forward`'s mesh layout gained `ShaderStages::FRAGMENT` on
+bindings 1 to 5 in the same change. This is the record of what was measured,
+what was decided, and what is still owed to a device.
+
+**The finding.** CI's `mtl e2e (macos-latest)` log under
+`MTL_DEBUG_LAYER_WARNING_MODE=nslog` carries two warning classes from the mesh
+suite, and they are opposite halves of one question:
+
+- `Fragment Function(fragmentMain): missing Buffer binding at index 3/4/5`.
+  Slang's Metal emission materialises every module global into every entry
+  point, so `msl/mesh.metal`'s `fragmentMain` declares `draw`, `meshes`,
+  `visible_instances`, `vertices` and `instances` as parameters. The layout made
+  bindings 1 to 5 visible to the geometry stage alone, so the fragment argument
+  table held nothing at those indices. `crcbl-shaders`'
+  `the_mesh_fragment_stage_stores_the_geometry_globals_without_reading_them` is
+  what now holds the artifact to "declared, stored into `KernelContext`, never
+  dereferenced" — and its doc comment says what a future real read would oblige.
+- `unused binding in encoder at Buffer index 6/7/8/9` and `index 0`. The
+  material table, light list, froxel grid and probe rows are declared
+  `geometry | FRAGMENT` and bound on both stages, and only one stage reads each;
+  `frame` is bound to the fragment stage of `depthMaskedFragmentMain` and
+  `rsmFragmentMain`, neither of which reads it.
+
+**Why the layout cannot answer either.** A `BindGroupLayoutEntry`'s visibility
+says which stages are _permitted_ to reach a binding; Slang's materialisation
+means the permission and the read are different sets, on the same shader, in
+both directions. Only the compiled pipeline knows, and only Metal will say. So
+the layout is now the permission and the reflection is the decision, which is
+what makes widening bindings 1 to 5 to `FRAGMENT` free rather than a trade of
+one warning class for the other.
+
+**Why 3, 4 and 5 and not 1 and 2 is still unknown.** `vertices [[buffer(1)]]`
+and `instances [[buffer(2)]]` are declared by `fragmentMain` on exactly the same
+terms as the three the layer complains about, and the layer says nothing about
+them. The only reading consistent with both classes is that the
+`missing binding` check consults `isUsed` too, and that the Metal compiler kept
+the argument alive for three of the five and not the other two. Nothing here can
+test that: it needs `MTLBinding::isUsed` read on a device.
+
+**The quirk decision.** The brief this was built from said `crcbl_mtl::quirk`'s
+mesh section records the reflection selector misbehaving on the paravirtual GPU.
+It does not. What `check_mesh_support` records is stronger and simpler: that
+device answers `false` to `supportsFamily:MTLGPUFamilyMetal3`, so a Metal mesh
+pipeline cannot be created on it at all and there is nothing for a mask to be
+wrong about. Mesh pipelines take `BindingMask::all()` anyway, for a reason of
+this backend's own rather than that device's: `crcbl_mtl::binding` binds through
+`setVertexBuffer:`/`setFragmentBuffer:` and has no object or mesh sibling, so
+`objectBindings`/`meshBindings` describe tables this backend does not write, and
+mapping one onto the other would be a guess. The module's rule is that a
+fallback never binds _less_.
+
+**Ordering is the sharp edge, and it is structural.** The seam does not require
+a pipeline to be bound before `bind_group` — it takes a pipeline _layout_, as
+`vkCmdBindDescriptorSets` does — so the mask that decides a group's binds may
+not exist when the group arrives and changes under it whenever a pipeline with a
+different one is bound. A pass therefore opens holding `BindingMask::none()`,
+`crcbl_mtl::command` keeps the groups in force per slot, and a pipeline bind
+re-applies only those whose mask actually moved. The second edge is that a
+_skipped_ bind must not be recorded in `crcbl_mtl::bind_cache` as made,
+otherwise the next pipeline that does read the slot is told the argument is
+already there. That is `BindingMask::issue`, which takes the cache call as a
+closure so the order is the compiler's business rather than a convention
+repeated at every bind site.
+
+**What it cost.** `crcbl_render::forward`'s mesh layout was at
+`PORTABLE_STORAGE_BUFFERS_PER_STAGE` in the vertex stage with no headroom; it is
+now at the same ceiling in the fragment stage too, because bindings 1, 2, 4 and
+5 are storage buffers. A row added to either raster stage is now a renderer that
+cannot be built in a browser, and `check_portable_storage_buffers` is what says
+so at the layout rather than at somebody else's `createPipelineLayout`.
+
+**What was verified, and where.** On this machine, which has no Metal device:
+the mask module's own host tests; a cross-target
+`cargo clippy --target aarch64-apple-darwin` and the matching
+`cargo doc --document-private-items`, which type-check and document every
+`cfg(target_os = "macos")` line of the change; `crcbl-shaders`' two new artifact
+guards, both shown red by splicing a read and a moved index into a copy of the
+text; and the Vulkan render and forward e2e suites on radv and lavapipe, which
+is what says the widened visibility moved no pixel.
+
+**What is owed to CI.** Everything about Metal itself. Nothing here executed a
+Metal call, `crcbl_mtl::binding`'s masked `apply` has never run, and the
+`crcbl-mtl` host suite does not compile it. The measurement that says whether
+this worked is the `mtl e2e (macos-latest)` job's warning counts under
+`MTL_DEBUG_LAYER_WARNING_MODE=nslog` — both classes should go to zero on a
+device whose reflection is faithful — and the `cargo test` in the macOS job is
+the only thing that runs `crcbl-mtl`'s new
+`the_forward_mesh_layout_flattens_onto_the_artifacts_argument_tables`, because
+`crate::binding` is `cfg(target_os = "macos")` and its tests are not host tests.
+
 ### SHIPPED — the depth-bias constant is an `i32` on the seam
 
 Closes "WebGPU cannot carry a fractional depth-bias constant", decided and built

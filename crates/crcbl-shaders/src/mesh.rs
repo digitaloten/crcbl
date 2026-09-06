@@ -4683,6 +4683,227 @@ mod tests {
         }
     }
 
+    /// Whether `line` names `word` as a whole identifier.
+    ///
+    /// Substring matching will not do here: `instances_3` is a substring of
+    /// `visible_instances_3`, so a plain `contains` would read the store of one
+    /// as a mention of the other and the check below would report a read that
+    /// is not there.
+    fn names(line: &str, word: &str) -> bool {
+        line.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|found| found == word)
+    }
+
+    /// The lines of an entry point's body that name `argument` somewhere other
+    /// than the signature it opens with and the one `KernelContext` prologue
+    /// line that stores it.
+    ///
+    /// Slang's Metal emission gives every entry point every module global as a
+    /// parameter and opens the body by copying each into a `KernelContext`
+    /// struct, whether the body goes on to read it or not — so a store is the
+    /// signature's own consequence, and anything *else* is a read.
+    fn reads_of<'a>(body: &'a str, argument: &str) -> Vec<&'a str> {
+        let store = format!("= {argument};");
+        body.lines()
+            .skip(1)
+            .filter(|line| names(line, argument))
+            .filter(|line| {
+                let line = line.trim();
+                !(line.starts_with("(&kernelContext") && line.ends_with(&store))
+            })
+            .collect()
+    }
+
+    /// **`fragmentMain` stores the five geometry globals and reads none of
+    /// them**, which is what makes `crcbl_render::forward`'s decision to name
+    /// `ShaderStages::FRAGMENT` on mesh bindings 1 to 5 a permission rather
+    /// than a cost.
+    ///
+    /// Slang materialises every module global into every entry point, so
+    /// `msl/mesh.metal`'s fragment stage takes `vertices`, `instances`, `draw`,
+    /// `meshes` and `visible_instances` as parameters and copies each into its
+    /// `KernelContext` — and Metal's debug layer answers a declared argument
+    /// with nothing bound at it with `missing Buffer binding at index N`, once
+    /// per draw. The layout therefore declares those rows fragment-visible and
+    /// `crcbl-mtl` binds them only where the pipeline's own
+    /// `MTLBinding::isUsed` says the compiled function kept them.
+    ///
+    /// **If this test ever goes red, that arrangement has to be revisited
+    /// rather than the test adjusted.** A `mesh.slang` whose fragment stage
+    /// genuinely reads one of these five would mean `isUsed` reports it true,
+    /// the bind is issued, and the buffer must actually be *bound* on the
+    /// fragment stage on every backend — which the layout already permits, but
+    /// which nothing else in the engine checks. The WebGPU storage-buffer
+    /// ceiling is the sharp edge: `forward.rs`'s own note records that this
+    /// layout is at the guaranteed limit in both raster stages already.
+    ///
+    /// Asked of the committed artifact rather than of the Slang source, for
+    /// `the_depth_entry_point_fetches_the_position_stream_alone`'s reason: the
+    /// claim is about the code a driver compiles.
+    #[test]
+    fn the_mesh_fragment_stage_stores_the_geometry_globals_without_reading_them() {
+        const GEOMETRY: [&str; 5] = [
+            "vertices_3",
+            "instances_3",
+            "draw_3",
+            "meshes_3",
+            "visible_instances_3",
+        ];
+        let msl = crate::MESH.msl().expect("mesh commits MSL");
+        let body = entry_point_body(msl, "fragmentMain");
+
+        for argument in GEOMETRY {
+            assert!(
+                names(body.lines().next().expect("a signature"), argument),
+                "msl/mesh.metal's fragmentMain no longer declares `{argument}`, so this test is \
+                 checking nothing — the Slang-generated suffix has moved and the names above \
+                 have to be re-read off the artifact"
+            );
+            let reads = reads_of(body, argument);
+            assert!(
+                reads.is_empty(),
+                "msl/mesh.metal's fragmentMain reads `{argument}`:{}\n\
+                 crcbl_render::forward's mesh layout and crcbl-mtl's reflection mask both treat \
+                 mesh bindings 1 to 5 as declared-but-unread by the fragment stage; a real read \
+                 means the buffer has to be bound on the fragment stage of every backend, and \
+                 that layout is at the WebGPU storage-buffer ceiling in both raster stages",
+                reads
+                    .iter()
+                    .map(|line| format!("\n  {}", line.trim()))
+                    .collect::<String>()
+            );
+        }
+
+        // The matcher has to be able to see a real read, or it is a green light
+        // wired to nothing. A dereference of `draw` spliced into a copy of the
+        // body is the shape `materials` already has a few lines below the
+        // prologue, and it must be named.
+        let sabotaged = format!("{body}\n    uint _S999 = draw_3->base_0;");
+        let caught = reads_of(&sabotaged, "draw_3");
+        assert_eq!(
+            caught.len(),
+            1,
+            "a spliced-in read of `draw_3` was not reported, so the check above cannot fail"
+        );
+    }
+
+    /// Every `name [[table(index)]]` an entry point's signature declares, as
+    /// `(name, table, index)`.
+    ///
+    /// Parameters are split on `", "`, which cuts a `texture2d<float,
+    /// access::sample>` in half — harmlessly, because the half that carries the
+    /// `[[…]]` is the half that carries the parameter's name, and the other has
+    /// no attribute to be found in it.
+    fn declared_arguments(signature: &str) -> Vec<(&str, &str, u32)> {
+        signature
+            .split(", ")
+            .filter_map(|parameter| {
+                let at = parameter.find(" [[")?;
+                let name = parameter[..at].split_whitespace().next_back()?;
+                let attribute = &parameter[at + " [[".len()..];
+                let attribute = &attribute[..attribute.find("]]")?];
+                let (table, index) = attribute.split_once('(')?;
+                let index = index.strip_suffix(')')?.parse().ok()?;
+                Some((name, table, index))
+            })
+            .collect()
+    }
+
+    /// **The argument tables `msl/mesh.metal`'s `fragmentMain` declares**, which
+    /// are the ones `crcbl-mtl` flattens the forward mesh layout onto.
+    ///
+    /// Metal has no set/binding pair: a shader argument names an index in one of
+    /// three flat per-stage tables, and `crcbl_mtl::binding` derives that index
+    /// by counting the same-table entries of the bind group layout that come
+    /// before it. Nothing at run time compares the two — a layout that placed
+    /// `materials` at `buffer(5)` would bind the instance runs where the shader
+    /// reads its material table and draw a wrong picture with a clean log. So
+    /// the artifact's half of that agreement is pinned here, on every host, and
+    /// `crcbl-mtl`'s `the_forward_mesh_layout_flattens_onto_the_artifacts_argument_tables`
+    /// pins the counting rule against the same numbers.
+    ///
+    /// The names are matched by prefix because Slang appends a disambiguating
+    /// suffix (`frame_5`, `draw_3`) that a regeneration may renumber; what may
+    /// not move is which resource sits at which index.
+    #[test]
+    fn the_mesh_fragment_stage_declares_the_tables_the_layout_flattens_to() {
+        const BUFFERS: [&str; 10] = [
+            "frame",
+            "vertices",
+            "instances",
+            "draw",
+            "meshes",
+            "visible_instances",
+            "materials",
+            "lights",
+            "cluster_lights",
+            "probes",
+        ];
+        const TEXTURES: [&str; 10] = [
+            "base_color_textures",
+            "shadow_atlas",
+            "ambient_occlusion",
+            "specular_dfg",
+            "normal_textures",
+            "ltc_matrix",
+            "contact_shadow",
+            "probe_visibility",
+            "mro_textures",
+            "emissive_textures",
+        ];
+        const SAMPLERS: [&str; 2] = ["base_color_sampler", "shadow_sampler"];
+
+        let msl = crate::MESH.msl().expect("mesh commits MSL");
+        let signature = entry_point_body(msl, "fragmentMain")
+            .lines()
+            .next()
+            .expect("a signature");
+        let declared = declared_arguments(signature);
+
+        for (table, expected) in [
+            ("buffer", BUFFERS.as_slice()),
+            ("texture", TEXTURES.as_slice()),
+            ("sampler", SAMPLERS.as_slice()),
+        ] {
+            let mut found: Vec<(&str, u32)> = declared
+                .iter()
+                .filter(|(_, kind, _)| *kind == table)
+                .map(|(name, _, index)| (*name, *index))
+                .collect();
+            found.sort_by_key(|(_, index)| *index);
+            assert_eq!(
+                found.len(),
+                expected.len(),
+                "fragmentMain declares {} {table} arguments and the forward mesh layout flattens \
+                 to {}: {found:?}",
+                found.len(),
+                expected.len()
+            );
+            for (position, (name, index)) in found.iter().enumerate() {
+                let wanted = expected[position];
+                assert_eq!(
+                    usize::try_from(*index).expect("an argument index"),
+                    position,
+                    "the {table} table has a hole at {position}, and the layout counts entries \
+                     rather than reading indices"
+                );
+                assert!(
+                    name.starts_with(&format!("{wanted}_")),
+                    "{table}({index}) is `{name}` and the layout puts `{wanted}` there"
+                );
+            }
+        }
+
+        // And the parser has to be able to see a moved index, or the pin above
+        // holds nothing: the same shape as `the_decode_comparison_notices_a_changed_line`.
+        let moved = signature.replace("[[buffer(9)]]", "[[buffer(11)]]");
+        assert_ne!(
+            declared_arguments(signature),
+            declared_arguments(&moved),
+            "a renumbered argument is invisible to the parser"
+        );
+    }
+
     /// The offsets `slangc` emitted for `DrawConstants`, read out of the
     /// disassembly, and the padding that makes the block's width the same
     /// number on both sides.

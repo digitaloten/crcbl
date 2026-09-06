@@ -86,11 +86,14 @@ pub(crate) enum Stage {
 }
 
 impl Stage {
-    /// How many stages [`BindCache`] holds a table set for.
-    const COUNT: usize = 3;
+    /// How many stages [`BindCache`] holds a table set for, and
+    /// [`BindingMask`](crate::binding_mask::BindingMask) a set of used slots
+    /// for.
+    pub(crate) const COUNT: usize = 3;
 
-    /// This stage's index into [`BindCache::stages`].
-    const fn slot(self) -> usize {
+    /// This stage's index into [`BindCache::stages`], and into the mask beside
+    /// it.
+    pub(crate) const fn slot(self) -> usize {
         self as usize
     }
 }
@@ -189,9 +192,9 @@ impl BindCache {
 
 /// The entry for `slot`, growing the table to reach it.
 ///
-/// Grown on demand rather than sized up front because the table capacities live
-/// in [`crate::binding`], which is macOS-only while this module is compiled on
-/// every host. Growth is bounded by the same thing the `set*` calls' own safety
+/// Grown on demand rather than sized up front because a stage's tables are
+/// filled from the bottom and a pass that binds three slots has no use for the
+/// rest. Growth is bounded by the same thing the `set*` calls' own safety
 /// arguments rest on: `plan_layout` refuses a pipeline layout whose sets overrun
 /// `Table::capacity`, and `crate::argument`'s `plan` bounds the push-constant
 /// block's index by `BUFFER_TABLE_ENTRIES`, so no slot reaching this is larger

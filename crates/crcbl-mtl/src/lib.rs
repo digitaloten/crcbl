@@ -393,6 +393,12 @@ mod argument;
 mod bind_cache;
 #[cfg(target_os = "macos")]
 mod binding;
+// The seventh, and the reason is `bind_cache`'s exactly: which argument-table
+// slots a compiled pipeline reads is a bitmask over integers, and a bit wrongly
+// cleared drops a bind that no Metal call fails on and no layer reports. So the
+// mask and its fallbacks are compiled in the test build on every host.
+#[cfg(any(target_os = "macos", test))]
+mod binding_mask;
 #[cfg(target_os = "macos")]
 mod command;
 #[cfg(target_os = "macos")]

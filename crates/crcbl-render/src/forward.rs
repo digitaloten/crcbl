@@ -4250,7 +4250,26 @@ impl ForwardRenderer {
             },
             BindGroupLayoutEntry {
                 binding: 1,
-                visibility: geometry,
+                // **Both stages, and here it is the FRAGMENT half that needs
+                // saying** — binding 6 and 7 are the mirror image, where the
+                // fragment stage plainly reads the row and the vertex half is
+                // the one Slang forces. Slang's Metal backend materialises
+                // every module global into every entry point, so
+                // `msl/mesh.metal`'s `fragmentMain` takes this buffer whether
+                // its body dereferences it or not — and Metal's debug layer
+                // answers a declared-but-unbound fragment argument with
+                // `missing Buffer binding at index N`, once per draw. Vulkan,
+                // D3D12 and WebGPU all accept a visibility wider than the
+                // shader's reads, so naming FRAGMENT costs them nothing but the
+                // entry itself.
+                //
+                // **It does not cost a redundant bind on Metal either**, and
+                // that is what makes it safe rather than a trade: `crcbl-mtl`
+                // consults `MTLPipelineOption::BindingInfo` reflection and
+                // issues the fragment-stage bind only where `MTLBinding::isUsed`
+                // says the compiled function kept the argument. This entry is
+                // the permission; the reflection is the decision.
+                visibility: geometry.union(ShaderStages::FRAGMENT),
                 kind: BindingKind::StorageBuffer {
                     // The shader says `StructuredBuffer`, not
                     // `RWStructuredBuffer`, so this is the truth rather than a
@@ -4263,7 +4282,8 @@ impl ForwardRenderer {
             },
             BindGroupLayoutEntry {
                 binding: 2,
-                visibility: geometry,
+                // Both stages, for binding 1's reason exactly.
+                visibility: geometry.union(ShaderStages::FRAGMENT),
                 kind: BindingKind::StorageBuffer {
                     // `StructuredBuffer` again: the vertex stage reads its
                     // instance and writes nothing. The *host* writes this one
@@ -4277,7 +4297,8 @@ impl ForwardRenderer {
             },
             BindGroupLayoutEntry {
                 binding: 3,
-                visibility: geometry,
+                // Both stages, for binding 1's reason exactly.
+                visibility: geometry.union(ShaderStages::FRAGMENT),
                 // `dynamic: true`, and it is the whole mechanism: it is what
                 // lets a draw say where its run of instances starts without
                 // `draw_indexed`'s own base instance, which the module docs and
@@ -4289,7 +4310,8 @@ impl ForwardRenderer {
             },
             BindGroupLayoutEntry {
                 binding: 4,
-                visibility: geometry,
+                // Both stages, for binding 1's reason exactly.
+                visibility: geometry.union(ShaderStages::FRAGMENT),
                 kind: BindingKind::StorageBuffer {
                     // The mesh table. `StructuredBuffer` again — the vertex
                     // stage looks its mesh up and writes nothing — and one
@@ -4303,7 +4325,8 @@ impl ForwardRenderer {
             },
             BindGroupLayoutEntry {
                 binding: 5,
-                visibility: geometry,
+                // Both stages, for binding 1's reason exactly.
+                visibility: geometry.union(ShaderStages::FRAGMENT),
                 kind: BindingKind::StorageBuffer {
                     // The per-bucket runs of surviving instances. Read-only
                     // here and written by the draw-argument pass, which is a
@@ -4776,10 +4799,12 @@ impl ForwardRenderer {
             entries: &mesh_entries,
         };
         // **This layout is at the guaranteed limit with no headroom on the
-        // raster path**: eight storage buffers in the vertex stage, which is
-        // every one a WebGPU device promises. A ninth is a renderer that cannot
-        // be built in a browser or on SwiftShader, so it fails here rather than
-        // at somebody else's `createPipelineLayout` — see
+        // raster path, in both raster stages**: the vertex stage takes every
+        // storage buffer a WebGPU device promises, and since bindings 1 to 5
+        // gained FRAGMENT visibility for Metal's debug layer the fragment stage
+        // takes the same number. A ninth in either is a renderer that cannot be
+        // built in a browser or on SwiftShader, so it fails here rather than at
+        // somebody else's `createPipelineLayout` — see
         // [`crcbl_hal::check_portable_storage_buffers`], which also says why the
         // mesh path's extra reads are outside the count.
         // `Some("mesh")`, which is the *pipeline* layout's label, not

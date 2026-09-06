@@ -144,8 +144,8 @@ use objc2_metal::{
     MTLRenderStages, MTLResource, MTLResourceUsage, MTLSamplerState, MTLTexture,
 };
 
-use crate::argument::BUFFER_TABLE_ENTRIES;
 use crate::bind_cache::{BindCache, ResourceId, Stage};
+use crate::binding_mask::{BindingMask, TABLES, Table};
 use crate::device::{
     DeviceInner, DeviceState, MetalDevice, Owned, lookup, lookup_mut, owned, take_owned, to_ns,
 };
@@ -174,33 +174,7 @@ const ADDRESS_BYTES: u64 = size_of::<MTLGPUAddress>() as u64;
 /// it costs every such group [`ADDRESS_BYTES`] per descriptor added.
 pub(crate) const MAX_BINDLESS_DESCRIPTORS: u32 = 8192;
 
-/// Entries in Metal's per-stage **texture** argument table. See
-/// [`BUFFER_TABLE_ENTRIES`], which carries the argument for all three and lives
-/// in [`crate::argument`] because a push-constant block competes for it.
-const TEXTURE_TABLE_ENTRIES: u32 = 128;
-
-/// Entries in Metal's per-stage **sampler** argument table. See
-/// [`TEXTURE_TABLE_ENTRIES`].
-const SAMPLER_TABLE_ENTRIES: u32 = 16;
-
-/// How many argument tables Metal gives a stage.
-const TABLES: usize = 3;
-
-/// Which of Metal's three per-stage argument tables a binding occupies.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Table {
-    /// `setVertexBuffer:offset:atIndex:` and its fragment sibling.
-    Buffer,
-    /// `setVertexTexture:atIndex:` and its fragment sibling.
-    Texture,
-    /// `setVertexSamplerState:atIndex:` and its fragment sibling.
-    Sampler,
-}
-
 impl Table {
-    /// Every table, in the order [`TableCounts`] indexes them.
-    const ALL: [Self; TABLES] = [Self::Buffer, Self::Texture, Self::Sampler];
-
     /// The table a binding kind lands in.
     ///
     /// Metal has one texture table for sampled and storage images alike — the
@@ -227,24 +201,6 @@ impl Table {
             BindingKind::UniformBuffer { .. } | BindingKind::StorageBuffer { .. } => Self::Buffer,
             BindingKind::SampledImage { .. } | BindingKind::StorageImage { .. } => Self::Texture,
             BindingKind::Sampler { .. } => Self::Sampler,
-        }
-    }
-
-    /// Position in a [`TableCounts`].
-    pub(crate) const fn slot(self) -> usize {
-        match self {
-            Self::Buffer => 0,
-            Self::Texture => 1,
-            Self::Sampler => 2,
-        }
-    }
-
-    /// How many entries this table has.
-    const fn capacity(self) -> u32 {
-        match self {
-            Self::Buffer => BUFFER_TABLE_ENTRIES,
-            Self::Texture => TEXTURE_TABLE_ENTRIES,
-            Self::Sampler => SAMPLER_TABLE_ENTRIES,
         }
     }
 
@@ -549,6 +505,18 @@ pub(crate) enum BoundResource {
         /// `useResource:`'s [`MTLResourceUsage`].
         writable: bool,
     },
+}
+
+impl BoundResource {
+    /// The argument table a write of this resource goes to — which is exactly
+    /// which variant it is, as [`BoundBinding`]'s own note says.
+    const fn table(&self) -> Table {
+        match self {
+            Self::Buffer { .. } | Self::Bindless { .. } => Table::Buffer,
+            Self::Texture(_) => Table::Texture,
+            Self::Sampler(_) => Table::Sampler,
+        }
+    }
 }
 
 /// One filled slot of a bind group.
@@ -907,20 +875,31 @@ fn identity<P: ?Sized>(object: &Retained<ProtocolObject<P>>) -> ResourceId {
 /// command buffer. `useResource:usage:` is **not** cached: it declares
 /// residency rather than filling a table slot, and the debug layer has no
 /// "redundant" finding for it.
+///
+/// `mask` is the bound pipeline's, as [`apply`] takes it and on the same terms:
+/// a slot the compiled kernel does not read is not set, and the cache is not
+/// told it was. `useResource:usage:` is outside the mask for the reason it is
+/// outside the cache — residency is not an argument-table entry, and a
+/// descriptor array's contents have to be resident whether or not this
+/// pipeline reads the table pointing at them.
 pub(crate) fn apply_compute(
     bindings: &[BoundBinding],
     encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
     binds: &mut BindCache,
+    mask: BindingMask,
 ) {
     for binding in bindings {
         if !binding.visibility.contains(ShaderStages::COMPUTE) {
             continue;
         }
         let slot = binding.index;
+        let table = binding.resource.table();
         let index = to_ns(u64::from(slot));
         match &binding.resource {
             BoundResource::Buffer { raw, offset, .. } => {
-                if binds.buffer_changed(Stage::Compute, slot, identity(raw), *offset) {
+                if mask.issue(Stage::Compute, table, slot, || {
+                    binds.buffer_changed(Stage::Compute, slot, identity(raw), *offset)
+                }) {
                     // SAFETY: as `apply` — the index was bounded by
                     // `Table::capacity` when the pipeline layout was planned,
                     // the offset was checked against the buffer's own length
@@ -933,7 +912,9 @@ pub(crate) fn apply_compute(
                 }
             }
             BoundResource::Texture(raw) => {
-                if binds.texture_changed(Stage::Compute, slot, identity(raw)) {
+                if mask.issue(Stage::Compute, table, slot, || {
+                    binds.texture_changed(Stage::Compute, slot, identity(raw))
+                }) {
                     // SAFETY: as above, minus the offset.
                     unsafe {
                         encoder.setTexture_atIndex(Some(raw), index);
@@ -941,7 +922,9 @@ pub(crate) fn apply_compute(
                 }
             }
             BoundResource::Sampler(raw) => {
-                if binds.sampler_changed(Stage::Compute, slot, identity(raw)) {
+                if mask.issue(Stage::Compute, table, slot, || {
+                    binds.sampler_changed(Stage::Compute, slot, identity(raw))
+                }) {
                     // SAFETY: as above, against the sampler table's capacity.
                     unsafe {
                         encoder.setSamplerState_atIndex(Some(raw), index);
@@ -963,7 +946,9 @@ pub(crate) fn apply_compute(
                         table_usage(*writable),
                     );
                 }
-                if binds.buffer_changed(Stage::Compute, slot, identity(raw), 0) {
+                if mask.issue(Stage::Compute, table, slot, || {
+                    binds.buffer_changed(Stage::Compute, slot, identity(raw), 0)
+                }) {
                     // SAFETY: as the buffer arm above — the index was bounded
                     // by `Table::capacity` when the pipeline layout was
                     // planned, the table is bound whole so there is no offset
@@ -1023,14 +1008,33 @@ const fn render_stages(visibility: ShaderStages) -> MTLRenderStages {
 /// encoder makes: **the two raster stages are two tables**, so a binding
 /// visible to both is asked about twice and can be skipped on one stage while
 /// still being set on the other.
+///
+/// # `mask` is what the pipeline reads, where `visibility` is what the layout
+/// permits
+///
+/// The two are not the same set and [`crate::binding_mask`] says why: Slang's
+/// Metal emission materialises every module global into every entry point, so
+/// `msl/mesh.metal`'s `fragmentMain` declares five buffers its body never
+/// dereferences, and `crcbl_render::forward`'s layout has to name both raster
+/// stages on rows only one of them reads. A bind is made when the layout
+/// permits it **and** the compiled pipeline reads it.
+///
+/// **A skipped bind is not recorded in the cache**, and
+/// [`BindingMask::issue`](crate::binding_mask::BindingMask::issue) is what
+/// makes that structural rather than a spelling convention at every bind site:
+/// the slot still holds whatever the last bind put there, so a later pipeline
+/// that *does* read it must still be given it. `crate::binding_mask`'s
+/// `a_slot_masked_out_for_one_pipeline_is_bound_for_the_next` is the check.
 pub(crate) fn apply(
     bindings: &[BoundBinding],
     encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
     binds: &mut BindCache,
+    mask: BindingMask,
 ) {
     for binding in bindings {
         let slot = binding.index;
         let index = to_ns(u64::from(slot));
+        let table = binding.resource.table();
         let vertex = binding.visibility.contains(ShaderStages::VERTEX);
         let fragment = binding.visibility.contains(ShaderStages::FRAGMENT);
         match &binding.resource {
@@ -1044,10 +1048,18 @@ pub(crate) fn apply(
                 // this buffer's own length when the group was created and again
                 // against the dynamic offset in `bind_group_raw`, and the
                 // buffer is kept alive by the `Retained` the group holds.
-                if vertex && binds.buffer_changed(Stage::Vertex, slot, id, *offset) {
+                if vertex
+                    && mask.issue(Stage::Vertex, table, slot, || {
+                        binds.buffer_changed(Stage::Vertex, slot, id, *offset)
+                    })
+                {
                     unsafe { encoder.setVertexBuffer_offset_atIndex(Some(raw), ns_offset, index) };
                 }
-                if fragment && binds.buffer_changed(Stage::Fragment, slot, id, *offset) {
+                if fragment
+                    && mask.issue(Stage::Fragment, table, slot, || {
+                        binds.buffer_changed(Stage::Fragment, slot, id, *offset)
+                    })
+                {
                     unsafe {
                         encoder.setFragmentBuffer_offset_atIndex(Some(raw), ns_offset, index);
                     }
@@ -1058,20 +1070,36 @@ pub(crate) fn apply(
                 // SAFETY: as above, minus the offset — the index was bounded by
                 // the texture table's capacity at layout planning and the
                 // texture is kept alive by the group.
-                if vertex && binds.texture_changed(Stage::Vertex, slot, id) {
+                if vertex
+                    && mask.issue(Stage::Vertex, table, slot, || {
+                        binds.texture_changed(Stage::Vertex, slot, id)
+                    })
+                {
                     unsafe { encoder.setVertexTexture_atIndex(Some(raw), index) };
                 }
-                if fragment && binds.texture_changed(Stage::Fragment, slot, id) {
+                if fragment
+                    && mask.issue(Stage::Fragment, table, slot, || {
+                        binds.texture_changed(Stage::Fragment, slot, id)
+                    })
+                {
                     unsafe { encoder.setFragmentTexture_atIndex(Some(raw), index) };
                 }
             }
             BoundResource::Sampler(raw) => {
                 let id = identity(raw);
                 // SAFETY: as above, against the sampler table's capacity.
-                if vertex && binds.sampler_changed(Stage::Vertex, slot, id) {
+                if vertex
+                    && mask.issue(Stage::Vertex, table, slot, || {
+                        binds.sampler_changed(Stage::Vertex, slot, id)
+                    })
+                {
                     unsafe { encoder.setVertexSamplerState_atIndex(Some(raw), index) };
                 }
-                if fragment && binds.sampler_changed(Stage::Fragment, slot, id) {
+                if fragment
+                    && mask.issue(Stage::Fragment, table, slot, || {
+                        binds.sampler_changed(Stage::Fragment, slot, id)
+                    })
+                {
                     unsafe { encoder.setFragmentSamplerState_atIndex(Some(raw), index) };
                 }
             }
@@ -1097,10 +1125,18 @@ pub(crate) fn apply(
                 let id = identity(raw);
                 // SAFETY: as the buffer arm above, and with no offset — the
                 // table is bound whole.
-                if vertex && binds.buffer_changed(Stage::Vertex, slot, id, 0) {
+                if vertex
+                    && mask.issue(Stage::Vertex, table, slot, || {
+                        binds.buffer_changed(Stage::Vertex, slot, id, 0)
+                    })
+                {
                     unsafe { encoder.setVertexBuffer_offset_atIndex(Some(raw), 0, index) };
                 }
-                if fragment && binds.buffer_changed(Stage::Fragment, slot, id, 0) {
+                if fragment
+                    && mask.issue(Stage::Fragment, table, slot, || {
+                        binds.buffer_changed(Stage::Fragment, slot, id, 0)
+                    })
+                {
                     unsafe { encoder.setFragmentBuffer_offset_atIndex(Some(raw), 0, index) };
                 }
             }
@@ -1409,6 +1445,7 @@ fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::argument::BUFFER_TABLE_ENTRIES;
     use crcbl_core::Handle;
     use crcbl_hal::{
         BufferDesc, BufferUsage, ClearValue, ColorAttachment, CommandEncoder, CommandEncoderDesc,
@@ -1854,6 +1891,112 @@ mod tests {
         // about the array and not about dynamic offsets.
         plan_set(&layout(&[entry(0, DYNAMIC_UNIFORM, 1)]), &test_limits())
             .expect("one dynamic uniform buffer");
+    }
+
+    /// **The forward mesh pass's layout, flattened.**
+    ///
+    /// `crcbl_render::forward`'s mesh bind group is the largest this engine
+    /// builds and the one every 3D frame goes through, and its raster path is
+    /// what `msl/mesh.metal` was compiled against — so the indices this rule
+    /// produces for it are the ones a wrong picture on Metal would come from.
+    /// The right-hand column is read off that artifact's `fragmentMain`
+    /// signature, which declares `frame [[buffer(0)]]` … `probes [[buffer(9)]]`,
+    /// `base_color_textures [[texture(0)]]` … `emissive_textures [[texture(9)]]`
+    /// and two samplers; `crcbl-shaders`' own
+    /// `the_mesh_fragment_stage_declares_the_tables_the_layout_flattens_to` is
+    /// what holds that half to the committed MSL, on every host.
+    ///
+    /// **The entries are replicated rather than imported.** `crcbl-render` is
+    /// not a dependency of this crate and must not become one — the dependency
+    /// runs the other way — so what this pins is *this backend's flattening
+    /// rule* against a layout of that shape, not `forward.rs` itself. The
+    /// visibility and the image parameters are left at the helper's defaults on
+    /// purpose: [`Table::of`] drops `view_type`, `sample_type` and `comparison`,
+    /// and `plan_set` never reads `visibility` at all, so only the binding
+    /// number and the kind's *table* decide an index.
+    ///
+    /// **What turns it red.** Any change to the counting rule: placing in slice
+    /// order, sharing one counter across the tables, or skipping the bindings a
+    /// path does not declare — that last one is the mistake `forward.rs`'s own
+    /// comment on bindings 13 and 14 records, where a layout that omitted two
+    /// entries put every binding above them two slots low and drew a wrong
+    /// picture with a clean log.
+    #[test]
+    fn the_forward_mesh_layout_flattens_onto_the_artifacts_argument_tables() {
+        // The image and sampler parameters `Table::of` discards; the real ones
+        // are `crcbl_render::forward`'s and only WebGPU reads them.
+        const IMAGE: BindingKind = BindingKind::SampledImage {
+            view_type: ImageViewType::D2,
+            sample_type: SampleType::Float,
+        };
+        const SAMPLER: BindingKind = BindingKind::Sampler { comparison: false };
+
+        // `crcbl_render::forward`'s mesh entries on the **raster** path, which
+        // is the one `msl/mesh.metal` is compiled for: the mesh path adds
+        // bindings 9 to 14 and 17 to 19 and 24, all of them geometry-only, and
+        // `mesh_cluster.slang` is the artifact those answer to.
+        let entries = [
+            entry(0, UNIFORM, 1),
+            entry(1, STORAGE, 1),
+            entry(2, STORAGE, 1),
+            entry(3, DYNAMIC_UNIFORM, 1),
+            entry(4, STORAGE, 1),
+            entry(5, STORAGE, 1),
+            entry(6, STORAGE, 1),
+            entry(7, IMAGE, 1),
+            entry(8, SAMPLER, 1),
+            entry(15, IMAGE, 1),
+            entry(16, SAMPLER, 1),
+            entry(20, STORAGE, 1),
+            entry(21, STORAGE, 1),
+            entry(22, IMAGE, 1),
+            entry(23, STORAGE, 1),
+            entry(25, IMAGE, 1),
+            entry(26, IMAGE, 1),
+            entry(27, IMAGE, 1),
+            entry(28, IMAGE, 1),
+            entry(29, IMAGE, 1),
+            entry(30, IMAGE, 1),
+            entry(31, IMAGE, 1),
+        ];
+        let plan = plan_set(&layout(&entries), &test_limits()).expect("the forward mesh layout");
+
+        for (binding, table, index, declared) in [
+            (0, Table::Buffer, 0, "frame"),
+            (1, Table::Buffer, 1, "vertices"),
+            (2, Table::Buffer, 2, "instances"),
+            (3, Table::Buffer, 3, "draw"),
+            (4, Table::Buffer, 4, "meshes"),
+            (5, Table::Buffer, 5, "visible_instances"),
+            (6, Table::Buffer, 6, "materials"),
+            (20, Table::Buffer, 7, "lights"),
+            (21, Table::Buffer, 8, "cluster_lights"),
+            (23, Table::Buffer, 9, "probes"),
+            (7, Table::Texture, 0, "base_color_textures"),
+            (15, Table::Texture, 1, "shadow_atlas"),
+            (22, Table::Texture, 2, "ambient_occlusion"),
+            (25, Table::Texture, 3, "specular_dfg"),
+            (26, Table::Texture, 4, "normal_textures"),
+            (27, Table::Texture, 5, "ltc_matrix"),
+            (28, Table::Texture, 6, "contact_shadow"),
+            (29, Table::Texture, 7, "probe_visibility"),
+            (30, Table::Texture, 8, "mro_textures"),
+            (31, Table::Texture, 9, "emissive_textures"),
+            (8, Table::Sampler, 0, "base_color_sampler"),
+            (16, Table::Sampler, 1, "shadow_sampler"),
+        ] {
+            assert_eq!(
+                placed(&plan, binding),
+                (table, index),
+                "binding {binding} is `{declared}` at {table:?}({index}) in msl/mesh.metal's \
+                 fragmentMain, and this backend would bind it somewhere else"
+            );
+        }
+
+        // And the three tables end where that signature does, so a binding
+        // added to the layout without one being added to the shader — or the
+        // reverse — is not absorbed silently by the row-by-row check above.
+        assert_eq!(plan.totals, [10, 10, 2]);
     }
 
     /// Metal's argument tables are finite, and both the per-set and the

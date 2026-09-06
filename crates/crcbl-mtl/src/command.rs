@@ -144,6 +144,7 @@ use objc2_metal::{
 };
 
 use crate::bind_cache::{BindCache, Stage};
+use crate::binding_mask::BindingMask;
 use crate::conv;
 use crate::device::{CommandBufferEntry, DeviceInner, QuerySetRaw, ResolvedImage, to_ns};
 
@@ -378,7 +379,15 @@ enum RenderCommand {
     BindPipeline(crate::pipeline::BoundPipeline),
     /// One resolved bind group, with every argument-table index already
     /// absolute and every dynamic offset already folded in.
-    BindGroup(Vec<crate::binding::BoundBinding>),
+    ///
+    /// `slot` is the seam's set number, and it is here for the replay rather
+    /// than for the Metal call — which takes absolute indices and knows nothing
+    /// about sets. [`RenderReplay`] keys the groups in force on it, so a second
+    /// bind at the same slot replaces the first instead of stacking on it.
+    BindGroup {
+        slot: u32,
+        bindings: Vec<crate::binding::BoundBinding>,
+    },
     /// The whole push-constant block as it stood when the write arrived.
     ///
     /// **A copy, not a borrow of the shadow.** `setBytes:length:atIndex:`
@@ -513,6 +522,71 @@ fn encode_pack(encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>, dispatch:
     );
 }
 
+/// Replaces the group at `slot`, or appends it, keeping the list in the order
+/// the surviving binds were issued in.
+///
+/// Order matters because two sets of one pipeline layout occupy disjoint ranges
+/// of the argument tables but two *layouts* need not: a group re-applied out of
+/// order could overwrite a slot a later bind had claimed. Moving a re-bound
+/// slot to the end keeps the list in exactly the order the still-effective
+/// binds were made in.
+fn remember<T>(groups: &mut Vec<(u32, T, BindingMask)>, slot: u32, bindings: T, mask: BindingMask) {
+    groups.retain(|(bound, ..)| *bound != slot);
+    groups.push((slot, bindings, mask));
+}
+
+/// What a render pass's replay carries from one command to the next.
+///
+/// # Why the groups are kept
+///
+/// `crcbl_hal::CommandEncoder` does not require a pipeline to be bound before
+/// [`bind_group`](CommandEncoder::bind_group) — it takes a *pipeline layout*,
+/// as `vkCmdBindDescriptorSets` does, and every other backend behind this seam
+/// accepts the two calls in either order. So the mask that decides which of a
+/// group's bindings reach the argument tables may not exist yet when the group
+/// arrives, and it changes under the group whenever a pipeline with a different
+/// one is bound.
+///
+/// The answer is to keep what is in force and re-apply it when the mask moves:
+/// a pass opens holding [`BindingMask::none`], so a group bound ahead of its
+/// pipeline sets nothing and is set in full by the pipeline bind that follows —
+/// and a draw cannot happen in between, because a draw with no pipeline bound
+/// is refused (see [`bound_primitive`](MetalCommandEncoder::bound_primitive)).
+/// Two pipelines sharing one mask re-apply nothing at all.
+struct RenderReplay<'a> {
+    /// What this encoder's argument tables already hold. See
+    /// [`crate::bind_cache`].
+    binds: BindCache,
+    /// The groups in force, one entry per slot, in the order their binds were
+    /// issued.
+    groups: Vec<(u32, &'a [crate::binding::BoundBinding], BindingMask)>,
+    /// The bound pipeline's mask, or [`BindingMask::none`] before one is bound.
+    mask: BindingMask,
+}
+
+impl<'a> RenderReplay<'a> {
+    fn new() -> Self {
+        Self {
+            binds: BindCache::default(),
+            groups: Vec::new(),
+            mask: BindingMask::none(),
+        }
+    }
+
+    /// Re-applies every group whose bindings were last decided under a
+    /// different mask than the one now in force.
+    fn reapply(&mut self, encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>) {
+        let mask = self.mask;
+        for (_, bindings, applied) in &mut self.groups {
+            if *applied == mask {
+                continue;
+            }
+            *applied = mask;
+            crate::binding::apply(bindings, encoder, &mut self.binds, mask);
+        }
+    }
+}
+
 /// Makes one recorded command's Metal call.
 ///
 /// Every value here was checked when the seam call arrived — a handle resolved,
@@ -520,10 +594,10 @@ fn encode_pack(encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>, dispatch:
 /// calls and decides nothing. That is deliberate: a check moved down here would
 /// report its failure at `end_render_pass` rather than at the call the caller
 /// made, and `crcbl_hal`'s own recorder tests assert on which call failed.
-fn replay(
+fn replay<'a>(
     encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
-    command: &RenderCommand,
-    binds: &mut BindCache,
+    command: &'a RenderCommand,
+    replay: &mut RenderReplay<'a>,
 ) {
     match command {
         RenderCommand::PushDebugGroup(name) => encoder.pushDebugGroup(name),
@@ -553,8 +627,18 @@ fn replay(
             // whatever `set_stencil_reference` last set — see
             // `crcbl_hal::StencilState`. `encode_render_pass` sets the seam's
             // initial value once, as the encoder opens.
+            //
+            // What a bind *does* change is which of the groups in force reach
+            // the argument tables: `setRenderPipelineState:` changes what those
+            // tables are read as. See `RenderReplay`.
+            replay.mask = bound.mask;
+            replay.reapply(encoder);
         }
-        RenderCommand::BindGroup(bindings) => crate::binding::apply(bindings, encoder, binds),
+        RenderCommand::BindGroup { slot, bindings } => {
+            let mask = replay.mask;
+            crate::binding::apply(bindings, encoder, &mut replay.binds, mask);
+            remember(&mut replay.groups, *slot, bindings.as_slice(), mask);
+        }
         RenderCommand::PushConstants {
             slot,
             bytes,
@@ -579,11 +663,11 @@ fn replay(
             // `crate::argument::plan` bounded by `Limits::max_push_constant_size`,
             // and `index` is the buffer-table entry after the last binding,
             // which the same call bounded by `BUFFER_TABLE_ENTRIES`.
-            if *vertex && binds.bytes_changed(Stage::Vertex, *slot, bytes) {
+            if *vertex && replay.binds.bytes_changed(Stage::Vertex, *slot, bytes) {
                 unsafe { encoder.setVertexBytes_length_atIndex(source, length, index) };
             }
             // SAFETY: as above, on the fragment stage's table.
-            if *fragment && binds.bytes_changed(Stage::Fragment, *slot, bytes) {
+            if *fragment && replay.binds.bytes_changed(Stage::Fragment, *slot, bytes) {
                 unsafe { encoder.setFragmentBytes_length_atIndex(source, length, index) };
             }
         }
@@ -790,6 +874,23 @@ pub(crate) struct MetalCommandEncoder {
     /// [`Self::close_open`] with [`Self::push_constants`], and for the same
     /// reason.
     binds: BindCache,
+    /// The bound **compute** pipeline's [`BindingMask`], or
+    /// [`BindingMask::none`] before one is bound.
+    ///
+    /// The compute half of what [`RenderReplay`] keeps for a render pass, and
+    /// here rather than there for [`Self::binds`]'s reason exactly: a compute
+    /// pass is encoded as the seam calls arrive, so its state lives as long as
+    /// the encoder this type owns. Cleared by [`Self::close_open`] alongside
+    /// [`Self::bound_threads`].
+    compute_mask: BindingMask,
+    /// The compute pass's bind groups in force, one per slot, in the order
+    /// their binds were issued — [`RenderReplay::groups`] argues why they are
+    /// kept, and the argument is the seam's rather than the render encoder's.
+    ///
+    /// The bindings are **owned** here where the render side borrows them from
+    /// the recorded command, because there is no recording: `bind_group`
+    /// resolves them, encodes them and would otherwise drop them.
+    compute_groups: Vec<(u32, Vec<crate::binding::BoundBinding>, BindingMask)>,
 }
 
 impl core::fmt::Debug for MetalCommandEncoder {
@@ -844,6 +945,8 @@ impl MetalCommandEncoder {
             index: None,
             push_constants: None,
             binds: BindCache::default(),
+            compute_mask: BindingMask::none(),
+            compute_groups: Vec::new(),
         };
         // The queue is checked before the command buffer is taken, so a handle
         // belonging to another device is reported as the crossing it is rather
@@ -973,6 +1076,12 @@ impl MetalCommandEncoder {
         self.bound_threads = None;
         self.push_constants = None;
         self.binds.reset();
+        // The pipeline state and the bind groups in force go with the encoder
+        // for `binds`'s reason: an `MTLComputeCommandEncoder` loses both at
+        // `endEncoding`, so a dispatch in the next pass must not inherit
+        // either.
+        self.compute_mask = BindingMask::none();
+        self.compute_groups.clear();
     }
 
     /// Opens the render encoder a recorded pass has been waiting for, replays
@@ -1039,10 +1148,12 @@ impl MetalCommandEncoder {
         // they belong to the `MTLRenderCommandEncoder` and `endEncoding` takes
         // them with it. Local rather than `self.binds` for that reason — this
         // encoder's life begins and ends inside this call, where the compute
-        // encoder's spans seam calls.
-        let mut binds = BindCache::default();
+        // encoder's spans seam calls. The bind groups in force and the bound
+        // pipeline's mask are the encoder's for the same reason; see
+        // `RenderReplay`.
+        let mut state = RenderReplay::new();
         for command in &recording.commands {
-            replay(&encoder, command, &mut binds);
+            replay(&encoder, command, &mut state);
         }
         encoder.endEncoding();
     }
@@ -1895,9 +2006,11 @@ impl CommandEncoder for MetalCommandEncoder {
             .bind_group_raw(slot, group, dynamic_offsets, layout, &limits)
         {
             Ok(bindings) => match target {
-                Target::Render => self.record(RenderCommand::BindGroup(bindings)),
+                Target::Render => self.record(RenderCommand::BindGroup { slot, bindings }),
                 Target::Compute(encoder) => {
-                    crate::binding::apply_compute(&bindings, &encoder, &mut self.binds);
+                    let mask = self.compute_mask;
+                    crate::binding::apply_compute(&bindings, &encoder, &mut self.binds, mask);
+                    remember(&mut self.compute_groups, slot, bindings, mask);
                 }
             },
             Err(error) => self.fail(error),
@@ -2324,15 +2437,28 @@ impl CommandEncoder for MetalCommandEncoder {
             return;
         };
         let encoder = encoder.clone();
-        let (raw, threads) = match self.device.compute_pipeline_raw(pipeline) {
+        let bound = match self.device.compute_pipeline_raw(pipeline) {
             Ok(bound) => bound,
             Err(error) => {
                 self.fail(error);
                 return;
             }
         };
-        encoder.setComputePipelineState(&raw);
-        self.bound_threads = Some(threads);
+        let mask = bound.mask;
+        encoder.setComputePipelineState(&bound.raw);
+        self.bound_threads = Some(bound.threads_per_threadgroup);
+        // `setComputePipelineState:` changes what the argument tables are read
+        // as, so every group in force has to be reconsidered under the new
+        // pipeline's mask — including one bound before any pipeline was, which
+        // the seam permits. See `RenderReplay`, whose argument this is.
+        self.compute_mask = mask;
+        for (_, bindings, applied) in &mut self.compute_groups {
+            if *applied == mask {
+                continue;
+            }
+            *applied = mask;
+            crate::binding::apply_compute(bindings, &encoder, &mut self.binds, mask);
+        }
     }
 
     fn dispatch(&mut self, x: u32, y: u32, z: u32) {

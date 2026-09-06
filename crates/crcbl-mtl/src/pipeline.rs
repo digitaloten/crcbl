@@ -108,14 +108,17 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSProcessInfo, NSString};
 use objc2_metal::{
-    MTLCompareFunction, MTLComputePipelineDescriptor, MTLComputePipelineState, MTLCullMode,
-    MTLDepthClipMode, MTLDepthStencilDescriptor, MTLDepthStencilState, MTLDevice, MTLFunction,
-    MTLGPUFamily, MTLLibrary, MTLMeshRenderPipelineDescriptor, MTLPipelineOption, MTLPixelFormat,
-    MTLPrimitiveType, MTLRenderPipelineColorAttachmentDescriptorArray, MTLRenderPipelineDescriptor,
-    MTLRenderPipelineState, MTLSize, MTLStencilDescriptor, MTLStencilOperation,
-    MTLTriangleFillMode, MTLWinding,
+    MTLBinding, MTLBindingType, MTLCompareFunction, MTLComputePipelineDescriptor,
+    MTLComputePipelineState, MTLCullMode, MTLDepthClipMode, MTLDepthStencilDescriptor,
+    MTLDepthStencilState, MTLDevice, MTLFunction, MTLGPUFamily, MTLLibrary,
+    MTLMeshRenderPipelineDescriptor, MTLPipelineOption, MTLPixelFormat, MTLPrimitiveType,
+    MTLRenderPipelineColorAttachmentDescriptorArray, MTLRenderPipelineDescriptor,
+    MTLRenderPipelineReflection, MTLRenderPipelineState, MTLSize, MTLStencilDescriptor,
+    MTLStencilOperation, MTLTriangleFillMode, MTLWinding,
 };
 
+use crate::bind_cache::Stage;
+use crate::binding_mask::{BindingMask, Reflected, Table};
 use crate::conv;
 use crate::device::{DeviceInner, MetalDevice, Owned, lookup, owned, to_ns};
 
@@ -206,6 +209,11 @@ pub(crate) struct GraphicsPipelineEntry {
     /// why — so this is the only thing `draw_mesh_tasks` has to check before
     /// it makes a call Metal would otherwise answer by raising.
     pub(crate) mesh: Option<MeshThreadgroups>,
+    /// Which argument-table slots this pipeline's stages actually read, as
+    /// Metal's own reflection reported them. See [`raster_mask`] for how it is
+    /// obtained and when it falls back to
+    /// [`BindingMask::all`](crate::binding_mask::BindingMask::all).
+    pub(crate) mask: BindingMask,
 }
 
 /// A compute pipeline, and the threadgroup size Metal will not take until the
@@ -222,6 +230,9 @@ pub(crate) struct ComputePipelineEntry {
     /// call has only the *bound* pipeline to ask, and Metal's encoder does not
     /// hand its pipeline state back.
     pub(crate) threads_per_threadgroup: MTLSize,
+    /// As [`GraphicsPipelineEntry::mask`], over the compute stage's one set of
+    /// argument tables.
+    pub(crate) mask: BindingMask,
 }
 
 owned!(
@@ -243,6 +254,19 @@ pub(crate) struct BoundPipeline {
     pub(crate) raster: RasterState,
     /// As [`GraphicsPipelineEntry::mesh`].
     pub(crate) mesh: Option<MeshThreadgroups>,
+    /// As [`GraphicsPipelineEntry::mask`], and what `crcbl_mtl::binding`'s
+    /// `apply` is handed at every bind group this pipeline is in force for.
+    pub(crate) mask: BindingMask,
+}
+
+/// A compute pipeline resolved to everything the compute encoder must be told,
+/// cloned out from under the device lock exactly as [`BoundPipeline`] is.
+pub(crate) struct BoundComputePipeline {
+    pub(crate) raw: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    /// As [`ComputePipelineEntry::threads_per_threadgroup`].
+    pub(crate) threads_per_threadgroup: MTLSize,
+    /// As [`ComputePipelineEntry::mask`].
+    pub(crate) mask: BindingMask,
 }
 
 impl DeviceInner {
@@ -258,6 +282,7 @@ impl DeviceInner {
             depth_stencil: entry.depth_stencil.clone(),
             raster: entry.raster,
             mesh: entry.mesh,
+            mask: entry.mask,
         })
     }
 
@@ -266,16 +291,14 @@ impl DeviceInner {
     pub(crate) fn compute_pipeline_raw(
         &self,
         handle: ComputePipelineHandle,
-    ) -> Result<
-        (
-            Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-            MTLSize,
-        ),
-        HalError,
-    > {
+    ) -> Result<BoundComputePipeline, HalError> {
         let state = self.state();
         let entry = lookup(&state.compute_pipelines, "compute pipeline", handle, self)?;
-        Ok((entry.raw.clone(), entry.threads_per_threadgroup))
+        Ok(BoundComputePipeline {
+            raw: entry.raw.clone(),
+            threads_per_threadgroup: entry.threads_per_threadgroup,
+            mask: entry.mask,
+        })
     }
 
     /// The push-constant block a pipeline layout declares.
@@ -380,7 +403,7 @@ impl MetalDevice {
         };
         let push_constants = crate::argument::plan(
             desc.push_constants,
-            occupied[crate::binding::Table::Buffer.slot()],
+            occupied[crate::binding_mask::Table::Buffer.slot()],
             &self.inner.caps,
         )?;
         let handle = self.state().pipeline_layouts.insert(PipelineLayoutEntry {
@@ -431,16 +454,26 @@ impl MetalDevice {
         }
 
         let label = desc.label.unwrap_or("<unlabelled>");
+        // The reflecting form of the selector, for [`raster_mask`]: the vertex
+        // and fragment binding lists are the only thing that can say which
+        // argument-table slots the compiled functions read, and
+        // `crcbl_mtl::binding_mask` argues why a layout cannot.
+        let mut reflection = None;
         let raw = self
             .inner
             .raw
-            .newRenderPipelineStateWithDescriptor_error(&descriptor)
+            .newRenderPipelineStateWithDescriptor_options_reflection_error(
+                &descriptor,
+                MTLPipelineOption::BindingInfo,
+                Some(&mut reflection),
+            )
             .map_err(|error| {
                 HalError::PipelineCreation(format!(
-                    "MTLDevice::newRenderPipelineStateWithDescriptor:error: rejected `{label}`: \
-                     {error}"
+                    "MTLDevice::newRenderPipelineStateWithDescriptor:options:reflection:error: \
+                     rejected `{label}`: {error}"
                 ))
             })?;
+        let mask = raster_mask(label, reflection.as_deref());
 
         let handle = self
             .state()
@@ -451,6 +484,7 @@ impl MetalDevice {
                 depth_stencil: plan.state,
                 raster: raster_state(desc.primitive, desc.depth_stencil),
                 mesh: None,
+                mask,
             });
         Ok(self.stamp(handle))
     }
@@ -629,10 +663,102 @@ impl MetalDevice {
                     object: object_threads,
                     mesh: mesh_threads,
                 }),
+                // **Everything, and deliberately so.** An
+                // `MTLRenderPipelineReflection` for this pipeline would report
+                // `objectBindings` and `meshBindings`, and this backend binds a
+                // mesh pipeline's resources through the *vertex* argument table
+                // — `crcbl_mtl::binding`'s `apply` has `setVertexBuffer:` and
+                // `setFragmentBuffer:` and no object or mesh sibling. Mapping
+                // one onto the other is a guess, and
+                // `crcbl_mtl::binding_mask`'s rule is that a guess never binds
+                // less. No device here can reach this either: this backend
+                // reports no `Features::MESH_SHADER`, and `crcbl_mtl::quirk`'s
+                // `check_mesh_support` refuses the pipeline outright on the
+                // paravirtual GPU every Mac job runs on, so there is nothing to
+                // measure the mapping against.
+                mask: BindingMask::all(),
             });
         Ok(self.stamp(handle))
     }
+}
 
+/// The mask a raster pipeline's reflection describes, over both raster stages.
+///
+/// `None` — Metal declining to hand back a reflection at all — is
+/// [`BindingMask::all`], which is `crcbl_mtl::binding_mask`'s one-directional
+/// rule: a mask that over-reports costs a redundant `set*`, and one that
+/// under-reports drops a bind nothing reports as missing.
+///
+/// The tile stage is not read. This backend builds no tile pipeline — there is
+/// no `MTLTileRenderPipelineDescriptor` anywhere in it — so `tileBindings`
+/// would always be empty, and a stage `crcbl_mtl::bind_cache` has no argument
+/// tables for has nowhere to put a bit.
+fn raster_mask(label: &str, reflection: Option<&MTLRenderPipelineReflection>) -> BindingMask {
+    let Some(reflection) = reflection else {
+        missing_reflection(label);
+        return BindingMask::all();
+    };
+    BindingMask::from_reflection(
+        reflection
+            .vertexBindings()
+            .iter()
+            .map(|binding| reflected(Stage::Vertex, &binding))
+            .chain(
+                reflection
+                    .fragmentBindings()
+                    .iter()
+                    .map(|binding| reflected(Stage::Fragment, &binding)),
+            ),
+    )
+}
+
+/// Says which pipeline fell back to binding everything, so the fallback is
+/// visible rather than silent.
+///
+/// `debug` rather than `warn`: a device that answers nothing here is not
+/// broken and nothing is wrong with the picture it draws — the only cost is the
+/// redundant `set*` calls and the debug layer's complaints about them, which is
+/// precisely what a reader chasing those complaints needs to be able to rule
+/// out.
+fn missing_reflection(label: &str) {
+    crcbl_core::log::debug!(
+        "crcbl-mtl: `{label}` was created with MTLPipelineOption::BindingInfo and Metal returned \
+         no reflection, so every argument-table slot its layout permits will be bound"
+    );
+}
+
+/// One `MTLBinding` as `crcbl_mtl::binding_mask` takes it.
+///
+/// `MTLBindingType` is wider than Metal's three argument tables — threadgroup
+/// memory, imageblocks, an object payload, a visible-function or intersection
+/// table, an acceleration structure, a tensor — and every one of those numbers
+/// in a space of its own. Each becomes `table: None`, which sets no bit at all
+/// rather than one belonging to a buffer of the same index.
+fn reflected(stage: Stage, binding: &ProtocolObject<dyn MTLBinding>) -> Reflected {
+    let kind = binding.r#type();
+    let table = if kind == MTLBindingType::Buffer {
+        Some(Table::Buffer)
+    } else if kind == MTLBindingType::Texture {
+        Some(Table::Texture)
+    } else if kind == MTLBindingType::Sampler {
+        Some(Table::Sampler)
+    } else {
+        None
+    };
+    Reflected {
+        stage,
+        table,
+        // `NSUInteger` is `usize` here, and an argument-table index is bounded
+        // by `Table::capacity` — so the narrowing has nothing real to lose. The
+        // saturating fallback is safe anyway: `BindingMask::uses` answers
+        // `true` for anything past its width, which is the direction a
+        // truncated index has to be wrong in.
+        index: u32::try_from(binding.index()).unwrap_or(u32::MAX),
+        used: binding.isUsed(),
+    }
+}
+
+impl MetalDevice {
     /// The colour-target rules both pipeline kinds obey, checked before either
     /// descriptor is touched.
     ///
@@ -768,13 +894,14 @@ impl MetalDevice {
             descriptor.setLabel(Some(&NSString::from_str(label)));
         }
         let label = desc.label.unwrap_or("<unlabelled>");
+        let mut reflection = None;
         let raw = self
             .inner
             .raw
             .newComputePipelineStateWithDescriptor_options_reflection_error(
                 &descriptor,
-                MTLPipelineOption::None,
-                None,
+                MTLPipelineOption::BindingInfo,
+                Some(&mut reflection),
             )
             .map_err(|error| {
                 HalError::PipelineCreation(format!(
@@ -795,6 +922,20 @@ impl MetalDevice {
             )));
         }
 
+        let mask = reflection.as_deref().map_or_else(
+            || {
+                missing_reflection(label);
+                BindingMask::all()
+            },
+            |reflection| {
+                BindingMask::from_reflection(
+                    reflection
+                        .bindings()
+                        .iter()
+                        .map(|binding| reflected(Stage::Compute, &binding)),
+                )
+            },
+        );
         let handle = self.state().compute_pipelines.insert(ComputePipelineEntry {
             owner: self.inner.id,
             raw,
@@ -803,6 +944,7 @@ impl MetalDevice {
                 height: to_ns(u64::from(y)),
                 depth: to_ns(u64::from(z)),
             },
+            mask,
         });
         Ok(self.stamp(handle))
     }

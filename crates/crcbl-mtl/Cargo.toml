@@ -116,10 +116,16 @@ crcbl-shaders = { workspace = true }
 #
 # * `MTLArgument` is where the Metal headers put `MTLIndexType`, which is what
 #   `drawIndexedPrimitives:…` and its indirect sibling take. Every indexed-draw
-#   method upstream is `cfg`-gated on it, so it is not optional. The reflection
-#   types that live beside it (`MTLBinding`, `MTLBufferBinding`) are **not**
-#   used: `crcbl_mtl::binding` explains why reflection cannot answer the one
-#   question a bind group would want it for.
+#   method upstream is `cfg`-gated on it, so it is not optional. `MTLBinding`
+#   and `MTLBindingType` live beside it and **are** used: `crcbl_mtl::pipeline`
+#   reads each pipeline's `MTLRenderPipelineReflection` /
+#   `MTLComputePipelineReflection` through them to learn which argument-table
+#   slots its compiled functions actually read. That is a different question
+#   from the one `crcbl_mtl::binding` says reflection cannot answer — reflection
+#   names a shader's own parameter *names*, which a `BindGroupLayoutEntry` has
+#   nothing to compare against, so it still cannot decide a binding's index;
+#   `isUsed` at an index this backend already computed, it can.
+#   `MTLBufferBinding` is still unused.
 #
 # Nothing else was needed, and that is the argument-table decision showing up in
 # the manifest: `MTLIndirectCommandBuffer`, `MTLArgumentEncoder`, `MTLHeap` and

@@ -13936,27 +13936,24 @@ minutes in `.github/workflows/ci.yml`, seven times the measured job.
 **What the log still says, counted in the mesh step of that run**, in the order
 worth reading:
 
-- **`Fragment Function(fragmentMain): missing Buffer binding at index 3 for draw_N`,
-  and the same at index 4 for `meshes_3` and index 5 for `visible_instances_3` —
-  1,206 of each, and 116 of each in the render step.** This is the "Draw Errors"
-  class, not the redundant one: Metal's validation says the fragment function's
-  argument table names a buffer at those slots and nothing is bound there for
-  the draw. Every golden on that runner matched, so either the fragment stage
-  declares those buffers without reading them (Slang emitting the vertex stage's
-  per-draw, mesh and instance tables into the fragment function's reflection) or
-  it reads them and the paravirtual device hands back something that happens to
-  draw right. **Not investigated.** The question to answer first is whether
-  `mesh.slang`'s fragment stage reads `draw`, `meshes` or `visible_instances` at
-  all; if it does, this is a real vertex-only bind of a buffer the fragment
-  needs and the fix is in `crcbl-mtl`'s bind plan, and if it does not, the
-  finding is noise the mode move will have to live with or suppress by not
-  declaring them.
-- **`unused binding in encoder at Buffer index N`** — 4,838 each at indices 6,
-  7, 8 and 9 and 3,563 at index 0. This is half (2): the renderer binds every
-  slot of a fixed layout and a pipeline that reads a subset gets a warning per
-  slot it ignores. Either the placeholder binds are skipped for pipelines whose
-  reflection says the slot is unread, or the warning is accepted and said so in
-  the record.
+- **`Fragment Function(fragmentMain): missing Buffer binding at index 3/4/5` and
+  `unused binding in encoder at Buffer index 0/6/7/8/9` — both addressed
+  2026-09-07, unverified.** The open question was whether `mesh.slang`'s
+  fragment stage reads `draw`, `meshes` or `visible_instances`; it does not.
+  `crcbl-shaders`'
+  `the_mesh_fragment_stage_stores_the_geometry_globals_without_reading_them`
+  reads the committed MSL and holds all five geometry globals to "declared,
+  stored into `KernelContext`, never dereferenced". The fix is both halves at
+  once: `crcbl_render::forward` declares bindings 1 to 5 fragment-visible so
+  nothing is missing, and `crcbl_mtl::binding_mask` reads
+  `MTLPipelineOption::BindingInfo` reflection so only the slots `isUsed` reports
+  are bound — which is also the "skip the placeholder binds for pipelines whose
+  reflection says the slot is unread" road for the second class.
+  `docs/notes/backends.md`'s "Metal binds by reflection" carries the design and
+  the open question (why the layer complains about buffers 3, 4 and 5 and not 1
+  and 2, which needs `isUsed` read on a device). **Nothing here has run a Metal
+  call**: the measurement is the next `mtl e2e (macos-latest)` job's counts for
+  these two classes, which should be zero.
 - **`previous setViewport was unused` / `previous setScissorRect was unused`** —
   610 each: a viewport and scissor set and then set again before any draw used
   them, so the first pair was wasted. Cheap to fold into the same per-encoder
@@ -13964,6 +13961,14 @@ worth reading:
 - **`redundant setTriangleFillMode`, `setFrontFacingWinding`,
   `setDepthClipMode`, `setDepthBias`** — 72 each, the raster state re-applied
   with the pipeline; the same cache can hold them.
+- **The viewport/scissor and raster-setter findings stay open, deliberately.**
+  They were considered for the reflection slice and left out because neither is
+  an argument-table slot and `crcbl_mtl::bind_cache` has no place for them.
+  `previous setViewport was unused` needs a "set but not yet drawn with" pair
+  invalidated at every draw, which is a different lifetime from a table mirror;
+  the `redundant setTriangleFillMode` family needs a fourth cache of
+  non-resource encoder state applied at `BindPipeline`. Both are cleanly
+  separable and each is its own small slice.
 
 Once the log is clean, `MTL_DEBUG_LAYER_WARNING_MODE` goes to `assert` per
 "Metal's debug layer is on `nslog`, and `assert` is the follow-up" above, and
