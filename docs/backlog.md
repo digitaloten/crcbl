@@ -8870,40 +8870,6 @@ cannot keep. Option (1) becomes worth the five-backend work only if a debug tool
 wants the counts. It schedules the refusal arm in each backend, the divergence
 rows, and the parity blockers they honestly cost.
 
-### DECIDED — quarry keeps one face, and documents the degenerate split
-
-The record behind this — the argument, the options and the measurements — is in
-`docs/notes/samples.md` under this heading.
-
-**DECIDED 2026-08-20 — keep one face, and say so in the sample's docs.** The
-plan asks for "one dense scene" and the split is already recorded and asserted;
-four to nine faces buys a non-degenerate instance cull at four to nine times the
-pool for a criterion that is answered, if not exercised. What the sample owes
-instead is one honest sentence: the instance cull keeps 1 of 1 because the scene
-holds one instance, so this criterion is answered by construction rather than by
-measurement, and a scene with many instances is where it would earn its place.
-
-### DECIDED — quarry commits six goldens, two dolly stops per path
-
-The record behind this — the argument, the options and the measurements — is in
-`docs/notes/samples.md` under this heading.
-
-**DECIDED 2026-08-20 — option (2), six images, and measure the device delta
-first.** One golden per path at each end of the dolly. (1) cannot catch a path
-that breaks partway down, which is where LOD lives and therefore where quarry's
-whole subject is; (3) keeps assertions that are stronger than pixels for
-everything except what the face looks like, which is the one thing they cannot
-cover — and the entry's own measured argument says so: every number quarry
-records is a count, and a face lit from the wrong side covers the same pixels,
-walks the same rungs and draws the same triangles.
-
-**The unmeasured half is a precondition, not a footnote.** These frames come off
-an RX 7900 XTX and CI compares on lavapipe. Before blessing anything, render the
-six on both and read the channel delta; if it exceeds the shared tolerance the
-answer is not a wider tolerance but goldens blessed from the runner that gates
-them. Blessing first and discovering the delta afterwards would produce six
-images nobody can trust and a tolerance widened to fit them.
-
 ### `DivergenceKind::Unclassified` is gone, and can come back
 
 The record behind this — the argument, the options and the measurements — is in
