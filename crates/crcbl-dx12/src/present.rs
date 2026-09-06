@@ -49,7 +49,7 @@ use crcbl_hal::{CompositeAlpha, Format, PresentMode, SurfaceCaps};
 /// **This is a refusal list as much as an offer.** `DXGI_SWAP_EFFECT_FLIP_DISCARD`
 /// accepts four back-buffer formats and rejects everything else at
 /// `CreateSwapChainForHwnd`, so reporting the seam's whole
-/// [`Format`](crcbl_hal::Format) set here would be an offer the create call
+/// [`Format`] set here would be an offer the create call
 /// cannot keep — the failure `Instance::surface_caps` calls out by name, one
 /// step later than an empty list.
 ///

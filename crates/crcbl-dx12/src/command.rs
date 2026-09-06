@@ -13,12 +13,12 @@
 //! `ResolveQueryData`. [`finish`](CommandEncoder::finish) closes the list and
 //! hands back a pooled [`CommandBufferHandle`] the device can submit.
 //!
-//! A buffer fill is here too, and it writes **zero only**: D3D12 has no valued
-//! device-side fill this backend takes, so a zero fill is a `CopyBufferRegion`
-//! out of the device's zeroed resource and any other value is refused. See
-//! [`fill_buffer`](CommandEncoder::fill_buffer) below for the whole argument.
+//! A buffer clear is here too, and D3D12 has no `vkCmdFillBuffer` to record
+//! it with: the seam's [`clear_buffer`](CommandEncoder::clear_buffer) writes
+//! zero, so it is a `CopyBufferRegion` out of the device's zeroed resource. See
+//! the method for the whole argument.
 //!
-//! What this backend will not do — that non-zero fill, and a mesh dispatch on a
+//! What this backend will not do — a mesh dispatch on a
 //! runtime whose command list is not an `ID3D12GraphicsCommandList6` —
 //! **fails the encoder** rather than
 //! recording nothing, so `finish` returns the refusal instead of a command
@@ -74,7 +74,7 @@
 //! area is passed through; `crcbl-mtl` documents the opposite divergence,
 //! because a Metal `loadAction` clears the whole attachment.
 //!
-//! # Store ops are honoured as [`StoreOp::Store`], always
+//! # Store ops are honoured as [`StoreOp::Store`](crcbl_hal::StoreOp::Store), always
 //!
 //! `OMSetRenderTargets` has no store op — the render-pass API that does is
 //! `ID3D12GraphicsCommandList4::BeginRenderPass`, and reaching for it means
@@ -1506,41 +1506,30 @@ impl CommandEncoder for Dx12CommandEncoder {
         }
     }
 
-    /// Fills a buffer range with a repeating 32-bit value — **zero only**.
+    /// Zeroes a buffer range, as a copy out of the device's zeroed resource.
     ///
     /// D3D12 has no `vkCmdFillBuffer`. Its valued fill is
     /// `ClearUnorderedAccessViewUint`, which needs a shader-visible UAV of the
-    /// destination: closing the valued fills that way costs either
-    /// `ALLOW_UNORDERED_ACCESS` on every device-local buffer this backend
-    /// allocates, or a `fill_buffer` that works only on `STORAGE` ones — a
-    /// capability that works only sometimes, which is worse than a clean
-    /// refusal. So the *zero* fill is a `CopyBufferRegion` out of
-    /// [`DeviceInner::zero`] in a loop of
-    /// [`ZERO_SOURCE_BYTES`](crate::device::ZERO_SOURCE_BYTES) chunks, which is
-    /// what `wgpu-hal`'s dx12 backend does for `clear_buffer`, and a value with
-    /// any bit set is refused by name. Zero is what
+    /// destination — either `ALLOW_UNORDERED_ACCESS` on every device-local
+    /// buffer this backend allocates, or a clear that works only on `STORAGE`
+    /// ones — and the seam's verb writes zero, which needs no view at all. So
+    /// the clear is a `CopyBufferRegion` out of [`DeviceInner::zero`] in a loop
+    /// of [`ZERO_SOURCE_BYTES`] chunks, which is what `wgpu-hal`'s dx12 backend
+    /// does for `clear_buffer`. Zero is what
     /// `crcbl_hal::Capability::BufferFillZero` says the call is *for*: an
     /// indirect count buffer at the top of a frame.
     ///
     /// **`crcbl-render` still zeroes its draw-generation counters with a clear
-    /// dispatch, and this landing does not change that.** Two reasons put it
-    /// there and only one was this backend's refusal: the other is that a fill
-    /// is legal only outside a pass while a render-graph frame is passes end to
-    /// end, and that survives on every backend. `fill_buffer` also remains four
-    /// separate backend promises — Metal repeats a byte, wgpu and this backend
-    /// write only zero — where a dispatch runs anywhere that can dispatch.
+    /// dispatch, and this does not change that.** A clear is legal only outside
+    /// a pass while a render-graph frame is passes end to end, and that holds
+    /// on every backend, where a dispatch runs anywhere that can dispatch.
     ///
-    /// # Which refusal, and why they differ
+    /// # The refusal
     ///
-    /// * A non-zero value is `Capability::BufferFillRepeatedByte` or
-    ///   `Capability::BufferFillWord`, both of which this backend declines, so
-    ///   it is [`HalError::Unsupported`] — the variant a caller matches on to
-    ///   take the clear-dispatch fallback, and the one the agnostic seam suite
-    ///   requires of a declared refusal.
-    /// * A range that is not a whole number of `u32`s, or that runs past the end
-    ///   of the buffer, is the caller's arithmetic and stays
-    ///   [`HalError::InvalidDescriptor`] naming it — the same answers `crcbl-vk`
-    ///   and `crcbl-mtl` give for the same two mistakes.
+    /// A range that is not a whole number of `u32`s, or that runs past the end
+    /// of the buffer, is the caller's arithmetic and is
+    /// [`HalError::InvalidDescriptor`] naming it — the same answers `crcbl-vk`
+    /// and `crcbl-mtl` give for the same two mistakes.
     fn clear_buffer(&mut self, buffer: BufferHandle, offset: u64, size: u64) {
         if self.list().is_none() || !self.outside_a_pass("a buffer clear") {
             return;
@@ -2359,8 +2348,9 @@ impl CommandEncoder for Dx12CommandEncoder {
     /// which reads *any* argument layout a command signature describes — so the
     /// seam's call is the degenerate case: one command, whose arguments are a
     /// `D3D12_DISPATCH_ARGUMENTS`, and no count buffer. See
-    /// [`DeviceInner::dispatch_signature`](crate::device::DeviceInner::dispatch_signature)
-    /// for the object, which is created once per device.
+    /// [`DeviceInner::indirect_signature`](crate::device::DeviceInner::indirect_signature)
+    /// for the object, which is created once per `(kind, stride)` and cached on
+    /// the device.
     ///
     /// The span is checked against the buffer's own size before the call.
     /// `ExecuteIndirect` reads twelve bytes at the offset and bounds-checks

@@ -722,7 +722,8 @@ fn features_of(raw: &RawCaps) -> Features {
 /// The feature-keyed fields do move:
 ///
 /// * `max_bindless_descriptors` moves to
-///   [`D3D12_MAX_SHADER_VISIBLE_DESCRIPTOR_HEAP_SIZE_TIER_2`] deliberately:
+///   [`D3D12_MAX_SHADER_VISIBLE_DESCRIPTOR_HEAP_SIZE_TIER_2`](windows::Win32::Graphics::Direct3D12::D3D12_MAX_SHADER_VISIBLE_DESCRIPTOR_HEAP_SIZE_TIER_2)
+///   deliberately:
 ///   [`Features::DESCRIPTOR_INDEXING`] requires binding tier 3, for which D3D12
 ///   defines **no constant at all** because the heap is bounded only by memory.
 ///   The tier 2 constant is the largest figure the API commits to in writing,

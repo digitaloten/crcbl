@@ -182,7 +182,7 @@ pub(crate) const fn dxgi_format(format: Format) -> DXGI_FORMAT {
 /// carries.
 ///
 /// A separate function from [`dxgi_format`] because
-/// [`IndexFormat`](crcbl_hal::IndexFormat) is a separate seam type: D3D12
+/// [`IndexFormat`] is a separate seam type: D3D12
 /// accepts only these two spellings in an index-buffer view, so widening it to
 /// the texel table would offer a caller formats the view cannot take.
 pub(crate) const fn index_format(format: IndexFormat) -> DXGI_FORMAT {

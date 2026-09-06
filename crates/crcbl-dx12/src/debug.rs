@@ -54,7 +54,8 @@
 //! [`report`] is the machine-readable half [`diagnosis`] was not: severities as
 //! an enum rather than a word inside a formatted line, counts beside the kept
 //! messages, and a flag saying whether anything was checked at all.
-//! [`ValidationReport::assert_clean`] turns it into a failing assertion with
+//! `ValidationReport::assert_clean` — a `#[cfg(test)]` method, so no doc build
+//! has an item to link to — turns it into a failing assertion with
 //! `crcbl_vk::debug`'s semantics unchanged — **a layer that was not on fails
 //! before the messages are even looked at**, because a suite that passed for
 //! want of a layer proves nothing and that failure mode is otherwise invisible.
@@ -185,7 +186,7 @@ pub(crate) enum Severity {
 
 impl Severity {
     /// Whether a message at this severity fails
-    /// [`ValidationReport::assert_clean`].
+    /// `ValidationReport::assert_clean`.
     ///
     /// Warnings included, because the line this backend is held to is
     /// `crcbl-vk`'s and that one is "zero errors **and** warnings". An
@@ -696,7 +697,7 @@ fn severity_of(severity: D3D12_MESSAGE_SEVERITY) -> Severity {
 /// A device whose messages cannot be read at all — the layer is off, or Windows
 /// has no *Graphics Tools* feature, so the `ID3D12InfoQueue` query fails —
 /// reports `enabled: false` and no messages, which
-/// [`ValidationReport::assert_clean`] treats as the failure it is rather than as
+/// `ValidationReport::assert_clean` treats as the failure it is rather than as
 /// a clean run.
 #[cfg(target_os = "windows")]
 pub(crate) fn report(device: &ID3D12Device) -> ValidationReport {
@@ -717,7 +718,7 @@ pub(crate) fn report(device: &ID3D12Device) -> ValidationReport {
 /// **It takes nothing.** An earlier version cleared the info queue so that a
 /// failure carried its own messages and not the next one's, which is a fine
 /// property right up until something else reads the same queue — and
-/// [`ValidationReport::assert_clean`] now does. See the module docs.
+/// `ValidationReport::assert_clean` now does. See the module docs.
 #[cfg(target_os = "windows")]
 pub(crate) fn diagnosis(device: &ID3D12Device) -> String {
     let reason = removed_reason(device);

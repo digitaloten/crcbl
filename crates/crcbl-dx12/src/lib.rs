@@ -45,12 +45,11 @@
 //! **Nothing in this crate is a stub that reports success** — a draw recorded
 //! into an encoder *fails the encoder*, so `finish` hands back the refusal
 //! rather than a command buffer that submits and draws nothing. **No slice is
-//! outstanding**: the buffer fill was the last one, and it landed for a value of
-//! zero, so every remaining
+//! outstanding**: the buffer clear was the last one, and it landed as a copy out
+//! of the device's zeroed resource, so every remaining
 //! [`HalError::Unsupported`](crcbl_hal::HalError::Unsupported) is a refusal this
 //! backend *chose* or one D3D12 makes for it, and each names what it is about
-//! rather than a slice to wait for. A fill with a non-zero value names the
-//! capabilities it would be, argued at `Dx12CommandEncoder`'s `fill_buffer`. The
+//! rather than a slice to wait for. The
 //! refusals that are *permanent* name the absence: a Wayland, XCB, AppKit or
 //! canvas surface names the backend that owns it, because D3D12 presents to an
 //! `HWND` and nothing else, and a buffer copy of a `D24UnormS8Uint` image's

@@ -121,11 +121,11 @@ impl AdapterRecord {
 /// the deferral obligation is discharged by having nothing to defer rather than
 /// by a mechanism. What still binds is the caller's half: the **window** must
 /// outlive every swapchain, which is
-/// [`Instance::create_surface`](crcbl_hal::Instance::create_surface)'s safety
+/// [`Instance::create_surface`]'s safety
 /// contract and not something this crate can check.
 ///
 /// The `HWND` is kept as a plain address rather than as a
-/// [`HWND`](windows::Win32::Foundation::HWND) because that type is a raw
+/// [`HWND`] because that type is a raw
 /// pointer, which `windows-rs` declares neither `Send` nor `Sync` — and this
 /// table lives behind a [`Mutex`] inside a struct the seam requires to be both.
 /// Storing the integer is what keeps this crate's "no `unsafe` marker impls

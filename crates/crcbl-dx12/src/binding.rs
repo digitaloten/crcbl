@@ -19,7 +19,7 @@
 //! Samplers cannot share that block: `CreateSampler` writes only into a
 //! `SAMPLER` heap and a descriptor table may not mix heap types. A layout with
 //! both therefore becomes **two** root parameters and a bind group holds **two**
-//! blocks. [`conv::descriptor_range_type`](crate::conv::descriptor_range_type)
+//! blocks. [`conv::descriptor_range_type`]
 //! makes the split a shape rather than a rule, by having no range type to return
 //! for a sampler at all.
 //!
@@ -102,7 +102,7 @@
 //!
 //! # A dynamic offset leaves the table and becomes a root descriptor
 //!
-//! [`BindingKind::UniformBuffer`](crcbl_hal::BindingKind::UniformBuffer)'s
+//! [`BindingKind::UniformBuffer`]'s
 //! `dynamic` and its storage-buffer twin are the one binding shape a descriptor
 //! table cannot express: the table is reached by a descriptor handle, and every
 //! view inside it was written when the group was created. D3D12's answer is a

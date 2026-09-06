@@ -578,7 +578,7 @@ pub(crate) struct Declared {
 /// `SetGraphicsRoot32BitConstants` takes a `*const c_void` it reads
 /// `Num32BitValues` 32-bit values through, and the seam's `data` is a `&[u8]`
 /// that need not be four-byte aligned. The array is stack-sized at the root
-/// budget, which [`write`] bounds the count against, so no call allocates.
+/// budget, which [`write`](write()) bounds the count against, so no call allocates.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Write {
     /// Root parameter index to set the constants at.

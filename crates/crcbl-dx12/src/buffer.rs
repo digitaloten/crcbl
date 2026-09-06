@@ -17,7 +17,7 @@
 //! [`BufferUsage`] and [`MemoryLocation`], and the D3D12 side is three integer
 //! constants — so off Windows it exists in the test build alone and `cargo test`
 //! on any host runs the rules. That is the same argument
-//! [`crate::draw`](crate::draw), `crate::dxil`, `crate::present`,
+//! [`crate::draw`], `crate::dxil`, `crate::present`,
 //! `crate::root` and `crate::pin` make, and it matters here for their reason:
 //! nothing in D3D12 reports a view whose size disagrees with its resource, so
 //! the only place this can be caught is before the call.

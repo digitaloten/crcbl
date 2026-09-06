@@ -13,11 +13,13 @@
 //! deadline wait — the query block: heaps of all three kinds, and both of the
 //! seam's ways of reading one back — and the presentation block: swapchains,
 //! acquire, present and
-//! the present wait. **No entry point here refuses any more** — the mesh
-//! pipeline was the last, and the one refusal the backend still makes moved to
-//! the encoder, where a `fill_buffer` with a non-zero value answers
-//! [`HalError::Unsupported`] naming the capability. Nothing here is a stub that
-//! reports success.
+//! the present wait. **No entry point here refuses for want of a slice any
+//! more** — the mesh pipeline was the last, and the valued buffer fill that had
+//! moved to the encoder left with the seam verb's `value`. What still answers
+//! [`HalError::Unsupported`] is what D3D12 has no object for: a binary
+//! semaphore's CPU-side value and wait, a statistics query set read back
+//! through the seam's one word per query, and a timeline semaphore on a device
+//! opened without the feature. Nothing here is a stub that reports success.
 //!
 //! The presentation block is **thin on purpose**: the DXGI calls live in
 //! [`crate::swapchain`] and every decision that is arithmetic lives in
@@ -141,8 +143,8 @@ const FIRST_NODE: u32 = 1;
 
 /// How many zeroed bytes [`DeviceInner::zero`] holds.
 ///
-/// D3D12 has no valued device-side fill this backend takes, so
-/// `crate::command`'s `fill_buffer` writes zero by copying out of that resource
+/// D3D12 has no `vkCmdFillBuffer`, so
+/// `crate::command`'s `clear_buffer` writes zero by copying out of that resource
 /// in a loop of `ceil(size / ZERO_SOURCE_BYTES)` steps. That makes this number a
 /// straight trade with two sides: every device that opens pays it once in device
 /// memory whether it ever fills anything or not, and every fill longer than it
@@ -563,7 +565,7 @@ pub(crate) struct DeviceInner {
     /// the nanoseconds the seam asks for.
     timestamp_frequency: NonZeroU64,
     /// [`ZERO_SOURCE_BYTES`] of zeroes on the default heap: the source every
-    /// zero `fill_buffer` copies out of.
+    /// `clear_buffer` copies out of.
     ///
     /// One per device, created here rather than per call, because a fill is on
     /// the frame path and `CreateCommittedResource` is not — and because the
@@ -1660,10 +1662,10 @@ impl Dx12Device {
         let fence: ID3D12Fence = unsafe { raw.CreateFence(0, D3D12_FENCE_FLAG_NONE) }
             .map_err(|error| HalError::Backend(format!("CreateFence failed: {error}")))?;
 
-        // Before any command list exists, because `fill_buffer` may not fail for
-        // want of it: an encoder has nowhere to report an allocation failure
+        // Before any command list exists, because `clear_buffer` may not fail
+        // for want of it: an encoder has nowhere to report an allocation failure
         // until `finish`, and this device would then have opened successfully
-        // while every fill on it refused.
+        // while every clear on it refused.
         let zero = zero_source(&raw)?;
 
         if let Some(label) = desc.label {
@@ -2136,11 +2138,10 @@ impl Device for Dx12Device {
     ///
     /// **This is the backend mid-build, and the reasons say so.** D3D12 has
     /// every capability below; what is missing is this crate's expression of it,
-    /// and each refusal names the slice that owes it — the exception being the
-    /// two *valued* buffer fills, which are a deliberate decline argued at
-    /// [`fill_buffer`](crate::Dx12CommandEncoder) rather than an unwritten
-    /// slice. The zero fill is supported and lands as a copy out of
-    /// [`DeviceInner::zero`].
+    /// and each refusal names the slice that owes it. The buffer clear is not
+    /// one of them: it lands as a copy out of [`DeviceInner::zero`], and the two
+    /// *valued* fills this backend once declined left with the seam verb's
+    /// `value`.
     ///
     /// The honest reading of this list is that `crcbl-dx12` is the furthest from
     /// parity of the five, and the point of writing it down is that the number
@@ -4338,7 +4339,7 @@ impl Device for Dx12Device {
     /// **One reference this cannot reach is a command buffer the caller has not
     /// destroyed.** `crcbl_dx12::command`'s encoder takes its own reference to
     /// every resource it records against, and a
-    /// [`CommandBufferHandle`](crcbl_hal::CommandBufferHandle) still in the
+    /// [`CommandBufferHandle`] still in the
     /// caller's hand still holds it — so a caller that renders into a swapchain
     /// image and keeps the command buffer across a resize gets DXGI's refusal
     /// rather than a resized swapchain. Destroying finished command buffers is
@@ -11509,13 +11510,11 @@ pub(crate) mod tests {
             "{error:?}"
         );
 
-        // The `Unsupported` side of the contrast still exists, but no `Device`
-        // entry point carries it any more — it moved to the encoder, where
-        // `Dx12CommandEncoder::fill_buffer` refuses a non-zero value before
-        // touching its handle.
-        // `the_commands_this_backend_refuses_still_refuse_and_name_themselves`
-        // owns that assertion, and this comment is the pointer that stops the
-        // pair being read as "this backend answers `InvalidHandle` to everything".
+        // The `Unsupported` side of the contrast still exists — the binary
+        // semaphore's CPU-side calls, which
+        // `a_cpu_wait_times_out_as_ok_false_and_a_binary_semaphore_has_no_cpu_side`
+        // asserts by name — and this comment is the pointer that stops the pair
+        // being read as "this backend answers `InvalidHandle` to everything".
 
         // And the third answer, on the two calls that used to be on the
         // `Unsupported` side: they create the object, and the handle dies with
@@ -12019,9 +12018,9 @@ pub(crate) mod tests {
         destination: BufferHandle,
         /// The upload-heap buffer the sentinel is copied from before each run.
         ///
-        /// A copy rather than `fill_buffer`: the sentinel is non-zero and this
-        /// backend fills only to zero, so the reset is a transfer the encoder
-        /// already records rather than a fill it would refuse.
+        /// A copy rather than `clear_buffer`: the sentinel is non-zero and the
+        /// seam's clear writes zero, so the reset is a transfer the encoder
+        /// already records.
         sentinel: BufferHandle,
         /// Host-readable copy target, so the result can be asserted rather than
         /// assumed.

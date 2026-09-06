@@ -84,7 +84,7 @@
 //!
 //! # D3D12 keeps almost all of the pipeline in the object, and one thing outside
 //!
-//! [`GraphicsPipelineDesc`](crcbl_hal::GraphicsPipelineDesc) is Vulkan-shaped
+//! [`GraphicsPipelineDesc`] is Vulkan-shaped
 //! and `D3D12_GRAPHICS_PIPELINE_STATE_DESC` is very nearly the same object:
 //! blend, depth/stencil, rasteriser, attachment formats and sample state are all
 //! in it, unlike Metal, which leaves half on the encoder. The exception is the
