@@ -26,6 +26,10 @@
 /// Tuneable parameters for the cue grammar.
 ///
 /// Changing these mid-title breaks player skill — versioned like a save format.
+///
+/// A [`Mixer`](crate::mixer::Mixer) holds one, the way it holds a [`Listener`],
+/// and [`Mixer::set_cue_grammar`](crate::mixer::Mixer::set_cue_grammar) is
+/// where a game states its own instead of handing one to every cue it raises.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CueGrammar {
     /// Maximum ITD in **samples** at the given sample rate.
@@ -146,10 +150,11 @@ impl Listener {
 /// Both positions are in world space.  Returns interpolated gains, ITD,
 /// pitch, and distance-attenuated volume.
 ///
-/// **Takes the listener explicitly and reads no shared state**, which is what
-/// makes it testable at a hundred positions in a loop.  The listener a game
-/// *remembers* lives on the [`Mixer`](crate::mixer::Mixer), and
-/// [`Mixer::cue`](crate::mixer::Mixer::cue) is what hands it to this function.
+/// **Takes the listener and the grammar explicitly and reads no shared state**,
+/// which is what makes it testable at a hundred positions in a loop.  What a
+/// game *remembers* — both of them — lives on the [`Mixer`](crate::mixer::Mixer),
+/// and [`Mixer::cue`](crate::mixer::Mixer::cue) is what hands them to this
+/// function.
 pub fn compute_cue(listener: [f32; 3], emitter: [f32; 3], grammar: &CueGrammar) -> SpatialCue {
     let dx = emitter[0] - listener[0];
     let dy = emitter[1] - listener[1];

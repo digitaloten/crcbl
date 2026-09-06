@@ -52,7 +52,7 @@ use std::sync::Arc;
 
 use crcbl::audio::AudioStream;
 use crcbl::audio::mixer::{Mixer, SoundBank, VoiceId, VoiceMix};
-use crcbl::audio::spatial::{CueGrammar, Listener};
+use crcbl::audio::spatial::Listener;
 use crcbl::audio::synth;
 use crcbl::math::DVec3;
 
@@ -307,10 +307,7 @@ impl Audio {
 
     /// The mix for a cue at `at`, heard from wherever the mixer's listener is.
     fn cue_mix(&self, at: DVec3, gain: f32) -> VoiceMix {
-        let cue = self.mixer.cue(
-            [at.x as f32, at.y as f32, at.z as f32],
-            &CueGrammar::default(),
-        );
+        let cue = self.mixer.cue([at.x as f32, at.y as f32, at.z as f32]);
         VoiceMix {
             volume: cue.volume * gain,
             ..VoiceMix::from(&cue)

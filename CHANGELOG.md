@@ -16,6 +16,18 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Breaking
 
+- **A mixer holds its cue grammar, beside its listener.**
+  `Mixer::cue(&self, emitter: [f32; 3], grammar: &CueGrammar) -> SpatialCue` is
+  now `Mixer::cue(&self, emitter: [f32; 3]) -> SpatialCue`, reading the grammar
+  the mixer holds. `Mixer::set_cue_grammar` states it — once, at start-up, for a
+  game whose world is not scaled like the default's — and `Mixer::cue_grammar`
+  reads back what is in force; a mixer nobody has configured cues with
+  `CueGrammar::default()`, the way one nobody has placed hears from
+  `Listener::ORIGIN`. Every call site in the workspace was passing
+  `&CueGrammar::default()`, so a caller wanting the shipped grammar now drops
+  the argument and nothing else. `spatial::compute_cue` is unchanged: it still
+  takes a listener position and a grammar explicitly, and is still the layer a
+  test drives at a hundred positions in a loop.
 - **An image view keeps its image's format.** `ImageViewDesc::format` documented
   itself as free to differ from the image's "for sRGB reinterpretation" and no
   two backends agreed: `crcbl-dx12` refused every differing format, `crcbl-mtl`

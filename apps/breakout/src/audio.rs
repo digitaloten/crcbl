@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use crcbl::audio::AudioStream;
 use crcbl::audio::mixer::{Mixer, SoundBank, VoiceMix};
-use crcbl::audio::spatial::{CueGrammar, Listener};
+use crcbl::audio::spatial::Listener;
 use crcbl::audio::synth;
 use crcbl::math::DVec3;
 
@@ -150,10 +150,7 @@ impl Audio {
             crcbl::log::debug!("audio: no sound registered at id {id}");
             return;
         };
-        let cue = self.mixer.cue(
-            [at.x as f32, at.y as f32, at.z as f32],
-            &CueGrammar::default(),
-        );
+        let cue = self.mixer.cue([at.x as f32, at.y as f32, at.z as f32]);
         self.mixer.play(voice.with_mix(VoiceMix {
             volume: cue.volume * MASTER_GAIN,
             ..VoiceMix::from(&cue)

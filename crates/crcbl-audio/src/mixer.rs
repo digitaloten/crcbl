@@ -505,9 +505,11 @@ impl Voice {
 /// [`AudioStream`](crate::AudioStream) — through an [`Arc`], which is what
 /// leaves the game a handle to go on playing through. See [`Mixer::play`].
 ///
-/// It is also where the [`Listener`] lives. [`Mixer::set_listener`] is called
-/// once a frame and [`Mixer::cue`] answers for a world position, so a game says
-/// where its ear is in one place instead of passing it to every cue it raises.
+/// It is also where the [`Listener`] and the [`CueGrammar`] live.
+/// [`Mixer::set_listener`] is called once a frame, [`Mixer::set_cue_grammar`]
+/// once at start-up, and [`Mixer::cue`] answers for a world position, so a game
+/// says where its ear is and how it hears in one place instead of passing both
+/// to every cue it raises.
 pub struct Mixer {
     voices: Mutex<Vec<(VoiceId, Voice)>>,
     /// Voices mid-release: stopped but playing their one fade-to-silence
@@ -521,6 +523,11 @@ pub struct Mixer {
     /// mechanism beside the one already here would only be a second thing to
     /// reason about.
     listener: Mutex<Listener>,
+    /// How [`Mixer::cue`] hears: the tuning it computes with. A peer of
+    /// `listener` — a fact about the game, stated once, rather than an argument
+    /// every call site repeats — and behind a [`Mutex`] for the reason
+    /// `listener` gives.
+    cue_grammar: Mutex<CueGrammar>,
     /// The next handle to hand out. Monotonic; ids are never reused, so a
     /// stale [`VoiceId`] can never name a later voice.
     next_id: AtomicU64,
@@ -541,6 +548,7 @@ impl Mixer {
             voices: Mutex::new(Vec::new()),
             releasing: Mutex::new(Vec::new()),
             listener: Mutex::new(Listener::ORIGIN),
+            cue_grammar: Mutex::new(CueGrammar::default()),
             next_id: AtomicU64::new(1),
             bus_gains: Mutex::new([1.0; Bus::ALL.len()]),
         }
@@ -614,16 +622,42 @@ impl Mixer {
         *self.lock_listener()
     }
 
-    /// The cue for an emitter at `emitter`, heard from this mixer's listener.
+    /// Set the grammar every later [`Mixer::cue`] is computed with.
     ///
-    /// The one call that reads the remembered listener: [`compute_cue`] stays a
-    /// pure function of two positions and this is what supplies the first of
-    /// them. Feed the result to [`Voice::with_mix`] through
-    /// [`VoiceMix::from`] when the sound starts, and to [`Mixer::set_mix`] on
-    /// every frame it needs re-aiming after that.
+    /// **Set it once, at start-up.** The shipped defaults are the *trained*
+    /// grammar — `docs/plan/13-audio.md` versions them like a save format,
+    /// because changing them mid-title breaks the skill a player built. What
+    /// this is for is a game whose world is not scaled like the default's:
+    /// its own [`CueGrammar`] is stated here, once, instead of being handed to
+    /// every cue it raises.
+    ///
+    /// **It does not re-aim what is already playing**, for the reason
+    /// [`Mixer::set_listener`] does not: a voice is mixed at the parameters it
+    /// was given, and a new grammar changes the *next* cue.
+    pub fn set_cue_grammar(&self, grammar: CueGrammar) {
+        *self.lock_cue_grammar() = grammar;
+    }
+
+    /// The grammar this mixer is cueing with.
+    ///
+    /// [`CueGrammar::default()`](CueGrammar::default) until
+    /// [`Mixer::set_cue_grammar`] says otherwise.
     #[must_use]
-    pub fn cue(&self, emitter: [f32; 3], grammar: &CueGrammar) -> SpatialCue {
-        compute_cue(self.listener().position, emitter, grammar)
+    pub fn cue_grammar(&self) -> CueGrammar {
+        *self.lock_cue_grammar()
+    }
+
+    /// The cue for an emitter at `emitter`, heard from this mixer's listener
+    /// and computed with this mixer's grammar.
+    ///
+    /// The one call that reads both of those: [`compute_cue`] stays a pure
+    /// function of two positions and a grammar, and this is what supplies
+    /// everything but the emitter. Feed the result to [`Voice::with_mix`]
+    /// through [`VoiceMix::from`] when the sound starts, and to
+    /// [`Mixer::set_mix`] on every frame it needs re-aiming after that.
+    #[must_use]
+    pub fn cue(&self, emitter: [f32; 3]) -> SpatialCue {
+        compute_cue(self.listener().position, emitter, &self.cue_grammar())
     }
 
     /// Start a voice, and answer with the handle that steers it.
@@ -727,6 +761,12 @@ impl Mixer {
     /// for the voice list.
     fn lock_listener(&self) -> std::sync::MutexGuard<'_, Listener> {
         self.listener.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Lock the cue grammar, recovering from poisoning, as [`Mixer::lock`] does
+    /// for the voice list.
+    fn lock_cue_grammar(&self) -> std::sync::MutexGuard<'_, CueGrammar> {
+        self.cue_grammar.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -862,6 +902,7 @@ impl std::fmt::Debug for Mixer {
             .field("voice_count", &count)
             .field("releasing_count", &releasing)
             .field("listener", &listener)
+            .field("cue_grammar", &self.cue_grammar())
             .finish()
     }
 }
@@ -1379,11 +1420,10 @@ mod tests {
     /// side at all.
     #[test]
     fn moving_the_listener_moves_where_the_next_cue_is_heard() {
-        let grammar = CueGrammar::default();
         let emitter = [0.0, 0.0, 0.0];
         let mixer = Mixer::new();
         let play = |mixer: &Mixer| {
-            let cue = mixer.cue(emitter, &grammar);
+            let cue = mixer.cue(emitter);
             mixer.play(Voice::new(vec![0.5f32; 64 * CHANNELS]).with_mix(VoiceMix::from(&cue)))
         };
 
@@ -1452,16 +1492,67 @@ mod tests {
         assert_eq!(mixer.listener(), Listener::ORIGIN);
         assert_eq!(Listener::ORIGIN.position, [0.0; 3]);
         assert_eq!(
-            mixer.cue(emitter, &grammar),
+            mixer.cue(emitter),
             compute_cue([0.0, 0.0, 0.0], emitter, &grammar),
             "a fresh mixer cued from somewhere other than the origin",
         );
 
         mixer.set_listener(Listener::ORIGIN);
         assert_eq!(
-            mixer.cue(emitter, &grammar),
+            mixer.cue(emitter),
             compute_cue([0.0, 0.0, 0.0], emitter, &grammar),
             "saying the origin out loud changed the answer",
+        );
+    }
+
+    /// **The remembered grammar reaches a played voice**, the way the
+    /// remembered listener does.
+    ///
+    /// One emitter, one listener, never moved, played twice — once under the
+    /// default grammar and once under one whose rolloff ends short of it. The
+    /// observable is the volume the *mixer* is holding, not what `cue`
+    /// returned, so a `set_cue_grammar` that stored the value and a `cue` that
+    /// went on computing with `CueGrammar::default()` leaves the two volumes
+    /// equal, which is what the last assertion is written against.
+    #[test]
+    fn the_grammar_the_mixer_holds_is_what_the_next_cue_is_computed_with() {
+        // Past the short grammar's `rolloff_end` and well inside the default's.
+        let emitter = [0.0, 0.0, 15.0];
+        let mixer = Mixer::new();
+        let play = |mixer: &Mixer| {
+            let cue = mixer.cue(emitter);
+            mixer.play(Voice::new(vec![0.5f32; 64 * CHANNELS]).with_mix(VoiceMix::from(&cue)))
+        };
+
+        assert_eq!(
+            mixer.cue_grammar(),
+            CueGrammar::default(),
+            "a fresh mixer cued with something other than the default grammar",
+        );
+        let under_default = play(&mixer);
+
+        let short = CueGrammar {
+            rolloff_start: 1.0,
+            rolloff_end: 10.0,
+            ..CueGrammar::default()
+        };
+        mixer.set_cue_grammar(short);
+        assert_eq!(mixer.cue_grammar(), short, "the grammar did not stick");
+        let under_short = play(&mixer);
+
+        let mixes = mixer.voice_mixes();
+        assert_eq!(mixes.len(), 2, "a voice went missing");
+        assert_eq!(mixes[0].0, under_default);
+        assert_eq!(mixes[1].0, under_short);
+        let (default_volume, short_volume) = (mixes[0].1.volume, mixes[1].1.volume);
+
+        assert!(
+            default_volume > 0.0,
+            "the default grammar rolls off well past this emitter: {default_volume}",
+        );
+        assert_eq!(
+            short_volume, 0.0,
+            "an emitter past the mixer's own rolloff_end should be silent, not {short_volume}",
         );
     }
 

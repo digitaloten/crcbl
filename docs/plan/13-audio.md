@@ -29,7 +29,9 @@ Grammar invariants (what makes it a learnable skill):
 - **Tunable constants in one struct** (`CueGrammar`): max ITD samples, ILD dB,
   rear dB + rear pitch cents, elevation pitch cents, distance rolloff curve.
   Shipped defaults are the _trained_ grammar; changing them mid-title breaks
-  player skill — versioned like a save format.
+  player skill — versioned like a save format. The `Mixer` owns one, beside its
+  listener: `Mixer::set_cue_grammar` states it once and `Mixer::cue(emitter)`
+  reads it, so a game that wants the defaults never spells them.
 - Distance: inverse-square-ish attenuation with clamp + optional per-emitter
   curves; doppler is post-MVP (it's a _motion_ cue and must not corrupt the
   positional grammar when it lands).
@@ -89,9 +91,9 @@ Grammar invariants (what makes it a learnable skill):
   `Listener::ORIGIN` as the value a mixer starts at; the `Mixer` owns one and
   `Mixer::set_listener` is where a frame says where the ears are, so a cue is
   placed against the mixer's listener rather than against a position each caller
-  passes in. (`spatial::compute_cue` still takes a listener position as an
-  argument, and that is the layer below — call it directly and you are back to
-  four samples spelling the entry point four ways.)
+  passes in. (`spatial::compute_cue` still takes a listener position and a
+  grammar as arguments, and that is the layer below — call it directly and you
+  are back to four samples spelling the entry point four ways.)
 - **Occlusion (rule 5) rides physics**: per active voice, a client-side
   `crcbl-phys` L0 raycast (listener → emitter, throttled + cached, not per audio
   block) collects hits; colliders carry an **acoustic material**
