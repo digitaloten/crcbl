@@ -13989,10 +13989,16 @@ worth reading:
     `an_indirect_dispatch_reads_its_workgroup_count_from_the_buffer`. A
     `Set Vertex Buffer Validation` finding fires at the `set*`, so this is a
     bind issued under a mask that says the slot is read by a pipeline whose
-    functions do not read it. The `BindingMask::all()` fallback is the simplest
-    explanation, and it was invisible: `missing_reflection` logged at `debug`
-    while the job's filter admits `warn`. It logs at `warn` now, so the next
-    `mtl e2e` log either names the pipeline or rules the fallback out.
+    functions do not read it. **The `BindingMask::all()` fallback is ruled
+    out**: `missing_reflection` was raised to `warn` in `08b5900`, the job's
+    filter admits `warn`, and the `mtl e2e` log on `ca27002` carries no such
+    line while the four counts above are identical to the run before. So every
+    pipeline in the job had a reflection, and for these draws the reflection's
+    `isUsed` and the layer's own check disagree about the same slots — which is
+    the question above again, and it needs `MTLBinding` read on a device.
+    **Stopped here deliberately**: `crcbl-mtl` is deferred by the roadmap's
+    Status section, the flood that cost the job twenty minutes is gone, and what
+    is left is 160 lines in a log nobody reads until the mode moves to `assert`.
 
 - **`previous setViewport was unused` / `previous setScissorRect was unused`** —
   610 each: a viewport and scissor set and then set again before any draw used
