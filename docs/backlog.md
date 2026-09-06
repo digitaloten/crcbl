@@ -16705,16 +16705,15 @@ joint's index on a skeleton. Nothing shipping.
 
 ## The Windows lavapipe vk e2e job reds in bursts of readback timeouts (2026-09-06)
 
-**Four times now, on four unrelated commits, and every time a rerun of the one
+**Five times now, on five unrelated commits, and every time a rerun of the one
 job was green.** `vk e2e (lavapipe, windows)` fails a handful of
 `crcbl-vk::vk_e2e mesh::*` tests with `harness.rs`'s readback deadline — "the
 196608-byte readback was still Pending after 30.0s, past the 30s this polls for"
 — while the same suite passes on the Linux lavapipe leg of the same run and on
-both local drivers. The failing job runs about half as long as a green one (five
-minutes against ten), which is the shape of a starved runner rather than a slow
-one: the tests that red are the frame-sized readbacks, and the copies simply
-never complete inside the deadline. Seen once before 2026-09-05, on `03830d0`
-(eight tests), on `e17f0df` (four tests), and on `56b98f0` (two tests,
+both local drivers. The tests that red are the frame-sized readbacks, and the
+copies simply never complete inside the deadline. Seen once before 2026-09-05,
+on `03830d0` (eight tests), on `e17f0df` (four tests), on `56b98f0` and again on
+`252d77c` (2026-09-07; the same two tests both times,
 `the_gpu_descends_a_scaled_instance_at_the_size_it_draws` and
 `the_gpu_descends_the_dag_to_the_cut_the_host_rule_says`, each at 33 s, with
 `wait_idle: Ok` and a clean validation report):
@@ -16725,15 +16724,13 @@ never complete inside the deadline. Seen once before 2026-09-05, on `03830d0`
 - `the_two_geometry_paths_agree_about_how_fine_the_dunes_patch_is`
 
 **What is known and what is not.** Verified: the log carries no validation line,
-no panic other than the deadline, and the run's other GPU jobs are green; the
-job's duration is the only measurable difference from a green run. Not verified:
-what starves it. `READBACK_DEADLINE` in
-`crates/crcbl-vk/tests/vk_e2e/harness.rs` is 30 s per readback, and a lavapipe
-frame at 256×192 through the mesh path takes well under a second on an idle
-runner, so a 30 s stall is not the frame — it is the runner. Nothing here says
-whether the hosted Windows image throttles, whether another job on the same VM
-competes, or whether `poll_readback` on the Windows lavapipe ICD can lose a
-fence under load.
+no panic other than the deadline, and the run's other GPU jobs are green.
+`READBACK_DEADLINE` in `crates/crcbl-vk/tests/vk_e2e/harness.rs` is 30 s per
+readback, and a lavapipe frame at 256×192 through the mesh path takes well under
+a second on an idle runner, so a 30 s stall is not the frame. Not verified:
+whether `poll_readback` on the Windows lavapipe ICD can lose a fence, or whether
+the copy is ever executed — the paragraph after the options is what the fifth
+burst settled about the runner itself.
 
 **Options, and none is taken yet.** (1) Raise the deadline for that leg alone —
 cheap, but a longer wait on a starved runner is still a wait, and the deadline
@@ -16745,9 +16742,26 @@ time before the suite) and print it beside the summary, so the next red carries
 the evidence this entry lacks. (3) is in place since the fourth burst:
 `vk e2e (lavapipe, windows)` has a "Read the runner's load before the suite"
 step that prints processor time over a 3 s sample, free memory and the eight
-busiest processes. Nothing has been read from it yet — the next burst is the
-first with evidence, and it is what decides between (1) and (2). Until then the
-answer is still `gh run rerun <id> --failed`.
+busiest processes.
+
+**The fifth burst read it, and it refutes the starved-runner story.** On
+`252d77c` the step read 3.5% processor time and 13.07 GiB free of 15.99 on 4
+logical processors — the same as the green runs either side of it (2.8% on
+`92dcfe0`, 27.3% on `a315b76`, 13.1 and 12.7 GiB free) — and the suite's own
+wall time was the same too: nextest's summary reads 168.9 s for the red run
+against 156.0 s and 171.0 s for the two green ones, with the same two `SLOW`
+tests in all three. The "half as long" in the earlier paragraph was the job, not
+the suite: a red suite stops the job before the forward suite runs. So the rest
+of the suite ran at full speed while two readbacks sat `Pending` for the whole
+deadline and `wait_idle` returned `Ok` — which is not load, it is a copy the
+Windows lavapipe ICD reported finished at the queue and never wrote, or a fence
+`poll_readback` never saw signalled. (1) and (2) are both off the table on that
+evidence: a longer wait on a copy that is not coming is still a wait, and a
+retry would hide a driver bug. What the next burst should carry is the
+readback's own state at the deadline — the fence status, whether the copy's
+command buffer was submitted before or after the frame's, and the destination
+buffer's first bytes — printed by the harness beside the panic; that is the next
+step, and until it is in the answer is still `gh run rerun <id> --failed`.
 
 ## The debug draw layer's console switch is one bit, not a category set (2026-08-31)
 
