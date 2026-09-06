@@ -39,9 +39,14 @@ mod game;
 mod gpu;
 mod high_score;
 mod menu;
+mod scene;
 
 #[cfg(target_arch = "wasm32")]
 pub mod web;
 
 pub use app::{BreakoutError, Loop, PendingLoop, Summary, run};
 pub use args::{Invocation, Options, USAGE, parse};
+// `Options::board`'s type and the component its chunk file is rows of. Public
+// because `Options` is: a field nobody outside this crate can name is one they
+// cannot construct an `Options` around.
+pub use scene::{Board, Brick};

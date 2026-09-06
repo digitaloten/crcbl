@@ -12,11 +12,16 @@ rather than merely true.
 
 Two things sit behind it, in both directions:
 
-- **It waits on stage 6.** Features 5 (scene IO) and 6 (asset browser) have
-  nothing to open or save: there is no `.scn/` directory format and no RON
-  reader anywhere in the workspace — see
-  [06-assets-scenes.md](06-assets-scenes.md), whose task 4 is the unbuilt half.
-  Feature 3 waits on stage 7's inspector, which is also unbuilt
+- **It no longer waits on stage 6.** Feature 5 (scene IO) has a format to open
+  and save: [06-assets-scenes.md](06-assets-scenes.md)'s task 4 landed
+  2026-09-07 as `crcbl_scene::scn`, with `Scene::load` over an `AssetSource` and
+  a `Scene::save` whose text is byte-identical for equal scenes, and
+  `apps/breakout` reads its brick grid through it. (This bullet used to claim
+  there was "no RON reader anywhere in the workspace", which was already false
+  when it was written: `crcbl_render::stack::CameraStack::from_ron` and
+  `crcbl_inventory::catalog::Catalog::from_ron` both predate it.) Feature 6, the
+  asset browser, still waits on the rest of stage 6 — there is no watcher and no
+  `crcbl bake`. Feature 3 waits on stage 7's inspector, which is also unbuilt
   ([07-ui-debug.md](07-ui-debug.md)).
 - **Two sample plans wait on it**, and they are the only two samples with no app
   directory. [sample/07-towers.md](sample/07-towers.md)'s milestone 2 _is_ this

@@ -77,6 +77,25 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **Breakout reads its brick grid from a `.scn/` directory**, the first sample
+  to load one. `apps/breakout/assets/scenes/board.scn/` is `scene.ron`,
+  `env.ron` and `sys/bricks.ron`, read through `crcbl_scene::scn` from a
+  `MemorySource` seeded with `include_str!` of the three committed files — the
+  browser's only path, and the reason a run's board cannot depend on the working
+  directory it started in — or from a `DirSource` when the new \*\*`--scene
+  <DIR>`** names another directory. A directory that is not a scene is refused
+  by key, line and column with exit 2, as lantern refuses a bad `--stack`; a
+  directory with no `scene.ron` names that key rather than loading an empty
+  board. `game::brick_position` is no longer what the game spawns: it is the
+  committed file's generator, and a canonical-file test asserts the chunk is
+  byte-for-byte what `Scene::save` writes from it, so the layout has one source.
+  `apps/breakout/tests/golden/board.png` is unchanged — the scene reproduces the
+  board exactly. `*.ron` is pinned to LF in `.gitattributes` so that comparison
+  holds on a Windows checkout.
+- **`crcbl::serde`** — the umbrella re-exports `serde` as it does `glam` and
+  `log`, so a component a sample hands `chunk_of` can derive the loader's own
+  `Serialize`/`Deserialize` (`#[serde(crate = "crcbl::serde")]`) without naming
+  a dependency beside the engine.
 - **`crcbl_scene::scn`, the `.scn/` scene directory** — the one content format
   the engine owns: a `scene.ron` header (`format: 0`, a name, the system
   manifest), an `env.ron` camera and ambient light, and one `sys/<system>.ron`
@@ -92,7 +111,8 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
   file that declares another system, an unknown field (every file type sets
   `deny_unknown_fields`), a repeated `SceneEntityId`, and a save of an entity
   that was never given one. `crcbl`'s new non-default `scn` feature reaches the
-  loader **without** the glTF parser. No sample loads a `.scn/` yet.
+  loader **without** the glTF parser. `apps/breakout` is the first consumer; see
+  the entry above.
 - **`crcbl-inventory`, the grid-inventory kit** — part 2 of
   `docs/plan/34-inventory.md`, headless and renderer-free. `Grid` is the one
   container primitive: a `W×H` field of cells with an occupancy map and an

@@ -4982,18 +4982,6 @@ deleted; it is what those plans still describe and the tree does not have.
 
 ## breakout (`docs/plan/sample/01-breakout.md`)
 
-### Breakout's layout is still compile-time constants (2026-08-27)
-
-**Not built.** `BRICK_ROWS`, `BRICK_COLS` and the derived origin are `const` in
-`apps/breakout/src/game.rs`; there is no `.scn/` directory anywhere in the tree
-and no `apps/editor`. The doc's milestone 3 is "layout from scene file, then
-edited in the editor", which makes breakout the smallest editor round-trip test
-— and both halves are outside this sample.
-
-**What it would take:** the stage 6 scene format, then the editor phase. **What
-it blocks:** the sample's own milestone 3, and the "smallest editor round-trip
-test" role the editor phase would otherwise have to invent a fixture for.
-
 ### Breakout's 10-minute soak and store-persistence checks are unrun (2026-08-27)
 
 **Partly built.** The high score persists through `crcbl::store::record::Record`
@@ -5013,7 +5001,10 @@ criterion.
 **Not built.** Milestone 3 asks for "tuning constants from a data file — first
 use of data-driven balance outside scenes". The constants are still in
 `apps/asteroids/src/game.rs`. The milestone is written "(after stage 6)", and
-stage 6 has produced no `.scn/` and no data-file loader a sample uses.
+stage 6 now has both halves of what that needed: `crcbl_scene::scn` is a `.scn/`
+directory and `apps/breakout` reads one through `AssetSource`, so the pattern to
+copy exists. What asteroids still has no schema for is a _balance table_, which
+is not a scene.
 
 **What it would take:** the stage 6 asset path, then a balance table this sample
 reads through `AssetSource`. **What it blocks:** the first demonstration that
@@ -5178,11 +5169,13 @@ that the ladder has no untextured-quad holdouts left.
 row in `web/build.sh`'s `DEMOS`. Nothing in the doc has been tested against
 code. The three links are independent and only one of them is the editor:
 
-1. **Milestone 2 waits on the editor.** There is no `apps/editor` — the
-   workspace `Cargo.toml` records the absence as deliberate until the editor
-   phase — and no `.scn/` directory anywhere in the tree. Every "editor-built"
-   and "authored in the editor" line inherits this, including the exit criterion
-   "map authored 100% in the editor, zero hand-edited scene text".
+1. **Milestone 2 waits on the editor.** There is no `apps/editor` — the scene
+   directory is no longer part of this link: `crcbl_scene::scn` landed
+   2026-09-07 and `apps/breakout` reads its board out of one. The workspace
+   `Cargo.toml` records the absence as deliberate until the editor phase — and
+   no `.scn/` directory anywhere in the tree. Every "editor-built" and "authored
+   in the editor" line inherits this, including the exit criterion "map authored
+   100% in the editor, zero hand-edited scene text".
 2. **Milestone 3 waits on a wire.** `crates/crcbl-net` ships `InMemoryTransport`
    and nothing else — no UDP transport, no LAN host discovery, no lobby browser
    — so "co-op over real transport" and the 4-player LAN exit criterion have
@@ -5263,11 +5256,14 @@ device-swap showcase — the rebind UI and the glyph hints that follow the
 last-active device. That last group is topic 19's forcing function.
 
 **Also not built:** puppet's map is authored in `apps/puppet/src/map.rs` rather
-than as a `.scn/` dir, for the same reason breakout's grid is in code. **Also
-not built:** milestone 5's golden frames. `apps/puppet` has no `tests/`
-directory at all, so nothing pins a pose; the Pages demo half of milestone 5 is
-done (`apps/puppet/src/web.rs`, `web/demos/puppet/`, the `puppet` row in
-`DEMOS`).
+than as a `.scn/` dir. The format is no longer the blocker — `crcbl_scene::scn`
+landed and `apps/breakout` loads one — so what is owed is the port: puppet's map
+is `crcbl-greybox` primitives with colliders beside them, and a `.scn/` of it
+needs a component type and a `chunk_of` codec for those, which nobody has
+written. **Also not built:** milestone 5's golden frames. `apps/puppet` has no
+`tests/` directory at all, so nothing pins a pose; the Pages demo half of
+milestone 5 is done (`apps/puppet/src/web.rs`, `web/demos/puppet/`, the `puppet`
+row in `DEMOS`).
 
 **One engine limit is visible in the picture**: the slopes are rounded, because
 `crcbl-phys` has no oriented box to make a wedge out of.

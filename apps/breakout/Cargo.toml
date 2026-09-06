@@ -36,7 +36,12 @@ crate-type = ["cdylib", "rlib"]
 # nothing else. `apps/sandbox` was the only consumer that ever looked like this;
 # all five do now.
 [dependencies]
-crcbl = { workspace = true }
+# `scn` is the scene *format* half of `crcbl::scene` — `crcbl_scene::scn`, the
+# `.scn/` directory `assets/scenes/board.scn/` is one of. Not `scene`: that
+# feature turns on the glTF importer as well, and this game reads no glTF at
+# run time. See `crates/crcbl/Cargo.toml`, where the two are split for exactly
+# this build.
+crcbl = { workspace = true, features = ["scn"] }
 
 # The build script's half, and the other feature. `crcbl` re-exports
 # `crcbl-sprite`'s reader; it does not re-export the PNG *encoder*, and it

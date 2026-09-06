@@ -50,6 +50,19 @@ fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// The one line a refused run explains itself on.
+///
+/// Not the whole of stderr: `crcbl::args::run_front_end` prints the usage text
+/// under the message, and the usage text names paths of its own — an assertion
+/// over the lot would be reading `--scene`'s help as though it were the answer.
+fn refusal(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .find(|line| line.starts_with("breakout: "))
+        .expect("a refused run says why")
+        .to_string()
+}
+
 /// The CI job's whole contract: it terminates, it exits 0, and it says what it
 /// did.
 #[test]
@@ -203,4 +216,54 @@ fn a_run_with_no_input_waits_for_a_launch() {
     let summary = stdout(&output);
     assert!(summary.contains("score 0"), "{summary}");
     assert!(summary.contains("WaitingForLaunch"), "{summary}");
+}
+
+/// **A `--scene` the binary cannot read is exit 2, by key, line and column.**
+///
+/// The refusal is the half worth asserting through the real binary: a run that
+/// fell back to the committed board when the directory it was pointed at did
+/// not parse would play the game it always played and report nothing, which is
+/// a level nobody could tell had failed to load.
+#[test]
+fn a_scene_directory_that_does_not_parse_is_refused_by_line_and_column() {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("unparsable.scn");
+    std::fs::create_dir_all(&dir).expect("the target tmp dir is writable");
+    // A header whose field is misspelled: `deny_unknown_fields` is what turns
+    // that into a position rather than a silently defaulted scene.
+    std::fs::write(
+        dir.join("scene.ron"),
+        "Scene(\n    format: 0,\n    nome: \"board\",\n)\n",
+    )
+    .expect("the target tmp dir is writable");
+
+    let output = breakout_null(&["--frames", "1", "--scene", dir.to_str().expect("utf-8")]);
+    assert_eq!(code(&output), 2, "{}", stdout(&output));
+    let message = refusal(&output);
+    assert!(message.contains("scene.ron"), "{message}");
+    assert!(message.contains("line 3"), "{message}");
+    assert!(message.contains("column"), "{message}");
+    assert!(message.contains("nome"), "{message}");
+}
+
+/// **A `--scene` with no `scene.ron` names the key that is missing**, and names
+/// it the way the caller spelled it: the directory the flag points at *is* the
+/// scene, so the header is `scene.ron` and not `board.scn/scene.ron`.
+///
+/// An empty board is the failure this refusal prevents. A loader that answered
+/// "no bricks" for a directory with no header would start a run that is
+/// instantly won.
+#[test]
+fn a_scene_directory_with_no_header_is_refused_by_the_missing_key() {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("headerless.scn");
+    std::fs::create_dir_all(&dir).expect("the target tmp dir is writable");
+
+    let output = breakout_null(&["--frames", "1", "--scene", dir.to_str().expect("utf-8")]);
+    assert_eq!(code(&output), 2, "{}", stdout(&output));
+    let message = refusal(&output);
+    assert!(message.contains("scene.ron"), "{message}");
+    assert!(message.contains("path not found"), "{message}");
+    assert!(
+        !message.contains("board.scn"),
+        "the key must be the caller's, not the built-in board's: {message}"
+    );
 }

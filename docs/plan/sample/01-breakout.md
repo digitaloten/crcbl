@@ -23,7 +23,8 @@ Deliberately the smallest thing that is a _game_ and not a demo.
 
 ## Scope
 
-- One screen, fixed brick layout (hardcoded pre-stage-6, `.scn/` dir after).
+- One screen, fixed brick layout, read from a `.scn/` directory
+  (`apps/breakout/assets/scenes/board.scn/`) since 2026-09-07.
 - Ball/paddle/brick collision through `crcbl-phys` L0: ball = swept-sphere CCD
   vs box colliders (never tunnels at high speed — first CCD consumer),
   reflection from contact normal. Paddle = kinematic body. No game-code
@@ -77,21 +78,27 @@ module either, because `apps/breakout/src/audio.rs` banks two cues and plays
 them and keeps no counter a row could read. State invented to fill the panel
 would be the panel bending the game rather than reporting on it.
 
-Still owed from the milestones below: **milestone 3, the layout from a file.**
-The brick grid is still in code. There is no `.scn/` directory anywhere in this
-tree and no `apps/editor`, so both halves of that milestone are waiting on
-things outside this sample — but **they are two rows now, not one**: the `.scn/`
-scene directory is `ROADMAP.md`'s **P11C** and lands without the editor, so the
-"layout from a scene file" half unblocks there and only "layout edited in the
-editor" waits on P12.
+**Milestone 3's first half landed 2026-09-07.** The brick grid is
+`apps/breakout/assets/scenes/board.scn/` — `scene.ron`, `env.ron` and
+`sys/bricks.ron` — read through `crcbl_scene::scn` from a `MemorySource` seeded
+with `include_str!` (the browser's only path) or from a `DirSource` when
+`--scene <DIR>` names another directory. `game::brick_position` is no longer
+what the game spawns: it is the committed file's _generator_, and
+`scene::tests::the_committed_board_is_what_the_writer_writes` asserts the chunk
+is byte-for-byte what `Scene::save` writes from it, which is what keeps the
+layout in one place. `tests/golden/board.png` did not move.
+
+Still owed: **milestone 3's second half, the layout edited in the editor**,
+which waits on `apps/editor` and so on `ROADMAP.md`'s **P12**.
 
 ## Milestones
 
 1. Paddle + ball bouncing (first playable: stage 4 loop + first stage 5 L0
    slice).
 2. Bricks + scoring + lives + states.
-3. (After stage 6) layout from scene file. (After stage 8) layout edited in
-   editor — breakout becomes the smallest editor round-trip test.
+3. Layout from scene file — **done 2026-09-07**, see above. (After stage 8)
+   layout edited in editor — breakout becomes the smallest editor round-trip
+   test.
 
 ## Exit criteria
 

@@ -290,6 +290,17 @@ pub use crcbl_webgpu as webgpu;
 /// message names neither crate helpfully.
 pub use glam as math;
 
+/// [`serde`]: the traits a component derives to be a row of a `.scn/` chunk
+/// file, which [`scene::scn::chunk_of`] bounds
+/// its component type by.
+///
+/// Re-exported for [`math`]'s reason: the derive has to name the one `serde`
+/// the loader's bound is spelled in, and a sample that adds its own `serde`
+/// line to do so is a sample with a dependency beside the engine — which
+/// `docs/plan/sample/00-samples-overview.md`'s first rule forbids. A deriving
+/// type points the macro here with `#[serde(crate = "crcbl::serde")]`.
+pub use serde;
+
 /// [`crcbl-ui`](crcbl_ui): immediate-mode UI toolkit — draw lists, glyph atlas,
 /// HUD skeleton, and widgets.
 pub use crcbl_ui as ui;

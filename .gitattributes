@@ -22,6 +22,13 @@
 *.wgsl text eol=lf
 *.metal text eol=lf
 
+# The engine's own text data formats, compared byte for byte by the tests that
+# keep a committed file honest: a `.scn/` chunk `include_str!`ed by a sample is
+# asserted equal to what `crcbl_scene::scn`'s writer produces, and that writer
+# pins `\n`. `text=auto` would hand a Windows checkout CRLF and fail the
+# comparison on a file nobody edited, the shader manifest's lesson again.
+*.ron text eol=lf
+
 # Shell harnesses: LF regardless of platform, since they run under bash.
 *.sh text eol=lf
 

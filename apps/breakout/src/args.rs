@@ -1,21 +1,21 @@
 //! Argument parsing for the breakout sample.
 //!
 //! ```text
-//! breakout [--headless] [--frames N] [--tick-hz N] [--backend B]
+//! breakout [--headless] [--frames N] [--tick-hz N] [--backend B] [--scene DIR]
 //! ```
 //!
 //! # What is left here after the engine took the shared half
 //!
-//! [`crcbl::args::Common`] owns every flag breakout has, because breakout has
-//! none of its own — its board is fixed, so there is no `--seed` to take. That
-//! makes this the smallest of the four parsers and the one that shows the seam
-//! most plainly: `Options` wraps `Common`, and `parse` rejects anything the
-//! engine did not claim.
-//!
-//! Still a wrapper rather than a bare alias for `Common`, because the *next*
-//! flag breakout grows goes here without changing its callers' types.
+//! [`crcbl::args::Common`] owns all but one of breakout's flags, and `--scene`
+//! is the one that is this game's: it names a `.scn/` directory to read the
+//! brick grid out of instead of the committed `assets/scenes/board.scn/`. The
+//! shape is `apps/lantern/src/args.rs`'s `--stack` — the file is read *here*,
+//! while there is still an exit code to refuse the run with, and `Options`
+//! carries the parsed value rather than the path.
 
 use crcbl::args::{Common, Consumed};
+
+use crate::scene::Board;
 
 /// The `--help` text.
 ///
@@ -55,15 +55,27 @@ OPTIONS:
                          Turns --headless on: the frame is read back off the
                          offscreen ring, which is the only surface every backend
                          can copy a presented image out of.
+    --scene <DIR>        Read the brick grid from a .scn/ scene directory
+                         instead of the committed
+                         apps/breakout/assets/scenes/board.scn. DIR is the
+                         scene directory itself, the one holding scene.ron. A
+                         directory that is not a scene is refused by key, line
+                         and column.
     --debug-overlay      Start with the debug panel visible (F3 toggles it)
     --no-debug-overlay   Start with it hidden. The default is 'visible in a
                          debug build, hidden in a release build'
     -h, --help           Print this help";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// **Not `Eq`.** [`Board`] is a list of world-space coordinates, and a float
+/// has no total equality; nothing compares two invocations for anything but a
+/// test's `assert_eq!`, which [`PartialEq`] serves.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Options {
-    /// The flags every sample has, which for breakout is all of them.
+    /// The flags every sample has, which for breakout is all but one.
     pub common: Common,
+    /// The brick layout the run opens with: the committed board unless
+    /// `--scene` named another directory.
+    pub board: Board,
 }
 
 impl Default for Options {
@@ -77,6 +89,7 @@ impl Default for Options {
             common: Common::new(crate::game::DEFAULT_TICK_HZ).with_screenshot(),
             #[cfg(target_arch = "wasm32")]
             common: Common::new(crate::game::DEFAULT_TICK_HZ),
+            board: Board::built_in(),
         }
     }
 }
@@ -94,9 +107,21 @@ pub fn parse(args: impl Iterator<Item = String>) -> Invocation {
             Consumed::Yes => continue,
             Consumed::Help => return Invocation::Help,
             Consumed::Bad(message) => return Invocation::BadUsage(message),
-            // Breakout claims nothing of its own, so anything the engine hands
-            // back is an unknown argument.
-            Consumed::No => return Invocation::BadUsage(format!("unknown argument: {arg}")),
+            Consumed::No => {}
+        }
+        match arg.as_str() {
+            "--scene" => match args.next() {
+                // Refused here rather than fallen back on: a run that quietly
+                // kept the built-in board when the directory it was pointed at
+                // would not parse is one that drew the picture it always drew
+                // and reported nothing.
+                Some(path) => match Board::read_dir(&path) {
+                    Ok(board) => options.board = board,
+                    Err(message) => return Invocation::BadUsage(message),
+                },
+                None => return Invocation::BadUsage("--scene needs a value".into()),
+            },
+            _ => return Invocation::BadUsage(format!("unknown argument: {arg}")),
         }
     }
 
@@ -163,13 +188,80 @@ mod tests {
         ));
     }
 
-    /// Breakout claims no flags of its own, so **every** unknown argument is a
-    /// rejection — including one another sample takes. A `--seed` silently
-    /// ignored here would be a run the caller believed was seeded.
+    /// Breakout claims one flag of its own, so every **other** unknown
+    /// argument is a rejection — including one another sample takes. A `--seed`
+    /// silently ignored here would be a run the caller believed was seeded.
     #[test]
     fn an_argument_this_game_does_not_claim_is_refused_including_another_games() {
         assert!(rejected(&["--nonsense"]).contains("nonsense"));
         assert!(rejected(&["--seed", "17"]).contains("--seed"));
+    }
+
+    /// **`--scene` reads a directory at run time, and the board in it reaches
+    /// the field.**
+    ///
+    /// The one-brick scene is what makes that assertable: a parser that
+    /// accepted the flag and kept the committed grid would pass any check
+    /// that only counted a successful parse.
+    #[test]
+    fn the_scene_flag_reads_a_directory_and_refuses_one_that_is_not_a_scene() {
+        let dir = std::env::temp_dir().join(format!("breakout-scene-{}.scn", std::process::id()));
+        std::fs::create_dir_all(dir.join("sys")).expect("the temp dir is writable");
+        std::fs::write(
+            dir.join("scene.ron"),
+            "Scene(format: 0, name: \"one\", systems: [\"bricks\"])",
+        )
+        .expect("the temp dir is writable");
+        std::fs::write(
+            dir.join("env.ron"),
+            "Env(camera: (position: (0.0, 0.0, -1.0), look_at: (0.0, 0.0, 0.0)), \
+             ambient: (0.0, 0.0, 0.0))",
+        )
+        .expect("the temp dir is writable");
+        std::fs::write(
+            dir.join("sys").join("bricks.ron"),
+            "Chunk(system: \"bricks\", entities: [\n    (0, (position: (1.0, 2.0, 0.0), \
+             half_extents: (1.2, 0.4, 0.5))),\n])",
+        )
+        .expect("the temp dir is writable");
+
+        let path = dir.to_str().expect("utf-8");
+        let board = parsed(&["--scene", path]).board;
+        assert_eq!(
+            board.bricks().len(),
+            1,
+            "the file's board must reach the field"
+        );
+        assert_eq!(
+            board.bricks()[0].position(),
+            crcbl::math::DVec3::new(1.0, 2.0, 0.0)
+        );
+
+        // A chunk that is not this system's is refused by the file it is in,
+        // not absorbed as an empty board.
+        std::fs::write(
+            dir.join("sys").join("bricks.ron"),
+            "Chunk(system: \"walls\", entities: [])",
+        )
+        .expect("the temp dir is writable");
+        let message = rejected(&["--scene", path]);
+        assert!(message.contains("sys/bricks.ron"), "{message}");
+        assert!(message.contains("walls"), "{message}");
+
+        assert!(
+            matches!(
+                parse(["--scene".to_string()].into_iter()),
+                Invocation::BadUsage(_)
+            ),
+            "--scene at the end of an argv is a run that silently kept the built-in board"
+        );
+    }
+
+    /// With no `--scene`, the board is the committed one — the browser's only
+    /// path, since a wasm build has no directory to point the flag at.
+    #[test]
+    fn the_default_board_is_the_committed_scene_directory() {
+        assert_eq!(parsed(&[]).board, crate::scene::Board::built_in());
     }
 
     #[test]

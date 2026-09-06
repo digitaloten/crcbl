@@ -412,6 +412,16 @@ always argued a shipped game should get.
   `moving_one_entity_changes_one_chunk_file`, which asserts the two chunk files
   moved and `scene.ron`/`env.ron` did not.
 
+**The first consumer is `apps/breakout`**, 2026-09-07:
+`apps/breakout/assets/scenes/board.scn/` is its brick grid, read through a
+`MemorySource` seeded with `include_str!` of the three committed files — which
+is the browser's only path — or through a `DirSource` when `--scene <DIR>` names
+another directory. `apps/breakout/src/scene.rs` holds the layout honest the way
+`crcbl_inventory::catalog`'s `CANONICAL` does: `game::brick_position` generates
+the board and a test asserts the committed chunk is byte-for-byte what
+`Scene::save` writes from it, so the file has one source and no second copy of
+the grid lives in code.
+
 **What is deliberately absent**, and each is named in `scn`'s module header so a
 reader of the code finds it there too: dirty-chunk tracking (task 4's own line,
 above); hot reload and the watcher (task 5); `crcbl bake` and `PackSource` (task

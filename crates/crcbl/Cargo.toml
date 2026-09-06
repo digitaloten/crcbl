@@ -93,6 +93,12 @@ crcbl-sprite = { workspace = true, features = ["load"] }
 # in the same types the renderer takes, without a second workspace path.
 glam = { workspace = true }
 log = { workspace = true }
+# Re-exported as `crcbl::serde` for the same reason `glam` is: a component a
+# sample hands `crcbl_scene::scn::chunk_of` has to derive *the* `Serialize`
+# the loader's bound names, and a sample that spells its own `serde` line is
+# one dependency past "the engine and nothing else". The derive feature is
+# the workspace's.
+serde = { workspace = true }
 thiserror = { workspace = true }
 
 # The browser's GPU seam, and only where a browser is — and now the *only* GPU

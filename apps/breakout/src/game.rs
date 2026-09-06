@@ -78,6 +78,8 @@ use crcbl::net::{InMemoryTransport, ProtocolCompatibility, Transport};
 use crcbl::phys::{ColliderComponent, PhysicsSystem, RigidBody, Transform};
 use crcbl::session::Loopback;
 
+use crate::scene::{Board, Brick};
+
 const COMPATIBILITY: ProtocolCompatibility = ProtocolCompatibility {
     protocol_version: 3,
     engine_build_id: 0x0043_5243_424C,
@@ -185,14 +187,28 @@ pub const BRICK_WIDTH: f64 = 2.4;
 pub const BRICK_HEIGHT: f64 = 0.8;
 pub const BRICK_GAP: f64 = 0.2;
 pub const BRICK_TOP: f64 = 7.0;
+/// The centre of the leftmost column.
+///
+/// Test-only for `brick_position`'s reason: the shipped game reads the grid
+/// out of a file and never computes one.
+#[cfg(test)]
 const BRICK_LEFT: f64 = -(BRICK_COLS as f64 * (BRICK_WIDTH + BRICK_GAP)) / 2.0 + BRICK_WIDTH / 2.0;
 
 /// Centre of brick `index` in the grid, in world space.
 ///
-/// Public because [`crate::art`] runs it backwards: the renderer is handed a
-/// bare list of live brick centres and has to recover which row a brick is in to
-/// know which frame of the sheet to draw it with. `art::brick_frame` is the
-/// inverse, and `art`'s tests hold the two to each other.
+/// **No longer what the game spawns**, and `cfg(test)` is what that means in
+/// the build: the grid comes out of `assets/scenes/board.scn/` — see
+/// [`crate::scene`] — and a shipped binary carrying a second copy of the layout
+/// beside the one it reads would be the thing the file was meant to replace.
+///
+/// Both remaining callers are tests, and they are the two halves of keeping the
+/// file honest. `scene`'s canonical-file test writes the board from here and
+/// asserts the committed chunk is byte-for-byte the result, so this is the
+/// file's *generator*. And [`crate::art`] runs it backwards: the renderer is
+/// handed a bare list of live brick centres and has to recover which row a brick
+/// is in to know which frame of the sheet to draw it with, so `art::brick_frame`
+/// is the inverse and `art`'s tests hold the two to each other.
+#[cfg(test)]
 pub fn brick_position(index: usize) -> DVec3 {
     let row = index / BRICK_COLS;
     let col = index % BRICK_COLS;
@@ -355,6 +371,9 @@ struct GameLogic {
     ball: Entity,
     paddle: Entity,
     bricks: Vec<Entity>,
+    /// The board this run was opened with, kept because [`restart`] spawns the
+    /// grid a second time and the scene directory is read once.
+    layout: Vec<Brick>,
     paddle_x: f64,
     ball_pos: DVec3,
     /// Live brick centres, refreshed each tick for the renderer. Reused rather
@@ -616,7 +635,7 @@ fn restart(logic: &mut GameLogic, world: &mut World) {
         with_physics(world, |phys| phys.remove_entity(entity));
         world.despawn(entity);
     }
-    logic.bricks = spawn_brick_grid(world);
+    logic.bricks = spawn_brick_grid(world, &logic.layout);
     logic.reset_run();
     let ball = logic.ball;
     with_physics(world, |phys| reset_ball(phys, ball));
@@ -748,24 +767,28 @@ fn set_velocity(phys: &mut PhysicsSystem, entity: Entity, velocity: DVec3) {
     }
 }
 
-/// Spawns a full brick grid and gives every brick a kinematic body and a box
-/// collider. Used both at startup and by [`restart`], so the layout is written
-/// once.
-fn spawn_brick_grid(world: &mut World) -> Vec<Entity> {
-    let mut bricks = Vec::with_capacity(BRICK_COUNT);
-    for _ in 0..BRICK_COUNT {
+/// Spawns `layout`'s bricks and gives every one a kinematic body and a box
+/// collider.
+///
+/// `layout` is the board the scene directory was read into — see
+/// [`crate::scene`]. Used both at startup and by [`restart`], which is why the
+/// layout is kept on [`GameLogic`] rather than re-read: a brick the ball breaks
+/// is despawned, and a restart has to be able to put the whole grid back.
+fn spawn_brick_grid(world: &mut World, layout: &[Brick]) -> Vec<Entity> {
+    let mut bricks = Vec::with_capacity(layout.len());
+    for _ in layout {
         bricks.push(world.spawn());
     }
     with_physics(world, |phys| {
-        for (index, &entity) in bricks.iter().enumerate() {
-            let transform = Transform::from_position(brick_position(index));
+        for (brick, &entity) in layout.iter().zip(&bricks) {
+            let transform = Transform::from_position(brick.position());
             phys.set_body(entity, RigidBody::new_kinematic());
             phys.set_transform(entity, transform);
             phys.set_collider(
                 entity,
                 &ColliderComponent::Box {
                     offset: DVec3::ZERO,
-                    half_extents: DVec3::new(BRICK_WIDTH / 2.0, BRICK_HEIGHT / 2.0, 0.5),
+                    half_extents: brick.half_extents(),
                     is_trigger: false,
                 },
                 &transform,
@@ -833,8 +856,12 @@ pub struct RenderState {
 /// render time — see [`Game::board_stats`].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BoardStats {
-    /// Bricks still standing, of [`BRICK_COUNT`].
+    /// Bricks still standing, of [`BoardStats::total`].
     pub bricks: usize,
+    /// How many the board started with, which is how many rows the scene
+    /// directory had — not a constant, because `--scene` is a door onto a
+    /// board with a different number of them.
+    pub total: usize,
     /// The speed the ball is on right now, in world units per second.
     pub ball_speed: f64,
 }
@@ -842,7 +869,7 @@ pub struct BoardStats {
 impl crcbl::ui::DebugModule for BoardStats {
     fn debug_section(&self, section: &mut crcbl::ui::DebugSection) {
         section.set_title("board");
-        section.row("bricks", format_args!("{}/{}", self.bricks, BRICK_COUNT));
+        section.row("bricks", format_args!("{}/{}", self.bricks, self.total));
         section.row("ball", format_args!("{:.2}/s", self.ball_speed));
     }
 }
@@ -942,7 +969,9 @@ impl Game<InMemoryTransport> {
     ///
     /// `tick_hz` is the one simulation rate in the process: it sets the
     /// server's clock, the client's clock, the ECS `tick_dt` every integrator
-    /// reads, and the period [`Game::tick`] advances by.
+    /// reads, and the period [`Game::tick`] advances by. `board` is the brick
+    /// layout the run opens with, read from a `.scn/` directory — see
+    /// [`crate::scene`].
     ///
     /// # Errors
     ///
@@ -953,8 +982,8 @@ impl Game<InMemoryTransport> {
     ///
     /// If `tick_hz` is zero. Callers parse it from `--tick-hz`, which rejects
     /// zero with exit 2.
-    pub fn new(headless: bool, tick_hz: u32) -> Result<Self, GameError> {
-        let mut game = Self::build(headless, tick_hz, |world, module| {
+    pub fn new(headless: bool, tick_hz: u32, board: &Board) -> Result<Self, GameError> {
+        let mut game = Self::build(headless, tick_hz, board, |world, module| {
             Loopback::new(world, module, tick_hz, COMPATIBILITY)
         })?;
 
@@ -983,7 +1012,7 @@ impl<T: Transport> Game<T> {
     /// spends the ticks for that, because how many are needed — and whether
     /// wall time has to pass between them — is a property of the link it
     /// chose, not of the board.
-    fn build<F>(headless: bool, tick_hz: u32, join: F) -> Result<Self, GameError>
+    fn build<F>(headless: bool, tick_hz: u32, board: &Board, join: F) -> Result<Self, GameError>
     where
         F: FnOnce(World, Box<dyn GameModule>) -> Result<Loopback<T>, crcbl::session::SessionError>,
     {
@@ -1034,12 +1063,14 @@ impl<T: Transport> Game<T> {
             ),
         ];
 
-        let bricks = spawn_brick_grid(&mut world);
+        let layout = board.bricks().to_vec();
+        let bricks = spawn_brick_grid(&mut world, &layout);
 
         crcbl::log::info!(
-            "physics: {} colliders, {} bodies (ball + paddle + 3 walls + {BRICK_COUNT} bricks)",
-            5 + BRICK_COUNT,
-            5 + BRICK_COUNT,
+            "physics: {} colliders, {} bodies (ball + paddle + 3 walls + {} bricks)",
+            5 + bricks.len(),
+            5 + bricks.len(),
+            bricks.len(),
         );
 
         let mut action_map = ActionMap::new();
@@ -1081,10 +1112,11 @@ impl<T: Transport> Game<T> {
         let shared = Arc::new(Mutex::new(GameLogic {
             ball: ball_entity,
             paddle: paddle_entity,
+            brick_positions: Vec::with_capacity(bricks.len()),
             bricks,
+            layout,
             paddle_x: 0.0,
             ball_pos: DVec3::new(BALL_START_X, BALL_START_Y, 0.0),
-            brick_positions: Vec::with_capacity(BRICK_COUNT),
             score: 0,
             lives: STARTING_LIVES,
             state: GameState::WaitingForLaunch,
@@ -1402,6 +1434,7 @@ impl<T: Transport> Game<T> {
         let logic = lock(&self.shared);
         BoardStats {
             bricks: logic.bricks.len(),
+            total: logic.layout.len(),
             ball_speed: logic.ball_speed,
         }
     }
@@ -1493,7 +1526,8 @@ mod tests {
 
     impl Harness {
         fn new(frame_hz: u32, tick_hz: u32) -> Self {
-            let game = Game::new(true, tick_hz).expect("headless game always starts");
+            let game =
+                Game::new(true, tick_hz, &Board::built_in()).expect("headless game always starts");
             Self {
                 game,
                 clock: FrameClock::new(tick_hz),
@@ -1564,7 +1598,7 @@ mod tests {
     /// every run, and the golden that pictures it.
     #[test]
     fn the_handshake_tick_leaves_the_board_where_it_was_built() {
-        let game = Game::new(true, 60).expect("headless game always starts");
+        let game = Game::new(true, 60, &Board::built_in()).expect("headless game always starts");
         let mut render = RenderState::default();
         game.render_state(&mut render);
 
@@ -1577,6 +1611,51 @@ mod tests {
         assert_eq!(render.lives, STARTING_LIVES);
     }
 
+    /// **The board the scene supplied is the board the physics world holds.**
+    ///
+    /// A one-brick scene, so the assertion cannot be satisfied by the layout
+    /// that was in this file before: the count, the position and the collider
+    /// all come from the file, and a `spawn_brick_grid` that had gone on
+    /// computing the grid would spawn forty bricks in a different place. The
+    /// centre reaches `RenderState` through `PhysicsSystem::transform`, so what
+    /// is compared is what the renderer would draw rather than the value the
+    /// loader parsed.
+    #[test]
+    fn a_loaded_board_is_the_grid_that_spawns() {
+        use crcbl::assets::MemorySource;
+        use std::path::Path;
+
+        let mut source = MemorySource::new();
+        for (key, text) in [
+            (
+                "scene.ron",
+                "Scene(format: 0, name: \"one\", systems: [\"bricks\"])",
+            ),
+            (
+                "env.ron",
+                "Env(camera: (position: (0.0, 0.0, -1.0), look_at: (0.0, 0.0, 0.0)), \
+                 ambient: (0.0, 0.0, 0.0))",
+            ),
+            (
+                "sys/bricks.ron",
+                "Chunk(system: \"bricks\", entities: [(0, (position: (3.0, 2.0, 0.0), \
+                 half_extents: (1.2, 0.4, 0.5)))])",
+            ),
+        ] {
+            source
+                .insert(Path::new(key), text.as_bytes().to_vec())
+                .expect("a nested scene key is a legal asset key");
+        }
+        let board = Board::load(&source, Path::new("")).expect("a one-brick scene loads");
+
+        let game = Game::new(true, 60, &board).expect("headless game always starts");
+        let mut render = RenderState::default();
+        game.render_state(&mut render);
+        assert_eq!(render.bricks, vec![DVec3::new(3.0, 2.0, 0.0)]);
+        assert_eq!(game.bricks_remaining(), 1);
+        assert_eq!(game.board_stats().total, 1);
+    }
+
     /// **The paddle moves on bytes that only ever existed as bytes.**
     ///
     /// Nothing here touches the action map, the queued events, or the shared
@@ -1587,7 +1666,8 @@ mod tests {
     /// there is no other way into this simulation.
     #[test]
     fn the_paddle_moves_on_an_intent_that_only_ever_travelled_as_bytes() {
-        let mut game = Game::new(true, 60).expect("headless game always starts");
+        let mut game =
+            Game::new(true, 60, &Board::built_in()).expect("headless game always starts");
         assert_eq!(
             game.paddle_x(),
             0.0,
@@ -2023,6 +2103,7 @@ mod tests {
 
         let stats = BoardStats {
             bricks: 7,
+            total: BRICK_COUNT,
             ball_speed: 13.25,
         };
         let mut section = crcbl::ui::DebugSection::new("board");
@@ -2528,7 +2609,7 @@ mod tests {
             conditions: SimConditions,
         ) -> Result<(Self, ManualClock), GameError> {
             let mut clock = None;
-            let game = Self::build(true, tick_hz, |world, module| {
+            let game = Self::build(true, tick_hz, &Board::built_in(), |world, module| {
                 let (session, handle) = Loopback::impaired_on_a_manual_clock(
                     world,
                     module,
@@ -3170,7 +3251,8 @@ mod tests {
     /// changes it, and this is the test that should go red when one lands.
     #[test]
     fn two_input_frames_in_one_tick_cost_a_tick_of_paddle_travel() {
-        let mut game = Game::new(true, DEFAULT_TICK_HZ).expect("headless game always starts");
+        let mut game = Game::new(true, DEFAULT_TICK_HZ, &Board::built_in())
+            .expect("headless game always starts");
         let step = PADDLE_SPEED * game.tick_dt_secs();
         let held = Intent {
             right: true,

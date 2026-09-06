@@ -215,8 +215,12 @@ fn assemble<S: Shell + ?Sized>(
         }
         booted
     };
-    let game =
-        Game::new(options.common.headless, options.common.tick_hz).map_err(BreakoutError::Game)?;
+    let game = Game::new(
+        options.common.headless,
+        options.common.tick_hz,
+        &options.board,
+    )
+    .map_err(BreakoutError::Game)?;
     Ok(Loop::new(
         booted,
         Breakout {
@@ -694,6 +698,7 @@ mod tests {
                 frames: Some(frames),
                 ..Common::new(crate::game::DEFAULT_TICK_HZ)
             },
+            ..Options::default()
         }
     }
 

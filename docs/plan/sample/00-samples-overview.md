@@ -135,9 +135,10 @@ without re-deriving it. It is not in the plan today.
 2. **Server-authoritative always.** Even breakout runs client+server over the
    in-memory transport. No sample gets a "simple mode" that bypasses the
    architecture — the architecture is what's being proven.
-3. **Scenes from files** (once stage 6 exists): samples load `.scn/` scene dirs,
-   and after stage 8 their scenes are maintained _in the editor_. Hand-edited
-   scene files after that point are a smell.
+3. **Scenes from files**: samples load `.scn/` scene dirs — the format landed
+   2026-09-07 and `apps/breakout` is the first sample reading one — and after
+   stage 8 their scenes are maintained _in the editor_. Hand-edited scene files
+   after that point are a smell.
 4. **Debug overlay on by default in dev builds, and switching it on is one
    thing.** Not a HUD each sample writes: one **modular** panel, where frame
    timing and FPS are always present and each further system contributes its own

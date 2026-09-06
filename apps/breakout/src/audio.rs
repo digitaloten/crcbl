@@ -64,7 +64,11 @@ const MASTER_GAIN: f32 = 0.5;
 /// **It belongs to the listener**, which is why it is here and not added to
 /// each emitter's Z at the call site: it is the camera's standoff from the
 /// field, and there is one camera and many cues.
-const LISTENER_STANDOFF: f32 = 1.0;
+///
+/// `pub(crate)` because `assets/scenes/board.scn/env.ron` writes the same
+/// standoff as its camera position, and `crate::scene`'s canonical-file test
+/// reads it from here rather than repeating the number.
+pub(crate) const LISTENER_STANDOFF: f32 = 1.0;
 
 /// The camera, at the screen centre. See the module docs.
 const LISTENER: Listener = Listener::new([0.0, 0.0, -LISTENER_STANDOFF]);
