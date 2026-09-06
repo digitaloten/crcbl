@@ -32,7 +32,7 @@ use crate::mesh_scene::{MESH_EXTENT, mesh_camera, place_cube};
 
 /// The pass labels a rung puts in a frame, transcribed from the two modules
 /// that record them — `crcbl_render::fxaa` adds one pass and
-/// `crcbl_render::smaa` adds three.
+/// `crcbl_render::cmaa2` adds five.
 ///
 /// **Written out here rather than asked of the renderer**, and that is the
 /// whole of what makes this test able to fail: a table the renderer handed over
@@ -45,7 +45,13 @@ fn resolve_labels(tier: Antialiasing) -> &'static [&'static str] {
         // caller's target and there is no second image in the frame.
         Antialiasing::None => &[],
         Antialiasing::Fxaa => &["fxaa"],
-        Antialiasing::Smaa => &["smaa-edges", "smaa-weights", "smaa-blend"],
+        Antialiasing::Cmaa2 => &[
+            "cmaa2-clear",
+            "cmaa2-edges",
+            "cmaa2-shapes",
+            "cmaa2-accumulate",
+            "cmaa2-apply",
+        ],
     }
 }
 

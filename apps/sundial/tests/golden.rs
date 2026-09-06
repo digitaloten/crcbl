@@ -884,11 +884,11 @@ fn the_shadow_reaches_the_pavement_the_plinth_stands_on() {
 ///
 /// **Not slack: the antialiasing's footprint**, and taken from
 /// `crates/crcbl/tests/forward_e2e/shadow.rs`, which measures the same seam on
-/// the engine's own fixture and states the reasoning — SMAA's blend weights
-/// reach `MAX_SEARCH_STEPS` texels each way along an edge, so for a band either
-/// side of the line a pixel is a mixture of the two filters and belongs to
-/// neither reference frame. A **texel** count and not a fraction of the frame,
-/// so the same constant holds at every extent.
+/// the engine's own fixture and states the reasoning — the resolve these frames
+/// draw through searches along an edge for a bounded number of texels each way,
+/// so for a band either side of the line a pixel is a mixture of the two
+/// filters and belongs to neither reference frame. A **texel** count and not a
+/// fraction of the frame, so the same constant holds at every extent.
 const SEAM_BLEED: u32 = 32;
 
 /// **The seam runs the console's filter on the left and the shipped one on the

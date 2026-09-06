@@ -779,8 +779,8 @@ mod tests {
             Antialiasing::Fxaa.name(),
         );
         assert_eq!(
-            antialiasing_label(Antialiasing::Smaa),
-            Antialiasing::Smaa.name(),
+            antialiasing_label(Antialiasing::Cmaa2),
+            Antialiasing::Cmaa2.name(),
         );
 
         // A rung the widget cannot have chosen lands on the bottom rather than

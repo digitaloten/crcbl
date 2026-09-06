@@ -762,10 +762,13 @@ fn a_penumbra_resolves_differently_under_every_rung_of_the_filter_ladder() {
 /// *after* it read their neighbours, so the picture either side of the column is
 /// only the unsplit frame's outside that footprint.
 ///
-/// `shaders/smaa_weights.slang`'s `MAX_SEARCH_STEPS` bounds the edge walk and
-/// each of its steps covers two texels, so this is twice that count. The number
-/// is taken from the pass rather than from the measurement, because what the
-/// measurement finds is what *this frame's* edges happened to need: probed
+/// The tier these frames resolve through is FXAA — it is the one
+/// `RenderEffects::DEFAULT_STACK` carries — and `shaders/fxaa.slang`'s
+/// `SEARCH_STEP` table is what bounds its edge walk: the sum of that table is
+/// how many texels the search reaches in each direction, and this is the next
+/// power of two above it. The number is taken from the pass rather than from
+/// the measurement, because what the measurement finds is what *this frame's*
+/// edges happened to need: probed
 /// column by column on radv over the `sun(1.0)` frame at a seam of 0.5 — the
 /// seam falls on column 128 of 256 — the near side differed from the unsplit
 /// `box` frame only at column 127, in one pixel by one level, and the far side

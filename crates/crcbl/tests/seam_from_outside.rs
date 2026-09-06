@@ -721,12 +721,12 @@ fn the_video_layer_clamps_downward_and_the_order_around_it_holds() {
 /// `GpuContext::effect_request` carrying it — so nothing here writes
 /// [`EffectRequest::antialiasing`](crcbl::render::EffectRequest::antialiasing)
 /// by hand. The observable is the *bit* that comes out: the view asks for FXAA
-/// by saying nothing, the file asks for SMAA, and a layer wired as a clamp
+/// by saying nothing, the file asks for CMAA2, and a layer wired as a clamp
 /// would leave the frame with neither.
 #[test]
 fn the_players_antialiasing_tier_replaces_the_resolve_slot() {
     let all = RenderEffects::all();
-    let storage = settings_file("[engine.video]\nantialiasing = \"smaa\"\n");
+    let storage = settings_file("[engine.video]\nantialiasing = \"cmaa2\"\n");
 
     let (mut shell, window, _clock) = windowed();
     let mut events = 0;
@@ -745,9 +745,9 @@ fn the_players_antialiasing_tier_replaces_the_resolve_slot() {
     )
     .expect("the null backend opens everywhere");
 
-    assert_eq!(gpu.antialiasing(), Some(Antialiasing::Smaa));
+    assert_eq!(gpu.antialiasing(), Some(Antialiasing::Cmaa2));
     let request = gpu.effect_request();
-    assert_eq!(request.antialiasing, Some(Antialiasing::Smaa));
+    assert_eq!(request.antialiasing, Some(Antialiasing::Cmaa2));
     assert_eq!(
         request.video, all,
         "the tier is not a bit the effect clamp answers for"
@@ -756,7 +756,7 @@ fn the_players_antialiasing_tier_replaces_the_resolve_slot() {
         request.resolve(all),
         RenderEffects::DEFAULT_STACK
             .difference(RenderEffects::ANTIALIASING)
-            .union(RenderEffects::SMAA),
+            .union(RenderEffects::CMAA2),
         "the file's tier must take the slot the view's own stack asked FXAA for"
     );
 

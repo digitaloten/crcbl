@@ -347,10 +347,10 @@ pub mod dfg;
 // `sky_prefilter` carries its own `//!` header, for `fog`'s reason above.
 pub mod sky_prefilter;
 
-// SMAA's two lookup tables, transcribed from the reference generators, and the
-// uniform block its three `smaa_*.slang` sources read; its own `//!` header for
-// the same reason.
-pub mod smaa;
+// The constants and the uniform block CMAA2's three `cmaa2_*.slang` sources
+// read, and the capacities its two append lists are sized by; its own `//!`
+// header, for `fog`'s reason above.
+pub mod cmaa2;
 
 // The linearly transformed cosine fit an area light's highlight is shaped by,
 // and the polygon integral that reads it; its own `//!` header, for `fog`'s
@@ -1131,16 +1131,7 @@ mod tests {
     /// the concrete shape `crcbl-render`'s passes hand the seam.
     #[test]
     fn the_graphics_shaders_offer_a_container_for_both_stages() {
-        for shader in [
-            &MESH,
-            &TONEMAP,
-            &FXAA,
-            &SMAA_EDGES,
-            &SMAA_WEIGHTS,
-            &SMAA_BLEND,
-            &SPRITE,
-            &UI,
-        ] {
+        for shader in [&MESH, &TONEMAP, &FXAA, &CMAA2_APPLY, &SPRITE, &UI] {
             let containers = shader.dxil_containers();
             for stage in [Stage::Vertex, Stage::Fragment] {
                 // **Scanned rather than resolved.** `mesh.slang` has two vertex

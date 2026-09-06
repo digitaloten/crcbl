@@ -30,7 +30,7 @@ convar! {
 convar! {
     /// Which edge-antialiasing pass runs.
     #[flags(ARCHIVE)]
-    pub static antialiasing: &'static str one_of ["none", "fxaa", "smaa"] = "fxaa";
+    pub static antialiasing: &'static str one_of ["none", "fxaa", "cmaa2"] = "fxaa";
 }
 
 // The plan writes code-declared variables in SCREAMING_CASE; Source writes them
@@ -107,7 +107,7 @@ fn the_type_in_the_declaration_is_the_kind() {
             max: 2.0
         }
     );
-    assert_eq!(antialiasing.kind(), Kind::Enum(&["none", "fxaa", "smaa"]));
+    assert_eq!(antialiasing.kind(), Kind::Enum(&["none", "fxaa", "cmaa2"]));
 }
 
 #[test]

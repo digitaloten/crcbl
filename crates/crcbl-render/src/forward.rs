@@ -176,6 +176,7 @@ use crate::graph::{
 // header predicted.
 use crate::atlas_view::AtlasView;
 use crate::bloom::Bloom;
+use crate::cmaa2::Cmaa2;
 use crate::exposure::{Exposure, ExposureAdaptation, ExposureBuffers};
 use crate::fxaa::Fxaa;
 use crate::grid::{Grid as GroundGrid, GridStyle};
@@ -192,7 +193,6 @@ use crate::scene::{self, Geometry, InstanceDesc, PageKind, ProbeUpdate, SceneDes
 use crate::shadow::{self, Cascades};
 use crate::skinning::{SkinRange, SkinnedMesh, Skinning, SkinningError};
 use crate::sky_pass::SkyPass;
-use crate::smaa::Smaa;
 use crate::ssao::{Ssao, cached_group};
 use crate::ssr::{Ssr, SsrEnvironment, SsrImages};
 use crate::stack::CameraStack;
@@ -395,7 +395,8 @@ const PAGE_PLACEHOLDER_TEXEL: [u8; 4] = [0xFF, 0x00, 0xFF, 0xFF];
 /// float, `docs/plan/43-render-standards.md` §9's third colour attachment.
 ///
 /// **Named here rather than in [`TransientImageDesc::motion`]**, on
-/// [`crate::smaa`]'s `EDGES_FORMAT` terms: the description and
+/// [`crate::graph`]'s other format-owning descriptions' terms: the description
+/// and
 /// [`MeshModules::COLOR_TARGETS`] have to agree, and the pass that builds the
 /// pipeline is the one that owns the answer.
 ///
@@ -1183,14 +1184,16 @@ const RENDER_PASSES: u32 = 8
 /// antialiasing tiers.
 ///
 /// **The larger and not the sum**, because the two are never both recorded —
-/// [`RenderEffects::SMAA`] carries that in writing and [`fullscreen_passes`] is
-/// where the choice is made. So this is the all-effects-on count as well as the
-/// ceiling, which is the property [`RENDER_PASSES`] needs from every term it
-/// adds up.
-const RESOLVE_PASSES: u32 = if Fxaa::PASSES > Smaa::PASSES {
+/// [`RenderEffects::CMAA2`] carries that in writing and
+/// [`ForwardRenderer::add_passes`] is where the choice is made. So this is the
+/// all-effects-on count as well as the ceiling, which is the property
+/// [`RENDER_PASSES`] needs from every term it adds up.
+///
+/// [`ForwardRenderer::add_passes`]: ForwardRenderer::add_passes
+const RESOLVE_PASSES: u32 = if Fxaa::PASSES > Cmaa2::PASSES {
     Fxaa::PASSES
 } else {
-    Smaa::PASSES
+    Cmaa2::PASSES
 };
 
 /// What the frame's one **post-tonemap** slot costs at its widest: the resolve
@@ -1295,11 +1298,16 @@ fn fullscreen_passes(
         passes += u64::from(Bloom::passes_for(extent));
     }
     // **One resolve slot, and the higher tier takes it.** Both bits set is a
-    // frame with SMAA's three passes and no FXAA pass at all, which is what
-    // [`RenderEffects::SMAA`] means by the two never both running — so this is
+    // frame with CMAA2's passes and no FXAA pass at all, which is what
+    // [`RenderEffects::CMAA2`] means by the two never both running — so this is
     // an `else if` rather than two independent terms.
-    if effects.contains(RenderEffects::SMAA) {
-        passes += Smaa::PASSES as u64;
+    //
+    // **[`Cmaa2::FULLSCREEN_PASSES`] and not [`Cmaa2::PASSES`]**: what this
+    // function counts is full-screen *draws*, and four of that tier's five
+    // passes are compute dispatches. [`crate::exposure`]'s three are left out
+    // of this arithmetic for the same reason.
+    if effects.contains(RenderEffects::CMAA2) {
+        passes += Cmaa2::FULLSCREEN_PASSES;
     } else if effects.contains(RenderEffects::ANTIALIASING) {
         passes += Fxaa::PASSES as u64;
     }
@@ -2403,10 +2411,10 @@ pub struct ForwardRenderer {
     /// [`crate::fxaa`].
     fxaa: Fxaa,
     /// `docs/plan/49-antialiasing.md`'s higher antialiasing tier — see
-    /// [`crate::smaa`]. It takes the resolve slot from
-    /// [`fxaa`](Self::fxaa) on the frames [`RenderEffects::SMAA`] is set for,
+    /// [`crate::cmaa2`]. It takes the resolve slot from
+    /// [`fxaa`](Self::fxaa) on the frames [`RenderEffects::CMAA2`] is set for,
     /// and neither is built per frame: both exist, and at most one records.
-    smaa: Smaa,
+    cmaa2: Cmaa2,
     /// [`crate::upscale`], and it draws nothing at a
     /// [`render_scale`](Self::render_scale) of `1.0`.
     upscale: Upscale,
@@ -2565,9 +2573,9 @@ struct Rollback {
     /// pipeline, one layout, a sampler and a ring of blocks.
     fxaa: Option<Fxaa>,
     /// `docs/plan/49-antialiasing.md`'s higher antialiasing tier, which owns
-    /// three pipelines, three layouts, two samplers, two uploaded tables and a
-    /// ring of blocks.
-    smaa: Option<Smaa>,
+    /// four compute pipelines, one graphics pipeline, two layouts and a ring of
+    /// blocks.
+    cmaa2: Option<Cmaa2>,
     upscale: Option<Upscale>,
     /// The background pass, which owns one pipeline, one layout and a ring of
     /// blocks and groups.
@@ -2626,8 +2634,8 @@ impl Rollback {
         if let Some(upscale) = self.upscale {
             upscale.destroy(device);
         }
-        if let Some(smaa) = self.smaa {
-            smaa.destroy(device);
+        if let Some(cmaa2) = self.cmaa2 {
+            cmaa2.destroy(device);
         }
         if let Some(fxaa) = self.fxaa {
             fxaa.destroy(device);
@@ -5620,14 +5628,13 @@ impl ForwardRenderer {
 
         // --- the higher antialiasing tier ---
         //
-        // The same slot, filled by SMAA's three passes instead of FXAA's one —
-        // see [`crate::smaa`], which says why the two are built together and at
-        // most one recorded. It is the only pass group in this frame that takes
-        // `queue`: its two lookup tables are committed bytes and are uploaded
-        // here, once, the way the `dfg` table above is.
-        rollback.smaa = Some(Smaa::new(
+        // The same slot, filled by CMAA2's four dispatches and one draw
+        // instead of FXAA's one draw — see [`crate::cmaa2`], which says why the
+        // two are built together and at most one recorded. It carries no lookup
+        // table, so unlike the tier it replaced it takes no `queue`: there is
+        // nothing to upload.
+        rollback.cmaa2 = Some(Cmaa2::new(
             device,
-            queue,
             instance_buffers.len(),
             target_format,
             Self::build_fullscreen,
@@ -5926,8 +5933,8 @@ impl ForwardRenderer {
                 .fxaa
                 .take()
                 .unwrap_or_else(|| unreachable!("the resolve was placed in the rollback above")),
-            smaa: rollback
-                .smaa
+            cmaa2: rollback
+                .cmaa2
                 .take()
                 .unwrap_or_else(|| unreachable!("the tier was placed in the rollback above")),
             upscale: rollback
@@ -6952,10 +6959,11 @@ impl ForwardRenderer {
         // that use it is a block that is stale on the frame a caller switches
         // the effect on.
         self.fxaa.begin_frame(device, self.frame, extent)?;
-        // The higher tier's block: the same extent and its reciprocal, written
-        // on the resolve's terms above. Sixteen bytes, and a frame that resolves
-        // through the other tier pays for them and reads none.
-        self.smaa.begin_frame(device, self.frame, extent)?;
+        // The higher tier's block: the extent and the two list capacities it
+        // implies, written on the resolve's terms above. Sixteen bytes, and a
+        // frame that resolves through the other tier pays for them and reads
+        // none.
+        self.cmaa2.begin_frame(device, self.frame, extent)?;
         // The upscale's block: the internal extent and its reciprocal. Written
         // on the two above's terms — a frame at full scale adds no upscale pass
         // and pays for sixteen bytes nobody reads, and a block written only on
@@ -9097,12 +9105,14 @@ impl ForwardRenderer {
         };
         //
         // **Two tiers share that slot and at most one fills it** — see
-        // [`RenderEffects::SMAA`], which is where "never both" is written down.
+        // [`RenderEffects::CMAA2`], which is where "never both" is written down.
         // The shape above is the same either way; what differs is what the
-        // resolve reads besides the tonemap's image, and SMAA's two working
-        // images are declared here beside it rather than inside the pass group,
-        // on [`Ssao::add_passes`]'s terms: a frame's images belong to the graph.
-        let resolving = effects.intersects(RenderEffects::ANTIALIASING.union(RenderEffects::SMAA));
+        // resolve reads besides the tonemap's image. CMAA2's five working
+        // buffers are declared inside its own pass group rather than here,
+        // where the tier it replaced declared two images: they are buffers,
+        // and [`crate::cmaa2`]'s header says why the graph owns them all the
+        // same.
+        let resolving = effects.intersects(RenderEffects::ANTIALIASING.union(RenderEffects::CMAA2));
         let display = if resolving {
             graph.create_image(
                 "display-color",
@@ -9111,13 +9121,6 @@ impl ForwardRenderer {
         } else {
             present
         };
-        let smaa_images = effects.contains(RenderEffects::SMAA).then(|| {
-            (
-                graph.create_image("smaa-edges", TransientImageDesc::smaa_edges(extent)),
-                graph.create_image("smaa-weights", TransientImageDesc::smaa_weights(extent)),
-            )
-        });
-
         let group = self.mesh_groups[self.frame];
         let emit = self.emit;
         // The wireframe twin where a caller switched the view on, and `None`
@@ -9890,16 +9893,15 @@ impl ForwardRenderer {
         // is the branch that makes that true: no pass, no second image, and the
         // frame the tonemap wrote is already where the frame ends.
         //
-        // **Which tier fills the slot is decided here, once.** SMAA is the
+        // **Which tier fills the slot is decided here, once.** CMAA2 is the
         // higher one and takes it whenever its bit is on, whatever the FXAA bit
         // says — the two are never both recorded, which is what
-        // [`RenderEffects::SMAA`] means by a tier that is off being a frame with
+        // [`RenderEffects::CMAA2`] means by a tier that is off being a frame with
         // fewer passes rather than a shader branch. Everything the paragraph
         // above says about the grid, the UI and the ordering holds for either.
         if display != present {
-            if let Some((edges, weights)) = smaa_images {
-                self.smaa
-                    .add_passes(graph, frame, display, edges, weights, present);
+            if effects.contains(RenderEffects::CMAA2) {
+                self.cmaa2.add_passes(graph, frame, display, present);
             } else {
                 self.fxaa.add_pass(graph, frame, display, present);
             }
@@ -11140,6 +11142,24 @@ impl ForwardRenderer {
         };
     }
 
+    /// Caps both of CMAA2's append lists at `cap` entries, or restores the
+    /// capacities the frame's own extent implies.
+    ///
+    /// **This exists so a test can reach the overflow path**, and it says so
+    /// rather than pretending to be a quality knob. `crate::cmaa2`'s two lists
+    /// are sized as a fraction of the frame; a frame dense enough in edges to
+    /// fill one is not something a fixture can draw at a readable size, and
+    /// what happens when one fills — the entries past the cap are dropped and
+    /// their pixels keep the colour they came in with — is the one behaviour of
+    /// that tier no picture shows.
+    /// `crates/crcbl/tests/mesh_e2e/cmaa2.rs` is the caller.
+    ///
+    /// Takes effect on the next [`begin_frame`](Self::begin_frame), on
+    /// [`set_render_scale`](Self::set_render_scale)'s terms exactly.
+    pub fn set_cmaa2_capacity_cap(&mut self, cap: Option<u32>) {
+        self.cmaa2.set_capacity_cap(cap);
+    }
+
     /// The render scale in force, after the clamp
     /// [`set_render_scale`](Self::set_render_scale) applied.
     ///
@@ -12268,7 +12288,7 @@ impl ForwardRenderer {
         } else {
             // **Both tiers**, because the slot is what a readout cannot have
             // rather than one filter in particular.
-            resolved.difference(RenderEffects::ANTIALIASING.union(RenderEffects::SMAA))
+            resolved.difference(RenderEffects::ANTIALIASING.union(RenderEffects::CMAA2))
         }
     }
 
@@ -12547,7 +12567,7 @@ impl ForwardRenderer {
         self.atlas_viewer.destroy(device);
         self.sky_pass.destroy(device);
         self.upscale.destroy(device);
-        self.smaa.destroy(device);
+        self.cmaa2.destroy(device);
         self.fxaa.destroy(device);
         self.bloom.destroy(device);
         self.auto_exposure.destroy(device);
@@ -19362,34 +19382,40 @@ mod tests {
         }
 
         // **The two antialiasing tiers share one resolve slot**, so neither is
-        // a plain removal and neither belongs in the loop above: switching SMAA
-        // off while FXAA stays on swaps three passes for one rather than losing
-        // three, and the loop's "gain nothing in their place" comparison is
-        // exactly what that violates. Three frames say it instead.
+        // a plain removal and neither belongs in the loop above: switching
+        // CMAA2 off while FXAA stays on swaps five passes for one rather than
+        // losing five, and the loop's "gain nothing in their place" comparison
+        // is exactly what that violates. Three frames say it instead.
         let both = all_on.clone();
-        let cheap = without(&mut renderer, RenderEffects::SMAA);
+        let cheap = without(&mut renderer, RenderEffects::CMAA2);
         let neither = without(
             &mut renderer,
-            RenderEffects::SMAA.union(RenderEffects::ANTIALIASING),
+            RenderEffects::CMAA2.union(RenderEffects::ANTIALIASING),
         );
-        const SMAA_PASSES: [&str; 3] = ["smaa-edges", "smaa-weights", "smaa-blend"];
+        const CMAA2_PASSES: [&str; 5] = [
+            "cmaa2-clear",
+            "cmaa2-edges",
+            "cmaa2-shapes",
+            "cmaa2-accumulate",
+            "cmaa2-apply",
+        ];
         let resolve_of = |labels: &[String]| -> Vec<String> {
             labels
                 .iter()
-                .filter(|label| *label == "fxaa" || SMAA_PASSES.contains(&label.as_str()))
+                .filter(|label| *label == "fxaa" || CMAA2_PASSES.contains(&label.as_str()))
                 .cloned()
                 .collect()
         };
         let without_resolve = |labels: &[String]| -> Vec<String> {
             labels
                 .iter()
-                .filter(|label| *label != "fxaa" && !SMAA_PASSES.contains(&label.as_str()))
+                .filter(|label| *label != "fxaa" && !CMAA2_PASSES.contains(&label.as_str()))
                 .cloned()
                 .collect()
         };
         assert_eq!(
             resolve_of(&both),
-            SMAA_PASSES.map(str::to_string).to_vec(),
+            CMAA2_PASSES.map(str::to_string).to_vec(),
             "with both bits set the higher tier takes the slot and the cheap one \
              records nothing"
         );
@@ -22748,7 +22774,7 @@ mod tests {
         .union(RenderEffects::ANTIALIASING)
         .union(RenderEffects::VOLUMETRIC_FOG)
         .union(RenderEffects::AUTO_EXPOSURE)
-        .union(RenderEffects::SMAA)
+        .union(RenderEffects::CMAA2)
         .union(RenderEffects::CONTACT_SHADOWS);
 
     /// Every effect this renderer draws is either in the default stack or in
@@ -22851,6 +22877,78 @@ mod tests {
             pool,
             commands,
         }
+    }
+
+    /// **A frame whose CMAA2 lists are far too small still records, compiles
+    /// and executes.**
+    ///
+    /// The overflow path on the one device that has no shader at all, which is
+    /// what makes this a different question from
+    /// `crates/crcbl/tests/mesh_e2e/cmaa2.rs`'s version: that one reads a real
+    /// frame back and says the picture degraded safely, and this one says the
+    /// *frame* is legal — five passes recorded, every buffer declared, and a
+    /// graph the compiler accepts — at a capacity small enough that
+    /// `crcbl_shaders::cmaa2`'s floor is the only thing holding the lists off
+    /// zero. A capacity that reached a buffer of no bytes would be refused by
+    /// the seam here, before any device could be asked to run it.
+    #[test]
+    fn a_frame_whose_cmaa2_lists_are_capped_to_nothing_is_still_a_legal_frame() {
+        let (_recorder, device, queue) = open();
+        let device = device.as_ref();
+        let mut renderer =
+            ForwardRenderer::new(device, queue, Format::Rgba8UnormSrgb).expect("built");
+        renderer.set_effect_request(EffectRequest {
+            programmatic: EffectOverride::none().force(RenderEffects::CMAA2, Some(true)),
+            ..EffectRequest::default()
+        });
+        // Zero, which `Cmaa2Params::with_capacity_cap` lifts to a single entry
+        // — the smallest list this tier can be asked for, and the one whose
+        // buffers are closest to the size the seam refuses outright.
+        renderer.set_cmaa2_capacity_cap(Some(0));
+        renderer
+            .begin_frame(
+                device,
+                &Camera::default(),
+                &DirectionalLight::default(),
+                TEST_EXTENT,
+            )
+            .expect("write");
+
+        let imported = swapchain_image(device);
+        let mut pool = crate::TransientPool::new();
+        let mut graph = crate::RenderGraph::new(queue);
+        let target = graph.import_image("target", imported);
+        renderer.add_passes(&mut graph, &pool, target, TEST_EXTENT);
+        let compiled = graph.compile(&pool).expect("a legal frame");
+        let labels: Vec<String> = compiled
+            .passes()
+            .iter()
+            .map(|pass| pass.label().to_string())
+            .collect();
+        for label in [
+            "cmaa2-clear",
+            "cmaa2-edges",
+            "cmaa2-shapes",
+            "cmaa2-accumulate",
+            "cmaa2-apply",
+        ] {
+            assert!(
+                labels.iter().any(|recorded| recorded == label),
+                "a capped frame must still record `{label}`: {labels:#?}"
+            );
+        }
+
+        let mut encoder = device.create_command_encoder(&crcbl_hal::CommandEncoderDesc {
+            label: Some("capped cmaa2 frame"),
+            queue,
+        });
+        compiled
+            .execute(device, &mut pool, encoder.as_mut(), None)
+            .expect("the graph executed");
+        let commands = encoder.finish().expect("recording succeeded");
+        device.destroy_command_buffer(commands);
+        renderer.destroy(device);
+        pool.destroy(device);
     }
 
     /// A stand-in for the acquired swapchain image the frame normally ends in,

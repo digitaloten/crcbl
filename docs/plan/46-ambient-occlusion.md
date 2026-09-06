@@ -249,7 +249,7 @@ direction exists now; the cone angle does not, and that refusal stands until it
 does.
 
 **SSAO was to stay as the cheap tier** rather than being deleted, on the
-antialiasing ladder's own FXAA-under-SMAA pattern: eight taps and a comparison
+antialiasing ladder's own FXAA-under-CMAA2 pattern: eight taps and a comparison
 is a real budget on a software rasteriser and on a small device, and the two
 techniques would share the pass, the resource, the blur and the test.
 
@@ -321,8 +321,8 @@ as machinery:
   why `probes`' floor now matches its AO-off render byte for byte.
 
 **The eight-tap body is back beside it since 2026-09-04**, on the
-FXAA-under-SMAA pattern the decision above asked for — see that section. What it
-kept of this list is the bias: a threshold comparison needs one and a horizon
+FXAA-under-CMAA2 pattern the decision above asked for — see that section. What
+it kept of this list is the bias: a threshold comparison needs one and a horizon
 integral does not, so `ssao_hemisphere.slang` declares `DEPTH_BIAS_RADII` and
 takes it as a share of the sampling radius rather than as the fixed 0.02
 view-space units `forward.rs`'s `SSAO_BIAS` held, because the radius is a

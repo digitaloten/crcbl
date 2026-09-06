@@ -1442,23 +1442,23 @@ mod tests {
         // `DEFAULT_STACK`'s resolve bit, so a tier that never arrived leaves
         // them exactly as the control above, and only a file naming the *other*
         // rung can tell the two apart.
-        let storage = settings_file("[engine.video]\nantialiasing = \"smaa\"\n");
+        let storage = settings_file("[engine.video]\nantialiasing = \"cmaa2\"\n");
         let (picked, picked_monitor) =
             effects_opened_with(crcbl::engine::SettingsSource::Source(&storage));
         let swapped = |stack: RenderEffects| {
             stack
                 .difference(RenderEffects::ANTIALIASING)
-                .union(RenderEffects::SMAA)
+                .union(RenderEffects::CMAA2)
         };
         assert_eq!(
             picked,
             swapped(main),
-            "`antialiasing = \"smaa\"` did not reach the room this sample draws",
+            "`antialiasing = \"cmaa2\"` did not reach the room this sample draws",
         );
         assert_eq!(
             picked_monitor,
             swapped(monitor),
-            "`antialiasing = \"smaa\"` did not reach the monitor's own view",
+            "`antialiasing = \"cmaa2\"` did not reach the monitor's own view",
         );
     }
 

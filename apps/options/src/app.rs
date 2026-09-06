@@ -2303,7 +2303,7 @@ mod tests {
         let stepped = screen.antialiasing();
         assert_eq!(
             stepped,
-            Antialiasing::Smaa,
+            Antialiasing::Cmaa2,
             "the first step up from the game's tier is the rung above it",
         );
         assert_eq!(screen.edits(), 1);
@@ -2393,8 +2393,8 @@ mod tests {
     /// means — and writes the key to say so.
     #[test]
     fn reset_takes_the_antialiasing_tier_back_to_the_games_own_rung() {
-        let (mut screen, mut menus) = screen("[engine.video]\nantialiasing = \"smaa\"\n");
-        assert_eq!(screen.antialiasing(), Antialiasing::Smaa);
+        let (mut screen, mut menus) = screen("[engine.video]\nantialiasing = \"cmaa2\"\n");
+        assert_eq!(screen.antialiasing(), Antialiasing::Cmaa2);
         reconcile(&mut screen, &mut menus);
 
         screen.apply(Action::Reset);
@@ -2428,7 +2428,7 @@ mod tests {
     fn the_tier_row_is_placed_from_the_file_without_writing_a_thing() {
         let held = QualityPreset::Medium;
         let (mut screen, mut menus) = screen(
-            "[engine.video]\nrender_scale = 1.0\nantialiasing = \"smaa\"\nvolumetric_fog = true\n",
+            "[engine.video]\nrender_scale = 1.0\nantialiasing = \"cmaa2\"\nvolumetric_fog = true\n",
         );
         assert_eq!(
             crcbl::settings::presets::selected(&screen.stack()),

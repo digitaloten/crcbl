@@ -109,7 +109,7 @@
 //!
 //! **`gtao` is the default and is what every golden was blessed at.**
 //! `docs/plan/46-ambient-occlusion.md` kept the hemisphere as the cheap tier on
-//! the antialiasing ladder's FXAA-under-SMAA pattern — eight taps and a
+//! the antialiasing ladder's FXAA-under-CMAA2 pattern — eight taps and a
 //! comparison is a real budget on a software rasteriser — and
 //! `docs/plan/sample/19-alcove.md`'s second milestone is the two of them either
 //! side of [`r_ssao_split`]. What the cheap tier does not produce is a bent

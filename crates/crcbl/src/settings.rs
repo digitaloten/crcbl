@@ -79,7 +79,7 @@
 //!
 //! Every key above answers "has the player asked for less?", and the answer only
 //! ever removes. The antialiasing tier cannot: the frame has one resolve slot,
-//! and a player who picked SMAA where the camera asked for FXAA has asked for a
+//! and a player who picked CMAA2 where the camera asked for FXAA has asked for a
 //! *different* filter rather than a smaller one — an intersection of the two
 //! leaves neither, and a union runs both. So the key holds a
 //! [`Antialiasing`] rung by name,
@@ -91,8 +91,8 @@
 //! view's own stack keeps the tier it asked for.
 //!
 //! **`antialiasing` used to be a boolean and `smaa` used to be a key.** Both are
-//! gone; [`antialiasing`]'s docs say what a file still holding the old spelling
-//! reads as.
+//! gone, and so is the tier the second was named for; [`antialiasing`]'s docs
+//! say what a file still holding either old spelling reads as.
 //!
 //! # And [`anisotropic_filtering`] is the first key that may ask for more
 //!
@@ -334,7 +334,7 @@ pub fn video(stack: &SettingsStack) -> VideoSettings {
 ///
 /// [`None`] for a stack that says nothing, which leaves the view's own stack
 /// holding the resolve slot, and otherwise the [`Antialiasing`] rung the key
-/// names — `"none"`, `"fxaa"` or `"smaa"`, [`Antialiasing::name`]'s spelling on
+/// names — `"none"`, `"fxaa"` or `"cmaa2"`, [`Antialiasing::name`]'s spelling on
 /// both sides of the round trip.
 ///
 /// # A file still holding the boolean reads as one of two things
@@ -347,7 +347,11 @@ pub fn video(stack: &SettingsStack) -> VideoSettings {
 /// `antialiasing = true` was "the player has not asked for less", which is
 /// exactly [`None`] here, and `antialiasing = false` was "no resolve at all",
 /// which is [`Antialiasing::None`]. A `smaa` key is not read by anything and is
-/// reported by `crcbl settings list` as a key the engine does not define.
+/// reported by `crcbl settings list` as a key the engine does not define — and
+/// so is the *value* `"smaa"`, which was the higher rung's word until
+/// `docs/plan/49-antialiasing.md`'s CMAA2 slice retired that tier. It is now a
+/// word no rung wears, and the paragraph below is what a file holding it gets:
+/// an unpicked tier and one warning naming the key.
 ///
 /// # A line that does nothing says so
 ///
@@ -1825,7 +1829,7 @@ mod tests {
     fn a_saved_video_section_reads_back_unchanged() {
         let wanted = VideoSettings {
             effects: RenderEffects::all() - RenderEffects::BLOOM - RenderEffects::SHADOWS,
-            antialiasing: Some(Antialiasing::Smaa),
+            antialiasing: Some(Antialiasing::Cmaa2),
             render_scale: 0.5,
             anisotropic_filtering: 4.0,
             frame_limit: FrameLimit::fps(60),
@@ -2166,7 +2170,7 @@ mod tests {
     /// simply cannot be turned off, and a player's row does nothing — so
     /// nothing else would report it. The two resolve bits are the exception the
     /// ladder exists for, so they are named here as the ladder's and asserted to
-    /// be **out** of the boolean table: a `smaa = false` row a player could
+    /// be **out** of the boolean table: a `cmaa2 = false` row a player could
     /// still write is a row nothing reads.
     ///
     /// # The second exception, and it is an open question rather than a design
@@ -2592,7 +2596,7 @@ mod tests {
     /// [`Antialiasing::name`] gives it.
     ///
     /// Both directions on every rung, because the failure this guards is a
-    /// screen that saves `"smaa"` and a start-up that reads back `"none"` — the
+    /// screen that saves `"cmaa2"` and a start-up that reads back `"none"` — the
     /// player's whole setting, silently, with no line to tell them why.
     #[test]
     fn every_antialiasing_rung_round_trips_through_a_file() {
@@ -2650,12 +2654,14 @@ mod tests {
 
     /// **A value that names no rung picks nothing and warns, naming the key.**
     ///
-    /// The spellings are the ones a hand-edited file plausibly holds: a rung
-    /// that is not built yet, the same word in the wrong case, and the numbers
-    /// TOML would take for the boolean this key used to be.
+    /// The spellings are the ones a hand-edited file plausibly holds: the word
+    /// of a rung that is **no longer** on the ladder — `smaa`, which was the
+    /// higher tier until `docs/plan/49-antialiasing.md`'s CMAA2 slice retired
+    /// it — the same word in the wrong case, and the numbers TOML would take for
+    /// the boolean this key used to be.
     #[test]
     fn an_antialiasing_key_naming_no_rung_warns_and_picks_nothing() {
-        for value in ["\"cmaa2\"", "\"FXAA\"", "\"\"", "1", "0.5"] {
+        for value in ["\"smaa\"", "\"FXAA\"", "\"\"", "1", "0.5"] {
             let capture = crcbl_core::log::capture();
             let toml = format!("[{VIDEO_NAMESPACE}]\n{ANTIALIASING_KEY} = {value}\n");
             assert_eq!(tier_of(&toml), None, "`{value}` was read as a tier");
@@ -3013,7 +3019,7 @@ mod tests {
 
         let key = format!("{VIDEO_NAMESPACE}.{ANTIALIASING_KEY}");
         assert_eq!(
-            apply(&mut stack, &key, &Value::Enum("smaa"), &mut stage),
+            apply(&mut stack, &key, &Value::Enum("cmaa2"), &mut stage),
             Ok(Applied::Live)
         );
         assert_eq!(
@@ -3022,7 +3028,7 @@ mod tests {
                 .last()
                 .expect("the renderer was told")
                 .antialiasing,
-            Some(Antialiasing::Smaa)
+            Some(Antialiasing::Cmaa2)
         );
 
         let key = format!("{VIDEO_NAMESPACE}.{}", VIDEO_KEYS[3].0);
@@ -3038,7 +3044,7 @@ mod tests {
         );
         // The tier survived the second write, which is what proves the stage is
         // handed the section rather than the key.
-        assert_eq!(video.antialiasing, Some(Antialiasing::Smaa));
+        assert_eq!(video.antialiasing, Some(Antialiasing::Cmaa2));
 
         let key = format!("{VIDEO_NAMESPACE}.{FRAME_LIMIT_KEY}");
         assert_eq!(

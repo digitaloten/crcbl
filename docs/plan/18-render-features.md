@@ -30,7 +30,7 @@ churned in a move commit.
 | Ambient occlusion: SSAO, its blur, GTAO                                 | [46-ambient-occlusion.md](46-ambient-occlusion.md) |
 | Screen-space reflections: the march, roughness                          | [47-reflections.md](47-reflections.md)             |
 | The post-processing stack: order, HDR, tonemap, bloom                   | [48-post-processing.md](48-post-processing.md)     |
-| Antialiasing: FXAA, SMAA, CMAA2, TAA, MSAA                              | [49-antialiasing.md](49-antialiasing.md)           |
+| Antialiasing: FXAA, CMAA2, TAA, MSAA                                    | [49-antialiasing.md](49-antialiasing.md)           |
 | Irradiance probes: the L1 grid                                          | [50-irradiance-probes.md](50-irradiance-probes.md) |
 | Volumetrics: height fog, the froxel column, light shafts                | [51-volumetrics.md](51-volumetrics.md)             |
 
@@ -66,7 +66,7 @@ does these, and it is answered in one place:
 | Ray-traced shadows + AO                                                                                                                                           | P7C                                                                                                                                                                                                                                                                      |
 | Ray-traced reflections                                                                                                                                            | P7C                                                                                                                                                                                                                                                                      |
 | Ray-traced global illumination                                                                                                                                    | P7C                                                                                                                                                                                                                                                                      |
-| The render quality pass: ~~SMAA 1x~~, ~~GTAO + bent normals~~, **Hi-Z + cone-traced SSR**, ~~shadow cross-fade → rotated Poisson PCF → PCSS~~                     | P10, with the bloom chain, because the profiler HUD is what shows a quality rung's cost honestly. Each rung's section above says what it costs and what it refuses. **The Hi-Z half of the SSR rung is built (2026-08-27)**; the cone trace over a colour pyramid is not |
+| The render quality pass: ~~CMAA2~~, ~~GTAO + bent normals~~, **Hi-Z + cone-traced SSR**, ~~shadow cross-fade → rotated Poisson PCF → PCSS~~                       | P10, with the bloom chain, because the profiler HUD is what shows a quality rung's cost honestly. Each rung's section above says what it costs and what it refuses. **The Hi-Z half of the SSR rung is built (2026-08-27)**; the cone trace over a colour pyramid is not |
 | MSAA                                                                                                                                                              | **No phase, and not a rejection** — viable and priced by the seventh decision, and not the default for exactly as long as SSAO and SSR read a single-sample depth                                                                                                        |
 | TAA (jitter and the resolve — ~~motion vectors~~ landed 2026-08-30); temporal SSR; ~~shadow atlases~~ (pulled forward 2026-08-30, [45-shadows.md](45-shadows.md)) | post-MVP. Auto-exposure left this row on 2026-08-29 (post stack)                                                                                                                                                                                                         |
 
@@ -97,8 +97,8 @@ under both paths side by side. Exit criteria of the other samples inherit
   which `docs/backlog.md` still carries.
 - **Post-stack perf in a browser**: each pass is simple, but measure — the horde
   web demo budget (S3) includes the stack. The quality pass adds passes to it:
-  SMAA 1x is three where FXAA is one, and a Hi-Z march builds a pyramid before
-  it walks one.
+  CMAA2 is five where FXAA is one, and a Hi-Z march builds a pyramid before it
+  walks one.
 - **An AA rung re-blesses the suite, and there is no additive-zero form of it.**
   The probe and bloom slices could land switched off and move nothing; FXAA
   moves every edge in every frame the bit is on for. So the risk is not the

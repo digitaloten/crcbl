@@ -48,7 +48,7 @@
 ///
 /// crcbl_console::convar! {
 ///     /// Which edge-antialiasing pass runs.
-///     pub static antialiasing: &'static str one_of ["none", "fxaa", "smaa"] = "none";
+///     pub static antialiasing: &'static str one_of ["none", "fxaa", "cmaa2"] = "none";
 /// }
 ///
 /// assert_eq!(r_ao_view.name(), "r_ao_view");

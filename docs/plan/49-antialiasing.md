@@ -1,4 +1,4 @@
-# Topic 49 — Antialiasing: FXAA, SMAA, CMAA2, TAA and the MSAA question
+# Topic 49 — Antialiasing: FXAA, CMAA2, TAA and the MSAA question
 
 Split out of [18-render-features.md](18-render-features.md) on 2026-08-27,
 verbatim. That topic had grown past a hundred kilobytes and a reader after one
@@ -119,47 +119,98 @@ What it cost, item by item, because none of it was hypothetical:
   discrete adapter, which is where each was blessed before; every one of them
   was then verified against **both** adapters.
 
-### SMAA 1x second, and it is the real industry standard step
+### CMAA2 second — landed 2026-09-06, and SMAA left in the same change
 
-**SMAA 1x is what the engine reaches for where FXAA over-blurs text and thin
-geometry** — not TAA, and not a wider FXAA preset. It is **built**:
-`crcbl_render::Smaa`, its three shaders, the cooked tables,
-`RenderEffects::SMAA` and `Antialiasing::Smaa`, with
-`smaa_changes_a_band_along_the_edges_and_nothing_else` as its observer. What
-follows is the design it was built to, kept because the refusals in it still
-bind. Three passes: an edge detection, a blend-weight calculation that looks the
-detected pattern up in a precomputed **area** table and a **search** table, and
-a neighbourhood blend that applies the weights. Each is the fullscreen shape the
-tier below establishes, so the pass machinery is the same machinery a third
-time.
+**CMAA2 is what the engine reaches for where FXAA over-blurs text and thin
+geometry** — not TAA, and not a wider FXAA preset. `crcbl_render::Cmaa2`, its
+three `cmaa2_*.slang` sources, `RenderEffects::CMAA2` and `Antialiasing::Cmaa2`,
+with `cmaa2_changes_a_band_along_the_edges_and_nothing_else` as its observer.
 
-Two things about it are specific to this tree:
+**It replaced SMAA 1x rather than joining it**, which the eighth decision below
+argues and "What is refused" states as a refusal: one morphological tier at a
+time. What left with this change is `crcbl_render::smaa`, `smaa_edges.slang`,
+`smaa_weights.slang`, `smaa_blend.slang`, the two cooked tables and their
+`cook-smaa` generator, the CI step that checked them, and the `"smaa"` settings
+word — which now reads the way any word no rung wears does, with one warning and
+an unpicked tier.
 
-- **The lookup tables are a data cost, not a computation.** They are on the
-  order of 160 KB and have to arrive as **committed bytes** with a generator and
-  a `--check` mode behind them, on `cook-clusters`' precedent and hashed the way
-  `spirv/manifest.txt` hashes an artifact. Deriving them at start-up instead
-  would put a table four rasterisers computed independently underneath every
-  golden in the suite, which is the read this file's determinism arguments spend
-  their whole length avoiding.
+**Five passes where SMAA was three, and only one of them is a draw.** The edge
+detect and the resolve run per pixel; the three between them run per **edge**,
+which is the cost model this tier was chosen for:
+
+1. `cmaa2-clear` zeroes the two counters, on `clear_counters.slang`'s terms — a
+   counter another invocation of the same dispatch may already have added to
+   cannot be zeroed inside it.
+2. `cmaa2-edges` marks each pixel's west and north boundaries against a
+   threshold with a local-contrast adaptation, writes the per-pixel edge word,
+   zeroes that pixel's accumulation, and **appends** every edge pixel to a
+   candidate list.
+3. `cmaa2-shapes` runs once per candidate: a run of like boundaries is walked to
+   its two ends, classified `Z` or `U` by how the boundary turns at each, and
+   the coverage a straight reconstruction leaves is integrated over each of the
+   run's pixels — two areas per pixel where the reconstruction crosses inside
+   it, which is the case a 45° staircase is entirely made of. Each is appended
+   as a **blend item**.
+4. `cmaa2-accumulate` runs once per item and adds it to the target pixel's
+   total.
+5. `cmaa2-apply` is the one fullscreen draw: it converts each pixel's total once
+   and writes the caller's target.
+
+Four things about it are specific to this tree:
+
+- **No lookup table, so nothing is cooked.** SMAA's area and search tables were
+  26,624 bytes of committed data with a generator and a `--check` mode behind
+  them; CMAA2's shape rules are analytic and the coverage is integrated in the
+  shader. That whole data cost, and the CI step guarding it, left with the tier.
+- **The accumulation is fixed point with integer atomics**, at
+  `crcbl_shaders::cmaa2::BLEND_FIXED_POINT_SCALE`. Blend items reach a pixel in
+  whatever order the device schedules, float addition is not associative, and a
+  frame that is a function of the scheduler is the thing this file's determinism
+  arguments spend their length refusing. Integer addition is associative and
+  commutative, so the total is the same whatever the order, and the single
+  conversion back happens per pixel in the apply. Two whole runs of one frame
+  come back byte-identical on radv and on lavapipe —
+  `the_same_frame_resolves_to_the_same_bytes_twice` — and under a float sum in
+  arrival order they do not.
+- **The two append lists have capacities and a frame may exceed them.** They are
+  a fraction of the frame — `crcbl_shaders::cmaa2::CANDIDATE_DIVISOR` and
+  `ITEM_DIVISOR` — and an entry past the cap is **dropped**, with every count
+  read back clamped to the same capacity, so the pixel it was for keeps its
+  unresolved colour and nothing is ever written outside a list.
+  `a_frame_that_overflows_the_lists_still_finishes_and_stays_finite` drives a
+  frame past a deliberately tiny cap on both adapters, and
+  `a_frame_whose_cmaa2_lists_are_capped_to_nothing_is_still_a_legal_frame` does
+  the same on the null device.
 - **It is historyless, so it is deterministic by construction**, and that is
-  what makes it golden-safe where TAA is not. Its inputs are one frame's pixels
-  and two constant tables; no frame it draws is a function of how many frames
-  preceded it.
+  what makes it golden-safe where TAA is not. Its inputs are one frame's pixels;
+  no frame it draws is a function of how many frames preceded it.
 
-FXAA does not leave when SMAA arrives. **It stays as the cheap tier**, on the
+**What it cost, measured 2026-09-06.**
+`apps/lantern --headless --frames 400 --size 1920x1080 --backend vk`, three runs
+a configuration, the medians of the p50s each run reported for its own passes,
+on an RX 7900 XTX under radv and on lavapipe —
+[43-render-standards.md](43-render-standards.md)'s protocol unchanged. On
+**radv** the resolve slot goes from FXAA's **0.027 ms** to CMAA2's **0.109 ms**
+(`cmaa2-clear` 0.001, `cmaa2-edges` 0.045, `cmaa2-shapes` 0.035,
+`cmaa2-accumulate` 0.004, `cmaa2-apply` 0.024), and the whole frame from **1.472
+ms** to **1.576 ms**. On **lavapipe** it goes the other way: FXAA's **2.451 ms**
+becomes CMAA2's **1.728 ms** (0.118, 0.121, 0.122, 0.120, 1.247), and the whole
+frame from **89.104 ms** to **88.713 ms**. That is the cost model the eighth
+decision picked this tier for, arriving: the work that scales with the frame's
+_pixels_ is one cheap dispatch and one cheap draw, and the software rasteriser —
+which is the tier every golden runs on — pays less for the better filter than it
+paid for the worse one. The four compute dispatches on lavapipe all land within
+a hundredth of a millisecond of each other, which is that driver's timestamp
+resolution rather than four passes of equal weight.
+
+FXAA does not leave when CMAA2 arrives. **It stays as the cheap tier**, on the
 terms `RenderEffects` already gives the other pairs: a tier that is off is a
 frame with fewer passes, not a shader branch.
 
 **What the rung still owes is cross-backend evidence** — Metal, DX12 and WebGPU
 compile the artifacts, and only CI has run them — which `docs/backlog.md`
-carries.
-
-**Superseded 2026-08-30**: the eighth decision below puts CMAA2 in this tier's
-place, and the three shaders, the two tables, `cook-smaa` and
-`crcbl_render::smaa` leave the tree with the slice that lands it. What stays is
-the observer's shape — `crates/crcbl/tests/mesh_e2e/smaa.rs`'s three
-measurements are what CMAA2 is held to, on the same scene.
+carries, along with the constants this transcription chose rather than took from
+the reference.
 
 ### TAA is specified and still post-MVP
 
@@ -215,10 +266,10 @@ priced**, and the price is specific:
 
 That is why it is not the default, and it is a reason rather than a refusal.
 **MSAA is the right answer for a forward renderer doing little screen-space
-work**; FXAA and then SMAA are the right answer for this one for exactly as long
-as SSAO and SSR are in the stack. A view that drops both — which the per-camera
-effect layer above already allows — is a view where the arithmetic flips, and
-the reader holding that view is the one who should make the call.
+work**; FXAA and then CMAA2 are the right answer for this one for exactly as
+long as SSAO and SSR are in the stack. A view that drops both — which the
+per-camera effect layer above already allows — is a view where the arithmetic
+flips, and the reader holding that view is the one who should make the call.
 
 ### An eighth, taken 2026-08-30: one AA row, and MSAA as its top rungs
 
@@ -230,31 +281,35 @@ filtering row is bilinear, trilinear and anisotropic 2× to 16×, which
 `apps/options`' `ANISOTROPIES` row already matches rung for rung.
 
 What this tree had instead, until the cycler below landed, was **two independent
-bits** — `RenderEffects::ANTIALIASING` and `RenderEffects::SMAA` — each its own
-settings row, so the panel could switch both on and the resolve slot picked
-between them out of sight. Neither is a `VIDEO_KEYS` row today; that table's own
-comment says why. The next two rungs of this ladder are the CS2 shape:
+bits** — `RenderEffects::ANTIALIASING` and the higher tier's, then SMAA's and
+now `RenderEffects::CMAA2` — each its own settings row, so the panel could
+switch both on and the resolve slot picked between them out of sight. Neither is
+a `VIDEO_KEYS` row today; that table's own comment says why. The next two rungs
+of this ladder are the CS2 shape:
 
 1. **One `antialiasing` cycler row — built 2026-08-30.**
-   `crcbl_render::Antialiasing` is the ladder (`None`, `Fxaa`, `Smaa`; CMAA2 and
-   the MSAA rungs arrive with the slices below). The
-   `[engine.video] antialiasing` key holds `Antialiasing::name`'s word, the
-   `smaa` key is gone, and `VIDEO_KEYS` is a six-row table of pure booleans
-   again. `EffectRequest` grew `antialiasing: Option<Antialiasing>` and
-   `resolve` applies it as a **replacement** inside the AA slot — after the
-   video clamp, before the programmatic override, before the device — because a
-   clamp cannot choose SMAA where the camera asked for FXAA.
-   `GpuContext::antialiasing` reads it while the context opens and
-   `effect_request` carries it. `apps/options`' `ANTIALIASING` row sits beside
-   `ANISOTROPY`, is born on whatever `RenderEffects::DEFAULT_STACK` carries —
-   which is what an absent key means — and is corrected to the file's rung on
-   the first frame. `RenderEffects::DEFAULT_STACK` did **not** change: which
-   tier the default carries is still the answer this row's default _is_, and
-   flipping it is still the user's call and a re-bless — **and the call is
-   taken, 2026-08-30: it is not flipped to SMAA.** CMAA2 becomes the default
-   tier when its slice lands, so the goldens re-bless once for the filter that
-   stays rather than twice. `web/tools/browser-e2e.mjs`'s `toFader` moved with
-   the row and the options browser gate was run locally.
+   `crcbl_render::Antialiasing` is the ladder (`None`, `Fxaa`, and the higher
+   tier — `Smaa` when this rung landed and `Cmaa2` since the rung below did; the
+   MSAA rungs arrive with the slice after). The `[engine.video] antialiasing`
+   key holds `Antialiasing::name`'s word, the `smaa` key is gone, and
+   `VIDEO_KEYS` is a six-row table of pure booleans again. `EffectRequest` grew
+   `antialiasing: Option<Antialiasing>` and `resolve` applies it as a
+   **replacement** inside the AA slot — after the video clamp, before the
+   programmatic override, before the device — because a clamp cannot choose the
+   higher tier where the camera asked for FXAA. `GpuContext::antialiasing` reads
+   it while the context opens and `effect_request` carries it. `apps/options`'
+   `ANTIALIASING` row sits beside `ANISOTROPY`, is born on whatever
+   `RenderEffects::DEFAULT_STACK` carries — which is what an absent key means —
+   and is corrected to the file's rung on the first frame.
+   `RenderEffects::DEFAULT_STACK` did **not** change: which tier the default
+   carries is still the answer this row's default _is_, and flipping it is still
+   the user's call and a re-bless — **and the call is taken, 2026-08-30: it is
+   not flipped to SMAA.** CMAA2 becomes the default tier instead, so the goldens
+   re-bless once for the filter that stays rather than twice. CMAA2 landed
+   2026-09-06 and **the flip is the commit after it**: this slice moved no
+   golden, and the one that changes `DEFAULT_STACK`'s AA slot is the one that
+   re-blesses them. `web/tools/browser-e2e.mjs`'s `toFader` moved with the row
+   and the options browser gate was run locally.
 
    A file still holding the boolean reads as the meaning it had:
    `antialiasing = true` was "the player has not asked for less", which is an
@@ -262,34 +317,23 @@ comment says why. The next two rungs of this ladder are the CS2 shape:
    `Antialiasing::None`. Neither warns. No other migration — everything here is
    v0.
 
-2. **CMAA2 in SMAA's place** — the user's call, 2026-08-30, taken with CS2's row
-   in front of them, and the trade is written out under the refusal below.
-   Intel's Conservative Morphological AA 2 (Strugar, 2018) is the same tier as
-   SMAA 1x — one frame's pixels, no history — in a different shape: an edge
-   detect writes a candidate list and only the candidates are classified and
-   blended, so the cost is proportional to the frame's edges rather than to its
-   pixels, which is the tier the software and browser paths most want. It
-   carries no lookup table, so nothing is cooked; its shape rules are analytic
-   and it is deliberately conservative — text and thin lines stay crisper than
-   SMAA leaves them, gentle slopes keep a little more of their step. Three
-   things about it are specific to this tree:
-   - **It is compute, not a fullscreen triangle**: an edge pass, a candidate
-     pass and a deferred colour-apply pass, with the candidate list and the
-     per-pixel blend items in storage buffers a work-group appends to. Those are
-     the AA stage's own buffers and stay under
-     `crcbl_hal::PORTABLE_STORAGE_BUFFERS_PER_STAGE`, which the forward pass
-     already sits against.
-   - **The blend items reach a pixel in atomic order**, and the reference sums
-     them in that order. A float sum in an order the hardware chooses is a frame
-     that is not a function of its inputs — this file's determinism argument —
-     so the apply pass accumulates in fixed point, or sorts a pixel's items
-     before it sums them. Which one is measured, on both rasterisers, before a
-     golden is blessed on it.
-   - **It is held to SMAA's observer**: the resolve moves a share of the frame
-     near a luma discontinuity and halves the count of pixels stepping by 96 of
-     255, on `mesh_e2e`'s scene, on radv and lavapipe. The SMAA tier leaves in
-     the same slice, so there is one morphological tier in the tree at any time
-     and the resolve slot still records one filter or the other.
+2. **~~CMAA2 in SMAA's place~~ — landed 2026-09-06** — the user's call,
+   2026-08-30, taken with CS2's row in front of them, and the trade is written
+   out under the refusal below. What was built, what it cost on both rasterisers
+   and which of its constants are this tree's choice rather than the reference's
+   are in "CMAA2 second" above; the three things this decision asked for
+   specifically all hold in the shipped passes. It **is** compute — four
+   dispatches, with the candidate list and the blend items in storage buffers a
+   work-group appends to, five buffers against
+   `crcbl_hal::PORTABLE_STORAGE_BUFFERS_PER_STAGE`'s eight — with a fullscreen
+   draw for the apply, because a swapchain image cannot be bound as a storage
+   image. The **arrival-order sum is gone**: the blend items accumulate through
+   integer atomics in fixed point, which is order-independent, and
+   `the_same_frame_resolves_to_the_same_bytes_twice` holds it on both drivers.
+   And it is **held to SMAA's observer**, the same scene and the same two
+   claims, in `crates/crcbl/tests/mesh_e2e/cmaa2.rs`. The default tier does not
+   move with it: flipping `RenderEffects::DEFAULT_STACK`'s AA slot to CMAA2 is
+   the next commit, and that is the one that re-blesses the goldens.
 3. **MSAA 2×, 4× and 8×** as the rungs above CMAA2, on the price the seventh
    decision above put on it: the depth prepass goes multisampled, and one
    **depth resolve** pass writes the single-sample image `ssao.slang`,
@@ -300,14 +344,16 @@ comment says why. The next two rungs of this ladder are the CS2 shape:
 
 ### What is refused
 
-- **Keeping SMAA 1x beside CMAA2.** Both are one tier — one frame's pixels, no
-  history, an edge classification and a blend — and a menu with both is a row
-  nobody can choose between. This section first declined CMAA2 on that ground,
-  with SMAA already built and measured; the user reversed it the same day
-  (2026-08-30) for CMAA2's cost model, which scales with edges rather than
-  pixels and so favours the lavapipe and browser tiers every golden runs on, and
-  for the crisper text its conservatism leaves. So SMAA is the one that goes,
-  and its retirement is part of the CMAA2 slice rather than a follow-up.
+- **~~Keeping SMAA 1x beside CMAA2.~~ Done 2026-09-06** — SMAA left with the
+  CMAA2 slice, so the tree holds one morphological tier. Both are one tier — one
+  frame's pixels, no history, an edge classification and a blend — and a menu
+  with both is a row nobody can choose between. This section first declined
+  CMAA2 on that ground, with SMAA already built and measured; the user reversed
+  it the same day (2026-08-30) for CMAA2's cost model, which scales with edges
+  rather than pixels and so favours the lavapipe and browser tiers every golden
+  runs on, and for the crisper text its conservatism leaves. So SMAA is the one
+  that went, and its retirement was part of the CMAA2 slice rather than a
+  follow-up.
 
 - **DLSS.** Single-vendor and closed: it runs on one hardware line behind an
   SDK, where every other path in this engine is held to being the same code on

@@ -190,12 +190,12 @@ mod tests {
 
     #[test]
     fn the_equals_sign_is_optional_and_dropped_however_it_is_spaced() {
-        let expected = ("antialiasing".to_owned(), vec!["smaa".to_owned()]);
-        assert_eq!(one("antialiasing smaa"), expected);
-        assert_eq!(one("antialiasing = smaa"), expected);
-        assert_eq!(one("antialiasing =smaa"), expected);
-        assert_eq!(one("antialiasing= smaa"), expected);
-        assert_eq!(one("antialiasing=smaa"), expected);
+        let expected = ("antialiasing".to_owned(), vec!["cmaa2".to_owned()]);
+        assert_eq!(one("antialiasing cmaa2"), expected);
+        assert_eq!(one("antialiasing = cmaa2"), expected);
+        assert_eq!(one("antialiasing =cmaa2"), expected);
+        assert_eq!(one("antialiasing= cmaa2"), expected);
+        assert_eq!(one("antialiasing=cmaa2"), expected);
     }
 
     #[test]
@@ -253,10 +253,10 @@ mod tests {
             ("echo".to_owned(), vec!["a;b".to_owned()])
         );
         assert_eq!(
-            parsed("r_ao_view 1; antialiasing smaa; echo done"),
+            parsed("r_ao_view 1; antialiasing cmaa2; echo done"),
             vec![
                 ("r_ao_view".to_owned(), vec!["1".to_owned()]),
-                ("antialiasing".to_owned(), vec!["smaa".to_owned()]),
+                ("antialiasing".to_owned(), vec!["cmaa2".to_owned()]),
                 ("echo".to_owned(), vec!["done".to_owned()]),
             ]
         );

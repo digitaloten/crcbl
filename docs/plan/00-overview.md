@@ -147,7 +147,7 @@ Cross-cutting topic docs (identity, no ordering implied):
 | 46    | [46-ambient-occlusion.md](46-ambient-occlusion.md) | Ambient occlusion: SSAO, its depth-weighted blur, and GTAO next           |
 | 47    | [47-reflections.md](47-reflections.md)             | Screen-space reflections: the Hi-Z march, roughness, determinism          |
 | 48    | [48-post-processing.md](48-post-processing.md)     | The post stack: pipeline order, HDR, tonemap, bloom, where toggles live   |
-| 49    | [49-antialiasing.md](49-antialiasing.md)           | Antialiasing: FXAA, SMAA 1x, TAA's blocker, and MSAA repriced             |
+| 49    | [49-antialiasing.md](49-antialiasing.md)           | Antialiasing: FXAA, CMAA2, TAA's blocker, and MSAA repriced               |
 | 50    | [50-irradiance-probes.md](50-irradiance-probes.md) | Irradiance probes: the static L1 grid, the diffuse GI twin                |
 | 51    | [51-volumetrics.md](51-volumetrics.md)             | Volumetrics: height fog and the froxel column                             |
 | 52    | [52-debug-console.md](52-debug-console.md)         | The debug console: variables and commands declared beside the code        |

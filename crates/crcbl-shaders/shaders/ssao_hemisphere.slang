@@ -7,7 +7,7 @@
 //
 // `docs/plan/46-ambient-occlusion.md` decided on 2026-08-13 that classic
 // normal-oriented hemisphere SSAO would stay beside GTAO rather than be
-// deleted by it, on the antialiasing ladder's FXAA-under-SMAA pattern: eight
+// deleted by it, on the antialiasing ladder's FXAA-under-CMAA2 pattern: eight
 // taps and a comparison is a real budget on a software rasteriser and on a
 // small device, and the two techniques share the pass, the resource, the blur
 // and the tests. `ssao.slang` was rewritten in place when GTAO landed, so this

@@ -13988,7 +13988,7 @@ mod tests {
         storage
             .write(
                 std::path::Path::new(SETTINGS_FILE),
-                b"[engine.video]\nshadows = false\nantialiasing = \"smaa\"\n\
+                b"[engine.video]\nshadows = false\nantialiasing = \"cmaa2\"\n\
                   render_scale = 0.5\nanisotropic_filtering = 4\n",
             )
             .expect("memory storage accepts every write");
@@ -13998,7 +13998,7 @@ mod tests {
             read.effects,
             RenderEffects::all().difference(RenderEffects::SHADOWS)
         );
-        assert_eq!(read.antialiasing, Some(crcbl_render::Antialiasing::Smaa));
+        assert_eq!(read.antialiasing, Some(crcbl_render::Antialiasing::Cmaa2));
         assert!((read.render_scale - 0.5).abs() < f32::EPSILON);
         assert!((read.anisotropic_filtering - 4.0).abs() < f32::EPSILON);
 
@@ -14615,7 +14615,7 @@ mod tests {
     #[test]
     fn setting_a_variable_through_the_console_reaches_the_bundle() {
         let mut engine = with_console_open();
-        run_line(&mut engine, "antialiasing smaa");
+        run_line(&mut engine, "antialiasing cmaa2");
         assert_eq!(
             engine
                 .gpu
@@ -14623,7 +14623,7 @@ mod tests {
                 .last()
                 .expect("the drain reached the bundle")
                 .antialiasing,
-            Some(crcbl_render::Antialiasing::Smaa),
+            Some(crcbl_render::Antialiasing::Cmaa2),
             "the console's write did not reach `GameGpu::apply_video`"
         );
 

@@ -129,7 +129,7 @@ request.
   and off, and the rates are an API a view calls with its own frame delta. There
   is no clock in `crcbl-render` to take the delta from, which is why.
 
-- **AA (MVP)**: **FXAA**, then SMAA 1x, with TAA post-MVP and MSAA priced rather
+- **AA (MVP)**: **FXAA**, then CMAA2, with TAA post-MVP and MSAA priced rather
   than rejected — the whole ladder, what each rung costs in this tree and what
   is refused are [49-antialiasing.md](49-antialiasing.md). **Built 2026-08-27**:
   `fxaa.slang` and `crcbl_render::fxaa` are one fullscreen resolve after the

@@ -78,13 +78,6 @@ path = "tools/cook-dfg.rs"
 name = "cook-sky-prefilter"
 path = "tools/cook-sky-prefilter.rs"
 
-# SMAA's area and search tables' generator: a transcription of the reference
-# scripts, and byte-exact where the two integrators above are within a
-# tolerance — `cook_table.rs` says why both comparisons exist.
-[[example]]
-name = "cook-smaa"
-path = "tools/cook-smaa.rs"
-
 # The LTC fit's table, on `cook-dfg`'s terms and in the same directory. It is
 # the only one of the four whose generator *minimises* rather than integrates,
 # which is why it carries a looser tolerance and its own paragraph about it.

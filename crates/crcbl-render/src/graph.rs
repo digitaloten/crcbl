@@ -3177,9 +3177,9 @@ impl TransientImageDesc {
     /// and `MOTION_FORMAT` states the convention on the host side.
     ///
     /// The format is named there rather than here for [`ambient_occlusion`]'s
-    /// reason inverted, exactly as [`smaa_edges`] gives it: the shader's return
-    /// struct and the pipeline's colour target have to agree, and the pass that
-    /// builds the pipeline is the one that owns the answer.
+    /// reason inverted: the shader's return struct and the pipeline's colour
+    /// target have to agree, and the pass that builds the pipeline is the one
+    /// that owns the answer.
     ///
     /// **Cleared to zero, and no `TRANSFER_SRC` or `SAMPLED` yet.** Nothing
     /// reads the attachment — `crcbl_render::forward`'s `DebugView::Motion`
@@ -3190,57 +3190,12 @@ impl TransientImageDesc {
     ///
     /// [`ambient_occlusion`]: TransientImageDesc::ambient_occlusion
     /// [`bloom_mip`]: TransientImageDesc::bloom_mip
-    /// [`smaa_edges`]: TransientImageDesc::smaa_edges
     #[must_use]
     pub const fn motion(extent: (u32, u32)) -> Self {
         Self {
             extent,
             format: crate::forward::MOTION_FORMAT,
             usage: ImageUsage::COLOR_ATTACHMENT,
-            samples: 1,
-            mip_levels: 1,
-        }
-    }
-
-    /// SMAA's edge mask: `crate::smaa`'s `EDGES_FORMAT`, rendered into by the
-    /// first of that tier's three passes and sampled by the second.
-    ///
-    /// `docs/plan/49-antialiasing.md`'s SMAA 1x rung. The format is named there
-    /// rather than here for [`ambient_occlusion`]'s reason inverted: the two
-    /// shader-side masks and the pipeline's colour target have to agree, and the
-    /// pass that builds the pipeline is the one that owns the answer.
-    ///
-    /// No `TRANSFER_SRC`: nothing reads the mask back. A usage flag naming a use
-    /// nothing makes is a claim about a resource rather than a fact about one —
-    /// [`bloom_mip`]'s argument.
-    ///
-    /// [`ambient_occlusion`]: TransientImageDesc::ambient_occlusion
-    /// [`bloom_mip`]: TransientImageDesc::bloom_mip
-    #[must_use]
-    pub const fn smaa_edges(extent: (u32, u32)) -> Self {
-        Self {
-            extent,
-            format: crate::smaa::EDGES_FORMAT,
-            usage: ImageUsage::COLOR_ATTACHMENT.union(ImageUsage::SAMPLED),
-            samples: 1,
-            mip_levels: 1,
-        }
-    }
-
-    /// SMAA's blend weights: `crate::smaa`'s `WEIGHTS_FORMAT`, one coverage
-    /// fraction per side of the pixel, written by the second of that tier's
-    /// passes and sampled by the third.
-    ///
-    /// [`smaa_edges`]'s description at four channels, and its two notes apply
-    /// unchanged.
-    ///
-    /// [`smaa_edges`]: TransientImageDesc::smaa_edges
-    #[must_use]
-    pub const fn smaa_weights(extent: (u32, u32)) -> Self {
-        Self {
-            extent,
-            format: crate::smaa::WEIGHTS_FORMAT,
-            usage: ImageUsage::COLOR_ATTACHMENT.union(ImageUsage::SAMPLED),
             samples: 1,
             mip_levels: 1,
         }

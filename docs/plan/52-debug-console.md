@@ -5,8 +5,8 @@ slice of work.** A Source-engine-style console in every demo and every build:
 opened with the `` ` ``/`~` key, drawn over the frame at the top of the screen,
 showing exactly the lines the engine logs to the terminal, with an input box and
 a **Send** button, `Enter` sending; every setting the engine reads is a variable
-the console prints (`antialiasing`) and sets (`antialiasing smaa`, or
-`antialiasing = smaa`), with autocomplete, and `help` lists every command and
+the console prints (`antialiasing`) and sets (`antialiasing cmaa2`, or
+`antialiasing = cmaa2`), with autocomplete, and `help` lists every command and
 variable. The user's standard for the design: robust and low-maintenance — the
 exposed variables and commands **come from the code that owns them**, declared
 where they live, so the console updates itself as the engine grows, and there is
@@ -125,7 +125,7 @@ day. Two things change in `crcbl::settings` to make that mechanical:
 
 - **The domain becomes a type.** `CatalogueKey::domain` was a prose string
   (`"1 to 16; 1 is off, and the device's own ceiling clamps it"`). It is now
-  `Kind` — `Bool`, `Enum(&["none", "fxaa", "smaa"])`, `Float { min, max }`,
+  `Kind` — `Bool`, `Enum(&["none", "fxaa", "cmaa2"])`, `Float { min, max }`,
   `Int { min, max }` — and the prose is `help`. `help` prints both;
   `apps/options` keeps its own labels and reads the same `Kind` for its rung
   count, so the two cannot disagree about a domain. The eight `KeyStatus::Named`
@@ -649,8 +649,8 @@ entry; the browser gate runs on every slice that touches a demo.
 - `help` prints every variable in `crcbl::settings::catalogue()` and every
   `convar!` in the workspace; a `convar!` missing from its crate's table is a
   red test in that crate.
-- `antialiasing` prints the value; `antialiasing smaa` and `antialiasing = smaa`
-  set it, the frame changes, and `save` writes it.
+- `antialiasing` prints the value; `antialiasing cmaa2` and
+  `antialiasing = cmaa2` set it, the frame changes, and `save` writes it.
 - `debug_view ambient occlusion` shows the AO channel in a demo that never
   exposed it — `apps/quarry`, for the reason slice 6 gives, and proven on radv
   and lavapipe, **and proven in a browser**: `web/tools/browser-e2e.mjs` types

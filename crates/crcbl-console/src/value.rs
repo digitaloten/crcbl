@@ -269,7 +269,7 @@ fn needs_quotes(text: &str) -> bool {
 mod tests {
     use super::*;
 
-    const AA: Kind = Kind::Enum(&["none", "fxaa", "smaa"]);
+    const AA: Kind = Kind::Enum(&["none", "fxaa", "cmaa2"]);
 
     #[test]
     fn every_bool_spelling_parses_in_either_case() {
@@ -365,8 +365,8 @@ mod tests {
 
     #[test]
     fn an_enum_matches_exactly_and_then_case_insensitively() {
-        assert_eq!(AA.parse("smaa"), Ok(Value::Enum("smaa")));
-        assert_eq!(AA.parse("SMAA"), Ok(Value::Enum("smaa")));
+        assert_eq!(AA.parse("cmaa2"), Ok(Value::Enum("cmaa2")));
+        assert_eq!(AA.parse("CMAA2"), Ok(Value::Enum("cmaa2")));
         assert_eq!(AA.parse("Fxaa"), Ok(Value::Enum("fxaa")));
     }
 
@@ -374,7 +374,7 @@ mod tests {
     fn an_unknown_enum_name_is_refused_listing_the_set() {
         assert_eq!(
             AA.parse("taa").expect_err("not in the set").message(),
-            "`taa` is not one of: none, fxaa, smaa"
+            "`taa` is not one of: none, fxaa, cmaa2"
         );
     }
 
@@ -422,9 +422,9 @@ mod tests {
             AA.check("antialiasing", &Value::Enum("taa"))
                 .expect_err("not in the set")
                 .message(),
-            "`antialiasing`: `taa` is not one of: none, fxaa, smaa"
+            "`antialiasing`: `taa` is not one of: none, fxaa, cmaa2"
         );
-        assert_eq!(AA.check("antialiasing", &Value::Enum("smaa")), Ok(()));
+        assert_eq!(AA.check("antialiasing", &Value::Enum("cmaa2")), Ok(()));
     }
 
     #[test]
@@ -432,7 +432,7 @@ mod tests {
         assert_eq!(Value::Bool(true).to_string(), "true");
         assert_eq!(Value::Int(3).to_string(), "3");
         assert_eq!(Value::Float(0.75).to_string(), "0.75");
-        assert_eq!(Value::Enum("smaa").to_string(), "smaa");
+        assert_eq!(Value::Enum("cmaa2").to_string(), "cmaa2");
         assert_eq!(Value::Text("plain".to_owned()).to_string(), "plain");
     }
 

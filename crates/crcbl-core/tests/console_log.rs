@@ -170,7 +170,7 @@ fn a_bad_directive_is_refused_and_changes_nothing() {
 #[test]
 fn a_console_line_reaches_the_capture_and_the_ring_under_one_target() {
     let _order = with_filter("info");
-    let message = "antialiasing = smaa";
+    let message = "antialiasing = cmaa2";
 
     let logs = crcbl_core::log::capture();
     console::print(message);

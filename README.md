@@ -57,7 +57,7 @@ What is real today:
   and a missed reflection are one atmosphere — a mirror reads that view along
   its reflected direction, out of the very buffer the background draws from, and
   the device pays four buffer loads for it; volumetric fog, bloom,
-  auto-exposure, SMAA and FXAA, render-scale upscaling, GPU skinning,
+  auto-exposure, CMAA2 and FXAA, render-scale upscaling, GPU skinning,
   alpha-masked cutout materials cut in the depth prepass and the shadows as well
   as in the shading and routed per draw bucket, so an opaque mesh keeps its
   vertex-only depth stage in a scene that has a cutout in it; double-sided
@@ -114,7 +114,7 @@ Every sample takes the same flags: `--backend vk|mtl|dx12|null`, `--headless`,
 `--frames N`, `--fullscreen`, `--pacing adaptive`, `--debug-overlay`. `F3` opens
 the debug panel, `F11` toggles fullscreen, `ESC` opens the menu, and `` ` ``
 opens the debug console — `help` lists every command and every setting the
-engine reads, `antialiasing smaa` sets one for the running frame,
+engine reads, `antialiasing cmaa2` sets one for the running frame,
 `debug_view ambient occlusion` draws a renderer's debug channel instead of the
 shaded picture (`shaded`, `heatmap`, `lod tint`, `normals`, `ambient occlusion`,
 `motion`, `bent normal`, `cascades`, `shadow atlas`), `toggle` and `reset` flip

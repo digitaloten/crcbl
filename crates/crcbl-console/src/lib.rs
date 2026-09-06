@@ -23,7 +23,7 @@
 //! crcbl_console::convar! {
 //!     /// Which edge-antialiasing pass runs.
 //!     #[flags(ARCHIVE)]
-//!     pub static antialiasing: &'static str one_of ["none", "fxaa", "smaa"] = "none";
+//!     pub static antialiasing: &'static str one_of ["none", "fxaa", "cmaa2"] = "none";
 //! }
 //!
 //! // One list per crate, gathered at one seam.
@@ -32,11 +32,11 @@
 //!
 //! let mut host = ();
 //! let mut cx = Context::new(&registry, &mut host);
-//! registry.execute(&mut cx, "antialiasing = smaa").expect("a value in the set");
-//! assert_eq!(cx.lines(), ["antialiasing = smaa"]);
+//! registry.execute(&mut cx, "antialiasing = cmaa2").expect("a value in the set");
+//! assert_eq!(cx.lines(), ["antialiasing = cmaa2"]);
 //!
 //! // And the code that owns the knob reads it without a lookup.
-//! assert_eq!(antialiasing.get_enum(), "smaa");
+//! assert_eq!(antialiasing.get_enum(), "cmaa2");
 //! assert_eq!(antialiasing.flags(), Flags::ARCHIVE);
 //! ```
 

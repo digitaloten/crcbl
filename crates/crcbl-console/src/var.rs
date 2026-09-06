@@ -603,7 +603,7 @@ const fn str_eq(a: &str, b: &str) -> bool {
 mod tests {
     use super::*;
 
-    const AA_VALUES: &[&str] = &["none", "fxaa", "smaa"];
+    const AA_VALUES: &[&str] = &["none", "fxaa", "cmaa2"];
 
     static A_BOOL: ConVar = ConVar::new_bool("t_bool", "a bool", Flags::NONE, false);
     static AN_INT: ConVar = ConVar::new_int("t_int", "an int", Flags::NONE, 1, 16, 4);
@@ -637,9 +637,9 @@ mod tests {
 
     #[test]
     fn an_enum_cell_holds_an_index_and_reads_back_the_name() {
-        AN_ENUM.set(&Value::Enum("smaa")).expect("in the set");
-        assert_eq!(AN_ENUM.get_enum(), "smaa");
-        assert_eq!(AN_ENUM.get(), Value::Enum("smaa"));
+        AN_ENUM.set(&Value::Enum("cmaa2")).expect("in the set");
+        assert_eq!(AN_ENUM.get_enum(), "cmaa2");
+        assert_eq!(AN_ENUM.get(), Value::Enum("cmaa2"));
         assert_eq!(*AN_ENUM.default(), Value::Enum("fxaa"));
     }
 
@@ -855,9 +855,9 @@ mod tests {
 
     #[test]
     fn const_string_equality_matches_the_runtime_one() {
-        assert!(str_eq("smaa", "smaa"));
-        assert!(!str_eq("smaa", "fxaa"));
-        assert!(!str_eq("smaa", "smaaa"));
-        assert_eq!(index_of(AA_VALUES, "smaa"), 2);
+        assert!(str_eq("cmaa2", "cmaa2"));
+        assert!(!str_eq("cmaa2", "fxaa"));
+        assert!(!str_eq("cmaa2", "cmaa22"));
+        assert_eq!(index_of(AA_VALUES, "cmaa2"), 2);
     }
 }

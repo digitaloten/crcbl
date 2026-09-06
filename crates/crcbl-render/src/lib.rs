@@ -166,6 +166,7 @@ mod probe_gather;
 /// console variable that decides whether the frame reads one.
 mod probe_visibility;
 
+mod cmaa2;
 /// The reflective shadow map: the sun's near cascade drawn a second time as
 /// what it reflects, where it is and which way it faces.
 pub mod rsm;
@@ -173,7 +174,6 @@ pub mod scene;
 pub mod shadow;
 pub mod skinning;
 mod sky_pass;
-mod smaa;
 mod split;
 pub mod sprite_pass;
 mod ssao;

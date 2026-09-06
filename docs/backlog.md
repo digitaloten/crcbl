@@ -2608,16 +2608,6 @@ user's call" below. The browser tier is no longer the second gate; it was
 measured 2026-09-02 and did not refuse the extra slices, and both defaults moved
 to the higher counts on 2026-09-03.
 
-## The tier table's CMAA2 cells are read as SMAA (2026-08-31)
-
-The Medium and High "Antialiasing" cells say CMAA2, which has no code.
-`docs/plan/49-antialiasing.md`'s eighth decision puts CMAA2 and SMAA 1x in one
-tier and retires SMAA in the slice that lands CMAA2, so `QualityPreset::values`
-writes `Antialiasing::Smaa` for those two columns and its comment says the
-constant moves with that slice. **This is the one place the slice read the table
-rather than transcribing it** — if the intent was that medium and high get no AA
-row until CMAA2 exists, this is the line to change.
-
 ## The shadow cadence default still has no tier to live in (2026-08-31)
 
 This supersedes nothing in the entry "Whether any tier should ship the shadow
@@ -2977,56 +2967,74 @@ do:
   mesh stage's copy of the subtraction. A device that selects the mesh path
   running the same suite is the missing evidence.
 
-### What the SMAA rung left owed (2026-08-30)
+### What the CMAA2 slice left (2026-09-06)
 
-**The tier is retired on paper**: `docs/plan/49-antialiasing.md`'s eighth
-decision (2026-08-30) puts CMAA2 in its place, and the SMAA shaders, tables,
-`cook-smaa`, `crcbl_render::smaa` and the `smaa` key leave with the slice that
-lands it. Every entry below closes with that removal; none is worth doing first.
+`docs/plan/49-antialiasing.md`'s eighth decision, rung 2, is built: CMAA2 draws
+through `cmaa2_edges.slang`, `cmaa2_shapes.slang` and `cmaa2_apply.slang`,
+recorded by `crcbl_render::cmaa2` under `RenderEffects::CMAA2` and switched by
+the `antialiasing = "cmaa2"` `[engine.video]` word, checked by
+`crates/crcbl/tests/mesh_e2e/cmaa2.rs` on radv and lavapipe. SMAA 1x left in the
+same change — `crcbl_render::smaa`, the three `smaa_*.slang` sources,
+`crcbl_shaders::smaa` with its two cooked tables and `cook-smaa`, the CI step
+that checked them, its own mesh e2e observer and the `"smaa"` word — so nothing
+in the tree spells SMAA any more and a settings file holding it warns and picks
+no tier. What the slice did not do:
 
-SMAA 1x draws: `smaa_edges.slang`, `smaa_weights.slang` and `smaa_blend.slang`
-against `crcbl_shaders::smaa`'s committed tables, recorded by
-`crcbl_render::smaa` under `RenderEffects::SMAA` and switched by the `smaa`
-`[engine.video]` key, checked by `crates/crcbl/tests/mesh_e2e/smaa.rs` on radv
-and lavapipe. What it did not do:
-
+- **The default tier does not move with it, and that is the next commit.**
+  `RenderEffects::DEFAULT_STACK` still carries `ANTIALIASING` without `CMAA2`,
+  which is what kept every committed golden still through this slice. Flipping
+  the slot is a one-line change plus a re-bless of every golden the bit would
+  then be on for, and two tests pin the current answer and will go red on it,
+  which is intended: `apps/options`' `the_antialiasing_ladder_is_the_whole_enum`
+  and `crcbl-render`'s `a_tier_spells_one_word_and_sets_one_pair_of_bits`.
+- **The MSAA rungs (2×, 4×, 8×) above CMAA2 are not built** — rung 3 of the same
+  decision. They need the multisampled depth prepass and the one depth-resolve
+  pass that feeds `ssao.slang`, `ssr.slang` and the Hi-Z pyramid, and the entry
+  "MSAA was reopened rather than reversed" below is still the gate: nobody has
+  measured that resolve.
+- **Four constants are this transcription's choice, not the reference's**, and
+  the observer is what decided them rather than a source anyone can diff
+  against. In `cmaa2_edges.slang`: `EDGE_THRESHOLD` and
+  `LOCAL_CONTRAST_ADAPTATION_FACTOR`. In `cmaa2_shapes.slang`: `U_SHAPE_WEIGHT`
+  and `MAX_LINE_LENGTH`. Each is named and commented as unsure at its
+  definition. A run with Intel's published source beside it is the missing
+  evidence; the shipped values pass the sweep this file's observer measured, on
+  both drivers, and nothing stronger is claimed for them.
+- **The out-of-bounds half of the overflow behaviour is invisible without
+  GPU-assisted validation.** Robust buffer access discards a store past a
+  binding's size, so removing the append guard in `cmaa2_shapes.slang` changes
+  no readback at all — the sabotage only shows as
+  `VUID-vkCmdDispatch-storageBuffers-06936` under
+  `VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT`, which no gate turns on. What
+  `a_frame_that_overflows_the_lists_still_finishes_and_stays_finite` actually
+  guards is the visible half: the frame completes and the dropped entries leave
+  their pixels unresolved. A gate that runs GPU-AV over the e2e suites would
+  cover the rest, and would catch this class everywhere rather than here.
 - **No backend but Vulkan has drawn it.** The Metal, DXIL and WGSL artifacts are
-  compiled and committed, and `crcbl-shaders`' guard tests read the sources, but
-  the only frames anyone has measured came out of radv and lavapipe. The mesh
-  e2e suite names no backend, so running it under `CRCBL_GPU=mtl`/`dx12`/`wgpu`
-  is the whole of the missing evidence — no new test.
-- **No demo asks for `SMAA`, so the browser has never run it.** The bit is not
-  in `DEFAULT_STACK` and nothing forces it on, which is what kept every
-  committed golden still. The browser-gate cost is therefore still unmeasured:
-  three passes where FXAA is one, and the shadow-filter entry below records what
-  a pass costs there.
-- **Which tier `DEFAULT_STACK` carries is still the user's call, and it is now
-  the only thing left of this question.** The row that was going to answer it is
-  built (`docs/plan/49-antialiasing.md`'s eighth decision, rung 1, landed
-  2026-08-30): `apps/options`' `ANTIALIASING` row is born on
-  `Antialiasing::from_effects(RenderEffects::DEFAULT_STACK)` and the player
-  steps off it themselves, so the constant is the default the panel shows.
-  Moving it from `Fxaa` to `Smaa` is still a one-line change to `DEFAULT_STACK`
-  plus a re-bless of every golden the bit would be on for — the set
-  `docs/plan/49-antialiasing.md` priced when FXAA landed, plus whatever has been
-  blessed since (`crates/crcbl/tests/golden/` has grown). Two tests pin the
-  current answer and will go red on the flip, which is intended: `apps/options`'
-  `the_antialiasing_ladder_is_the_whole_enum` and `crcbl-render`'s
-  `a_tier_spells_one_word_and_sets_one_pair_of_bits`. The CMAA2 slice retires
-  SMAA, so the flip is worth taking before it or not at all. **Not at all —
-  decided 2026-08-30**: CMAA2 becomes the default when it lands, one re-bless
-  for the filter that stays.
-- **The reference's S2x/T2x and reprojection paths are not transcribed**, and
-  deliberately: they are not branched around in the shaders, they are absent, so
-  `SMAA_AREATEX_SUBTEX_SIZE` still selects nothing and only the offset-zero slab
-  is committed. `bake_area_slab` still produces the other slabs; a rung that
-  ever needs them commits them rather than re-deriving anything.
-- **The preset is `SMAA_PRESET_HIGH` and is not configurable.** Threshold, both
-  search-step counts and the corner rounding are `static const` in the shaders,
-  guarded by text assertions in `crcbl_shaders::smaa`. Two of them are loop trip
-  counts, so moving them into the params block would make the searches
-  dynamically bounded; a quality ladder would want separate pipelines, not a
-  uniform.
+  compiled and committed and `crcbl-shaders`' guard tests read the sources, but
+  every frame measured came out of radv and lavapipe. The mesh e2e suite names
+  no backend, so running it under `CRCBL_GPU=mtl`/`dx12`/`wgpu` is the whole of
+  the missing evidence — no new test.
+- **No demo asks for `CMAA2`, so the browser has never run it**, and the
+  browser-gate cost is unmeasured: five passes where FXAA is one. The default
+  flip above is what would change that, and it is the reason to measure the
+  browser before taking it rather than after.
+- **The pass fusion plan 48 describes has not landed, so the edge detect
+  computes its own luma.** `tonemap.slang` writes `1.0` into alpha;
+  `cmaa2_edges.slang` therefore does the luma itself per pixel, which is one dot
+  product per sample it would not otherwise pay. Fusing them is a change to the
+  tonemap and a re-bless of anything reading alpha, not to this pass.
+- **The accumulation buffer is 16 bytes a pixel and is not pooled with
+  anything.** `ACCUM_WORDS` is four `u32` per pixel of the resolve target,
+  allocated transiently each frame; at 1920×1080 that is about 33 MB. Nothing
+  has measured whether it matters, and a packed two-word form is the obvious
+  first thing to try if it does.
+- **The per-edge passes dispatch over the list capacity, not the list count.**
+  `cmaa2-shapes` and `cmaa2-accumulate` each run a fixed number of groups sized
+  from the capacity and exit early on invocations past the counter, because the
+  count lives on the device and the graph has no indirect dispatch. The measured
+  cost is in plan 49 and is small; an indirect dispatch would make the tier's
+  cost track the frame's edges the way its cost model claims.
 
 ### What auto-exposure left owed (2026-08-29)
 
@@ -4433,7 +4441,7 @@ So the honest position is that MSAA is viable and priced, not refused: the depth
 prepass would have to be multisampled too, and both screen-space passes read
 that depth, so MSAA buys a depth resolve before SSAO and SSR or per-sample
 versions of them. **Nobody has measured that resolve**, and until somebody does,
-"FXAA and SMAA are the right answer for this renderer" is a judgement rather
+"FXAA and CMAA2 are the right answer for this renderer" is a judgement rather
 than a result.
 
 ### The settings catalogue's named keys have no reader
@@ -23239,7 +23247,7 @@ plumbing:
   a file to say about them beyond present or absent.
 
 **The camera layer's two bits are one field on purpose.** `RenderEffects` has
-both `ANTIALIASING` and `SMAA`, and `CameraStack` has one `antialiasing` field
+both `ANTIALIASING` and `CMAA2`, and `CameraStack` has one `antialiasing` field
 naming an `Antialiasing` tier rather than a field per bit.
 `docs/plan/49-antialiasing.md` collapsed the two into one ladder because the
 resolve slot holds one filter, and two fields would let a file ask for both —

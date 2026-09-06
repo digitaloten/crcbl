@@ -16,11 +16,12 @@
 //! chooses, so a developer on another machine gets a useful answer instead of
 //! a false alarm.
 //!
-//! **A tolerance of zero compares bytes.** `cook-smaa`'s tables are bytes,
-//! not `f32`s, and its generator takes no transcendental at all — so the only
-//! honest comparison is exact, and decoding pairs of its bytes as floats would
-//! be nonsense. A tool that passes `0.0` gets the first differing byte named
-//! instead.
+//! **A tolerance of zero compares bytes**, and the mode exists for a table
+//! whose generator takes no transcendental at all: there the only honest
+//! comparison is exact, and decoding pairs of its bytes as floats would be
+//! nonsense. A tool that passes `0.0` gets the first differing byte named
+//! instead. No shipped generator asks for it today — the retired SMAA tier's
+//! did, and left with it.
 
 use std::path::PathBuf;
 use std::process::ExitCode;

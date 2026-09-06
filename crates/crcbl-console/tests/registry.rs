@@ -18,7 +18,7 @@ convar! {
 convar! {
     /// Which edge-antialiasing pass runs.
     #[flags(ARCHIVE)]
-    pub static antialiasing: &'static str one_of ["none", "fxaa", "smaa"] = "none";
+    pub static antialiasing: &'static str one_of ["none", "fxaa", "cmaa2"] = "none";
 }
 
 convar! {
@@ -49,7 +49,7 @@ convar! {
 // that asserts its value are a race unless they are about different variables.
 convar! {
     /// A set of names one test writes.
-    pub static t_written_enum: &'static str one_of ["none", "fxaa", "smaa"] = "none";
+    pub static t_written_enum: &'static str one_of ["none", "fxaa", "cmaa2"] = "none";
 }
 
 convar! {
@@ -284,10 +284,10 @@ fn a_bound_variable_prints_the_hosts_value_and_has_no_default_to_show() {
 fn setting_a_variable_prints_the_new_value_and_the_owning_code_reads_it() {
     let registry = gathered();
     assert_eq!(
-        run(&registry, "t_written_enum smaa"),
-        ["t_written_enum = smaa"]
+        run(&registry, "t_written_enum cmaa2"),
+        ["t_written_enum = cmaa2"]
     );
-    assert_eq!(t_written_enum.get_enum(), "smaa");
+    assert_eq!(t_written_enum.get_enum(), "cmaa2");
     // The `=` is optional and means the same thing.
     assert_eq!(
         run(&registry, "t_written_enum = fxaa"),
@@ -515,12 +515,12 @@ fn a_prefix_nothing_starts_with_offers_nothing() {
 fn an_enum_variable_completes_its_values() {
     let registry = gathered();
     let completion = registry.complete("antialiasing ");
-    assert_eq!(completion.candidates, ["fxaa", "none", "smaa"]);
+    assert_eq!(completion.candidates, ["cmaa2", "fxaa", "none"]);
     assert_eq!(completion.common, "");
 
-    let completion = registry.complete("antialiasing s");
-    assert_eq!(completion.candidates, ["smaa"]);
-    assert_eq!(completion.common, "smaa");
+    let completion = registry.complete("antialiasing c");
+    assert_eq!(completion.candidates, ["cmaa2"]);
+    assert_eq!(completion.common, "cmaa2");
 
     let completion = registry.complete("ANTIALIASING F");
     assert_eq!(completion.candidates, ["fxaa"]);
@@ -557,7 +557,7 @@ fn a_variable_with_no_set_of_values_completes_nothing_after_its_name() {
         crcbl_console::Completion::default()
     );
     assert_eq!(
-        registry.complete("antialiasing smaa "),
+        registry.complete("antialiasing cmaa2 "),
         crcbl_console::Completion::default()
     );
 }

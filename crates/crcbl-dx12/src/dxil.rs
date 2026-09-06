@@ -899,6 +899,52 @@ mod tests {
                 &[Uav, Srv],
             ),
             (
+                "cmaa2_edges",
+                &crcbl_shaders::CMAA2_EDGES,
+                &["clearMain", "edgesMain"],
+                // The block, the tonemapped frame it reads, and the five working
+                // buffers — in declaration order, which is binding order, so
+                // `b0`, `t0` and `u0` through `u4`. All five are UAVs, where
+                // `exposure` above has one SRV in the middle of its run, because
+                // every one of them is written somewhere in the tier.
+                //
+                // **Six here where the source declares seven.** The item list
+                // is the seventh, no entry point of this file touches it, and
+                // `dxc` drops a resource the shader never reads — so the
+                // container declares no register for it and this row must not
+                // either. It is declared last in the source precisely so that
+                // what it leaves behind is the end of the run rather than a
+                // hole in it, which is the gap
+                // [`registers_are_dense_from_zero_in_every_committed_container`]
+                // refuses. `cmaa2_shapes` below reads it, and its own row is
+                // seven long.
+                &[Cbv, Srv, Uav, Uav, Uav, Uav],
+            ),
+            (
+                "cmaa2_shapes",
+                &crcbl_shaders::CMAA2_SHAPES,
+                &["shapesMain", "accumulateMain"],
+                // The same seven in the same order, because one bind-group
+                // layout serves both files and Metal takes its indices from the
+                // declarations — see `crcbl_shaders::declaration_order`. A row
+                // of its own because the two containers are compiled separately
+                // and nothing else compares them: that the two sources agree is
+                // something a reader has to check, and this is where it is. The
+                // run is one longer than `cmaa2_edges`' above because these two
+                // entry points between them read every one of the five.
+                &[Cbv, Srv, Uav, Uav, Uav, Uav, Uav],
+            ),
+            (
+                "cmaa2_apply",
+                &crcbl_shaders::CMAA2_APPLY,
+                &["vertexMain", "fragmentMain"],
+                // The resolve's own layout: the tonemapped frame at `t0`, the
+                // accumulation it reads **read-only** at `t1` — which is why it
+                // is an SRV here where the same buffer is a UAV in the two rows
+                // above — and the block at `b0`.
+                &[Srv, Srv, Cbv],
+            ),
+            (
                 "compute_probe",
                 &crcbl_shaders::COMPUTE_PROBE,
                 &["computeMain"],

@@ -1008,12 +1008,12 @@ mod tests {
         let atlas = atlas();
         let extent = (960, 720);
 
-        let mut typed = panel(&[], "antialiasing smaa");
-        assert_eq!(typed.submit().as_deref(), Some("antialiasing smaa"));
+        let mut typed = panel(&[], "antialiasing cmaa2");
+        assert_eq!(typed.submit().as_deref(), Some("antialiasing cmaa2"));
         assert!(typed.field().is_empty(), "the field kept the sent line");
         assert_eq!(typed.submit(), None, "an empty field submitted a command");
 
-        let mut clicked = panel(&[], "antialiasing smaa");
+        let mut clicked = panel(&[], "antialiasing cmaa2");
         let layout = clicked.layout(extent, &atlas);
         let (min, max) = layout.send();
         let on_button = (min + max) * 0.5;
@@ -1029,7 +1029,7 @@ mod tests {
         );
         assert_eq!(
             clicked.point(&layout, &mut ui, release_at(on_button)),
-            ConsoleInput::Submitted("antialiasing smaa".to_owned()),
+            ConsoleInput::Submitted("antialiasing cmaa2".to_owned()),
         );
         assert!(clicked.field().is_empty());
     }

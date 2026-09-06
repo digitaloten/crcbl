@@ -234,7 +234,7 @@ pub(crate) fn arm_motion_view(renderer: &mut ForwardRenderer) {
                 .union(RenderEffects::BLOOM)
                 .union(RenderEffects::VOLUMETRIC_FOG)
                 .union(RenderEffects::ANTIALIASING)
-                .union(RenderEffects::SMAA),
+                .union(RenderEffects::CMAA2),
             Some(false),
         ),
         ..EffectRequest::default()

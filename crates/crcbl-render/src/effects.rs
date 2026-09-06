@@ -19,7 +19,7 @@
 //!
 //! [`Antialiasing`] is the one thing the `[engine.video]` layer **replaces**
 //! rather than removes, and that type says why: a clamp can only take the
-//! resolve away, and a player choosing SMAA where the camera asked for FXAA is
+//! resolve away, and a player choosing CMAA2 where the camera asked for FXAA is
 //! asking for a different filter rather than for less of one. It is still one
 //! layer — [`EffectRequest::resolve`] applies it where the video clamp sits,
 //! before the override and before the device.
@@ -130,7 +130,7 @@ bitflags::bitflags! {
         /// this one is not a lens, it is a resolve, and it is the tier the
         /// resolve slot carries by default — [`Antialiasing::from_effects`] of
         /// the default stack answers [`Antialiasing::Fxaa`]. The higher tier,
-        /// [`SMAA`](Self::SMAA), is the one kept out, and its doc says why.
+        /// [`CMAA2`](Self::CMAA2), is the one kept out, and its doc says why.
         /// `docs/plan/49-antialiasing.md` is where the ladder is written down.
         const ANTIALIASING = 1 << 4;
         /// Volumetric fog — the froxel scatter, the column scan that turns it
@@ -176,36 +176,38 @@ bitflags::bitflags! {
         /// tenths of a second. `docs/plan/48-post-processing.md` carries the
         /// adaptation as the next rung.
         const AUTO_EXPOSURE = 1 << 6;
-        /// SMAA 1x — the edge detection, the blend-weight pass that reads the
-        /// two committed lookup tables, and the neighbourhood blend.
-        /// [`Antialiasing::Smaa`] is the rung a settings file names it by.
+        /// CMAA2 — the edge detect that appends a candidate list, the shape
+        /// classification with its bounded long-edge search, the fixed-point
+        /// accumulate and the deferred colour apply.
+        /// [`Antialiasing::Cmaa2`] is the rung a settings file names it by.
         ///
         /// `docs/plan/49-antialiasing.md`'s antialiasing ladder, second rung and
         /// **the higher of the two antialiasing tiers**. When it is set it takes
         /// the resolve slot instead of [`ANTIALIASING`](Self::ANTIALIASING):
-        /// three passes where FXAA is one, over-blurring far less of the thin
-        /// geometry and text that is FXAA's known weakness.
+        /// five passes where FXAA is one, over-blurring far less of the thin
+        /// geometry and text that is FXAA's known weakness, and costing what a
+        /// frame's *edges* cost rather than what its pixels do.
         ///
         /// **The two are never both run**, and that is what "a tier that is off
         /// is a frame with fewer passes" means here — the FXAA bit may stay set
         /// beside this one and is simply not recorded, because there is one
         /// resolve slot and this fills it.
         /// [`ForwardRenderer::add_passes`] is where the choice is made, once,
-        /// and `crate::smaa` is the pass group.
+        /// and `crate::cmaa2` is the pass group.
         ///
         /// **Not in [`RenderEffects::DEFAULT_STACK`]**, on
         /// [`ANTIALIASING`](Self::ANTIALIASING)'s original terms: it is a
         /// resolve rather than a lens and belongs there on the merits, and what
         /// keeps it out is that swapping the resolve moves every golden in the
         /// suite at once. That flip is its own change with its own re-bless, and
-        /// which tier the default stack should carry is a decision to take once
-        /// goldens exist for both — `docs/backlog.md` holds the question.
+        /// `docs/plan/49-antialiasing.md` says it is the change after this one.
         ///
         /// The bit is numbered after the tiers it postdates rather than beside
-        /// the one it replaces, so no existing flag's value moves.
+        /// the one it replaces, so no existing flag's value moves. It kept the
+        /// slot the retired SMAA tier had, for the same reason.
         ///
         /// [`ForwardRenderer::add_passes`]: crate::forward::ForwardRenderer::add_passes
-        const SMAA = 1 << 7;
+        const CMAA2 = 1 << 7;
         /// Screen-space contact shadows — the short march along the sun's
         /// direction through the depth prepass, whose `R8Unorm` channel scales
         /// the sun's shadow term.
@@ -231,7 +233,7 @@ bitflags::bitflags! {
         ///
         /// The bit is numbered after the tiers it postdates rather than beside
         /// the shadow bit it completes, so no existing flag's value moves —
-        /// [`SMAA`](Self::SMAA)'s rule.
+        /// [`CMAA2`](Self::CMAA2)'s rule.
         const CONTACT_SHADOWS = 1 << 8;
     }
 }
@@ -255,11 +257,11 @@ impl RenderEffects {
     /// is a cost question rather than a correctness one.
     /// [`AUTO_EXPOSURE`](Self::AUTO_EXPOSURE) is out for a third, written on
     /// the bit: it takes a control away from the caller, and a view that set an
-    /// exposure has said what it wants done with it. [`SMAA`](Self::SMAA) is
+    /// exposure has said what it wants done with it. [`CMAA2`](Self::CMAA2) is
     /// out for a fourth, also written on the bit: the resolve slot is filled by
     /// [`ANTIALIASING`](Self::ANTIALIASING), which *is* in here, and moving it
-    /// to the higher tier moves every golden in the suite — a decision to take
-    /// once both tiers have goldens rather than one to inherit.
+    /// to the higher tier moves every golden in the suite — the re-bless
+    /// `docs/plan/49-antialiasing.md` puts in the change after this one.
     /// [`CONTACT_SHADOWS`](Self::CONTACT_SHADOWS) is out for a fifth reason
     /// that is not a reason at all: `docs/plan/45-shadows.md` decided it belongs
     /// *here*, with the low preset clearing it, and it is parked outside only
@@ -279,7 +281,7 @@ impl RenderEffects {
         Self::BLOOM
             .union(Self::VOLUMETRIC_FOG)
             .union(Self::AUTO_EXPOSURE)
-            .union(Self::SMAA)
+            .union(Self::CMAA2)
             // **Parked, not decided.** `docs/plan/45-shadows.md` puts
             // [`CONTACT_SHADOWS`](Self::CONTACT_SHADOWS) *in* this stack and has
             // the low preset clear it; it sits in this list because switching it
@@ -310,7 +312,7 @@ impl RenderEffects {
         (Self::ANTIALIASING, "aa"),
         (Self::VOLUMETRIC_FOG, "vfog"),
         (Self::AUTO_EXPOSURE, "autoexp"),
-        (Self::SMAA, "smaa"),
+        (Self::CMAA2, "cmaa2"),
         (Self::CONTACT_SHADOWS, "contact"),
     ];
 
@@ -342,12 +344,12 @@ impl RenderEffects {
 /// Counter-Strike 2's video panel in front of it: the slot holds **one** filter,
 /// so the settings seam holds one ladder rather than two independent bits a
 /// panel could switch on together. The renderer still reads
-/// [`RenderEffects::ANTIALIASING`] and [`RenderEffects::SMAA`] —
+/// [`RenderEffects::ANTIALIASING`] and [`RenderEffects::CMAA2`] —
 /// [`bits`](Self::bits) and [`from_effects`](Self::from_effects) are the join,
 /// and [`ForwardRenderer::add_passes`] is where the bits become passes.
 ///
-/// The rungs above this one — CMAA2 in SMAA's place, then MSAA 2×, 4× and 8× —
-/// are that section's next two slices and are deliberately not here.
+/// The rungs above this one — MSAA 2×, 4× and 8× — are that section's next
+/// slice and are deliberately not here.
 ///
 /// **Serialized in snake_case, which is [`name`](Self::name)'s spelling.** A
 /// camera stack names a rung by that word — see [`crate::stack`] — and
@@ -365,8 +367,8 @@ pub enum Antialiasing {
     None,
     /// FXAA 3.11 — [`RenderEffects::ANTIALIASING`], one fullscreen pass.
     Fxaa,
-    /// SMAA 1x — [`RenderEffects::SMAA`], three passes and the higher tier.
-    Smaa,
+    /// CMAA2 — [`RenderEffects::CMAA2`], five passes and the higher tier.
+    Cmaa2,
 }
 
 impl Antialiasing {
@@ -375,13 +377,13 @@ impl Antialiasing {
     /// Ascending by cost and by what it removes, which is the order
     /// `apps/options`' `ANTIALIASING` row steps and the order
     /// [`from_name`](Self::from_name) searches.
-    pub const ALL: [Self; 3] = [Self::None, Self::Fxaa, Self::Smaa];
+    pub const ALL: [Self; 3] = [Self::None, Self::Fxaa, Self::Cmaa2];
 
     /// The two bits one resolve slot is made of.
     ///
     /// [`EffectRequest::resolve`] clears both before it sets the chosen one, so
     /// a set that reached it with both on cannot leave with both on.
-    const SLOT: RenderEffects = RenderEffects::ANTIALIASING.union(RenderEffects::SMAA);
+    const SLOT: RenderEffects = RenderEffects::ANTIALIASING.union(RenderEffects::CMAA2);
 
     /// The bits this tier sets, and no others.
     #[must_use]
@@ -389,21 +391,21 @@ impl Antialiasing {
         match self {
             Self::None => RenderEffects::empty(),
             Self::Fxaa => RenderEffects::ANTIALIASING,
-            Self::Smaa => RenderEffects::SMAA,
+            Self::Cmaa2 => RenderEffects::CMAA2,
         }
     }
 
     /// The tier `effects` draws.
     ///
-    /// **[`Smaa`](Self::Smaa) wins where both bits are set**, because that is
+    /// **[`Cmaa2`](Self::Cmaa2) wins where both bits are set**, because that is
     /// the choice [`ForwardRenderer::add_passes`] makes when it fills the slot:
     /// this answers what the frame draws rather than what the set says.
     ///
     /// [`ForwardRenderer::add_passes`]: crate::forward::ForwardRenderer::add_passes
     #[must_use]
     pub const fn from_effects(effects: RenderEffects) -> Self {
-        if effects.contains(RenderEffects::SMAA) {
-            Self::Smaa
+        if effects.contains(RenderEffects::CMAA2) {
+            Self::Cmaa2
         } else if effects.contains(RenderEffects::ANTIALIASING) {
             Self::Fxaa
         } else {
@@ -422,7 +424,7 @@ impl Antialiasing {
         match self {
             Self::None => "none",
             Self::Fxaa => "fxaa",
-            Self::Smaa => "smaa",
+            Self::Cmaa2 => "cmaa2",
         }
     }
 
@@ -566,7 +568,7 @@ pub struct EffectRequest {
     ///
     /// **The one layer that replaces rather than clamps**, and
     /// [`Antialiasing`]'s docs carry the argument: the slot holds one filter, so
-    /// a player choosing SMAA where the camera asked for FXAA is asking for a
+    /// a player choosing CMAA2 where the camera asked for FXAA is asking for a
     /// different filter and not for less of one. It is applied after
     /// [`video`](Self::video) and before [`programmatic`](Self::programmatic),
     /// so game code still has the last word before the device — see
@@ -715,18 +717,18 @@ mod tests {
         // 5. The antialiasing tier *replaces* the resolve slot rather than
         //    clamping it, which is the arm that fails if it is intersected with
         //    the camera's set the way `video` is: the camera here asks for FXAA
-        //    and the player asked for SMAA, and an intersection leaves neither.
-        let smaa = RenderEffects::SMAA;
+        //    and the player asked for CMAA2, and an intersection leaves neither.
+        let cmaa2 = RenderEffects::CMAA2;
         let picked = EffectRequest {
             camera: RenderEffects::DEFAULT_STACK,
-            antialiasing: Some(Antialiasing::Smaa),
+            antialiasing: Some(Antialiasing::Cmaa2),
             ..EffectRequest::default()
         };
         assert_eq!(
             picked.resolve(all),
             RenderEffects::DEFAULT_STACK
                 .difference(RenderEffects::ANTIALIASING)
-                .union(smaa),
+                .union(cmaa2),
             "the player's tier must take the slot, not intersect with it"
         );
         assert_eq!(
@@ -741,9 +743,9 @@ mod tests {
 
         // 6. And it is applied *before* the override, which is the arm that
         //    fails if the two are swapped: game code forcing the resolve off is
-        //    the last word, and a tier applied after it would put SMAA back.
+        //    the last word, and a tier applied after it would put CMAA2 back.
         let forced_off_after = EffectRequest {
-            antialiasing: Some(Antialiasing::Smaa),
+            antialiasing: Some(Antialiasing::Cmaa2),
             programmatic: EffectOverride::none().force(Antialiasing::SLOT, Some(false)),
             ..EffectRequest::default()
         };
@@ -765,9 +767,9 @@ mod tests {
 
         // 7. The device still clamps the tier, last and absolutely.
         assert_eq!(
-            picked.resolve(all.difference(smaa)),
+            picked.resolve(all.difference(cmaa2)),
             RenderEffects::DEFAULT_STACK.difference(RenderEffects::ANTIALIASING),
-            "a device with no SMAA must not draw the tier the player picked"
+            "a device with no CMAA2 must not draw the tier the player picked"
         );
     }
 
@@ -785,7 +787,7 @@ mod tests {
             let (word, bits) = match tier {
                 Antialiasing::None => ("none", RenderEffects::empty()),
                 Antialiasing::Fxaa => ("fxaa", RenderEffects::ANTIALIASING),
-                Antialiasing::Smaa => ("smaa", RenderEffects::SMAA),
+                Antialiasing::Cmaa2 => ("cmaa2", RenderEffects::CMAA2),
             };
             assert_eq!(tier.name(), word);
             assert_eq!(Antialiasing::from_name(word), Some(tier));
@@ -807,9 +809,9 @@ mod tests {
             "the key is snake_case"
         );
         assert_eq!(
-            Antialiasing::from_name("cmaa2"),
+            Antialiasing::from_name("smaa"),
             None,
-            "a rung that is not built"
+            "the retired tier's word, which is now a word no rung wears"
         );
         assert_eq!(Antialiasing::from_name(""), None);
 
@@ -818,7 +820,7 @@ mod tests {
         for extra in [
             RenderEffects::empty(),
             RenderEffects::ANTIALIASING,
-            RenderEffects::SMAA,
+            RenderEffects::CMAA2,
             Antialiasing::SLOT,
         ] {
             let tier = Antialiasing::from_effects(extra);
@@ -829,7 +831,7 @@ mod tests {
         }
         assert_eq!(
             Antialiasing::from_effects(Antialiasing::SLOT),
-            Antialiasing::Smaa,
+            Antialiasing::Cmaa2,
             "the higher tier fills the slot when both bits are set, as add_passes does",
         );
 
@@ -873,14 +875,14 @@ mod tests {
                 RenderEffects::BLOOM
                     .union(RenderEffects::VOLUMETRIC_FOG)
                     .union(RenderEffects::AUTO_EXPOSURE)
-                    .union(RenderEffects::SMAA)
+                    .union(RenderEffects::CMAA2)
                     .union(RenderEffects::CONTACT_SHADOWS)
             ),
         );
         let post = RenderEffects::BLOOM
             .union(RenderEffects::VOLUMETRIC_FOG)
             .union(RenderEffects::AUTO_EXPOSURE)
-            .union(RenderEffects::SMAA)
+            .union(RenderEffects::CMAA2)
             .union(RenderEffects::CONTACT_SHADOWS);
         assert!(!EffectRequest::default().camera.contains(post));
         assert!(
@@ -905,7 +907,7 @@ mod tests {
                 .force(RenderEffects::ANTIALIASING, Some(true))
                 .force(RenderEffects::VOLUMETRIC_FOG, Some(true))
                 .force(RenderEffects::AUTO_EXPOSURE, Some(true))
-                .force(RenderEffects::SMAA, Some(true))
+                .force(RenderEffects::CMAA2, Some(true))
                 .force(RenderEffects::CONTACT_SHADOWS, Some(true)),
             ..EffectRequest::default()
         };

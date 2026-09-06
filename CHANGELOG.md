@@ -35,6 +35,45 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **CMAA2 is the morphological antialiasing tier, in SMAA 1x's place.**
+  `docs/plan/49-antialiasing.md`'s eighth decision, rung 2.
+  `Antialiasing::Cmaa2` replaces `Antialiasing::Smaa` on the ladder,
+  `RenderEffects::CMAA2` replaces `RenderEffects::SMAA` in the resolve slot, and
+  `[engine.video] antialiasing = "cmaa2"` is the word that asks for it. Intel's
+  Conservative Morphological AA 2 (Strugar, 2018) transcribed onto this tree's
+  passes: an edge detect with a local-contrast adaptation, a shape
+  classification that walks a run of like boundaries to its ends and calls it
+  `Z` or `U`, an analytic coverage integral over the run, and a deferred colour
+  apply.
+
+  Five passes where SMAA drew three, and only the last is a draw: `cmaa2-clear`,
+  `cmaa2-edges`, `cmaa2-shapes` and `cmaa2-accumulate` are compute, and
+  `cmaa2-apply` is one fullscreen triangle. The three between the ends run per
+  **edge** rather than per pixel — the candidate list and the blend items live
+  in storage buffers a work-group appends to with atomic counters — which is the
+  cost model the tier was chosen for: on lavapipe the resolve slot gets
+  **cheaper** than FXAA's, 2.451 ms to 1.728 ms at 1920×1080, while on radv it
+  goes 0.027 ms to 0.109 ms.
+
+  **A frame is a function of its inputs, not of the scheduler.** Blend items
+  reach a pixel in whatever order the device runs them and float addition is not
+  associative, so the accumulation is integer, in fixed point at
+  `crcbl_shaders::cmaa2::BLEND_FIXED_POINT_SCALE`, and converts back once per
+  pixel in the apply. Two runs of one frame come back byte-identical on radv and
+  on lavapipe.
+
+  **The two append lists have capacities, and a frame that exceeds one degrades
+  visibly rather than corrupting anything**: entries past the cap are dropped,
+  every count read back is clamped to the capacity, nothing is written outside a
+  list, and the pixels those entries were for keep their unresolved colour.
+  `ForwardRenderer::set_cmaa2_capacity_cap` is what the tests drive a frame past
+  a tiny cap with.
+
+  No lookup table: the shape rules are analytic, so nothing is cooked and
+  nothing is committed as data. The tier is historyless, so it is golden-safe.
+  `RenderEffects::DEFAULT_STACK` is unchanged by this change — the resolve slot
+  still defaults to FXAA, and no golden moved.
+
 - **A camera's render stack is a RON file.**
   `docs/plan/43-render-standards.md`'s foundations block (b), and the first
   thing in this workspace to read or write RON — the `ron` crate is now a
@@ -792,6 +831,21 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
   writing `SsaoParams::radius` has to stay inside. Widening the disc costs no
   samples: the march takes the same count whatever its reach.
 
+### Removed
+
+- **SMAA 1x, replaced by CMAA2 in the same change** — one morphological tier at
+  a time, which `docs/plan/49-antialiasing.md`'s "What is refused" states as a
+  refusal. `Antialiasing::Smaa`, `RenderEffects::SMAA` and `crcbl_render::smaa`
+  are gone, with `smaa_edges.slang`, `smaa_weights.slang` and `smaa_blend.slang`
+  and their committed SPIR-V, WGSL, MSL and DXIL artifacts. So are
+  `crcbl_shaders::smaa` and the two cooked lookup tables it published — 26,624
+  bytes of committed data — along with the `cook-smaa` example that generated
+  them and the CI step that re-derived and compared them on every push.
+
+  A settings file holding `antialiasing = "smaa"` now reads the way any word no
+  rung wears does: one warning, and no tier picked. There is no alias and no
+  migration — everything here is v0.
+
 ### Fixed
 
 - **The browser gate's heartbeat calibration no longer times out on a slow
@@ -910,6 +964,13 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
   was the one job holding the demo site's deploy.
 
 ### Changed
+
+- **`QualityPreset`'s Medium and High columns write `Antialiasing::Cmaa2`**
+  where they wrote `Antialiasing::Smaa`. The tier table in
+  `docs/plan/39-capabilities.md` named CMAA2 in those cells all along and the
+  code had to read it as SMAA because CMAA2 did not exist; the two agree now.
+  Low and Ultra are unchanged, and no preset is applied at start-up, so no
+  golden moved.
 
 - **`GpuMaterial::NO_PAGE` is out of band, and a material naming no texture no
   longer samples a page.** It was `0`, which meant every page had to burn its

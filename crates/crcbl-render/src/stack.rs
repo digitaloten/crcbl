@@ -45,12 +45,13 @@
 //!
 //! [`AntialiasingPass`] is the exception because the thing it names is not a
 //! pass but a **slot**. [`Antialiasing`] holds the argument: there is one
-//! resolve, [`RenderEffects::ANTIALIASING`] and [`RenderEffects::SMAA`] are two
+//! resolve, [`RenderEffects::ANTIALIASING`] and [`RenderEffects::CMAA2`] are two
 //! bits of one ladder rung rather than two independent switches, and
 //! `EffectRequest::resolve` clears the whole slot before it fills it. So this
-//! file has **one** antialiasing field naming a tier, and no `smaa` field beside
-//! it: two spellings of one rung is exactly what `docs/plan/49-antialiasing.md`
-//! refused when it collapsed the two bits into a ladder.
+//! file has **one** antialiasing field naming a tier, and no per-tier field
+//! beside it: two spellings of one rung is exactly what
+//! `docs/plan/49-antialiasing.md` refused when it collapsed the two bits into a
+//! ladder.
 //!
 //! [`EffectRequest::camera`]: crate::EffectRequest::camera
 //! [`ForwardRenderer::set_fog`]: crate::ForwardRenderer::set_fog
@@ -145,8 +146,8 @@ pub struct ContactShadowsPass {}
 /// # Unknown fields are refused
 ///
 /// `deny_unknown_fields`, so a stack naming a pass this engine does not have —
-/// a typo, a rung from a later version, `smaa` written as though it were a
-/// field — fails to parse rather than silently drawing something else.
+/// a typo, a rung from a later version, a tier's own word written as though it
+/// were a field — fails to parse rather than silently drawing something else.
 /// [`StackError`] names the line, the column and the field.
 ///
 /// # Round trip
@@ -381,7 +382,7 @@ mod tests {
             reflections: Some(ReflectionsPass {}),
             bloom: Some(BloomPass {}),
             antialiasing: Some(AntialiasingPass {
-                tier: Antialiasing::Smaa,
+                tier: Antialiasing::Cmaa2,
             }),
             volumetric_fog: Some(VolumetricFogPass {}),
             auto_exposure: Some(AutoExposurePass {}),
@@ -417,9 +418,11 @@ mod tests {
     /// misspelled would draw without reflections and report success — which is
     /// a frame that is wrong and plausible, this crate's whole difficulty.
     ///
-    /// `smaa` is the unknown field the test uses on purpose: it is the name a
-    /// reader who knows `RenderEffects` would reach for, and this file has one
-    /// antialiasing slot instead. The refusal is where they find that out.
+    /// `smaa` is the unknown field the test uses on purpose: it is the word the
+    /// tier CMAA2 replaced was spelled with, and a file still holding it has to
+    /// be told rather than quietly drawing something else. This file has one
+    /// antialiasing slot instead, and the refusal is where a reader finds that
+    /// out.
     #[test]
     fn an_unknown_field_is_refused_by_line_column_and_name() {
         let error = CameraStack::from_ron("(\n    shadows: Some(()),\n    smaa: Some(()),\n)")
@@ -622,7 +625,7 @@ mod tests {
         let elsewhere = EffectRequest {
             camera: RenderEffects::empty(),
             video: RenderEffects::all().difference(RenderEffects::BLOOM),
-            antialiasing: Some(Antialiasing::Smaa),
+            antialiasing: Some(Antialiasing::Cmaa2),
             programmatic: EffectOverride::none().force(RenderEffects::CONTACT_SHADOWS, Some(true)),
         };
         renderer.set_effect_request(elsewhere);
