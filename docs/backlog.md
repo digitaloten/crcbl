@@ -2944,126 +2944,6 @@ and the tree does not have, plus the decisions and declined options they
 carried. It is here rather than there because a plan doc is a plan and this file
 is the record of what did not happen.
 
-### `CueGrammar` belongs on the `Mixer`, or does not (2026-08-27)
-
-Every call site passes `&CueGrammar::default()` — in the samples and in
-`crcbl-audio`'s own tests. Moving it beside the listener collapses
-`cue(emitter, &grammar)` to `cue(emitter)`.
-
-The argument is weaker than it first looks, and the weakening is the point:
-`distance_rolloff_reaches_zero` in `crcbl-audio/src/spatial.rs` builds a
-non-default grammar with its own rolloff, and has since 2026-07-31. So the claim
-"nothing in the workspace constructs a non-default one" is false. What is true
-is that it varies the grammar without varying it _per call site_.
-
-Deliberately not taken when the listener moved, because "this mixer's grammar"
-is a bigger claim than "this mixer's listener".
-
-**Blocks:** the `crcbl_audio::CueDeck` seam below — building that seam first
-would build it around a parameter that is about to disappear.
-
-**DECIDED 2026-09-06 —** `CueGrammar` moves onto the `Mixer` — a mixer's grammar
-is its listener's peer — and `cue(emitter)` loses the parameter; `CueDeck` is
-built on top of that. It schedules the move, the signature change and its
-callers, then the deck.
-
-### Does `Summary` keep re-flattening `RunSummary`? (2026-08-27)
-
-Every sample re-declares the same eight fields and copies them across one by
-one, and drift is already visible in the doc comments. The engine went the other
-way for arguments — `Common` is a field on each game's `Options`, so adding a
-shared flag reaches every game without touching every struct — and `Summary`
-does the opposite with no stated reason.
-
-The counter-argument is real: flattening is what lets `main.rs` write
-`summary.frames` rather than `summary.run.frames`.
-
-**DECIDED 2026-09-06 —** each sample's `Summary` carries one `run: RunSummary`
-field rather than re-flattening it — composition over copied fields, with
-`summary.run.frames` at the reads. It schedules the field change and its
-readers.
-
-## Unbuilt work
-
-### The debug console's settings slice — what slice 2 left (2026-08-30)
-
-`docs/plan/52-debug-console.md` slice 2 landed the typed catalogue,
-`crcbl::settings::apply`, `settings::console_bindings()` and the
-`GameGpu::apply_video`/`set_debug_view` pair. What it deliberately did not do:
-
-- **A console write is recorded and then drained, and one seam has nowhere to
-  drain to.** `crcbl_console::Binding` reaches its host as `&mut dyn Any` and
-  `Any` is implemented only for `'static` types, so `settings::ConsoleHost`
-  cannot hold a borrow of the renderer, the mixer or the clock — it records into
-  `settings::Deferred` instead. `Loop::drain_console` (slice 5) reads
-  `take_video` into `GameGpu::apply_video`, `take_frame_limit` into
-  `Clock::set_limit` and `take_gains` into `HostedGame::set_bus_gain`, once a
-  frame, printing a named refusal when a game supplies no mixer. If the
-  arrangement is ever unwanted, the alternative is a `Binding` host bound by
-  something other than `Any` — a change to `crcbl-console`'s public shape, not
-  to this module.
-- **`settings::Stage::set_frame_limit`'s only implementor is `Deferred`.** A
-  console write is live — the loop drains the recorded limit into its own
-  `Clock` — but `apps/options` applies its rows through `GpuStage`, which
-  inherits the `Unsupported` default, so `apply` on `engine.video.frame_limit`
-  still answers `Applied::NextStart` there. The options screen has its own
-  `HostedGame::take_pending_frame_limit` path for the same key, so nothing is
-  broken; the two ways of moving one ceiling are what would be worth collapsing.
-- **`GpuContext::set_pacing` is reachable from no catalogue key.** The key that
-  would want it is `engine.video.present_mode`, which is `KeyStatus::Named` — so
-  plan decision 3's "the seams that exist" list is one shorter than it reads. It
-  becomes reachable the day `present_mode` grows a reader.
-- **The eight `KeyStatus::Named` rows carry ranges nobody measured.**
-  `NAMED_VIDEO_KEYS` gives `brightness` `0..=2`, `ui_scale` `0.25..=4` and `fov`
-  `1..=179`, because a `Kind::Float` needs a range and there is no setter to
-  agree with — which is exactly what makes them `Named`. Every one is
-  `READ_ONLY`, so no range there decides anything today; a row that grows a
-  reader must take the reader's range with it and join
-  `every_kind_admits_the_ends_of_its_own_range_and_reads_them_back`.
-  `resolution` is `Kind::Text` because it is a TOML array and the console's
-  domain type spells no array — a `Kind::List` is the alternative, and nothing
-  needs it yet.
-- **`settings::apply_video_to` coarsens a `HalError` into `Unsupported`.** The
-  only fallible call in it is `ForwardRenderer::set_anisotropy`, whose failure
-  is `create_sampler`'s; the body logs the error at `warn` naming the key and
-  returns `Err(Unsupported)`, so what the device said survives in the log and
-  not in the type. Giving `Unsupported` a `Refused(HalError)` arm is the
-  alternative; it was declined because every caller today does the same thing
-  with both answers.
-- **`apply_video_to`'s body is still covered only by compiling.**
-  `debug_view_switches` is asserted against `ForwardRenderer::debug_view`'s
-  precedence order without a device, and slice 5 proved the _loop_ reaches
-  `GameGpu::apply_video` with the section a console line asked for —
-  `setting_a_variable_through_the_console_reaches_the_bundle`, against a fake
-  bundle.
-
-  **The debug-view half of this is closed**, re-checked 2026-09-02: this bullet
-  used to end "nothing yet drives a real renderer through it. That is slice
-  6's", and slice 6 shipped. `apps/quarry/tests/device/console.rs`'s
-  `the_console_puts_the_occlusion_view_on_a_sample_that_never_had_a_row_for_it`
-  and `the_occlusion_view_draws_the_grey_channel_and_not_the_shaded_face` open a
-  real `Quarry` — and so a real `ForwardRenderer::with_scene` — drive
-  `crcbl::settings::set_debug_view_on` and read the pixels back. What is left is
-  `apply_video_to` itself, which no device test drives.
-
-- **`crcbl-console` still has no `Kind: Display`, and nothing wants one yet.**
-  The brief expected `crcbl settings list` to print the domain; it does not —
-  that command reads `CatalogueKey::status` and nothing else. Slice 5's `help`
-  turned out not to want one either: the line `help` prints — the registry's own
-  `describe`, in `crates/crcbl-console/src/registry.rs` — carries the name, the
-  value, the default and the flags, so a variable's _range_ is the one thing the
-  console cannot show. Adding the `Display` (in `crcbl-console`, tested there)
-  and putting it in that line is what would fix it.
-
-### The scaffold template has no renderer to forward to (2026-08-30)
-
-`crates/crcbl-cli/templates/main.rs.tmpl`'s `Gpu` holds a `MenuRenderer`, a
-`UiRenderer` and a `TransientPool` and no `ForwardRenderer` — it only uses
-`ForwardRenderer::present_target`, the static import helper. So its hand-written
-`impl GameGpu for Gpu` keeps the `apply_video`/`set_debug_view` defaults and
-reports `Unsupported`, which is the honest answer. The day the template
-scaffolds a scene, the pair goes in beside the renderer.
-
 ### `crcbl_audio::CueDeck` — the cue plumbing every sample copies (2026-08-27)
 
 The stream-open-with-null-fallback, the unknown-id guard, the cue→`VoiceMix`
@@ -3073,7 +2953,9 @@ across four samples.
 **Not** the sound design, which is supposed to differ, and not the per-sample
 debug sections.
 
-**Blocked on** the `CueGrammar` decision above.
+**Unblocked 2026-09-06:** the grammar moved onto the `Mixer` and
+`Mixer::cue(emitter)` lost its parameter, so the deck is built around the
+signature it keeps.
 
 ### Structured logging: the engine's own macros (2026-08-27)
 
@@ -10355,9 +10237,9 @@ item lives.
   lists predicted and is why breakout's cues cannot be asserted about. That
   asymmetry is an argument for the seam rather than against it: the copy that
   was never made is the one with no coverage. **Not the sound design**, which is
-  supposed to differ, and not the per-sample debug sections. **Blocked on the
-  `CueGrammar` decision recorded above** — building the deck first means
-  building it around a parameter that is about to disappear.
+  supposed to differ, and not the per-sample debug sections. The parameter the
+  deck was waiting on is gone — `Mixer::cue(emitter)` since 2026-09-06 — so the
+  seam is buildable as it stands.
 
 - **DECISION NEEDED — does each game keep re-flattening `RunSummary`?** Every
   sample declares its own `Summary` struct that re-states `RunSummary`'s fields
@@ -10459,28 +10341,6 @@ retrospective on the three sample findings lists says which seam closed each.
   thought, because its `bytemuck::Pod` derive and the `..Default` idiom around
   it are load-bearing. Nothing constructs one outside `crcbl-render` today.
   Noted, not investigated.
-
-- **`CueGrammar` is a parameter of `Mixer::cue` that every call site passes
-  `&CueGrammar::default()` to.** By the workspace's own rule that is a parameter
-  nothing varies, and putting the grammar on the mixer beside the listener would
-  collapse `cue(emitter, &CueGrammar::default())` to `cue(emitter)`. **The
-  argument is weaker than it was written**, corrected 2026-08-23: `ROADMAP.md`
-  stated that nothing in the workspace ever constructs a non-default grammar,
-  and `distance_rolloff_reaches_zero` in `crcbl-audio/src/spatial.rs` has built
-  one with its own rolloff since 2026-07-31 — before the claim was made. The
-  type does vary; what does not vary is the argument at any `Mixer::cue` call
-  site. This entry also said "five of them" and there are thirteen
-  `CueGrammar::default()` sites across the samples and the crate's own tests.
-  Deliberately not taken with the listener: "this mixer's grammar" is a bigger
-  claim than "this mixer's listener", and it was not part of the decision that
-  was delegated.
-
-  **DECIDED 2026-09-06 —** the grammar moves onto the `Mixer`, beside the
-  listener, and `cue(emitter)` loses the parameter; `CueDeck` is built on top of
-  it afterwards. A mixer's grammar is its listener's peer, and the workspace's
-  own rule about a parameter nothing varies is what points at it. Work: move the
-  field, drop the parameter at all thirteen call sites, then build
-  `crcbl_audio::CueDeck`.
 
 - **`Listener` has a position and no orientation**, so `compute_cue` still
   hard-codes "the listener faces +Z" and its module docs say so. That is the
