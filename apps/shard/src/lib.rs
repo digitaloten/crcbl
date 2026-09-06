@@ -111,10 +111,13 @@
 //! effect, because nothing here has an effect — no item is equipped, eaten or
 //! swung — so what [`loot::Rarity`] scales is what the find teaches. There is no
 //! sector streaming and no networking of any kind — the plan says milestone 1
-//! ships none, and the loopback here is sample rule 2 rather than a network. The
-//! golden frames per `GeometryPath` that milestone 1's exit criteria ask for are
-//! not here either, and neither is the recorded browser budget or the peak wasm
-//! memory figure. `docs/backlog.md` carries all of it, with what each would take.
+//! ships none, and the loopback here is sample rule 2 rather than a network.
+//! `tests/golden.rs` is milestone 1's golden frames per `GeometryPath` — every
+//! path is held to the same reference per bearing, and `EXPOSURE` is public so
+//! that suite draws the zone at the stop the sample does — but the recorded
+//! browser budget and the peak wasm memory figure that criterion asks for
+//! beside them are not here. `docs/backlog.md` carries both, with what each
+//! would take.
 //!
 //! One thing is absent from the picture rather than merely from the feature list,
 //! and it is deliberate: **the character is a capsule**. It is the *same* capsule
@@ -159,7 +162,7 @@ pub use args::{Invocation, Options, USAGE, parse};
 pub use camera::{Iso, walk_direction};
 pub use foe::{Foe, FoeView, Kind};
 pub use game::{Controls, DEFAULT_TICK_HZ, Dropped, Game, GameError, RenderState, Stats};
-pub use gpu::{Gpu, Paths};
+pub use gpu::{EXPOSURE, Gpu, Paths};
 pub use level::{MAX_LEVEL, THRESHOLDS};
 pub use loot::{DEFAULT_SEED, GRID_H, GRID_W, LOOT_REACH_M, Rarity};
 pub use menu::{MenuKind, Menus};

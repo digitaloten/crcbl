@@ -456,6 +456,7 @@ rows below.
 | `crates/crcbl/tests/run-render-e2e.sh`        | a GPU the renderer opens                |
 | `crates/crcbl-cli/tests/run-cli-e2e.sh`       | nothing                                 |
 | `apps/lantern/tests/run-lantern-golden.sh`    | a GPU (lighting goldens)                |
+| `apps/shard/tests/run-shard-golden.sh`        | a GPU (the zone on every geometry path) |
 | `web/run-browser-e2e.sh`                      | Chrome + Xvfb                           |
 
 `web/run-browser-e2e.sh` is the P5 gate itself and needs no GPU: it serves the

@@ -107,7 +107,7 @@ const FRAMES_IN_FLIGHT: usize = crcbl::engine::FRAMES_IN_FLIGHT;
 /// it are worth less than that: the lit window read 5.03 before and 20.00 and
 /// 14.21 on the two runs after, because what is in frame when the window opens
 /// depends on where the character and the camera have got to.
-const EXPOSURE: f32 = 6.0;
+pub const EXPOSURE: f32 = 6.0;
 
 /// Which of `docs/plan/39-capabilities.md`'s selectors this device drew through,
 /// and which of topic 18's effects came out of the four-layer request — rule

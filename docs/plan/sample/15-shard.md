@@ -138,6 +138,16 @@ after `apps/puppet`'s orbit and `apps/breach`'s first person, and it is the one
 whose camera the player barely controls — fixed elevation, fixed distance, a yaw
 that moves in quarter turns.
 
+**The sample has goldens now, and one measurement that is not one.**
+`apps/shard/tests/run-shard-golden.sh` is the first thing in `ci.yml` that runs
+`apps/shard` on a real driver — the zone from four bearings on three geometry
+paths, against four committed references — and it is also where the one recorded
+shortfall of this milestone's picture lives: the reference is drawn with
+anisotropic filtering off, because radv and llvmpipe do not agree about it on a
+floor this grazing and nothing else in the frame accounts for any of the
+difference. The browser budget and the peak wasm memory figure are still
+untaken.
+
 **The zone is one authored table and everything else is read off it**: a floor
 slab per open tile, a solid block per wall tile, pillars, a dais, braziers, and
 doorways with holes through them. The meshes and the colliders walk the _same_
@@ -185,8 +195,8 @@ payload version 3, holding the experience and deriving the level from it.
 What a level is **not** yet is something to spend: there is no skill, no stat
 point and no equipment. There is no sector streaming and no networking of any
 kind — the plan says milestone 1 ships none, and the loopback here is sample
-rule 2 rather than a network. The golden frames per `GeometryPath`, the recorded
-browser budget and the peak wasm memory figure are all not taken.
+rule 2 rather than a network. The recorded browser budget and the peak wasm
+memory figure are not taken; the golden frames are (see below).
 
 **One absence is in the picture rather than in the feature list: the character
 is a capsule.** It is the _same_ capsule `crcbl::phys::CharacterConfig` sweeps,
@@ -211,8 +221,25 @@ run over.
   the kill pays what `foe::Kind::experience` gives the kind that actually fell,
   the find pays what its tier does, and the two together cross the first row of
   `level::THRESHOLDS`, so the level turns on the pickup.
-- Golden frames per `GeometryPath` from a fixed camera set, plus the
-  human-reviewed comparison recorded here.
+- ✅ Golden frames per `GeometryPath` from a fixed camera set, plus the
+  human-reviewed comparison recorded here. Met 2026-09-07:
+  `apps/shard/tests/golden.rs` draws the zone at 256×192 from the four bearings
+  `Iso` can be in — computed from the rig rather than pressed for, since a
+  headless run receives no `Q`/`E` — once on each of `MeshShader`,
+  `IndirectCount` and `IndirectPerBatch`, each reached by subtracting features
+  from one adapter the way `apps/quarry/tests/device/harness.rs` does. Every
+  path is held to the _same_ reference per bearing, on `apps/lantern`'s
+  argument: a lesser tail is a constraint on submission, not a second renderer,
+  and on radv all three draw the four frames bit for bit identically. Reviewed
+  by opening all four: the capsule standing on the tiled floor inside its pool
+  of torchlight at the spawn and half bearings, and at the two quarter turns a
+  brazier blazing on the aisle behind it with a lit dais slab beside it — no
+  frame black or blank. Blessed on an RX 7900 XTX (radv, Mesa 26.2.2) and
+  compared on llvmpipe (LLVM 22.1.8), where the worst of the twelve puts 0.3479%
+  of the frame over `Tolerance::RASTERISER`'s per-channel delta against a 1%
+  budget, 0.0020% grossly wrong against 0.1%, and ssim 0.999142 against a 0.99
+  floor. The suite's device withholds `SAMPLER_ANISOTROPY`, which is the whole
+  of what the two rasterisers disagree about here — see that file's `BASE`.
 - Recorded browser budget for real 3D content, and the peak wasm memory figure.
 - ✅ The inventory kit used without a single engine change made on its behalf;
   anything it needed filed as a topic 34 finding instead. Met 2026-09-07: the

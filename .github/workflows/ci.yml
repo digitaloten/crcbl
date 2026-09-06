@@ -1748,6 +1748,28 @@ jobs:
           CRCBL_VK_SYNC_VALIDATION: '1'
           CRCBL_VK_VALIDATION_FATAL: '1'
         run: apps/lantern/tests/run-lantern-golden.sh
+      # The **load** on the fallback paths, where the step above is their
+      # acceptance fixture. `docs/plan/sample/15-shard.md`'s milestone 1 exists
+      # to put content through them rather than fixtures, and this suite draws
+      # shard's zone from all four bearings its camera rig can be in, once per
+      # `GeometryPath` — each path reached by subtracting features from this
+      # runner's adapter, which is how a lesser tail is exercised on a device
+      # that would never select it. Every path is held to the *same* reference
+      # per bearing, so a submission tail that draws a different picture fails
+      # here rather than being blessed into a second golden.
+      #
+      # This is also the only step in this workflow that runs `apps/shard` at
+      # all: the sample appeared nowhere in it until this one, so a validation
+      # error or a lost frame in the zone reached CI only through the browser
+      # gate's SwiftShader.
+      - name: Draw shard's zone on lavapipe
+        env:
+          CRCBL_GPU: vk
+          CRCBL_VK_ICD: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          CRCBL_VK_VALIDATION: '1'
+          CRCBL_VK_SYNC_VALIDATION: '1'
+          CRCBL_VK_VALIDATION_FATAL: '1'
+        run: apps/shard/tests/run-shard-golden.sh
       # The ambient-occlusion acceptance fixture, and the only step that runs the
       # occlusion pass against anything that can tell it apart from a no-op. An
       # SSAO pass that never ran leaves a white channel, one whose intensity is

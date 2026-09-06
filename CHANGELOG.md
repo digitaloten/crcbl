@@ -77,6 +77,18 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- `apps/shard` golden frames: `apps/shard/tests/golden.rs` draws the zone from
+  all four bearings its camera rig can be in, once per `GeometryPath`, and
+  compares each against a checked-in reference under `apps/shard/tests/golden/`.
+  Every path is held to the _same_ reference per bearing, so a submission tail
+  that draws a different picture fails rather than being blessed into a second
+  golden. Run it with `apps/shard/tests/run-shard-golden.sh`, which CI now runs
+  on lavapipe — the first step in the workflow that runs `apps/shard` at all.
+  The suite's device withholds `SAMPLER_ANISOTROPY`: radv and llvmpipe filter
+  this zone's grazing-angle floor differently enough to put 5.77% of the frame
+  outside `Tolerance::RASTERISER`, against 0.25% without it.
+- `crcbl_shard::EXPOSURE` is public, so the golden suite draws the zone at the
+  stop the sample does instead of copying the number.
 - **`apps/shard` gets milestone 1's level verb, and loot gets rarity with it.**
   Felling a foe is worth `foe::Kind::experience` — 20 for a husk, 35 for an
   adept, 60 for a warden — and taking what it left is worth its tier; both go

@@ -5454,12 +5454,14 @@ milestone 4 asks for is also unrecorded, though the page exists
 
 ### Shard's milestone 1 measurements are all untaken (2026-08-27)
 
-**Not measured:** golden frames per `GeometryPath` from a fixed camera set, the
-recorded browser budget for real 3D content, and the peak wasm memory figure —
-which this doc says is the first sample whose content could plausibly approach
-the wasm32 address-space ceiling. `apps/shard` has no `tests/` directory.
+**Not measured:** the recorded browser budget for real 3D content, and the peak
+wasm memory figure — which this doc says is the first sample whose content could
+plausibly approach the wasm32 address-space ceiling. The golden frames per
+`GeometryPath` are taken: `apps/shard/tests/golden.rs`, run by
+`apps/shard/tests/run-shard-golden.sh` and by CI's **Draw shard's zone on
+lavapipe** step.
 
-**What it blocks:** three of milestone 1's four exit criteria, and the "first 3D
+**What it blocks:** one of milestone 1's four exit criteria, and the "first 3D
 browser budget on the site" gap this sample exists to close.
 
 ### Shard's milestone 2 is unstarted and blocked outside the sample (2026-08-27)
@@ -5751,14 +5753,11 @@ left out:
   wants console, CLI, UI button and autosave timer to be one path; the path
   exists (`Shard::autosave` → `Vault::store`) but only the timer calls it.
 
-### `apps/shard` has none of milestone 1's exit-criteria figures (2026-08-26)
+### `apps/shard` has two of milestone 1's exit-criteria figures still untaken (2026-08-26)
 
-Three of that plan's exit criteria are recordings rather than features, and none
-of them has been made:
+Two of that plan's exit criteria are recordings rather than features, and
+neither has been made:
 
-- **A golden frame per `GeometryPath`.** Nothing in `apps/shard` renders a
-  reference frame or compares one. `apps/quarry` is the sample that already does
-  this and is the shape to copy.
 - **A recorded browser budget.** What _is_ measured, on this machine, is the
   browser gate's wall clock: 82 s before the fight slice, 91–94 s after it, and
   111 s after the save slice, on the `auto` adapter, which resolves to
@@ -5766,6 +5765,38 @@ of them has been made:
   the two should not be confused.
 - **Peak wasm memory.** Not measured at all. `web/engine/wasm-memory.js` exists
   and other demos' pages read it; nothing here reads it or records a number.
+
+### shard's goldens are drawn with anisotropic filtering off (2026-09-07)
+
+**Deliberate, measured, and a real gap in what the goldens cover.**
+`apps/shard/tests/golden.rs`'s `BASE` withholds `Features::SAMPLER_ANISOTROPY`
+from the device it opens, because radv and llvmpipe filter this zone's
+grazing-angle tiled floor differently enough to put **5.77%** of a frame outside
+`Tolerance::RASTERISER`'s per-channel delta against a 1% budget; without the
+flag it is 0.25%. Isolated rather than guessed: with the antialiasing pass off
+the figure is 5.7739% (unchanged to four decimals), with occlusion and
+reflections off 5.77%, with every effect but the shadows off 5.79%. Both drivers
+do implement anisotropy — withholding it moves radv's own frame by 19.8% of its
+pixels and llvmpipe's by 21.8% — they implement it differently, which Vulkan
+permits.
+
+**What it costs:** the anisotropic path the sample actually ships with is not in
+any committed reference, so a regression confined to it would not be caught
+here.
+
+**What would return it:** either a golden blessed per driver, or a suite-local
+tolerance an order of magnitude looser than the tree's — which would widen the
+gate against every regression to absorb one — or a `min_lod`/mip-bias control on
+the page sampler that made the two implementations agree. None is scheduled.
+
+### shard's goldens cover the geometry axis only (2026-09-07)
+
+`apps/shard/tests/golden.rs` forces all three `GeometryPath` values but leaves
+`BindingModel` at whatever the adapter selects, which on radv and on llvmpipe is
+`Bindless`. A browser's frame is `ArrayPages`, and no committed reference is
+drawn through it. The subtraction that would do it is one more flag —
+`DESCRIPTOR_INDEXING`, which is inside `Features::GPU_DRIVEN` — and the reason
+it is not there is scope: the exit criterion names the geometry axis.
 
 ### `apps/shard`'s browser-gate thresholds are measured on one rasteriser (2026-08-26)
 
