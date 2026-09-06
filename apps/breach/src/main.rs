@@ -24,15 +24,15 @@ fn main() -> ExitCode {
             format!(
                 "breach: {} frames, {} ticks of the {} map on the {} shell at {}x{}, {} \
                  (feet at {:.2} {:.2} {:.2}, {}/{} shots hit, {:?}/{:?}/{:?}, {:?})",
-                summary.frames,
-                summary.ticks,
+                summary.run.frames,
+                summary.run.ticks,
                 summary.map.name(),
-                summary.backend,
-                summary.extent.0,
-                summary.extent.1,
+                summary.run.backend,
+                summary.run.extent.0,
+                summary.run.extent.1,
                 // What the window system actually did, not what `--fullscreen`
                 // asked for. It is free to refuse.
-                summary.mode,
+                summary.run.mode,
                 summary.feet[0],
                 summary.feet[1],
                 summary.feet[2],
@@ -43,7 +43,7 @@ fn main() -> ExitCode {
                 summary.paths.geometry,
                 summary.paths.binding,
                 summary.paths.lighting,
-                summary.exit,
+                summary.run.exit,
             )
         },
     )

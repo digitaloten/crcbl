@@ -26,11 +26,9 @@
 //! one.
 
 use crcbl::core::input::KeyCode;
-use crcbl::engine::{
-    Booted, Clock, ExitReason, FrameInfo, HostedGame, RunSummary, wait_for_configure,
-};
+use crcbl::engine::{Booted, Clock, FrameInfo, HostedGame, RunSummary, wait_for_configure};
 use crcbl::prelude::*;
-use crcbl::shell::{DisplayMode, ShellBackend as Backend, WindowId};
+use crcbl::shell::{DisplayMode, WindowId};
 use crcbl::ui::{DebugModule, DebugSection};
 
 use crate::gpu::Gpu;
@@ -56,17 +54,8 @@ const HEARTBEAT_TICKS: u64 = 30;
 /// What a finished run reports.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Summary {
-    pub backend: Backend,
-    pub frames: u64,
-    pub ticks: u64,
-    pub events: u64,
-    pub extent: (u32, u32),
-    pub exit: ExitReason,
-    /// Whether the effects were stopped when the run ended.
-    pub paused: bool,
-    /// The mode the window system actually had the window in, **not** the one
-    /// the run last asked for.
-    pub mode: DisplayMode,
+    /// The half of the report every sample shares.
+    pub run: RunSummary,
     /// How many particles were alive on the last frame.
     pub live: u32,
     /// How many instances the last frame pointed at them. Zero would mean a run
@@ -390,14 +379,7 @@ impl HostedGame for Sparks {
     fn summary(&self, run: RunSummary) -> Summary {
         let reading = self.show.reading();
         Summary {
-            backend: run.backend,
-            frames: run.frames,
-            ticks: run.ticks,
-            events: run.events,
-            extent: run.extent,
-            exit: run.exit,
-            paused: run.paused,
-            mode: run.mode,
+            run,
             live: reading.live,
             drawn: self.drawn,
             clamped: reading.spam_clamped,
@@ -409,13 +391,13 @@ impl HostedGame for Sparks {
         crcbl::log::info!(
             "sparks: {} frames, {} ticks, {} live, {} instances, {} clamped, \
              {} page commands ({:?})",
-            summary.frames,
-            summary.ticks,
+            summary.run.frames,
+            summary.run.ticks,
             summary.live,
             summary.drawn,
             summary.clamped,
             summary.commands,
-            summary.exit,
+            summary.run.exit,
         );
     }
 }

@@ -51,14 +51,14 @@ fn main() -> ExitCode {
             "quarry: {} frames, {} ticks on the {} shell at {}x{}, {} \
              (camera {}, {:?} / {:?} / {:?}, effects {}, {} triangles at a {}px budget, {}, \
              {:?})",
-            summary.frames,
-            summary.ticks,
-            summary.backend,
-            summary.extent.0,
-            summary.extent.1,
+            summary.run.frames,
+            summary.run.ticks,
+            summary.run.backend,
+            summary.run.extent.0,
+            summary.run.extent.1,
             // What the window system actually did, not what `--fullscreen`
             // asked for. It is free to refuse.
-            summary.mode,
+            summary.run.mode,
             summary.camera.label(),
             // Rule 12's headless half: the three selectors this run's frames
             // were actually drawn through.
@@ -74,7 +74,7 @@ fn main() -> ExitCode {
             summary.triangles,
             summary.lod_budget,
             cull_row(summary.cull),
-            summary.exit,
+            summary.run.exit,
         )
     })
 }

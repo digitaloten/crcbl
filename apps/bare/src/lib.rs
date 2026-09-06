@@ -36,8 +36,8 @@ use core::time::Duration;
 use crcbl::args::{Common, Consumed};
 use crcbl::engine::{
     Clock, ExitReason, Flow, FrameBudget, FrameOutcome, GpuContext, GpuContextDesc, GpuError,
-    LoopError, ModeRequest, Pending, WINDOWED_IDLE, accept_close, open_window, run_ticks,
-    wait_for_configure,
+    LoopError, ModeRequest, Pending, RunSummary, WINDOWED_IDLE, accept_close, open_window,
+    run_ticks, wait_for_configure,
 };
 use crcbl::hal::{CommandEncoderDesc, Format, ResourceState};
 use crcbl::prelude::*;
@@ -47,26 +47,15 @@ use crcbl::shell::{DisplayMode, Shell, ShellBackend, WindowDesc, WindowId, open,
 /// What a completed run did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Summary {
-    /// Which shell backend ran.
-    pub backend: ShellBackend,
-    /// Frames presented.
-    pub frames: u64,
-    /// Fixed simulation steps executed.
-    pub ticks: u64,
-    /// Shell events observed, of every kind.
-    pub events: u64,
-    /// The swapchain's size when the loop stopped.
-    pub extent: (u32, u32),
-    /// The mode the window system actually had the window in.
+    /// The half of the report every sample shares.
     ///
-    /// **Not the one `--fullscreen` asked for.** A library consumer has to read
-    /// this back the same way the engine's own loop does, which is the point of
-    /// carrying it here: `crcbl::engine::ModeRequest::mode` is public, and a
-    /// hand-written loop that reported its request instead would say
-    /// "borderless" for every window system that refused.
-    pub mode: DisplayMode,
-    /// Why it stopped.
-    pub exit: ExitReason,
+    /// Built here rather than handed over by [`crcbl::engine::Loop`], which is
+    /// the property this sample guards: a hand-written loop can read back
+    /// everything the engine's own report carries. `mode` is the one that would
+    /// otherwise go wrong — `crcbl::engine::ModeRequest::mode_at_exit` is what
+    /// asks the window system, and a loop that reported its request instead
+    /// would say "borderless" for every window system that refused.
+    pub run: RunSummary,
 }
 
 /// This sample has no simulation of its own to fail, so the engine's error type
@@ -303,13 +292,18 @@ impl<S: Shell + ?Sized> Bare<S> {
     /// a leaked device is worse than a lost error.
     pub fn finish(mut self, exit: ExitReason) -> Result<Summary, BareError> {
         let summary = Summary {
-            backend: self.shell.backend(),
-            frames: self.budget.presented(),
-            ticks: self.ticks,
-            events: self.events,
-            extent: self.gpu.extent(),
-            mode: self.mode.mode_at_exit(&*self.shell, self.window),
-            exit,
+            run: RunSummary {
+                backend: self.shell.backend(),
+                frames: self.budget.presented(),
+                ticks: self.ticks,
+                events: self.events,
+                extent: self.gpu.extent(),
+                exit,
+                // This loop has no pause key and never declines to tick, so the
+                // simulation is running whenever the loop is.
+                paused: false,
+                mode: self.mode.mode_at_exit(&*self.shell, self.window),
+            },
         };
         let gpu_result = self.gpu.destroy();
         let shell_result = if exit.window_survives() {
@@ -449,10 +443,10 @@ mod tests {
     #[test]
     fn a_headless_run_presents_its_budget_and_stops() {
         let summary = run(&headless(8)).expect("the null backend runs everywhere");
-        assert_eq!(summary.frames, 8);
-        assert_eq!(summary.exit, ExitReason::FrameBudget);
-        assert_eq!(summary.backend, ShellBackend::Headless);
-        assert!(summary.extent.0 > 0 && summary.extent.1 > 0);
+        assert_eq!(summary.run.frames, 8);
+        assert_eq!(summary.run.exit, ExitReason::FrameBudget);
+        assert_eq!(summary.run.backend, ShellBackend::Headless);
+        assert!(summary.run.extent.0 > 0 && summary.run.extent.1 > 0);
     }
 
     /// **The simulation drives the picture.**
@@ -491,7 +485,7 @@ mod tests {
             "the budget must stop a hand-stepped loop too",
         );
         let summary = engine.finish(ExitReason::FrameBudget).expect("teardown");
-        assert_eq!(summary.frames, 3);
+        assert_eq!(summary.run.frames, 3);
     }
 
     /// Unknown arguments are refused rather than ignored; this sample claims no

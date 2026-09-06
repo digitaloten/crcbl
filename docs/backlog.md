@@ -10323,33 +10323,6 @@ item lives.
   deck was waiting on is gone — `Mixer::cue(emitter)` since 2026-09-06 — so the
   seam is buildable as it stands.
 
-- **DECISION NEEDED — does each game keep re-flattening `RunSummary`?** Every
-  sample declares its own `Summary` struct that re-states `RunSummary`'s fields
-  and copies them across one by one, in every `apps/*/src/app.rs`, and drift is
-  already visible in the doc comments. The engine went the _other_ way for
-  arguments: `Common` is a field on each game's `Options` "so adding a shared
-  flag reaches every sample without touching any of their structs", and
-  `Summary` does the opposite with no reason stated anywhere.
-  - _Keep flattening._ `main.rs` writes `summary.frames`, which is the whole of
-    the argument for it and is not nothing.
-  - _One `run: RunSummary` field._ A field added to `RunSummary` reaches every
-    sample without touching one struct per sample, at the cost of
-    `summary.run.frames` at every read.
-
-  **DECIDED 2026-09-06 —** one `run: RunSummary` field on each sample's
-  `Summary`. Composition over a copy per sample is what the engine already does
-  for arguments, and a field added to `RunSummary` then reaches every sample in
-  one edit instead of one per sample. Work: add the field, delete the re-stated
-  ones, and move the reads to `summary.run.frames` in every `apps/*/src/app.rs`
-  and `main.rs`.
-
-## What the render-to-texture monitor found (2026-08-22)
-
-`apps/lantern` now draws its in-scene monitor from a second view, which made it
-the first thing in this tree to put two cameras and two `ForwardRenderer`s in
-one graph. Four findings came out of that, none of them fixed, all of them in
-`crcbl-render` rather than the sample.
-
 - **Two nodes in lantern's graph now share the label `base-colour-page`.** The
   frame holds two `ForwardRenderer`s, each owning its own page, and both import
   under `ForwardRenderer::BASE_COLOR_PAGE_LABEL`. Labels are not keys and

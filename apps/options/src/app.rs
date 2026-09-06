@@ -54,14 +54,14 @@ use crcbl::audio::mixer::Bus;
 use crcbl::console::Value;
 use crcbl::core::input::KeyCode;
 use crcbl::engine::{
-    Booted, Clock, ExitReason, FrameInfo, FrameLimit, HostedGame, RunSummary, SettingsSource,
+    Booted, Clock, FrameInfo, FrameLimit, HostedGame, RunSummary, SettingsSource,
     wait_for_configure,
 };
 use crcbl::prelude::*;
 use crcbl::render::{Antialiasing, DEFAULT_ANISOTROPY, RenderEffects};
 use crcbl::settings::SharedSettings;
 use crcbl::settings::presets::QualityPreset;
-use crcbl::shell::{DisplayMode, ShellBackend as Backend, WindowId};
+use crcbl::shell::{DisplayMode, WindowId};
 use crcbl::store::settings::SettingsStack;
 
 use crate::audio::Audio;
@@ -88,15 +88,8 @@ pub const HEARTBEAT_TICKS: u64 = 60;
 /// What a finished run reports.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Summary {
-    pub backend: Backend,
-    pub frames: u64,
-    pub ticks: u64,
-    pub events: u64,
-    pub extent: (u32, u32),
-    pub exit: ExitReason,
-    /// The mode the window system actually had the window in, **not** the one
-    /// the run last asked for.
-    pub mode: DisplayMode,
+    /// The half of the report every sample shares.
+    pub run: RunSummary,
     /// How many times a fader moved. Zero from a run nobody touched.
     pub edits: u64,
     /// What the last press of `SAVE` did.
@@ -1233,13 +1226,7 @@ impl HostedGame for Screen {
 
     fn summary(&self, run: RunSummary) -> Summary {
         Summary {
-            backend: run.backend,
-            frames: run.frames,
-            ticks: run.ticks,
-            events: run.events,
-            extent: run.extent,
-            exit: run.exit,
-            mode: run.mode,
+            run,
             edits: self.edits,
             saved: self.saved.clone(),
         }
@@ -1248,10 +1235,10 @@ impl HostedGame for Screen {
     fn log_summary(summary: &Summary) {
         crcbl::log::info!(
             "options: {} frames, {} edit(s), {} ({:?})",
-            summary.frames,
+            summary.run.frames,
             summary.edits,
             summary.saved,
-            summary.exit,
+            summary.run.exit,
         );
     }
 }

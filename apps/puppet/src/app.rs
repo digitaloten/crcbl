@@ -33,13 +33,11 @@
 //! `crcbl-phys` never sees either.
 
 use crcbl::core::input::KeyCode;
-use crcbl::engine::{
-    Booted, Clock, ExitReason, FrameInfo, HostedGame, RunSummary, wait_for_configure,
-};
+use crcbl::engine::{Booted, Clock, FrameInfo, HostedGame, RunSummary, wait_for_configure};
 use crcbl::input::{ActionDecl, ActionKind, ActionMap, Binding};
 use crcbl::math::Vec3;
 use crcbl::prelude::*;
-use crcbl::shell::{DisplayMode, ShellBackend as Backend, WindowId};
+use crcbl::shell::{DisplayMode, WindowId};
 
 use crate::anim::Animator;
 use crate::camera::Follow;
@@ -136,17 +134,8 @@ fn camera_turn(actions: &ActionMap, seconds: f32) -> (f32, f32) {
 /// order to claim.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Summary {
-    pub backend: Backend,
-    pub frames: u64,
-    pub ticks: u64,
-    pub events: u64,
-    pub extent: (u32, u32),
-    pub exit: ExitReason,
-    /// Whether the simulation was stopped when the run ended.
-    pub paused: bool,
-    /// The mode the window system actually had the window in, **not** the one
-    /// the run last asked for.
-    pub mode: DisplayMode,
+    /// The half of the report every sample shares.
+    pub run: RunSummary,
     /// Where the character's feet ended up, in metres. The other samples report
     /// a score here; this one is a walk, and this is where the walk got to.
     pub feet: [f64; 3],
@@ -527,14 +516,7 @@ impl HostedGame for Puppet {
 
     fn summary(&self, run: RunSummary) -> Summary {
         Summary {
-            backend: run.backend,
-            frames: run.frames,
-            ticks: run.ticks,
-            events: run.events,
-            extent: run.extent,
-            exit: run.exit,
-            paused: run.paused,
-            mode: run.mode,
+            run,
             feet: [
                 self.stats.position.x,
                 self.stats.feet,
@@ -550,15 +532,15 @@ impl HostedGame for Puppet {
         crcbl::log::info!(
             "puppet: {} frames, {} ticks, feet at {:.2} {:.2} {:.2}, {} step(s) climbed, \
              {} tick(s) blocked, {} overlay commands ({:?})",
-            summary.frames,
-            summary.ticks,
+            summary.run.frames,
+            summary.run.ticks,
             summary.feet[0],
             summary.feet[1],
             summary.feet[2],
             summary.climbed,
             summary.blocked,
             summary.commands,
-            summary.exit,
+            summary.run.exit,
         );
     }
 }
@@ -631,8 +613,8 @@ impl<S: Shell + ?Sized> PendingLoop<S> {
 mod tests {
     use super::*;
     use crcbl::args::Common;
-    use crcbl::engine::PAUSE_KEY;
-    use crcbl::shell::HeadlessShell;
+    use crcbl::engine::{ExitReason, PAUSE_KEY};
+    use crcbl::shell::{HeadlessShell, ShellBackend as Backend};
 
     fn scripted(options: &Options) -> Loop<HeadlessShell> {
         with_shell(Box::new(HeadlessShell::new()), options).expect("headless always starts")
@@ -670,9 +652,9 @@ mod tests {
     #[test]
     fn a_headless_run_walks_the_circuit_and_draws_it() {
         let summary = run(&headless(120)).expect("the null backend always runs");
-        assert_eq!(summary.frames, 120);
-        assert_eq!(summary.exit, ExitReason::FrameBudget);
-        assert!(summary.ticks > 0, "no tick ran");
+        assert_eq!(summary.run.frames, 120);
+        assert_eq!(summary.run.exit, ExitReason::FrameBudget);
+        assert!(summary.run.ticks > 0, "no tick ran");
         assert!(
             summary.commands > 0,
             "the run presented frames with nothing on them",
@@ -697,7 +679,7 @@ mod tests {
         let first = run(&headless(60)).expect("headless runs everywhere");
         let second = run(&headless(60)).expect("headless runs everywhere");
         assert_eq!(first, second, "two identical runs must agree exactly");
-        assert_eq!(first.backend, Backend::Headless);
+        assert_eq!(first.run.backend, Backend::Headless);
     }
 
     /// **The camera keys turn the view and the walk keys do not.** They are read

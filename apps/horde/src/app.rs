@@ -59,11 +59,11 @@
 
 use crcbl::core::input::KeyCode;
 use crcbl::engine::{
-    Booted, Clock, ExitReason, FrameInfo, HostedGame, RunSummary, TouchUpdate, wait_for_configure,
+    Booted, Clock, FrameInfo, HostedGame, RunSummary, TouchUpdate, wait_for_configure,
 };
 use crcbl::math::Vec2;
 use crcbl::prelude::*;
-use crcbl::shell::{DisplayMode, ShellBackend as Backend, WindowId};
+use crcbl::shell::{DisplayMode, WindowId};
 use crcbl::ui::draw_list::DrawList;
 
 use crate::art::SceneStats;
@@ -78,29 +78,23 @@ pub use crate::args::Options;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Summary {
-    pub backend: Backend,
-    pub frames: u64,
-    pub ticks: u64,
-    pub events: u64,
-    pub extent: (u32, u32),
-    pub exit: ExitReason,
+    /// The half of the report every sample shares.
+    pub run: RunSummary,
     /// How long the run lasted, in simulated seconds.
     pub elapsed: f64,
     pub kills: u64,
     pub level: u32,
     pub enemies: usize,
+    /// Where the simulation got to.
+    ///
+    /// Pause is not one of these and never will be: it is the loop declining to
+    /// advance the simulation, not a state the simulation is in, so it is
+    /// [`RunSummary::paused`] instead.
     pub state: GameState,
     /// What the sprite pass did with the run's last frame — see
     /// [`SceneStats`]. Reported because it is what P7's GPU culling is meant to
     /// change, and a number nobody prints is a number nobody notices moving.
     pub scene: SceneStats,
-    /// Whether the simulation was stopped when the run ended. Beside `state`
-    /// rather than inside it: pause is the loop declining to advance the
-    /// simulation, not a state the simulation is in.
-    pub paused: bool,
-    /// The mode the window system actually had the window in, **not** the one
-    /// the run last asked for.
-    pub mode: DisplayMode,
 }
 
 // ---- errors -----------------------------------------------------------------
@@ -495,20 +489,13 @@ impl HostedGame for Horde {
 
     fn summary(&self, run: RunSummary) -> Summary {
         Summary {
-            backend: run.backend,
-            frames: run.frames,
-            ticks: run.ticks,
-            events: run.events,
-            extent: run.extent,
-            exit: run.exit,
+            run,
             elapsed: self.game.elapsed,
             kills: self.game.kills,
             level: self.game.level,
             enemies: self.game.enemy_count(),
             state: self.game.state,
             scene: self.scene,
-            paused: run.paused,
-            mode: run.mode,
         }
     }
 
@@ -516,15 +503,15 @@ impl HostedGame for Horde {
         crcbl::log::info!(
             "horde: {} frames, {} ticks, survived {:.1}s with {} kills at level {} \
              ({} enemies left, scene {:?}, {:?}, {:?})",
-            summary.frames,
-            summary.ticks,
+            summary.run.frames,
+            summary.run.ticks,
             summary.elapsed,
             summary.kills,
             summary.level,
             summary.enemies,
             summary.scene,
             summary.state,
-            summary.exit,
+            summary.run.exit,
         );
     }
 }
@@ -764,7 +751,7 @@ const HUD_STATE_SIZE: f32 = 14.0;
 #[cfg(test)]
 mod tests {
     use crcbl::args::Common;
-    use crcbl::engine::{DEBUG_OVERLAY_KEY, Flow, PAUSE_KEY};
+    use crcbl::engine::{DEBUG_OVERLAY_KEY, ExitReason, Flow, PAUSE_KEY};
 
     use super::*;
     use crcbl::core::input::{ContactId, PointerButton, TouchPhase};
@@ -1173,9 +1160,9 @@ mod tests {
         };
         assert_eq!(reason, ExitReason::FrameBudget);
         let summary = engine.finish(reason).expect("teardown");
-        assert_eq!(summary.frames, 8);
-        assert_eq!(summary.backend, ShellBackend::Headless);
-        assert!(summary.ticks > 0, "the simulation never ran");
+        assert_eq!(summary.run.frames, 8);
+        assert_eq!(summary.run.backend, ShellBackend::Headless);
+        assert!(summary.run.ticks > 0, "the simulation never ran");
         assert_eq!(summary.state, GameState::Playing);
         assert_eq!(summary.level, 1);
         assert!(summary.elapsed > 0.0, "the clock never advanced");

@@ -25,21 +25,21 @@ fn main() -> ExitCode {
             format!(
                 "viewer: {} frames, {} events on the {} shell at {}x{}, {} \
                  ({} instances, {} skipped, effects {}, {:?})",
-                summary.frames,
-                summary.events,
-                summary.backend,
-                summary.extent.0,
-                summary.extent.1,
+                summary.run.frames,
+                summary.run.events,
+                summary.run.backend,
+                summary.run.extent.0,
+                summary.run.extent.1,
                 // What the window system actually did, not what `--fullscreen`
                 // asked for. It is free to refuse.
-                summary.mode,
+                summary.run.mode,
                 summary.instances,
                 summary.skipped,
                 // And which of topic 18's effects were in those frames,
                 // resolved — the observable for this sample's own
                 // `[engine.video]` wiring.
                 summary.effects.row(),
-                summary.exit,
+                summary.run.exit,
             )
         },
     )

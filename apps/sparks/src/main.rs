@@ -24,18 +24,18 @@ fn main() -> ExitCode {
             format!(
                 "sparks: {} frames, {} ticks on the {} shell at {}x{}, {} \
                  ({} live, {} instance(s) drawn, {} spawn(s) clamped, {:?})",
-                summary.frames,
-                summary.ticks,
-                summary.backend,
-                summary.extent.0,
-                summary.extent.1,
+                summary.run.frames,
+                summary.run.ticks,
+                summary.run.backend,
+                summary.run.extent.0,
+                summary.run.extent.1,
                 // What the window system actually did, not what `--fullscreen`
                 // asked for. It is free to refuse.
-                summary.mode,
+                summary.run.mode,
                 summary.live,
                 summary.drawn,
                 summary.clamped,
-                summary.exit,
+                summary.run.exit,
             )
         },
     )

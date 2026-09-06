@@ -24,14 +24,14 @@ fn main() -> ExitCode {
             format!(
                 "lantern: {} frames, {} ticks on the {} shell at {}x{}, {} \
                  (camera {}, {:?} / {:?} / {:?}, effects {}, {:?})",
-                summary.frames,
-                summary.ticks,
-                summary.backend,
-                summary.extent.0,
-                summary.extent.1,
+                summary.run.frames,
+                summary.run.ticks,
+                summary.run.backend,
+                summary.run.extent.0,
+                summary.run.extent.1,
                 // What the window system actually did, not what `--fullscreen`
                 // asked for. It is free to refuse.
-                summary.mode,
+                summary.run.mode,
                 summary.camera.label(),
                 // Rule 12's headless half: the three selectors this run's frames
                 // were actually drawn through.
@@ -40,7 +40,7 @@ fn main() -> ExitCode {
                 summary.paths.lighting,
                 // And which of topic 18's effects were in them, resolved.
                 summary.paths.effects_row(),
-                summary.exit,
+                summary.run.exit,
             )
         },
     )

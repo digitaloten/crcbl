@@ -37,13 +37,13 @@
 
 use crcbl::core::input::KeyCode;
 use crcbl::engine::{
-    Booted, Clock, ExitReason, FrameInfo, HostedGame, PointerUpdate, RunSummary, open_window,
+    Booted, Clock, FrameInfo, HostedGame, PointerUpdate, RunSummary, open_window,
     wait_for_configure,
 };
 use crcbl::math::Vec3;
 use crcbl::prelude::*;
 use crcbl::render::{CullStats, DebugView, Flyer};
-use crcbl::shell::{DisplayMode, PointerMode, ShellBackend as Backend, WindowDesc, WindowId};
+use crcbl::shell::{PointerMode, WindowDesc, WindowId};
 use crcbl::ui::draw_list::DrawList;
 
 use crate::args::Options;
@@ -126,23 +126,8 @@ pub fn dolly_at(elapsed: f32) -> f32 {
 /// What a completed run did.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Summary {
-    /// Which shell backend ran.
-    pub backend: Backend,
-    /// Frames presented.
-    pub frames: u64,
-    /// Fixed simulation steps executed.
-    pub ticks: u64,
-    /// Shell events observed, of every kind.
-    pub events: u64,
-    /// The swapchain's size when the loop stopped.
-    pub extent: (u32, u32),
-    /// Why it stopped.
-    pub exit: ExitReason,
-    /// Whether the simulation was stopped when the loop ended.
-    pub paused: bool,
-    /// The mode the window system actually had the window in, **not** the one
-    /// the run last asked for.
-    pub mode: DisplayMode,
+    /// The half of the report every sample shares.
+    pub run: RunSummary,
     /// **Which of the three selectors the frames were drawn through**, and
     /// whether the run forced any of them.
     ///
@@ -712,14 +697,7 @@ impl HostedGame for Quarry {
 
     fn summary(&self, run: RunSummary) -> Summary {
         Summary {
-            backend: run.backend,
-            frames: run.frames,
-            ticks: run.ticks,
-            events: run.events,
-            extent: run.extent,
-            exit: run.exit,
-            paused: run.paused,
-            mode: run.mode,
+            run,
             paths: self.paths,
             camera: self.camera,
             triangles: self.triangles,
@@ -732,12 +710,12 @@ impl HostedGame for Quarry {
         crcbl::log::info!(
             "quarry: {} frames, {} ticks on the {} shell at {}x{} ({:?}), {:?} / {:?} / {:?}, \
              effects {}, {} triangles at a {}px budget, {}",
-            summary.frames,
-            summary.ticks,
-            summary.backend,
-            summary.extent.0,
-            summary.extent.1,
-            summary.exit,
+            summary.run.frames,
+            summary.run.ticks,
+            summary.run.backend,
+            summary.run.extent.0,
+            summary.run.extent.1,
+            summary.run.exit,
             summary.paths.geometry,
             summary.paths.binding,
             summary.paths.lighting,
@@ -908,7 +886,7 @@ impl<S: Shell + ?Sized> PendingLoop<S> {
 
 #[cfg(test)]
 mod tests {
-    use crcbl::engine::{Flow, MENU_ACTIVATE_KEY, MENU_DOWN_KEY, PAUSE_KEY};
+    use crcbl::engine::{ExitReason, Flow, MENU_ACTIVATE_KEY, MENU_DOWN_KEY, PAUSE_KEY};
     use crcbl::render::ClusterCull;
     use crcbl::shell::HeadlessShell;
 
@@ -1172,8 +1150,8 @@ mod tests {
         let first = run(&headless(16)).expect("headless runs everywhere");
         let second = run(&headless(16)).expect("headless runs everywhere");
         assert_eq!(first, second, "two identical runs must agree exactly");
-        assert_eq!(first.frames, 16);
-        assert_eq!(first.exit, ExitReason::FrameBudget);
+        assert_eq!(first.run.frames, 16);
+        assert_eq!(first.run.exit, ExitReason::FrameBudget);
         assert_eq!(first.camera, CameraMode::Fixed);
     }
 

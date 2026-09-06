@@ -34,12 +34,12 @@
 
 use crcbl::core::input::KeyCode;
 use crcbl::engine::{
-    Booted, Clock, ExitReason, FrameInfo, HostedGame, PointerUpdate, RunSummary, open_window,
+    Booted, Clock, FrameInfo, HostedGame, PointerUpdate, RunSummary, open_window,
     wait_for_configure,
 };
 use crcbl::prelude::*;
 use crcbl::render::{EffectRequest, Flyer, RenderEffects};
-use crcbl::shell::{DisplayMode, PointerMode, ShellBackend as Backend, WindowDesc, WindowId};
+use crcbl::shell::{PointerMode, WindowDesc, WindowId};
 use crcbl::ui::draw_list::DrawList;
 
 use crate::args::Options;
@@ -57,23 +57,8 @@ const HEARTBEAT_TICKS: u64 = 60;
 /// What a completed run did.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Summary {
-    /// Which shell backend ran.
-    pub backend: Backend,
-    /// Frames presented.
-    pub frames: u64,
-    /// Fixed simulation steps executed.
-    pub ticks: u64,
-    /// Shell events observed, of every kind.
-    pub events: u64,
-    /// The swapchain's size when the loop stopped.
-    pub extent: (u32, u32),
-    /// Why it stopped.
-    pub exit: ExitReason,
-    /// Whether the simulation was stopped when the loop ended.
-    pub paused: bool,
-    /// The mode the window system actually had the window in, **not** the one
-    /// the run last asked for.
-    pub mode: DisplayMode,
+    /// The half of the report every sample shares.
+    pub run: RunSummary,
     /// **Which of the three selectors the frames were drawn through**, and
     /// whether the run forced any of them.
     ///
@@ -586,14 +571,7 @@ impl HostedGame for Alcove {
 
     fn summary(&self, run: RunSummary) -> Summary {
         Summary {
-            backend: run.backend,
-            frames: run.frames,
-            ticks: run.ticks,
-            events: run.events,
-            extent: run.extent,
-            exit: run.exit,
-            paused: run.paused,
-            mode: run.mode,
+            run,
             paths: self.paths,
             camera: self.camera,
             knobs: self.knobs,
@@ -605,12 +583,12 @@ impl HostedGame for Alcove {
         crcbl::log::info!(
             "alcove: {} frames, {} ticks on the {} shell at {}x{} ({:?}), {:?} / {:?} / {:?}, \
              occlusion {}",
-            summary.frames,
-            summary.ticks,
-            summary.backend,
-            summary.extent.0,
-            summary.extent.1,
-            summary.exit,
+            summary.run.frames,
+            summary.run.ticks,
+            summary.run.backend,
+            summary.run.extent.0,
+            summary.run.extent.1,
+            summary.run.exit,
             summary.paths.geometry,
             summary.paths.binding,
             summary.paths.lighting,

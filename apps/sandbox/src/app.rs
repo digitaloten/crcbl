@@ -63,8 +63,8 @@ use crcbl::backend::GpuBackend;
 // `MAX_CONSECUTIVE_RECONFIGURES` is what makes `--frames N` terminate when the
 // swapchain never becomes presentable — a budget of *presented* frames cannot.
 use crcbl::engine::{
-    Booted, Clock, ExitReason, FrameInfo, FrameLimit, GpuOptions, HostedGame, LoopConfig, Pacing,
-    RunSummary, wait_for_configure,
+    Booted, Clock, FrameInfo, FrameLimit, GpuOptions, HostedGame, LoopConfig, Pacing, RunSummary,
+    wait_for_configure,
 };
 use crcbl::prelude::*;
 use crcbl::render::RenderEffects;
@@ -240,24 +240,8 @@ impl Options {
 /// What a completed run did. Printed by `main`, asserted by the tests.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Summary {
-    /// Which shell backend ran.
-    pub backend: Backend,
-    /// Frames presented.
-    pub frames: u64,
-    /// Fixed simulation steps executed.
-    pub ticks: u64,
-    /// Shell events observed, of every kind.
-    pub events: u64,
-    /// The swapchain's size when the loop stopped.
-    pub extent: (u32, u32),
-    /// Why it stopped.
-    pub exit: ExitReason,
-    /// Whether the simulation was stopped when the loop ended.
-    pub paused: bool,
-    /// The mode the window system actually had the window in, **not** the one
-    /// the run last asked for. A summary that reported the request would say
-    /// "borderless" for every compositor that refused.
-    pub mode: DisplayMode,
+    /// The half of the report every sample shares.
+    pub run: RunSummary,
     /// Which of topic 18's effects the frames were drawn through, **resolved**.
     ///
     /// Read back off the renderer rather than copied from the request the
@@ -583,14 +567,7 @@ impl HostedGame for Sandbox {
 
     fn summary(&self, run: RunSummary) -> Summary {
         Summary {
-            backend: run.backend,
-            frames: run.frames,
-            ticks: run.ticks,
-            events: run.events,
-            extent: run.extent,
-            exit: run.exit,
-            paused: run.paused,
-            mode: run.mode,
+            run,
             effects: self.effects,
         }
     }
@@ -598,13 +575,13 @@ impl HostedGame for Sandbox {
     fn log_summary(summary: &Summary) {
         crcbl::log::info!(
             "sandbox: {} frames, {} ticks on the {} shell at {}x{}, effects {} ({:?})",
-            summary.frames,
-            summary.ticks,
-            summary.backend,
-            summary.extent.0,
-            summary.extent.1,
+            summary.run.frames,
+            summary.run.ticks,
+            summary.run.backend,
+            summary.run.extent.0,
+            summary.run.extent.1,
             summary.effects.row(),
-            summary.exit,
+            summary.run.exit,
         );
     }
 }
@@ -662,7 +639,8 @@ mod tests {
     // true. Only the tests name them now, because the loop that reads them is
     // the engine's.
     use crcbl::engine::{
-        DEBUG_OVERLAY_KEY, FULLSCREEN_KEY, Flow, MENU_ACTIVATE_KEY, MENU_DOWN_KEY, PAUSE_KEY,
+        DEBUG_OVERLAY_KEY, ExitReason, FULLSCREEN_KEY, Flow, MENU_ACTIVATE_KEY, MENU_DOWN_KEY,
+        PAUSE_KEY,
     };
     use crcbl::shell::HeadlessShell;
 
@@ -861,12 +839,12 @@ mod tests {
         let first = run(&headless(30)).expect("headless runs everywhere");
         let second = run(&headless(30)).expect("headless runs everywhere");
         assert_eq!(first, second, "two identical runs must agree exactly");
-        assert_eq!(first.backend, Backend::Headless);
-        assert_eq!(first.frames, 30);
-        assert_eq!(first.exit, ExitReason::FrameBudget);
+        assert_eq!(first.run.backend, Backend::Headless);
+        assert_eq!(first.run.frames, 30);
+        assert_eq!(first.run.exit, ExitReason::FrameBudget);
         // 30 frames at a 1/60 s step, with the first update only establishing
         // the baseline: 29 steps of 16.666 ms at a 16.666 ms tick.
-        assert_eq!(first.ticks, 29);
+        assert_eq!(first.run.ticks, 29);
     }
 
     /// The tick count follows the *clock*, not the frame count — the whole
@@ -879,12 +857,12 @@ mod tests {
         })
         .expect("headless runs everywhere");
         let sixty = run(&headless(62)).expect("headless runs everywhere");
-        assert_eq!(sixty.frames, thirty.frames, "same number of frames");
+        assert_eq!(sixty.run.frames, thirty.run.frames, "same number of frames");
         // 61 steps of 1/60 s: 61 ticks at 60 Hz, half as many at 30 Hz. The
         // frame count is one higher than the tick count because the clock's
         // first update only establishes a baseline.
-        assert_eq!(sixty.ticks, 61);
-        assert_eq!(thirty.ticks, 30, "half the rate, half the ticks");
+        assert_eq!(sixty.run.ticks, 61);
+        assert_eq!(thirty.run.ticks, 30, "half the rate, half the ticks");
     }
 
     /// The ordering constraint the shell seam exists to enforce: no size until
@@ -939,7 +917,7 @@ mod tests {
         let summary = engine
             .finish(ExitReason::CloseRequested)
             .expect("teardown after a close");
-        assert_eq!(summary.exit, ExitReason::CloseRequested);
+        assert_eq!(summary.run.exit, ExitReason::CloseRequested);
     }
 
     /// The frame budget defaults exist so a headless CI job cannot hang, and so
@@ -1411,8 +1389,8 @@ mod tests {
             "F11 twice must land back where it started",
         );
         let summary = engine.finish(ExitReason::FrameBudget).expect("teardown");
-        assert_eq!(summary.mode, DisplayMode::Windowed);
-        assert!(!summary.paused);
+        assert_eq!(summary.run.mode, DisplayMode::Windowed);
+        assert!(!summary.run.paused);
     }
 
     /// **A backend that refuses reports the mode it really has.**
@@ -1451,7 +1429,7 @@ mod tests {
         );
         assert!(!engine.mode_honoured(), "the refusal has to be noticed");
         let summary = engine.finish(ExitReason::FrameBudget).expect("teardown");
-        assert_eq!(summary.mode, DisplayMode::Windowed);
+        assert_eq!(summary.run.mode, DisplayMode::Windowed);
     }
 
     /// Holding F11 down does not strobe the window between modes.

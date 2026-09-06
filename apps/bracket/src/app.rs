@@ -28,11 +28,9 @@
 //! instructions to read and nothing to press.
 
 use crcbl::core::input::KeyCode;
-use crcbl::engine::{
-    Booted, Clock, ExitReason, FrameInfo, HostedGame, RunSummary, wait_for_configure,
-};
+use crcbl::engine::{Booted, Clock, FrameInfo, HostedGame, RunSummary, wait_for_configure};
 use crcbl::prelude::*;
-use crcbl::shell::{DisplayMode, ShellBackend as Backend, WindowId};
+use crcbl::shell::{DisplayMode, WindowId};
 use crcbl::ui::{DebugModule, DebugSection};
 
 use crate::gpu::Gpu;
@@ -82,17 +80,8 @@ const HEARTBEAT_TICKS: u64 = 60;
 /// order to claim.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Summary {
-    pub backend: Backend,
-    pub frames: u64,
-    pub ticks: u64,
-    pub events: u64,
-    pub extent: (u32, u32),
-    pub exit: ExitReason,
-    /// Whether the population was stopped when the run ended.
-    pub paused: bool,
-    /// The mode the window system actually had the window in, **not** the one
-    /// the run last asked for.
-    pub mode: DisplayMode,
+    /// The half of the report every sample shares.
+    pub run: RunSummary,
     /// How many matches were played and rated.
     pub matches: u64,
     /// How far the ladder still is from the truth, in rating points. The other
@@ -394,14 +383,7 @@ impl HostedGame for Bracket {
 
     fn summary(&self, run: RunSummary) -> Summary {
         Summary {
-            backend: run.backend,
-            frames: run.frames,
-            ticks: run.ticks,
-            events: run.events,
-            extent: run.extent,
-            exit: run.exit,
-            paused: run.paused,
-            mode: run.mode,
+            run,
             matches: self.sim.matches_played(),
             error: self.sim.mean_rating_error(),
             commands: self.commands,
@@ -411,12 +393,12 @@ impl HostedGame for Bracket {
     fn log_summary(summary: &Summary) {
         crcbl::log::info!(
             "bracket: {} frames, {} ticks, {} matches, {:.1} rating error, {} page commands ({:?})",
-            summary.frames,
-            summary.ticks,
+            summary.run.frames,
+            summary.run.ticks,
             summary.matches,
             summary.error,
             summary.commands,
-            summary.exit,
+            summary.run.exit,
         );
     }
 }
@@ -489,8 +471,8 @@ impl<S: Shell + ?Sized> PendingLoop<S> {
 mod tests {
     use super::*;
     use crcbl::args::Common;
-    use crcbl::engine::{DEBUG_OVERLAY_KEY, Flow, PAUSE_KEY};
-    use crcbl::shell::HeadlessShell;
+    use crcbl::engine::{DEBUG_OVERLAY_KEY, ExitReason, Flow, PAUSE_KEY};
+    use crcbl::shell::{HeadlessShell, ShellBackend as Backend};
 
     fn scripted(options: &Options) -> Loop<HeadlessShell> {
         with_shell(Box::new(HeadlessShell::new()), options).expect("headless always starts")
@@ -563,9 +545,9 @@ mod tests {
         let first = run(&headless(30)).expect("headless runs everywhere");
         let second = run(&headless(30)).expect("headless runs everywhere");
         assert_eq!(first, second, "two identical runs must agree exactly");
-        assert_eq!(first.backend, Backend::Headless);
-        assert_eq!(first.frames, 30);
-        assert_eq!(first.exit, ExitReason::FrameBudget);
+        assert_eq!(first.run.backend, Backend::Headless);
+        assert_eq!(first.run.frames, 30);
+        assert_eq!(first.run.exit, ExitReason::FrameBudget);
         assert!(
             first.commands > 0,
             "a run that drew nothing presented 30 blank frames"
@@ -743,18 +725,18 @@ mod tests {
         let sixty = run(&headless(62)).expect("headless runs everywhere");
         let thirty = run(&headless_with(62, |common| common.tick_hz = 30))
             .expect("headless runs everywhere");
-        assert_eq!(sixty.frames, thirty.frames);
+        assert_eq!(sixty.run.frames, thirty.run.frames);
         // 62 frames, the first update establishing the baseline: 61 ticks at
         // 60 Hz.
-        assert_eq!(sixty.ticks, 61);
-        assert_eq!(thirty.ticks, 30, "half the rate, half the ticks");
+        assert_eq!(sixty.run.ticks, 61);
+        assert_eq!(thirty.run.ticks, 30, "half the rate, half the ticks");
 
         // The case that needs the accumulator to be a `while` rather than an
         // `if`: a headless frame is pinned to 1/60 s, so at 120 Hz every frame
         // owes the simulation two ticks.
         let fast = run(&headless_with(62, |common| common.tick_hz = 120))
             .expect("headless runs everywhere");
-        assert_eq!(fast.ticks, 122, "a frame owing two ticks must run both");
+        assert_eq!(fast.run.ticks, 122, "a frame owing two ticks must run both");
     }
 
     /// **The demo runs itself.** Nothing sends a key, and the population still
@@ -766,7 +748,7 @@ mod tests {
     #[test]
     fn the_population_runs_with_nothing_driving_it() {
         let summary = run(&headless(240)).expect("headless runs everywhere");
-        assert_eq!(summary.ticks, 239);
+        assert_eq!(summary.run.ticks, 239);
         assert!(summary.matches > 0, "nobody was ever paired");
         assert!(summary.commands > 0, "the page drew nothing");
     }

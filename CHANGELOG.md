@@ -979,6 +979,15 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- **Every sample's `Summary` carries the engine's `RunSummary` whole.** The
+  eight fields each `apps/*/src/app.rs` re-declared and copied across one by one
+  — `backend`, `frames`, `ticks`, `events`, `extent`, `exit`, `paused`, `mode` —
+  are one `pub run: RunSummary` field, read as `summary.run.frames`; a sample's
+  own fields (`score`, `paths`, `sim_ticks` and the rest) stay beside it.
+  `apps/bare` builds the `RunSummary` itself rather than being handed one, which
+  is the hand-written-loop property that sample exists to guard. A field added
+  to `RunSummary` now reaches every sample in one edit instead of nineteen. No
+  printed summary line, exit code or flag changed.
 - **`apps/bracket` rates with Glicko-2 instead of Elo.** `rating::Rating` now
   carries a deviation and a volatility beside its points, and `settle` runs
   Glickman's steps 2–8 (_Example of the Glicko-2 system_, 22 March 2022) as a

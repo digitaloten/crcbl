@@ -51,14 +51,14 @@ use std::rc::Rc;
 
 use crcbl::core::input::{KeyCode, PointerButton, ScrollDelta};
 use crcbl::engine::{
-    Booted, Clock, ExitReason, FrameInfo, HostedGame, LoopError, PointerUpdate, RunSummary,
-    open_shell, open_window, requested_window_size, wait_for_configure,
+    Booted, Clock, FrameInfo, HostedGame, LoopError, PointerUpdate, RunSummary, open_shell,
+    open_window, requested_window_size, wait_for_configure,
 };
 use crcbl::prelude::*;
 use crcbl::render::cull::Aabb;
 use crcbl::render::{DebugView, OrbitCamera, RenderEffects};
 use crcbl::scene::gltf_render::Skip;
-use crcbl::shell::{CursorIcon, DisplayMode};
+use crcbl::shell::CursorIcon;
 use crcbl::ui::{DebugModule, DebugSection, draw_list::DrawList};
 
 use crate::args::Options;
@@ -167,19 +167,8 @@ pub fn exposure_step() -> f32 {
 /// What a finished run reports.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Summary {
-    /// Which shell backend ran.
-    pub backend: ShellBackend,
-    /// Frames presented.
-    pub frames: u64,
-    /// Shell events observed, start-up included.
-    pub events: u64,
-    /// The swapchain's size when the loop stopped.
-    pub extent: (u32, u32),
-    /// The mode the window system actually had the window in, **not** the one
-    /// `--fullscreen` asked for. It is free to refuse.
-    pub mode: DisplayMode,
-    /// Why it stopped.
-    pub exit: ExitReason,
+    /// The half of the report every sample shares.
+    pub run: RunSummary,
     /// How many instances the document placed.
     ///
     /// Zero would be a run that presented empty frames, which is the one
@@ -1495,12 +1484,7 @@ impl HostedGame for Viewer {
 
     fn summary(&self, run: RunSummary) -> Summary {
         Summary {
-            backend: run.backend,
-            frames: run.frames,
-            events: run.events,
-            extent: run.extent,
-            mode: run.mode,
-            exit: run.exit,
+            run,
             instances: self.instances,
             skipped: self.skipped,
             effects: self.effects,
@@ -1511,15 +1495,15 @@ impl HostedGame for Viewer {
         crcbl::log::info!(
             "viewer: {} frames, {} events on the {} shell at {}x{} ({} instances, {} skipped, \
              effects {}, {:?})",
-            summary.frames,
-            summary.events,
-            summary.backend,
-            summary.extent.0,
-            summary.extent.1,
+            summary.run.frames,
+            summary.run.events,
+            summary.run.backend,
+            summary.run.extent.0,
+            summary.run.extent.1,
             summary.instances,
             summary.skipped,
             summary.effects.row(),
-            summary.exit,
+            summary.run.exit,
         );
     }
 }
@@ -1847,8 +1831,8 @@ mod tests {
     }
 
     use crcbl::engine::{
-        DEBUG_OVERLAY_KEY, FULLSCREEN_KEY, Flow, MENU_ACTIVATE_KEY, MENU_DOWN_KEY, MENU_LEFT_KEY,
-        MENU_RIGHT_KEY, MENU_UP_KEY, PAUSE_KEY,
+        DEBUG_OVERLAY_KEY, ExitReason, FULLSCREEN_KEY, Flow, MENU_ACTIVATE_KEY, MENU_DOWN_KEY,
+        MENU_LEFT_KEY, MENU_RIGHT_KEY, MENU_UP_KEY, PAUSE_KEY,
     };
     use crcbl::math::Vec2;
     use crcbl::math::Vec3;
@@ -2363,12 +2347,12 @@ mod tests {
 
         let (_dir, options) = model_at(&fixture::quad_glb(fixture::QUAD_CENTRE), 8);
         let summary = run(&options).expect("the null backend runs everywhere");
-        assert_eq!(summary.frames, 8);
-        assert_eq!(summary.exit, ExitReason::FrameBudget);
-        assert_eq!(summary.backend, ShellBackend::Headless);
+        assert_eq!(summary.run.frames, 8);
+        assert_eq!(summary.run.exit, ExitReason::FrameBudget);
+        assert_eq!(summary.run.backend, ShellBackend::Headless);
         assert_eq!(summary.instances, 1, "the document's one node was placed");
         assert_eq!(summary.skipped, 0, "nothing about the fixture is skipped");
-        assert!(summary.extent.0 > 0 && summary.extent.1 > 0);
+        assert!(summary.run.extent.0 > 0 && summary.run.extent.1 > 0);
     }
 
     /// **Frame-on-load frames the model**, wherever the document put it.
@@ -3970,7 +3954,7 @@ mod tests {
         let summary = engine
             .finish(ExitReason::CloseRequested)
             .expect("teardown after a close");
-        assert_eq!(summary.exit, ExitReason::CloseRequested);
+        assert_eq!(summary.run.exit, ExitReason::CloseRequested);
     }
 
     /// **A document nothing could be made of is refused, not presented.**

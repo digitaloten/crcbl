@@ -26,14 +26,14 @@ fn main() -> ExitCode {
                 "alcove: {} frames, {} ticks on the {} shell at {}x{}, {} \
                  (camera {}, {:?} / {:?} / {:?}, effects {}, technique {} vs {}, seam {}, \
                  radius {:.3}, intensity {:.2}, cost {}, {:?})",
-                summary.frames,
-                summary.ticks,
-                summary.backend,
-                summary.extent.0,
-                summary.extent.1,
+                summary.run.frames,
+                summary.run.ticks,
+                summary.run.backend,
+                summary.run.extent.0,
+                summary.run.extent.1,
                 // What the window system actually did, not what `--fullscreen`
                 // asked for. It is free to refuse.
-                summary.mode,
+                summary.run.mode,
                 summary.camera.label(),
                 // Rule 12's headless half: the three selectors this run's frames
                 // were actually drawn through.
@@ -52,7 +52,7 @@ fn main() -> ExitCode {
                 // The charter's "cost per technique, per frame", in the headless
                 // summary as well as on the panel.
                 summary.occlusion_cost.row(),
-                summary.exit,
+                summary.run.exit,
             )
         },
     )

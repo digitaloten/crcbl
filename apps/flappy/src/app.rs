@@ -30,11 +30,11 @@
 
 use crcbl::core::input::KeyCode;
 use crcbl::engine::{
-    Booted, Clock, ExitReason, FrameInfo, HostedGame, PauseControl, PointerUpdate, RunSummary,
-    TouchUpdate, wait_for_configure,
+    Booted, Clock, FrameInfo, HostedGame, PauseControl, PointerUpdate, RunSummary, TouchUpdate,
+    wait_for_configure,
 };
 use crcbl::prelude::*;
-use crcbl::shell::{DisplayMode, ShellBackend as Backend, WindowId};
+use crcbl::shell::{DisplayMode, WindowId};
 
 use crate::game::{self, Game, GameState, RenderState};
 use crate::gpu::Gpu;
@@ -46,30 +46,21 @@ pub use crate::args::Options;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Summary {
-    pub backend: Backend,
-    pub frames: u64,
-    /// Times the loop called [`Game::tick`].
-    ///
-    /// Distinct from [`Self::sim_ticks`], and the distinction is the point: this
-    /// one counts calls and rises whether or not the call did anything.
-    pub ticks: u64,
+    /// The half of the report every sample shares.
+    pub run: RunSummary,
     /// Times the simulation actually advanced, from [`Game::ticks_run`].
-    pub sim_ticks: u64,
-    pub events: u64,
-    pub extent: (u32, u32),
-    pub exit: ExitReason,
-    pub score: u32,
-    pub state: GameState,
-    /// Whether the simulation was stopped when the run ended.
     ///
-    /// Beside `state` rather than inside it: pause is the loop declining to
-    /// advance the simulation, not a state the simulation is in. See
-    /// [`crcbl::engine::Loop::is_paused`].
-    pub paused: bool,
-    /// The mode the window system actually had the window in, **not** the one
-    /// the run last asked for. A summary that reported the request would say
-    /// "borderless" for every compositor that refused.
-    pub mode: DisplayMode,
+    /// Distinct from [`RunSummary::ticks`], and the distinction is the point:
+    /// that one counts the loop's calls to [`Game::tick`] and rises whether or
+    /// not the call did anything.
+    pub sim_ticks: u64,
+    pub score: u32,
+    /// Where the simulation got to.
+    ///
+    /// Pause is not one of these and never will be: it is the loop declining to
+    /// advance the simulation, not a state the simulation is in, so it is
+    /// [`RunSummary::paused`] instead.
+    pub state: GameState,
 }
 
 // ---- errors -----------------------------------------------------------------
@@ -405,28 +396,21 @@ impl HostedGame for Flappy {
 
     fn summary(&self, run: RunSummary) -> Summary {
         Summary {
-            backend: run.backend,
-            frames: run.frames,
-            ticks: run.ticks,
+            run,
             sim_ticks: self.game.ticks_run,
-            events: run.events,
-            extent: run.extent,
-            exit: run.exit,
             score: self.game.score,
             state: self.game.state,
-            paused: run.paused,
-            mode: run.mode,
         }
     }
 
     fn log_summary(summary: &Summary) {
         crcbl::log::info!(
             "flappy: {} frames, {} ticks, score {} ({:?}, {:?})",
-            summary.frames,
-            summary.ticks,
+            summary.run.frames,
+            summary.run.ticks,
             summary.score,
             summary.state,
-            summary.exit,
+            summary.run.exit,
         );
     }
 }
@@ -617,7 +601,7 @@ fn draw_hud(dl: &mut crcbl::ui::draw_list::DrawList, hud: &HudStrings) {
 mod tests {
     use crcbl::args::Common;
     use crcbl::engine::{
-        DEBUG_OVERLAY_KEY, FULLSCREEN_KEY, MENU_ACTIVATE_KEY, MENU_DOWN_KEY, PAUSE_KEY,
+        DEBUG_OVERLAY_KEY, ExitReason, FULLSCREEN_KEY, MENU_ACTIVATE_KEY, MENU_DOWN_KEY, PAUSE_KEY,
     };
 
     use super::*;
@@ -625,7 +609,7 @@ mod tests {
 
     use crcbl::core::input::KeyCode;
     use crcbl::engine::Flow;
-    use crcbl::shell::HeadlessShell;
+    use crcbl::shell::{HeadlessShell, ShellBackend as Backend};
 
     fn scripted(options: &Options) -> Loop<HeadlessShell> {
         with_shell(Box::new(HeadlessShell::new()), options).expect("headless always starts")
@@ -853,9 +837,9 @@ mod tests {
         let first = run(&headless(30)).expect("headless runs everywhere");
         let second = run(&headless(30)).expect("headless runs everywhere");
         assert_eq!(first, second, "two identical runs must agree exactly");
-        assert_eq!(first.backend, Backend::Headless);
-        assert_eq!(first.frames, 30);
-        assert_eq!(first.exit, ExitReason::FrameBudget);
+        assert_eq!(first.run.backend, Backend::Headless);
+        assert_eq!(first.run.frames, 30);
+        assert_eq!(first.run.exit, ExitReason::FrameBudget);
     }
 
     #[test]
@@ -863,11 +847,11 @@ mod tests {
         let sixty = run(&headless(62)).expect("headless runs everywhere");
         let thirty = run(&headless_with(62, |common| common.tick_hz = 30))
             .expect("headless runs everywhere");
-        assert_eq!(sixty.frames, thirty.frames);
+        assert_eq!(sixty.run.frames, thirty.run.frames);
         // 62 frames, the first update establishing the baseline: 61 ticks at
         // 60 Hz.
-        assert_eq!(sixty.ticks, 61);
-        assert_eq!(thirty.ticks, 30, "half the rate, half the ticks");
+        assert_eq!(sixty.run.ticks, 61);
+        assert_eq!(thirty.run.ticks, 30, "half the rate, half the ticks");
 
         // The case that needs the accumulator to be a `while` rather than an
         // `if`: a headless frame is pinned to 1/60 s, so at 120 Hz every frame
@@ -875,7 +859,7 @@ mod tests {
         // report 61 here and look right at 60 Hz forever.
         let fast = run(&headless_with(62, |common| common.tick_hz = 120))
             .expect("headless runs everywhere");
-        assert_eq!(fast.ticks, 122, "a frame owing two ticks must run both");
+        assert_eq!(fast.run.ticks, 122, "a frame owing two ticks must run both");
     }
 
     /// The whole start-up path — window, GPU, ECS world, physics,
@@ -883,9 +867,9 @@ mod tests {
     #[test]
     fn a_run_starts_waiting_for_the_player() {
         let summary = run(&headless(5)).expect("headless runs everywhere");
-        assert_eq!(summary.frames, 5);
-        assert_eq!(summary.ticks, 4);
-        assert!(summary.events >= 1, "at least a configure event");
+        assert_eq!(summary.run.frames, 5);
+        assert_eq!(summary.run.ticks, 4);
+        assert!(summary.run.events >= 1, "at least a configure event");
         assert_eq!(summary.state, GameState::WaitingToStart);
         assert_eq!(summary.score, 0);
     }
@@ -907,7 +891,7 @@ mod tests {
             GameState::WaitingToStart,
             "the flap never reached the simulation"
         );
-        assert!(summary.ticks > 0);
+        assert!(summary.run.ticks > 0);
     }
 
     /// `--seed` reaches the course.
@@ -972,7 +956,7 @@ mod tests {
         );
         engine.frame().expect("a frame");
         let summary = engine.finish(ExitReason::FrameBudget).expect("teardown");
-        assert_eq!(summary.frames, 1);
+        assert_eq!(summary.run.frames, 1);
         assert_eq!(summary.state, GameState::WaitingToStart);
     }
 
@@ -2057,7 +2041,7 @@ mod tests {
             "F11 twice must land back where it started",
         );
         let summary = engine.finish(ExitReason::FrameBudget).expect("teardown");
-        assert_eq!(summary.mode, DisplayMode::Windowed);
+        assert_eq!(summary.run.mode, DisplayMode::Windowed);
     }
 
     /// **A backend that refuses reports the mode it really has.** The
@@ -2100,7 +2084,7 @@ mod tests {
         assert!(!engine.mode_honoured(), "the refusal has to be noticed");
 
         let summary = engine.finish(ExitReason::FrameBudget).expect("teardown");
-        assert_eq!(summary.mode, DisplayMode::Windowed);
+        assert_eq!(summary.run.mode, DisplayMode::Windowed);
     }
 
     /// Holding F11 down does not strobe the window between modes.

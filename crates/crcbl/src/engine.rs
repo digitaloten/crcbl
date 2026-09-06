@@ -5096,8 +5096,9 @@ pub struct FrameInfo {
 
 /// The shared half of what a run reports.
 ///
-/// Every sample's `Summary` carried these eight fields with the same meaning,
-/// and then its own two or three. [`HostedGame::summary`] receives this and
+/// Every sample's `Summary` carries this as one `run` field and adds its own
+/// two or three beside it, so a field added here reaches every sample without
+/// touching one struct per sample. [`HostedGame::summary`] receives this and
 /// returns the whole thing, so the game keeps a summary type of its own rather
 /// than the engine growing a `score: Option<u32>`.
 #[derive(Clone, Debug, PartialEq, Eq)]

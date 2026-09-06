@@ -33,12 +33,10 @@
 //! see.
 
 use crcbl::core::input::KeyCode;
-use crcbl::engine::{
-    Booted, Clock, ExitReason, FrameInfo, HostedGame, RunSummary, wait_for_configure,
-};
+use crcbl::engine::{Booted, Clock, FrameInfo, HostedGame, RunSummary, wait_for_configure};
 use crcbl::math::Vec2;
 use crcbl::prelude::*;
-use crcbl::shell::{DisplayMode, ShellBackend as Backend, WindowId};
+use crcbl::shell::{DisplayMode, WindowId};
 use crcbl::ui::draw_list::DrawList;
 
 use crate::game::{self, Game, GameState, RenderState};
@@ -51,24 +49,18 @@ pub use crate::args::Options;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Summary {
-    pub backend: Backend,
-    pub frames: u64,
-    pub ticks: u64,
-    pub events: u64,
-    pub extent: (u32, u32),
-    pub exit: ExitReason,
+    /// The half of the report every sample shares.
+    pub run: RunSummary,
     pub score: u32,
     pub lives: u32,
     /// Zero-based, like the simulation's. `main.rs` prints `wave + 1`.
     pub wave: u32,
+    /// Where the simulation got to.
+    ///
+    /// Pause is not one of these and never will be: it is the loop declining to
+    /// advance the simulation, not a state the simulation is in, so it is
+    /// [`RunSummary::paused`] instead.
     pub state: GameState,
-    /// Whether the simulation was stopped when the run ended. Beside `state`
-    /// rather than inside it: pause is the loop declining to advance the
-    /// simulation, not a state the simulation is in.
-    pub paused: bool,
-    /// The mode the window system actually had the window in, **not** the one
-    /// the run last asked for.
-    pub mode: DisplayMode,
 }
 
 // ---- errors -----------------------------------------------------------------
@@ -363,30 +355,23 @@ impl HostedGame for Asteroids {
 
     fn summary(&self, run: RunSummary) -> Summary {
         Summary {
-            backend: run.backend,
-            frames: run.frames,
-            ticks: run.ticks,
-            events: run.events,
-            extent: run.extent,
-            exit: run.exit,
+            run,
             score: self.game.score,
             lives: self.game.lives,
             wave: self.game.wave,
             state: self.game.state,
-            paused: run.paused,
-            mode: run.mode,
         }
     }
 
     fn log_summary(summary: &Summary) {
         crcbl::log::info!(
             "asteroids: {} frames, {} ticks, score {}, wave {} ({:?}, {:?})",
-            summary.frames,
-            summary.ticks,
+            summary.run.frames,
+            summary.run.ticks,
             summary.score,
             summary.wave + 1,
             summary.state,
-            summary.exit,
+            summary.run.exit,
         );
     }
 }
@@ -562,7 +547,7 @@ fn draw_hud(dl: &mut DrawList, hud: &HudStrings) {
 #[cfg(test)]
 mod tests {
     use crcbl::args::Common;
-    use crcbl::engine::{CONSOLE_KEY, Flow, MENU_ACTIVATE_KEY, PAUSE_KEY};
+    use crcbl::engine::{CONSOLE_KEY, ExitReason, Flow, MENU_ACTIVATE_KEY, PAUSE_KEY};
 
     use super::*;
     use crcbl::core::input::PointerButton;
@@ -762,9 +747,9 @@ mod tests {
         };
         assert_eq!(reason, ExitReason::FrameBudget);
         let summary = engine.finish(reason).expect("teardown");
-        assert_eq!(summary.frames, 8);
-        assert_eq!(summary.backend, ShellBackend::Headless);
-        assert!(summary.ticks > 0, "the simulation never ran");
+        assert_eq!(summary.run.frames, 8);
+        assert_eq!(summary.run.backend, ShellBackend::Headless);
+        assert!(summary.run.ticks > 0, "the simulation never ran");
         assert_eq!(summary.state, GameState::WaitingToStart);
         assert_eq!(summary.lives, game::STARTING_LIVES);
     }

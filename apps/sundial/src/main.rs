@@ -26,14 +26,14 @@ fn main() -> ExitCode {
                 "sundial: {} frames, {} ticks on the {} shell at {}x{}, {} \
                  (camera {}, {:?} / {:?} / {:?}, effects {}, filter {} vs {}, seam {}, \
                  sun {}, cost {}, {:?})",
-                summary.frames,
-                summary.ticks,
-                summary.backend,
-                summary.extent.0,
-                summary.extent.1,
+                summary.run.frames,
+                summary.run.ticks,
+                summary.run.backend,
+                summary.run.extent.0,
+                summary.run.extent.1,
                 // What the window system actually did, not what `--fullscreen`
                 // asked for. It is free to refuse.
-                summary.mode,
+                summary.run.mode,
                 summary.camera.label(),
                 // Rule 12's headless half: the three selectors this run's frames
                 // were actually drawn through.
@@ -53,7 +53,7 @@ fn main() -> ExitCode {
                 // The charter's "cost per technique, per frame", in the headless
                 // summary as well as on the panel.
                 summary.shadow_cost.row(),
-                summary.exit,
+                summary.run.exit,
             )
         },
     )

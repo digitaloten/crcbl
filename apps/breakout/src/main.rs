@@ -24,18 +24,18 @@ fn main() -> ExitCode {
             format!(
                 "breakout: {} frames, {} ticks ({} simulated) on the {} shell at {}x{}, {} \
                  (score {}, {:?}, {:?})",
-                summary.frames,
-                summary.ticks,
+                summary.run.frames,
+                summary.run.ticks,
                 summary.sim_ticks,
-                summary.backend,
-                summary.extent.0,
-                summary.extent.1,
+                summary.run.backend,
+                summary.run.extent.0,
+                summary.run.extent.1,
                 // What the window system actually did, not what
                 // `--fullscreen` asked for. It is free to refuse.
-                summary.mode,
+                summary.run.mode,
                 summary.score,
                 summary.state,
-                summary.exit,
+                summary.run.exit,
             )
         },
     )
