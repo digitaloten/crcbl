@@ -177,6 +177,12 @@ browser's own gate and the demo site's deploy.
 - **`crcbl-vfx`** — particle simulation: pooled effects, stateless randomness, a
   fixed modifier menu. This is the **CPU staging** of
   [20-particles.md](20-particles.md), whose destination is GPU-resident.
+- **`crcbl-inventory`** — the grid-inventory kit, headless: one `Grid` primitive
+  with an occupancy map and an optional tag filter, footprints as `8×8` bitmasks
+  in a `u64`, four rotations, deterministic first-fit auto-placement, atomic
+  moves, stacking with split and merge, and a RON item catalogue. Part 2 of
+  [34-inventory.md](34-inventory.md); nesting, mounts and coverage, server
+  authority and the stash are not in it.
 - **`crcbl-ui`** — the immediate-mode draw list with rect/text/outline commands,
   CPU triangulation into screen-space vertex and index buffers, a baked-in
   monospace glyph atlas, `FontAtlas` text layout, `Label`/`Button` widgets,

@@ -123,6 +123,12 @@ crcbl-anim = { path = "crates/crcbl-anim", version = "0.1.0" }
 # a browser build nothing beyond the simulation itself — there is no renderer,
 # no shader and no asset parser in it, by design.
 crcbl-vfx = { path = "crates/crcbl-vfx", version = "0.1.0" }
+# The grid-inventory kit: the container primitive, the item catalogue and the
+# placement rules, headless. `serde`, `ron` and `thiserror` and nothing else —
+# no `glam` and no `crcbl-core` — so the arrow into it costs a browser build
+# the simulation and no more, and the server and the client can link the same
+# placement code without agreeing on a renderer.
+crcbl-inventory = { path = "crates/crcbl-inventory", version = "0.1.0" }
 # The console registry: the variable and command vocabulary the UI, the engine
 # and the CLI all speak. It depends on nothing but `core`/`std`, so the arrow
 # into it costs every target the same nothing — see that crate's own manifest.

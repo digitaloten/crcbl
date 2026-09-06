@@ -7,30 +7,31 @@
 //! dependency on a *backend*.
 //!
 //! ```text
-//! crcbl::core    → crcbl-core    handles, WorldPos, FrameArena, FrameClock, input
-//! crcbl::shell   → crcbl-shell   the windowing seam and its backends
-//! crcbl::hal     → crcbl-hal     the GPU seam, plus the recording null backend
-//! crcbl::render  → crcbl-render  the render graph, cameras, the forward frame
-//! crcbl::scene   → crcbl-scene   glTF import and the mesh bakes (feature `scene`)
-//! crcbl::shaders → crcbl-shaders the engine's shaders, as SPIR-V
-//! crcbl::ui      → crcbl-ui      draw lists, the glyph atlas, HUD widgets
-//! crcbl::vfx     → crcbl-vfx     particle effects, pooled and hashed (feature `vfx`)
-//! crcbl::ecs     → crcbl-ecs     the world, components, systems, the schedule
-//! crcbl::anim    → crcbl-anim    skeletons, clips, pose sampling, joint palettes
-//! crcbl::phys    → crcbl-phys    rigid bodies, colliders, forces, queries
-//! crcbl::net     → crcbl-net     the transport seam and the wire protocol
-//! crcbl::server  → crcbl-server  the authoritative simulation and its hash
-//! crcbl::client  → crcbl-client  prediction, reconciliation, interpolation
-//! crcbl::input   → crcbl-input   action maps and bindings
-//! crcbl::audio   → crcbl-audio   the mixer, the sound bank, the cue grammar
-//! crcbl::store   → crcbl-store   platform storage and atomic writes
-//! crcbl::sprite  → crcbl-sprite  sheets, clips and the baked-pair reader
-//! crcbl::webgpu  → crcbl-webgpu  the wasm → JS command stream (wasm32 only)
-//! crcbl::math    → glam          the maths the renderer's types are spelled in
-//! crcbl::log     → log           the logging facade the engine records through
-//! crcbl::backend → (this crate)  runtime GPU backend selection
-//! crcbl::adapter → (this crate)  which adapter inside that backend
-//! crcbl::engine  → (this crate)  the shell↔HAL join every sample repeats
+//! crcbl::core      → crcbl-core      handles, WorldPos, FrameArena, FrameClock, input
+//! crcbl::shell     → crcbl-shell     the windowing seam and its backends
+//! crcbl::hal       → crcbl-hal       the GPU seam, plus the recording null backend
+//! crcbl::render    → crcbl-render    the render graph, cameras, the forward frame
+//! crcbl::scene     → crcbl-scene     glTF import and the mesh bakes (feature `scene`)
+//! crcbl::shaders   → crcbl-shaders   the engine's shaders, as SPIR-V
+//! crcbl::ui        → crcbl-ui        draw lists, the glyph atlas, HUD widgets
+//! crcbl::vfx       → crcbl-vfx       particle effects, pooled and hashed (feature `vfx`)
+//! crcbl::inventory → crcbl-inventory grids, items, placement and stacking (feature `inventory`)
+//! crcbl::ecs       → crcbl-ecs       the world, components, systems, the schedule
+//! crcbl::anim      → crcbl-anim      skeletons, clips, pose sampling, joint palettes
+//! crcbl::phys      → crcbl-phys      rigid bodies, colliders, forces, queries
+//! crcbl::net       → crcbl-net       the transport seam and the wire protocol
+//! crcbl::server    → crcbl-server    the authoritative simulation and its hash
+//! crcbl::client    → crcbl-client    prediction, reconciliation, interpolation
+//! crcbl::input     → crcbl-input     action maps and bindings
+//! crcbl::audio     → crcbl-audio     the mixer, the sound bank, the cue grammar
+//! crcbl::store     → crcbl-store     platform storage and atomic writes
+//! crcbl::sprite    → crcbl-sprite    sheets, clips and the baked-pair reader
+//! crcbl::webgpu    → crcbl-webgpu    the wasm → JS command stream (wasm32 only)
+//! crcbl::math      → glam            the maths the renderer's types are spelled in
+//! crcbl::log       → log             the logging facade the engine records through
+//! crcbl::backend   → (this crate)    runtime GPU backend selection
+//! crcbl::adapter   → (this crate)    which adapter inside that backend
+//! crcbl::engine    → (this crate)    the shell↔HAL join every sample repeats
 //! ```
 //!
 //! # One dependency is the whole point, and it took until S3 to mean it
@@ -151,6 +152,20 @@ pub use crcbl_hal as hal;
 /// [`crcbl-input`](crcbl_input): action maps, bindings, and the button and axis
 /// accessors a game polls once a tick.
 pub use crcbl_input as input;
+/// [`crcbl-inventory`](crcbl_inventory): the grid-inventory kit — the one
+/// container primitive, the item catalogue it is checked against, and the
+/// placement, rotation and stacking rules over both.
+///
+/// Part 2 of `docs/plan/34-inventory.md`, headless: there is no panel and no
+/// drag here, because a placement rule the server enforces and a client
+/// predicts has to be the same code on both sides of the wire, and a widget is
+/// only on one of them. `apps/shard` is the sample the kit was forced by, and
+/// the one that will draw a panel over it.
+///
+/// Behind the non-default `inventory` feature, on [`vfx`]'s terms: a game whose
+/// player carries nothing links no container model.
+#[cfg(feature = "inventory")]
+pub use crcbl_inventory as inventory;
 /// [`crcbl-jobs`](crcbl_jobs): the spawn seam, the two communication
 /// primitives, and the work-stealing pool a game's data-parallel passes run on.
 ///

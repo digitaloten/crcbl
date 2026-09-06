@@ -286,6 +286,7 @@ dependencies = [
  "crcbl-greybox",
  "crcbl-hal",
  "crcbl-input",
+ "crcbl-inventory",
  "crcbl-jobs",
  "crcbl-mtl",
  "crcbl-net",
@@ -419,6 +420,16 @@ name = "crcbl-input"
 version = "0.1.0"
 dependencies = [
  "crcbl-core",
+]
+
+[[package]]
+name = "crcbl-inventory"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "ron",
+ "serde",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

@@ -4921,6 +4921,23 @@ later costs a version bump and nothing else. Do not "helpfully" reserve it.
 **What it blocks:** shard milestone 1's exit criterion (a complete session:
 explore, fight, loot, level, save, resume) and breach's buy menu.
 
+### A loaded `Grid`'s occupancy map is not re-derived
+
+`crcbl_inventory::Grid` serialises its `occupancy` map alongside its
+`placements`, so a save that was tampered with below `crcbl-store`'s checksum
+can carry a map that disagrees with the placements that should have written it —
+a cell claiming a slot that does not cover it, or a covered cell reading free.
+Nothing re-derives one, and `Grid`'s own doc says so.
+
+It is written that way because re-deriving needs each item's footprint, which
+lives in the `Catalog`, and a `Deserialize` has no catalogue to reach. The fix
+is a `Grid::relink(&Catalog) -> Result<(), InventoryError>` that rebuilds the
+map from the placements and refuses an overlap, called by whatever loads a save
+— but a method a loader can forget is the failure mode it replaces, so the shape
+wants a decision: `relink` at the load site, or a `LoadedGrid` newtype that only
+becomes a `Grid` by going through it. Not urgent while the only producer of a
+serialised grid is the same build that reads it back.
+
 ### `crcbl icon bake` (2026-08-27)
 
 **Not built.** Neither `icon` nor `bake` parses; `crcbl-cli` accepts `new`,

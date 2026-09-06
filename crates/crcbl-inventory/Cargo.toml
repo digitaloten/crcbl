@@ -1,0 +1,42 @@
+[package]
+name = "crcbl-inventory"
+description = "Crucible's grid-inventory kit: one grid primitive, bitmask footprints, rotation and stacking"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Three dependencies, and every one of them is a *format* or an *error*, not a
+# runtime. There is no `glam` here (a cell is two `u8`s, not a vector), no
+# `crcbl-core` (nothing in this crate has a handle, a clock or an arena) and no
+# IO of any kind — which is what lets `wasm32-unknown-unknown` build it from the
+# first commit and what lets the server and the client link the same placement
+# code without either of them agreeing on a renderer.
+#
+# `serde` carries a grid into a save and a catalogue out of a file. `derive` is
+# on because the alternative is a hand-written visitor per type, and the two
+# types that *do* have hand-written impls (`Shape`, `Catalog`) are hand-written
+# because their file form is deliberately not their memory form — see
+# `src/shape.rs` and `src/catalog.rs`.
+[dependencies]
+serde = { workspace = true }
+# The catalogue's file format, and the same one `crcbl_render::stack` already
+# writes: a game that hand-edits one data file should not need a second syntax
+# for the next one. Reading is `ron::from_str`; writing is one pinned
+# `PrettyConfig`, so a catalogue written on Windows is the file that was written
+# on Linux.
+ron = { workspace = true }
+# `InventoryError` and `CatalogError` are returned from every fallible call, so
+# they need `Display` and `Error` without a macro of this crate's own.
+thiserror = { workspace = true }
+
+# The placement invariants — first-fit finds a placement whenever a brute-force
+# sweep can, a refused move leaves the grid untouched — hold over every shape
+# and every grid, not over the handful a table of cases would list. That is the
+# same argument `crates/crcbl-vfx/Cargo.toml` makes for its pool, and it is why
+# this is a dev-dependency rather than a table of hand-picked footprints.
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

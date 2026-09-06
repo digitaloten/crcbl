@@ -91,6 +91,43 @@ plans say to avoid. Shard has already taken the one deferral available to it
 (its fight slice shipped with no item, no currency, no equipped weapon), so its
 next verb is loot, and loot is where the kit is forced.
 
+### The kit's model decisions, as built (2026-09-07)
+
+`crates/crcbl-inventory` is the model half of `docs/plan/34-inventory.md`, built
+from shard under option 1 above. Five decisions are in the crate header and are
+recorded here so they are not re-derived:
+
+- **A footprint is an `8×8` bitmask in one `u64`** (`Shape`, `MAX_SHAPE`).
+  Sixty-four bits is exactly the word, so turning a footprint is arithmetic and
+  walking its cells is walking its set bits. The cap is deliberately loose — the
+  widest container the plan ships is the `5×10` backpack — and a footprint past
+  it is refused rather than truncated, because the `x == 8` bit wraps into the
+  next row.
+- **Four rotations, not two.** The plan calls rotation an involution, and that
+  is the rectangle case: a bitmask footprint admits an L, whose quarter turn is
+  not its three-quarter turn. A `turned_once` written as a bare transpose — the
+  reversal forgotten — is invisible for every container in the shipped table,
+  which is why `an_l_turned_four_times_is_the_shape_it_started_as` is written on
+  an L and not on the `1×2` pocket item.
+- **No `HashMap` anywhere.** Iteration order over one is not something two
+  machines agree on, and every answer the crate gives is one a prediction has to
+  match. Lookups are linear scans over `Vec`s in file order.
+- **The read paths allocate nothing** — `can_place`, `find_slot`, `at`, `slot`,
+  `slots`. Occupancy is a `Vec<u16>` sized once at `Grid::new`.
+- **`Catalog::to_ron` pins `\n`**, as `crcbl_render::stack::CameraStack`'s
+  writer does: `ron::ser::PrettyConfig`'s default is `\r\n` on Windows, and a
+  writer whose output depends on the host is not one a data file can be kept in
+  git as.
+
+Three shapes departed from the plan's sketch. `Grid::move_within` is one atomic
+call rather than remove-then-place: written the other way a refused move deletes
+the item and a successful one renumbers its slot, and a drag is holding that
+number. `Grid::split` takes the new `StackId` as an argument, because the crate
+mints no ids and "re-id it afterwards" is a comment rather than a safeguard. And
+a `Grid`'s occupancy map is serialised rather than rebuilt on load, because
+rebuilding it needs the footprints, which live in the catalogue, and a
+`Deserialize` has none.
+
 ### Cross-fleet stash: decided and out of scope (2026-08-27)
 
 **Deliberately not built.** Engine stash = per-server-instance store;

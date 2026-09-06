@@ -77,6 +77,29 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **`crcbl-inventory`, the grid-inventory kit** — part 2 of
+  `docs/plan/34-inventory.md`, headless and renderer-free. `Grid` is the one
+  container primitive: a `W×H` field of cells with an occupancy map and an
+  optional accept-filter, so a helmet slot is a `1×1` grid filtered by a tag
+  rather than a second concept. `Shape` is a footprint as an `8×8` bitmask in
+  one `u64` — a size past `MAX_SHAPE` is refused rather than truncated, because
+  the `x == 8` bit wraps into the next row — and `Rotation` has four arms, not
+  two, because a bitmask footprint admits an L and the plan's involution is only
+  the rectangle case. `Catalog` reads and writes the item table as RON with a
+  pinned `\n`, and `Catalog::key` is the FNV-1a of an item's name, so a save's
+  item id survives an edit to the file that moves its position. `Grid` carries
+  `can_place`, `place`, `remove`, `move_within` (atomic — a refused move leaves
+  the grid equal to what it was, slot ids included), `rotate`, `find_slot` and
+  `insert` (deterministic first-fit, row-major, trying `Rotation::ALL` at each
+  cell), `merge`, `split` and `weight_g`. It depends on `serde`, `ron` and
+  `thiserror` and nothing else — no `glam`, no `crcbl-core`, no IO, no `HashMap`
+  — so it builds for `wasm32-unknown-unknown` and a server and a client can link
+  the same placement code. Nesting, mounts and coverage, the weight rollup,
+  server authority and the stash are not in it.
+- **`crcbl::inventory`** — `crcbl-inventory` behind the umbrella crate's new
+  non-default `inventory` feature, on the `vfx` feature's terms: a game whose
+  player carries nothing links no container model. Every crate it pulls in is
+  already in `crcbl`'s tree, so turning it on adds no third-party dependency.
 - **`crcbl_golden::srgb::decode`**, re-exported at the crate root as
   `srgb_decode` — the sRGB electro-optical transfer function, the way back from
   a readback byte to the linear light behind it, beside the `srgb_encode` that
