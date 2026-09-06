@@ -5169,13 +5169,14 @@ that the ladder has no untextured-quad holdouts left.
 row in `web/build.sh`'s `DEMOS`. Nothing in the doc has been tested against
 code. The three links are independent and only one of them is the editor:
 
-1. **Milestone 2 waits on the editor.** There is no `apps/editor` — the scene
-   directory is no longer part of this link: `crcbl_scene::scn` landed
-   2026-09-07 and `apps/breakout` reads its board out of one. The workspace
-   `Cargo.toml` records the absence as deliberate until the editor phase — and
-   no `.scn/` directory anywhere in the tree. Every "editor-built" and "authored
-   in the editor" line inherits this, including the exit criterion "map authored
-   100% in the editor, zero hand-edited scene text".
+1. **Milestone 2 waits on the editor.** There is no `apps/editor`; the workspace
+   `Cargo.toml` records the absence as deliberate until the editor phase. The
+   scene directory is no longer part of this link: `crcbl_scene::scn` landed
+   2026-09-07 and `apps/breakout` reads its board out of one
+   (`apps/breakout/assets/scenes/board.scn/`). Every "editor-built" and
+   "authored in the editor" line inherits the editor's absence, including the
+   exit criterion "map authored 100% in the editor, zero hand-edited scene
+   text".
 2. **Milestone 3 waits on a wire.** `crates/crcbl-net` ships `InMemoryTransport`
    and nothing else — no UDP transport, no LAN host discovery, no lobby browser
    — so "co-op over real transport" and the 4-player LAN exit criterion have
