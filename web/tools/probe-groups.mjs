@@ -3082,19 +3082,24 @@ export async function runProbeGroups({
           `${msaa.error ? ` — ${msaa.error}` : ''}`
   );
 
-  // **THE QUERY GATE, AND THE ONLY EXERCISE `Capability::OcclusionQuery` HAS ON
-  // THIS BACKEND.** The native seam suite that holds the other four backends to
-  // that declaration (`exercise_query_set_creation` in
-  // `crates/crcbl/tests/hal_seam_e2e.rs`) is a native binary and cannot open this
-  // one, so without this group the `Support::Yes` is a sentence nothing tests.
+  // **THE QUERY GATE, AND THE EVIDENCE FOR THE DIVERGENCE ROW'S KIND.** Since
+  // 2026-09-06 `Capability::OcclusionQuery` answers `Support::No` on every
+  // backend and `create_query_set` refuses the kind — `crcbl_hal::CommandEncoder`
+  // has no begin/end query verb, which `crcbl_hal::NO_OCCLUSION_QUERY_VERB`
+  // spells out — and each backend carries an `Unwritten` divergence row for it.
+  // This group is what makes WebGPU's row `Unwritten` rather than an
+  // `ApiAbsence`: the browser and the replayer serve the whole spine below, so
+  // the only missing piece is the seam verb, and that is a measurement rather
+  // than a reading of the WebIDL. It writes to the stream directly, because the
+  // device would refuse the set; `crates/crcbl-webgpu/src/probe.rs` carries the
+  // Rust half of the same argument above `PROBE_OCCLUSION_QUERIES`.
   //
-  // WHAT THE CAPABILITY CLAIMS, AND IT IS WORTH BEING EXACT: a
-  // `QueryKind::Occlusion` query set, and nothing more.
-  // `crcbl_hal::CommandEncoder` has no begin/end query verb — its whole query
-  // vocabulary is the reset, the timestamp write and the resolve — so nothing a
-  // caller records through this seam can ever *write* an occlusion query, here or
-  // on the Vulkan backend whose `Yes` means the same thing. There is no count to
-  // be plausible about, and this group does not pretend there is one.
+  // WHAT THE ROW CLAIMS, AND IT IS WORTH BEING EXACT: that the API can build a
+  // `QueryKind::Occlusion` query set, and nothing more. The seam's whole query
+  // vocabulary is the reset, the timestamp write and the resolve, so nothing a
+  // caller records through it can ever *write* an occlusion query, here or on
+  // any other backend. There is no count to be plausible about, and this group
+  // does not pretend there is one.
   //
   // WHAT IT DOES: wasm records a 32-query occlusion set, a `QUERY_RESOLVE`
   // destination filled with a sentinel byte, the seam's `reset_query_set` over
