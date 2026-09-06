@@ -13908,25 +13908,53 @@ the paravirtual device itself; the way to know is one run of the mesh step with
 `MTL_DEBUG_LAYER_WARNING_MODE=ignore`, which nobody has taken because the
 warnings are the point of the step.
 
-**Half (1) is built; half (2) and the mode move are open.** `crcbl-mtl`'s
-encoder now tracks what is bound per stage and slot and skips a `set*` whose
-argument is already there — `crcbl_mtl::bind_cache`, landed 2026-09-06, recorded
-in `docs/notes/backends.md`. That removes the "redundant setting" class in
-principle and **nothing measured it**: this workspace has no Metal, so the
-change is verified only by the crate's host unit tests and by `clippy`/`rustdoc`
-on `aarch64-apple-darwin`. The next `mtl e2e (macos-latest)` run is the verdict,
-and what to read in it is the per-step durations against the 37 / 29 / 25 / 22
-minutes above and the count of `Set Vertex Texture Validation` lines in the mesh
-step against the 161,289 above.
+**Half (1) is built and measured; half (2) and the mode move are open.**
+`crcbl-mtl`'s encoder tracks what is bound per stage and slot and skips a `set*`
+whose argument is already there — `crcbl_mtl::bind_cache`, landed 2026-09-06 in
+`63c035c`, recorded in `docs/notes/backends.md`. The first
+`mtl e2e (macos-latest)` run carrying it, on `5b0fe2f`, is the measurement: the
+whole job took 6 minutes 19 seconds against 33 to 46 before, the mesh step 2
+minutes 27 seconds against 22 to 37, the render step 1 minute 32 against 3 to 4,
+and the job log 1.2 million lines against more than 30 million. Every "Set
+Vertex Texture", "Set Fragment Buffers", "Set Vertex Buffer" and sampler finding
+— the "redundant setting" class — is gone from the log. The cap is back at 45
+minutes in `.github/workflows/ci.yml`, seven times the measured job.
 
-(2) The "unused binding" class is untouched and is a bind-layout question: the
-renderer binds every slot of a fixed layout and a pipeline that reads a subset
-gets a warning per slot it ignores; either the placeholder binds are skipped for
-pipelines whose reflection says the slot is unread, or the warning is accepted
-and said so in the record. Once the log is clean, `MTL_DEBUG_LAYER_WARNING_MODE`
-goes to `assert` per "Metal's debug layer is on `nslog`, and `assert` is the
-follow-up" above, the cap comes back down to the measured envelope, and the
-"price" tests on Metal become a number worth reading.
+**What the log still says, counted in the mesh step of that run**, in the order
+worth reading:
+
+- **`Fragment Function(fragmentMain): missing Buffer binding at index 3 for draw_N`,
+  and the same at index 4 for `meshes_3` and index 5 for `visible_instances_3` —
+  1,206 of each, and 116 of each in the render step.** This is the "Draw Errors"
+  class, not the redundant one: Metal's validation says the fragment function's
+  argument table names a buffer at those slots and nothing is bound there for
+  the draw. Every golden on that runner matched, so either the fragment stage
+  declares those buffers without reading them (Slang emitting the vertex stage's
+  per-draw, mesh and instance tables into the fragment function's reflection) or
+  it reads them and the paravirtual device hands back something that happens to
+  draw right. **Not investigated.** The question to answer first is whether
+  `mesh.slang`'s fragment stage reads `draw`, `meshes` or `visible_instances` at
+  all; if it does, this is a real vertex-only bind of a buffer the fragment
+  needs and the fix is in `crcbl-mtl`'s bind plan, and if it does not, the
+  finding is noise the mode move will have to live with or suppress by not
+  declaring them.
+- **`unused binding in encoder at Buffer index N`** — 4,838 each at indices 6,
+  7, 8 and 9 and 3,563 at index 0. This is half (2): the renderer binds every
+  slot of a fixed layout and a pipeline that reads a subset gets a warning per
+  slot it ignores. Either the placeholder binds are skipped for pipelines whose
+  reflection says the slot is unread, or the warning is accepted and said so in
+  the record.
+- **`previous setViewport was unused` / `previous setScissorRect was unused`** —
+  610 each: a viewport and scissor set and then set again before any draw used
+  them, so the first pair was wasted. Cheap to fold into the same per-encoder
+  cache as a "last set, not yet drawn with" pair.
+- **`redundant setTriangleFillMode`, `setFrontFacingWinding`,
+  `setDepthClipMode`, `setDepthBias`** — 72 each, the raster state re-applied
+  with the pipeline; the same cache can hold them.
+
+Once the log is clean, `MTL_DEBUG_LAYER_WARNING_MODE` goes to `assert` per
+"Metal's debug layer is on `nslog`, and `assert` is the follow-up" above, and
+the "price" tests on Metal become a number worth reading.
 
 ### `crcbl-dx12` fails `cargo doc --document-private-items` on msvc
 
