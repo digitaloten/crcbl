@@ -14573,13 +14573,33 @@ mod tests {
         /// words that say it was this refusal rather than another.
         type Break = (&'static str, fn(&mut SceneDesc<'static>), &'static str);
 
-        let cases: [Break; 7] = [
+        let cases: [Break; 9] = [
             (
                 "a row naming a layer the page has not got",
                 |scene| {
                     scene.materials[DEMO_TEXTURED].base_color_texture = 7;
                 },
                 "material row 2 samples base-colour page layer 7",
+            ),
+            // And the same on the two kinds rung 3 added, because `check_scene`
+            // reads a different column of the row for each: a check written per
+            // kind is only worth what its arms cover, and a column nobody broke
+            // here could be read out of the wrong material field for ever.
+            // `demo` names no layer of either, so any index at all is past the
+            // end.
+            (
+                "a row naming a packed-page layer the page has not got",
+                |scene| {
+                    scene.materials[DEMO_TEXTURED].metallic_roughness_occlusion_texture = 3;
+                },
+                "material row 2 samples metallic-roughness-occlusion page layer 3",
+            ),
+            (
+                "a row naming an emissive layer the page has not got",
+                |scene| {
+                    scene.materials[DEMO_TEXTURED].emissive_texture = 3;
+                },
+                "material row 2 samples emissive page layer 3",
             ),
             // The one page refusal a caller can actually spell: `push_layer`
             // takes bytes it cannot measure against the extent.

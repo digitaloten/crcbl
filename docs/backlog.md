@@ -16177,18 +16177,14 @@ it. Also declined: refusing with `HalError::Unsupported` on a device without the
 capability. It was tried as a falsification and the engine's frame loop fails
 every frame under it, which is the argument against it in one line.
 
-## The viewer's material set waits on the glTF importer (2026-08-30, re-scoped 2026-09-06)
+## What the viewer's shelf slice left (2026-08-30, re-scoped 2026-09-06)
 
-`docs/plan/sample/05-viewer.md` milestone 4: the native drop and the shelf are
-built, the normal-map rung landed 2026-08-30, and on 2026-09-06 the **device**
-half of `43-render-standards.md` §2's rung 3 landed with it — `mesh.slang`
-samples `mro_textures` and `emissive_textures` and shades through both. What is
-still owed is the **importer**: `crcbl_scene::gltf_import` reads only
-`baseColorTexture` and `normalTexture`, so a shelf model's
-`metallicRoughnessTexture`, `occlusionTexture` and `emissiveTexture` are dropped
-and every row it writes carries `NO_PAGE` on the two new columns. Until that
-lands the viewer draws two of the four maps a document ships. What the shelf
-slice left behind:
+`docs/plan/sample/05-viewer.md` milestone 4 is built: the native drop, the
+shelf, and — since 2026-09-06, with both halves of `43-render-standards.md` §2's
+rung 3 — the full metallic-roughness set, so a shelf model's
+`metallicRoughnessTexture`, `occlusionTexture` and `emissiveTexture` all reach a
+page and all four material maps draw. What is left is the shelf slice's own
+leftovers, none of them about the material set:
 
 - **The browser gate's `playing` and `deforming` checks read the _dropped_
   document.** The page opens on Suzanne, which has no skin, so
@@ -16272,16 +16268,6 @@ and a layer list per kind. What it left:
   loud in a frame, and the frame that would show it is one nobody has drawn.
   Deliberate: a fixture that sampled it would need a shader built wrong on
   purpose, which is a sabotage rather than a test.
-- **`pack_page` still returns one `Vec<Option<u32>>` per kind by hand.**
-  `crcbl_scene::gltf_render::pack_page` returns
-  `(PageDesc, base_layers, normal_layers)` and `material_rows` takes the two
-  separately. **Still open after rung 3's device half landed 2026-09-06**, and
-  the reason it is: that slice added the two `PageKind` variants and the shader
-  that reads them, and touched the importer not at all, so `pack_page` still
-  packs two kinds. The importer half is what turns those into four positional
-  arguments, and it is the moment to give them a
-  `[Vec<Option<u32>>; PageKind::ALL.len()]` table on `PageKind::index`'s terms —
-  the same shape `PageDesc` itself took.
 - **No caller sizes a page after pushing into it, and `set_extent` panics if one
   tries.** The alternative — an extent inferred from the first layer's length —
   was considered and declined: a layer's byte count does not determine a square
@@ -16312,8 +16298,13 @@ glTF's three products. What it left:
   what is dropped is a document that dials the channel back. Filling it wants a
   `f32` on `GpuMaterial` (the row is 64 bytes with no spare word, so it would
   have to share one, the way the page columns do) and an importer that reads
-  `occlusionTexture.strength`. **Deliberately deferred to the importer half**,
-  which is the slice that can test it against a real document.
+  `occlusionTexture.strength`. **Still open after the importer half landed
+  2026-09-06**: `crcbl_scene::gltf_import`'s `occlusion_textures` reports the
+  image and the UV set and nothing else, and the slot's `strength` is read
+  nowhere in the workspace — a document that writes one loses it with no `Skip`
+  saying so, which is the honest gap here. Checked 2026-09-06 against the nine
+  shelf models' `.gltf` files: none writes an `occlusionTexture.strength` at
+  all, so nothing in this tree is drawn wrong by it today.
 - **The environment specular is not occluded by this channel, and neither is the
   screen-space one.** `mesh.slang` applies `mro.r` to the flat ambient, the sky
   and the probe grid — the terms `ssao`'s own factor already scales — and the
@@ -16324,11 +16315,20 @@ glTF's three products. What it left:
   would mean a channel in the reflectivity attachment for the reflection pass to
   reload. Considered and declined for this slice: it changes what a reflection
   is worth on every scene in the tree, which is a rung with its own goldens.
-- **No document reaches either page.** `crcbl_scene::gltf_import` reads only
-  `baseColorTexture` and `normalTexture`, so `gltf_e2e` draws neither new page
-  and the only device evidence is `crcbl/tests/mesh_e2e/mro_page.rs` and
-  `emissive_page.rs`, whose layers are authored by hand. The importer half is
-  what closes that.
+- **The packed page reaches a device only through hand-authored layers.** The
+  importer half landed 2026-09-06 and `crcbl/tests/gltf_e2e.rs`'s
+  `an_imported_emissive_texture_lights_the_half_of_the_quad_it_covers` draws an
+  imported `emissiveTexture`, but there is no equivalent for the packed page:
+  the device evidence for occlusion, roughness and metalness is still
+  `crcbl/tests/mesh_e2e/mro_page.rs`, whose layers are written by hand, and
+  `crcbl_scene::gltf_render`'s host tests over the packed bytes. What is
+  therefore unproven end to end is the **separate-image** arrangement —
+  SciFiHelmet's, where the occlusion image's `r` is resampled into the
+  metallic-roughness image's — reaching a frame. One `gltf_e2e` document with a
+  metallic-roughness map whose `b` splits the quad would close it, on the
+  emissive fixture's shape; deliberately left because the arithmetic each
+  channel does is already measured on the device and the packing is measured on
+  the host.
 - **The packed page's mip filter has no fixture of its own.**
   `crcbl_render::mip::linear_chain` is a third filter beside `chain` and
   `normal_chain` — a plain box mean, no transfer curve, no alpha weight, no

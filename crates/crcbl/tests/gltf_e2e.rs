@@ -28,6 +28,18 @@
 //!   dropped or unapplied parent transform — does not produce. Drop the
 //!   translation instead and the quad leaves the camera's window entirely.
 //!
+//! # And a second document, for the second page an importer fills
+//!
+//! `an_imported_emissive_texture_lights_the_half_of_the_quad_it_covers` draws
+//! the same quad under a different material: a black base colour, an
+//! `emissiveFactor`, and an `emissiveTexture` that is black over half the
+//! surface and white over the other. Every light in that frame is off, so the
+//! picture is the emission and nothing else, and the two halves reading apart
+//! is the claim that the document's own image became a page layer and that the
+//! row points at it. `crates/crcbl/tests/mesh_e2e/emissive_page.rs` already
+//! measures what the *shader* does with such a layer; what only a file can
+//! prove is that the importer put one there.
+//!
 //! `#[ignore]` like `render_e2e.rs` and `tiling_e2e.rs`: it needs a real GPU,
 //! which `CRCBL_GPU` names and `tests/run-gltf-e2e.sh` supplies. It commits no
 //! golden image — the claim is which hue is in which quadrant, not a pixel-exact
@@ -42,7 +54,10 @@ use crcbl::adapter::{ADAPTER_ENV_VAR, device_type_from_name};
 use crcbl::backend::{BACKEND_ENV_VAR, GpuBackend};
 use crcbl::hal::Format;
 use crcbl::math::Vec3;
-use crcbl::render::{Camera, DirectionalLight, ForwardRenderer, Projection};
+use crcbl::render::{
+    Camera, DirectionalLight, EffectOverride, EffectRequest, ForwardRenderer, Projection,
+    RenderEffects,
+};
 use crcbl::scene::gltf_render::build_render_scene;
 use crcbl::screenshot::{ForwardScene, OffscreenSetup};
 use crcbl_assets::DirSource;
@@ -123,13 +138,133 @@ const YELLOW: Hue = Hue {
     channels: [true, true, false],
 };
 
-/// The document, as the bytes of a `.glb`.
+/// The nested hierarchy the base-colour document is drawn under: a parent that
+/// translates and turns a quarter-turn about `Z`, and a child that translates
+/// again. [`QUAD_CENTRE`] is where the two put the quad.
+const PIVOTED_NODES: &str = r#"[
+    {
+      "name": "pivot",
+      "translation": [2.0, 3.0, 0.0],
+      "rotation": [0.0, 0.0, 0.70710678, 0.70710678],
+      "children": [1]
+    },
+    { "name": "panel", "mesh": 0, "translation": [0.0, -1.0, 0.0] }
+  ]"#;
+
+/// One node at the origin, which is what the emissive document is drawn under:
+/// that test's claim is about a texture's two halves, and a rotation would only
+/// move which half of the frame each lands in.
+const FLAT_NODES: &str = r#"[{ "name": "panel", "mesh": 0 }]"#;
+
+/// The base-colour document's material.
+///
+/// `metallicFactor` is written out as zero, and it is load-bearing: glTF
+/// defaults a material to a *fully rough conductor*, and a conductor has no
+/// diffuse lobe at all — the base colour would barely reach the frame. The
+/// base-colour factor is white so the texel arrives undiluted.
+const BASE_COLOUR_MATERIAL: &str = r#"{
+    "name": "swatches",
+    "pbrMetallicRoughness": {
+      "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
+      "metallicFactor": 0.0,
+      "roughnessFactor": 1.0,
+      "baseColorTexture": { "index": 0 }
+    }
+  }"#;
+
+/// The `emissiveFactor` the emissive document writes.
+///
+/// Three descending channels rather than white, so the lit half carries
+/// evidence that the *factor* is in the product as well as the texel: a shader
+/// or an importer that emitted the texture alone would read the same in all
+/// three.
+const EMISSIVE_FACTOR: [f32; 3] = [1.0, 0.5, 0.25];
+
+/// The emissive document's material: a **black** base colour under
+/// [`EMISSIVE_FACTOR`] and an `emissiveTexture`.
+///
+/// Black because the frame it is read in has every light off, and a base colour
+/// that could pick up so much as an ambient term would put a number in the dark
+/// half that this page did not emit.
+fn emissive_material() -> String {
+    format!(
+        r#"{{
+    "name": "lamp",
+    "pbrMetallicRoughness": {{
+      "baseColorFactor": [0.0, 0.0, 0.0, 1.0],
+      "metallicFactor": 0.0,
+      "roughnessFactor": 1.0
+    }},
+    "emissiveFactor": [{}, {}, {}],
+    "emissiveTexture": {{ "index": 0 }}
+  }}"#,
+        EMISSIVE_FACTOR[0], EMISSIVE_FACTOR[1], EMISSIVE_FACTOR[2]
+    )
+}
+
+/// The side of the emissive document's image, in texels.
+///
+/// Wider than the two columns the split needs, and that is what the reading
+/// depends on: [`quadrant`] averages a patch a *quarter* of the frame in, and a
+/// two-texel image puts that patch inside the bilinear ramp between its two
+/// texels — the black half came back at a third of full when this was `2`. At
+/// eight, the ramp is one texel wide either side of the seam at `u = 0.5` and
+/// both patches sit whole inside a solid run.
+const EMISSIVE_SIDE: u32 = 8;
+
+/// The emissive document's image, RGBA8 row-major: the left half black and the
+/// right half white, [`EMISSIVE_SIDE`] texels a side.
+///
+/// A column split rather than four hues, because the claim is that the *page*
+/// decides where a surface emits — one row of the material table, one quad, and
+/// two readings that can only differ by the texel under them. `u` grows with
+/// world `+X` through the UVs above, so the black half is the left of the frame.
+fn emissive_texels() -> Vec<u8> {
+    (0..EMISSIVE_SIDE * EMISSIVE_SIDE)
+        .flat_map(|index| {
+            if index % EMISSIVE_SIDE < EMISSIVE_SIDE / 2 {
+                [0x00, 0x00, 0x00, 0xFF]
+            } else {
+                [0xFF; 4]
+            }
+        })
+        .collect()
+}
+
+/// The base-colour document: [`TEXELS`] under [`PIVOTED_NODES`], which is what
+/// `an_imported_gltf_draws_its_own_texture_where_its_own_hierarchy_puts_it`
+/// reads.
+fn quad_glb() -> Vec<u8> {
+    quad_document(
+        &png_bytes(2, 2, &TEXELS),
+        PIVOTED_NODES,
+        BASE_COLOUR_MATERIAL,
+    )
+}
+
+/// The emissive document: [`emissive_texels`] under [`FLAT_NODES`], which is
+/// what `an_imported_emissive_texture_lights_the_half_of_the_quad_it_covers`
+/// reads.
+fn emissive_quad_glb() -> Vec<u8> {
+    quad_document(
+        &png_bytes(EMISSIVE_SIDE, EMISSIVE_SIDE, &emissive_texels()),
+        FLAT_NODES,
+        &emissive_material(),
+    )
+}
+
+/// The document, as the bytes of a `.glb`: the quad, `image` in a `bufferView`,
+/// `nodes` as the whole of its scene graph and `material` as its one material.
 ///
 /// Assembled here rather than vendored, for the reason
 /// `crates/crcbl-scene/src/gltf_fixture.rs` gives about its own fixtures: a
 /// binary blob is a fixture nobody reviewing a change can read, and every number
 /// this test asserts on is a number written out below.
-fn quad_glb() -> Vec<u8> {
+///
+/// Parameterised over those three because the two documents this file draws
+/// differ in exactly them and in nothing else — the geometry, the accessors and
+/// the `bufferView` arithmetic below are one copy rather than two that drift.
+fn quad_document(image: &[u8], nodes: &str, material: &str) -> Vec<u8> {
     // A unit quad in the `XY` plane facing `+Z`, and the texture coordinates
     // that put one texel of a 2×2 image in each corner of it. glTF's `UV` origin
     // is the image's **top-left** and `v` grows downward, so the corner at
@@ -168,27 +303,14 @@ fn quad_glb() -> Vec<u8> {
         bin.push(0);
     }
     let image_offset = bin.len();
-    let image = png_bytes(2, 2, &TEXELS);
-    bin.extend_from_slice(&image);
+    bin.extend_from_slice(image);
 
-    // `metallicFactor` is written out as zero, and it is load-bearing: glTF
-    // defaults a material to a *fully rough conductor*, and a conductor has no
-    // diffuse lobe at all — the base colour would barely reach the frame. The
-    // base-colour factor is white so the texel arrives undiluted.
     let json = format!(
         r#"{{
   "asset": {{ "version": "2.0" }},
   "scene": 0,
   "scenes": [{{ "nodes": [0] }}],
-  "nodes": [
-    {{
-      "name": "pivot",
-      "translation": [2.0, 3.0, 0.0],
-      "rotation": [0.0, 0.0, 0.70710678, 0.70710678],
-      "children": [1]
-    }},
-    {{ "name": "panel", "mesh": 0, "translation": [0.0, -1.0, 0.0] }}
-  ],
+  "nodes": {nodes},
   "meshes": [{{
     "name": "panel",
     "primitives": [{{
@@ -197,15 +319,7 @@ fn quad_glb() -> Vec<u8> {
       "material": 0
     }}]
   }}],
-  "materials": [{{
-    "name": "swatches",
-    "pbrMetallicRoughness": {{
-      "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
-      "metallicFactor": 0.0,
-      "roughnessFactor": 1.0,
-      "baseColorTexture": {{ "index": 0 }}
-    }}
-  }}],
+  "materials": [{material}],
   "textures": [{{ "source": 0 }}],
   "images": [{{ "name": "swatches", "bufferView": 4, "mimeType": "image/png" }}],
   "accessors": [
@@ -323,13 +437,24 @@ fn assert_pins_arrived(setup: &OffscreenSetup) {
     }
 }
 
-/// Imports [`quad_glb`] through a real [`DirSource`] over a real directory,
+/// Imports `document` through a real [`DirSource`] over a real directory,
 /// converts it, draws one frame of it, and hands back the pixels.
 ///
 /// The source is the production one rather than a mock, so the key rule the
 /// document's own `bufferView` image has to satisfy is the one that will apply
 /// to a file a user opens.
-fn draw_the_imported_quad() -> Image {
+///
+/// `centre` is where the composed hierarchy puts the quad, which the camera
+/// looks straight at; `sun` is the light on it; and `effects` is
+/// [`None`] for the renderer's own stack — the frame the engine draws by
+/// default — or a request for a frame with the passes that could add a term of
+/// their own turned off.
+fn draw_the_imported_quad(
+    document: &[u8],
+    centre: Vec3,
+    sun: DirectionalLight,
+    effects: Option<EffectRequest>,
+) -> Image {
     // A logger before anything opens, for `render_e2e.rs`'s reason: without one
     // every `log::info!` a backend emits on the way to a device goes nowhere,
     // and on a runner nobody can log into that output is the whole diagnosis.
@@ -338,7 +463,7 @@ fn draw_the_imported_quad() -> Image {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let root = dir.path().join("assets");
     std::fs::create_dir_all(root.join("meshes")).expect("the asset tree");
-    std::fs::write(root.join("meshes/panel.glb"), quad_glb()).expect("the document");
+    std::fs::write(root.join("meshes/panel.glb"), document).expect("the document");
 
     let key = Path::new("meshes/panel.glb");
     let imported =
@@ -361,6 +486,9 @@ fn draw_the_imported_quad() -> Image {
 
     let setup = OffscreenSetup::open_forward(EDGE, EDGE, move |device, queue, format| {
         let mut renderer = ForwardRenderer::with_scene(device, queue, format, &converted.scene)?;
+        if let Some(effects) = effects {
+            renderer.set_effect_request(effects);
+        }
         for instance in &converted.instances {
             renderer
                 .add_instance(instance)
@@ -371,8 +499,8 @@ fn draw_the_imported_quad() -> Image {
                 // Straight down the quad's normal, so a world metre maps to a
                 // fixed span of pixels and a quadrant of the face is a quadrant
                 // of the frame.
-                eye: QUAD_CENTRE + Vec3::Z * 3.0,
-                target: QUAD_CENTRE,
+                eye: centre + Vec3::Z * 3.0,
+                target: centre,
                 up: Vec3::Y,
                 projection: Projection::Orthographic {
                     half_height: 0.5 * FRAME_FRACTION,
@@ -380,14 +508,7 @@ fn draw_the_imported_quad() -> Image {
                     far: 10.0,
                 },
             },
-            // Straight onto the face and a healthy ambient, so each swatch's own
-            // hue is what separates it from its neighbours rather than any
-            // shading gradient.
-            sun: DirectionalLight {
-                direction: Vec3::Z,
-                color: Vec3::splat(1.2),
-                ambient: Vec3::splat(0.35),
-            },
+            sun,
             renderer: Box::new(renderer),
         })
     })
@@ -462,7 +583,18 @@ fn is_hue(pixel: [f32; 3], hue: Hue) -> bool {
 #[test]
 #[ignore = "needs a real GPU and a backend pin; run tests/run-gltf-e2e.sh"]
 fn an_imported_gltf_draws_its_own_texture_where_its_own_hierarchy_puts_it() {
-    let image = draw_the_imported_quad();
+    // Straight onto the face and a healthy ambient, so each swatch's own hue is
+    // what separates it from its neighbours rather than any shading gradient.
+    let image = draw_the_imported_quad(
+        &quad_glb(),
+        QUAD_CENTRE,
+        DirectionalLight {
+            direction: Vec3::Z,
+            color: Vec3::splat(1.2),
+            ambient: Vec3::splat(0.35),
+        },
+        None,
+    );
 
     // (right, bottom) → the hue the composed transform puts there. The quad's
     // corners before the parent's `Rz(90°)`: red at `(-x, +y)`, green at
@@ -519,3 +651,120 @@ fn an_imported_gltf_draws_its_own_texture_where_its_own_hierarchy_puts_it() {
         );
     }
 }
+
+/// **An imported `emissiveTexture` lights the half of the surface it covers and
+/// leaves the other half dark**, with every light in the frame off.
+///
+/// The importer half of `docs/plan/43-render-standards.md` §2's rung 3, on a
+/// device and through a real file: `crates/crcbl/tests/mesh_e2e/emissive_page.rs`
+/// already measures what the shader does with an emissive layer, and its layers
+/// are authored by hand into a `PageDesc`. What is unproven until here is that a
+/// `.glb`'s own `emissiveTexture` becomes that layer and that the row points at
+/// it — a conversion that dropped the image keeps `NO_PAGE`, whose texel is
+/// `1.0`, and would light **both** halves at the factor.
+///
+/// The sun is black and the ambient is zero, and the base colour is black
+/// besides, so the whole frame is the emission and nothing else. The passes
+/// that could put light in the dark half without the page's help — bloom
+/// spreading the lit half across the seam, the reflection march, the AA resolve
+/// — are turned off, on `mesh_e2e/emissive_page.rs`'s terms.
+///
+/// # Sweep
+///
+/// Measured 2026-09-06 before [`DARK_CEILING`] and [`BRIGHT_FLOOR`] were fixed.
+/// On radv both dark patches read `[0.0, 0.0, 0.0]` and both lit ones
+/// `[255.0, 188.0, 137.0]`; on lavapipe `[0.0, 0.0, 0.0]` and
+/// `[255.0, 187.0, 137.0]`. The dark half is *exactly* zero on both, which is
+/// what [`EMISSIVE_SIDE`] bought: the patch sits whole inside the black run
+/// rather than in the ramp at the seam.
+///
+/// # Sabotage
+///
+/// `crcbl_scene::gltf_render::material_rows` no longer writing
+/// `emissive_texture: layer(PageKind::Emissive)`, so the row keeps the
+/// `NO_PAGE` the importer left on it. Red on radv on 2026-09-06 with
+/// `"channel 0 of dark patch 0 read 255.0; the texel there is black, and a row
+/// that lost its emissive page would emit the factor across the whole quad"` —
+/// and the printed line reading `dark [[255.0, 188.0, 137.0], …]` against a lit
+/// half of exactly the same numbers, which is the shape that failure takes.
+#[test]
+#[ignore = "needs a real GPU and a backend pin; run tests/run-gltf-e2e.sh"]
+fn an_imported_emissive_texture_lights_the_half_of_the_quad_it_covers() {
+    let image = draw_the_imported_quad(
+        &emissive_quad_glb(),
+        Vec3::ZERO,
+        // No light at all, so every term but the emission is exactly zero and a
+        // reading is the page's own product.
+        DirectionalLight {
+            direction: Vec3::Z,
+            color: Vec3::ZERO,
+            ambient: Vec3::ZERO,
+        },
+        Some(EffectRequest {
+            programmatic: EffectOverride::none()
+                .force(RenderEffects::ANTIALIASING, Some(false))
+                .force(RenderEffects::REFLECTIONS, Some(false))
+                .force(RenderEffects::SHADOWS, Some(false))
+                .force(RenderEffects::BLOOM, Some(false))
+                .force(RenderEffects::AMBIENT_OCCLUSION, Some(false)),
+            ..EffectRequest::default()
+        }),
+    );
+
+    // Both rows of each half, because the split is a column of the image: a
+    // conversion that lost the UVs would put one texel over the whole quad, and
+    // then all four readings are one value — which fails the two checks below
+    // together, since a quad at the black texel misses the floor and one at the
+    // white texel misses the ceiling.
+    let dark = [
+        quadrant(&image, false, false),
+        quadrant(&image, false, true),
+    ];
+    let bright = [quadrant(&image, true, false), quadrant(&image, true, true)];
+    eprintln!(
+        "crcbl gltf e2e: the emissive split reads dark {dark:?} and bright {bright:?} \
+         against a factor of {EMISSIVE_FACTOR:?}"
+    );
+
+    for (patch, reading) in dark.iter().enumerate() {
+        for (channel, value) in reading.iter().enumerate() {
+            assert!(
+                *value < DARK_CEILING,
+                "channel {channel} of dark patch {patch} read {value:.1}; the texel there \
+                 is black, and a row that lost its emissive page would emit the factor \
+                 across the whole quad"
+            );
+        }
+    }
+    for (patch, reading) in bright.iter().enumerate() {
+        assert!(
+            reading[0] > BRIGHT_FLOOR,
+            "the red channel of lit patch {patch} read {:.1}; the texel there is white \
+             and the factor's first channel is {}, so this half has to be lit",
+            reading[0],
+            EMISSIVE_FACTOR[0]
+        );
+        assert!(
+            reading[0] > reading[1] && reading[1] > reading[2],
+            "lit patch {patch} read {reading:?}, which does not descend the way its \
+             factor {EMISSIVE_FACTOR:?} does — the row's radiance has to be in the \
+             product, not the texel alone"
+        );
+    }
+}
+
+/// The value, on an eight-bit channel of the read-back frame, that the unlit
+/// half must stay under.
+///
+/// Swept on both drivers before it was fixed, where it reads zero on each; a
+/// few levels of room rather than zero itself, because a driver whose bilinear
+/// rounding differs by a level is not the regression this guards. A row that
+/// lost its emissive page reads the lit half's numbers here instead, which is
+/// two orders away.
+const DARK_CEILING: f32 = 8.0;
+
+/// The value the lit half's red channel must reach.
+///
+/// Swept on both drivers, where it saturates at 255 — the factor's first
+/// channel is one and the texel is white.
+const BRIGHT_FLOOR: f32 = 200.0;

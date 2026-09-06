@@ -35,6 +35,39 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **The glTF importer fills the packed and emissive page columns.**
+  `docs/plan/43-render-standards.md` §2's rung 3, second half:
+  `crcbl_scene::gltf_import` now reads
+  `pbrMetallicRoughness.metallicRoughnessTexture`, `occlusionTexture` and
+  `emissiveTexture` beside the two slots it already read, and reports each on
+  `GltfScene::metallic_roughness_textures`, `occlusion_textures` and
+  `emissive_textures` — the same "which image, which UV set" seam
+  `base_color_textures` and `normal_textures` ride, with the page layer left to
+  `crcbl_scene::gltf_render`. Every shelf model with a metallic-roughness,
+  occlusion or emissive map now draws with it.
+
+  **The packing rule is glTF's own**, and `gltf_render::pack_page` has both
+  cases. `metallicRoughnessTexture` supplies `g` and `b`; `occlusionTexture`
+  supplies `r`. When the two name the **same image** — the convention, and what
+  BoomBox, WaterBottle, Corset, BarramundiFish and FlightHelmet all ship — that
+  image is the layer as it stands. When they name **different images**
+  (SciFiHelmet), the occlusion image's `r` is written into the packed layer,
+  resampled onto the page's extent first. A channel the document named no image
+  for is `0xFF`, which is the identity of each of the three products. A layer is
+  keyed by the _pair_, so two materials naming the same pair share one and two
+  that pair one map with different occlusion maps do not.
+
+  **`pack_page` now returns a `[Vec<Option<u32>>; PageKind::ALL.len()]` table**
+  indexed by `PageKind::index`, one entry per material per kind, rather than one
+  positional `Vec` per kind — which is what lets a packed layer, built from a
+  pair of images, be answered for at all. `material_rows` takes that table and
+  fills all four columns the same way.
+
+  **`occlusionTexture.strength` is still not carried.** `GpuMaterial` has no
+  field for it and `mesh.slang` shades at glTF's default of `1.0`, so a document
+  that dials the channel back loses that; none of the nine shelf models does.
+  `docs/backlog.md` holds what filling it would take.
+
 - **The packed metallic-roughness-occlusion page and the emissive page, on the
   device.** `docs/plan/43-render-standards.md` §2's rung 3, first half:
   `crcbl_render::scene::PageKind` gains `MetallicRoughnessOcclusion` (linear

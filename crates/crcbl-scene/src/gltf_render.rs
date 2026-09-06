@@ -272,8 +272,8 @@ pub fn build_render_scene(scene: &GltfScene, key: &Path) -> RenderScene {
         list: Vec::new(),
     };
 
-    let (page, base_layers, normal_layers) = pack_page(scene, &mut skips);
-    let materials = material_rows(scene, &base_layers, &normal_layers, &mut skips);
+    let (page, layers) = pack_page(scene, &mut skips);
+    let materials = material_rows(scene, &layers, &mut skips);
     let (meshes, origins, slots) = resident_meshes(scene, &mut skips);
     let instances = place_instances(scene, &slots, &mut skips);
 
@@ -343,46 +343,89 @@ fn image_label(scene: &GltfScene, image: usize) -> String {
 // The texture page
 // ---------------------------------------------------------------------------
 
-/// Decode every image the document actually uses, resample each page's onto that
-/// page's own square extent, and return the page with a map from image index to
-/// layer for each of its two kinds: base colour, then normal.
+/// The layer each material samples on each [`PageKind`]: `table[kind.index()]`
+/// is that kind's own list, parallel to [`GltfScene::materials`].
 ///
-/// A map is `None` for an image that is not in that page — never wanted, never
-/// decoded, or decoded and refused — and a material naming one keeps
+/// **Indexed by material rather than by image**, which is what lets one entry
+/// answer for the packed page: a `MetallicRoughnessOcclusion` layer is built
+/// from a *pair* of images and has no single image to be keyed by. It is also
+/// where the UV set is settled — see [`sampled_images`] — so a row is read out
+/// of this with no second question to ask.
+type LayerTable = [Vec<Option<u32>>; PageKind::ALL.len()];
+
+/// The byte a channel of the packed page carries where the document named no
+/// image to fill it.
+///
+/// Full, because every one of glTF's three products through this page is a
+/// multiplication: `roughness * g`, `metallic * b` and an indirect term times
+/// `r`, so `0xFF` — exactly `1.0` on the linear `Rgba8Unorm` image the page is
+/// created as — is the value that changes nothing. A material naming only
+/// `occlusionTexture` therefore keeps its roughness and metallic *factors*
+/// across its whole area, and one naming only `metallicRoughnessTexture` is
+/// unoccluded, which is what each of those documents means.
+const PACKED_NEUTRAL: u8 = 0xFF;
+
+/// Decode every image the document actually uses, resample each page's onto that
+/// page's own square extent, and return the page beside a [`LayerTable`].
+///
+/// An entry is `None` where the material samples nothing on that kind — it
+/// names no texture, names one on a UV set this importer does not read, or
+/// names an image that was never decoded or was refused — and the row keeps
 /// [`GpuMaterial::NO_PAGE`](mesh::GpuMaterial::NO_PAGE) in that column.
 ///
 /// **Each [`PageKind`] is sized from its own images**, so a document with a
 /// 2048² albedo map and a 512² normal map allocates one of each rather than two
 /// of the larger — and a kind no material names is left empty, which costs one
 /// texel on the device rather than an image nothing samples.
-fn pack_page(
-    scene: &GltfScene,
-    skips: &mut Skips<'_>,
-) -> (PageDesc<'static>, Vec<Option<u32>>, Vec<Option<u32>>) {
-    let base_wanted = wanted_images(
+///
+/// **Four kinds and five slots**, because glTF splits the packed page in two:
+/// `pbrMetallicRoughness.metallicRoughnessTexture` supplies `g` and `b`,
+/// `occlusionTexture` supplies `r`, and [`packed_layer`] is what joins them.
+fn pack_page(scene: &GltfScene, skips: &mut Skips<'_>) -> (PageDesc<'static>, LayerTable) {
+    let base = sampled_images(
         scene.base_color_textures(),
         "baseColorTexture",
         "the surface shades with its base-colour factor alone",
         skips,
     );
-    let normal_wanted = wanted_images(
+    let normal = sampled_images(
         scene.normal_textures(),
         "normalTexture",
         "the surface shades with its interpolated normal and no normal map",
         skips,
     );
+    let metallic_roughness = sampled_images(
+        scene.metallic_roughness_textures(),
+        "metallicRoughnessTexture",
+        "the surface shades with its metallic and roughness factors across its whole area",
+        skips,
+    );
+    let occlusion = sampled_images(
+        scene.occlusion_textures(),
+        "occlusionTexture",
+        "the surface's indirect light is unoccluded",
+        skips,
+    );
+    let emissive = sampled_images(
+        scene.emissive_textures(),
+        "emissiveTexture",
+        "the surface emits its emissive factor across its whole area",
+        skips,
+    );
+
+    // One page's images, and then everything: the packed page is the one whose
+    // images come from two slots.
+    let base_images = images_in(&[&base]);
+    let normal_images = images_in(&[&normal]);
+    let packed_images = images_in(&[&metallic_roughness, &occlusion]);
+    let emissive_images = images_in(&[&emissive]);
 
     // Decoded once per image rather than once per slot: a document naming one
-    // image from both slots is legal, and decoding it twice would push the same
-    // failure into `skips` twice and report one loss as two.
-    let mut wanted = base_wanted.clone();
-    for image in &normal_wanted {
-        if !wanted.contains(image) {
-            wanted.push(*image);
-        }
-    }
+    // image from two slots is legal — and for the packed page it is the
+    // *convention* — so decoding it twice would push the same failure into
+    // `skips` twice and report one loss as two.
     let mut decoded: Vec<(usize, crcbl_sprite::load::Rgba8)> = Vec::new();
-    for image in wanted {
+    for image in images_in(&[&base, &normal, &metallic_roughness, &occlusion, &emissive]) {
         match decode_image(scene, image, skips) {
             Some(rgba) => decoded.push((image, rgba)),
             None => continue,
@@ -402,71 +445,222 @@ fn pack_page(
             .max()
             .map(|side| side.min(MAX_PAGE_EXTENT))
     };
-    let base_extent = extent_of(&base_wanted);
-    let normal_extent = extent_of(&normal_wanted);
+    let extents = [
+        extent_of(&base_images),
+        extent_of(&normal_images),
+        extent_of(&packed_images),
+        extent_of(&emissive_images),
+    ];
 
     let mut page = PageDesc::empty();
-    for (kind, extent) in [
-        (PageKind::BaseColor, base_extent),
-        (PageKind::Normal, normal_extent),
-    ] {
+    for (kind, extent) in PageKind::ALL.into_iter().zip(extents) {
         if let Some(extent) = extent {
             page.set_extent(kind, extent);
         }
     }
-    let mut base_layers = vec![None; scene.images().len()];
-    let mut normal_layers = vec![None; scene.images().len()];
-    for (image, rgba) in decoded {
-        // The two pages are two device images, so one texel run cannot be
-        // shared between them; an image both slots name is resampled per page.
-        if base_wanted.contains(&image) {
-            let extent = base_extent.unwrap_or_else(|| {
-                unreachable!("this image is one of the ones `base_extent` was taken over")
-            });
-            base_layers[image] = Some(page.push_layer(
-                PageKind::BaseColor,
-                crcbl_render::mip::resample(&rgba.pixels, rgba.width, rgba.height, extent),
-            ));
+    let mut table: LayerTable = std::array::from_fn(|_| vec![None; scene.materials().len()]);
+
+    // The three kinds one image fills on its own. **The filter differs per
+    // kind and the difference is the whole point**: `resample` decodes an sRGB
+    // curve and weights by alpha, which is right for the two colour pages and
+    // wrong for the others; `normal_resample` averages decoded vectors plainly
+    // and renormalises. An image two of these slots name is therefore resampled
+    // twice with two filters, which is the right answer rather than an
+    // inefficiency — the pages hold different kinds of value and neither filter
+    // is correct for the other's.
+    type Filter = fn(&[u8], u32, u32, u32) -> Vec<u8>;
+    for (kind, slot, images, filter) in [
+        (
+            PageKind::BaseColor,
+            &base,
+            &base_images,
+            crcbl_render::mip::resample as Filter,
+        ),
+        (
+            PageKind::Normal,
+            &normal,
+            &normal_images,
+            crcbl_render::mip::normal_resample as Filter,
+        ),
+        (
+            PageKind::Emissive,
+            &emissive,
+            &emissive_images,
+            crcbl_render::mip::resample as Filter,
+        ),
+    ] {
+        let Some(extent) = extents[kind.index()] else {
+            continue;
+        };
+        let mut by_image: Vec<Option<u32>> = vec![None; scene.images().len()];
+        for (image, rgba) in &decoded {
+            if images.contains(image) {
+                by_image[*image] = Some(
+                    page.push_layer(kind, filter(&rgba.pixels, rgba.width, rgba.height, extent)),
+                );
+            }
         }
-        if normal_wanted.contains(&image) {
-            // **`normal_resample`, not `resample`** — the filter that averages
-            // the decoded vectors plainly and renormalises, where the one above
-            // decodes an sRGB curve and weights by alpha. The same image in both
-            // slots is therefore resampled twice with two filters, which is the
-            // right answer rather than an inefficiency: the two pages hold
-            // different kinds of value and neither filter is correct for the
-            // other's.
-            let extent = normal_extent.unwrap_or_else(|| {
-                unreachable!("this image is one of the ones `normal_extent` was taken over")
-            });
-            normal_layers[image] = Some(page.push_layer(
-                PageKind::Normal,
-                crcbl_render::mip::normal_resample(&rgba.pixels, rgba.width, rgba.height, extent),
-            ));
+        for (material, image) in slot.iter().enumerate() {
+            table[kind.index()][material] = image.and_then(|image| by_image[image]);
         }
     }
-    (page, base_layers, normal_layers)
+
+    /// The pair of images one packed layer was built from: the material's
+    /// `metallicRoughnessTexture` and its `occlusionTexture`, each [`None`]
+    /// where the material named none or where the image did not decode.
+    type PackedKey = (Option<usize>, Option<usize>);
+
+    // And the packed page, whose layer is keyed by that *pair* rather than by
+    // one image: two materials naming the same metallic-roughness map and the
+    // same occlusion map share a layer, and two that pair the same
+    // metallic-roughness map with different occlusion maps do not, because
+    // those are two different sets of texels.
+    if let Some(extent) = extents[PageKind::MetallicRoughnessOcclusion.index()] {
+        // Keyed on the images that *decoded*, so a material whose occlusion
+        // image was refused shares the layer of one that named no occlusion at
+        // all — the two shade identically, and `decode_image` has already said
+        // why once.
+        let live = |image: Option<usize>| {
+            image.filter(|image| decoded.iter().any(|(decoded, _)| decoded == image))
+        };
+        let mut packed: Vec<(PackedKey, u32)> = Vec::new();
+        for material in 0..scene.materials().len() {
+            let pair: PackedKey = (
+                live(metallic_roughness[material]),
+                live(occlusion[material]),
+            );
+            if pair == (None, None) {
+                continue;
+            }
+            let layer = match packed.iter().find(|(key, _)| *key == pair) {
+                Some((_, layer)) => *layer,
+                None => {
+                    let level0 = packed_layer(&decoded, pair.0, pair.1, extent);
+                    let layer = page.push_layer(PageKind::MetallicRoughnessOcclusion, level0);
+                    packed.push((pair, layer));
+                    layer
+                }
+            };
+            table[PageKind::MetallicRoughnessOcclusion.index()][material] = Some(layer);
+        }
+    }
+
+    (page, table)
 }
 
-/// Which of [`GltfScene::images`] one material slot's textures name, in the
-/// order they are first asked for, with a [`Skip`] for each that samples a UV
-/// set this importer does not read.
+/// One packed metallic-roughness-occlusion layer, `extent²` RGBA8 texels in
+/// glTF 2.0's own channel assignment: occlusion in `r`, roughness in `g`,
+/// metallic in `b`.
+///
+/// `metallic_roughness` and `occlusion` are the document's two images, each
+/// already decoded and each [`None`] where the material named none. Both
+/// [`None`] is not a layer at all and this is not called for it.
+///
+/// **The same image in both slots is the layer as it stands** — that is how
+/// glTF authors pack these three channels, and it is what the shelf's BoomBox,
+/// WaterBottle, Corset, BarramundiFish and FlightHelmet all do — so nothing is
+/// copied over `r` in that case. **Two different images** is the other legal
+/// arrangement (SciFiHelmet), and then the occlusion image's `r` is written
+/// into the metallic-roughness image's, resampled onto this page's extent
+/// first because the two are not obliged to be the same size.
+///
+/// A channel with no image behind it is [`PACKED_NEUTRAL`].
+///
+/// # Panics
+///
+/// If either image is not in `decoded`, which is `pack_page`'s to guarantee.
+fn packed_layer(
+    decoded: &[(usize, crcbl_sprite::load::Rgba8)],
+    metallic_roughness: Option<usize>,
+    occlusion: Option<usize>,
+    extent: u32,
+) -> Vec<u8> {
+    let resampled = |image: usize| {
+        let rgba = decoded
+            .iter()
+            .find(|(decoded, _)| *decoded == image)
+            .map(|(_, rgba)| rgba)
+            .unwrap_or_else(|| unreachable!("`pack_page` packs only images it decoded"));
+        // **`linear_resample`**, the filter for four independent linear
+        // channels: no transfer curve, no alpha weight and no renormalise, so
+        // a minified texel is the area's mean roughness rather than its mean
+        // through a curve, and nothing couples roughness to metalness.
+        crcbl_render::mip::linear_resample(&rgba.pixels, rgba.width, rgba.height, extent)
+    };
+    let texels = extent as usize * extent as usize;
+    let mut level0 = match metallic_roughness {
+        Some(image) => resampled(image),
+        None => vec![PACKED_NEUTRAL; texels * 4],
+    };
+    match occlusion {
+        // The convention: one image carries all three channels, so its own `r`
+        // is already the occlusion and copying it onto itself would be a
+        // resample for nothing.
+        Some(image) if Some(image) == metallic_roughness => {}
+        Some(image) => {
+            for (texel, from) in level0
+                .chunks_exact_mut(4)
+                .zip(resampled(image).chunks_exact(4))
+            {
+                texel[0] = from[0];
+            }
+        }
+        None => {
+            for texel in level0.chunks_exact_mut(4) {
+                texel[0] = PACKED_NEUTRAL;
+            }
+        }
+    }
+    level0
+}
+
+/// Every image the slots in `slots` name between them, deduplicated, in the
+/// order they are first asked for.
+///
+/// The order is what decides layer order within a kind, so it is the
+/// document's own rather than a set's.
+fn images_in(slots: &[&[Option<usize>]]) -> Vec<usize> {
+    let mut images: Vec<usize> = Vec::new();
+    for slot in slots {
+        for image in slot.iter().flatten() {
+            if !images.contains(image) {
+                images.push(*image);
+            }
+        }
+    }
+    images
+}
+
+/// Which of [`GltfScene::images`] each material samples through one slot,
+/// **parallel to `textures`**, with a [`Skip`] for each that samples a UV set
+/// this importer does not read.
 ///
 /// `feature` is the slot the way the specification spells it, and `instead` is
 /// what the surface does without it — the two halves of the message that differ
-/// between the base-colour and normal slots.
+/// between the five slots.
 ///
-/// An image no live slot names is deliberately left out: a layer per unused
-/// image is device memory for nothing.
-fn wanted_images(
+/// **`None` is "nothing this importer can sample is there"**, and the two ways
+/// of arriving at it answer alike deliberately: the material names no texture
+/// in this slot, or it names one on `TEXCOORD_1` and the primitive carries no
+/// such coordinates. Deciding the UV set *here* is what stops an image put on
+/// the page for the material that asked for set 0 being handed to a material
+/// that asked for set 1 — which would sample it with coordinates the file did
+/// not mean, silently, having already logged that it would not.
+///
+/// An image no live slot names is deliberately left out of every page: a layer
+/// per unused image is device memory for nothing.
+fn sampled_images(
     textures: &[Option<GltfTexture>],
     feature: &'static str,
     instead: &str,
     skips: &mut Skips<'_>,
-) -> Vec<usize> {
-    let mut wanted: Vec<usize> = Vec::new();
+) -> Vec<Option<usize>> {
+    let mut sampled: Vec<Option<usize>> = Vec::with_capacity(textures.len());
     for (material, texture) in textures.iter().enumerate() {
-        let Some(texture) = texture else { continue };
+        let Some(texture) = texture else {
+            sampled.push(None);
+            continue;
+        };
         if texture.tex_coord() != 0 {
             skips.push(
                 "texCoord",
@@ -477,13 +671,12 @@ fn wanted_images(
                     texture.tex_coord()
                 ),
             );
+            sampled.push(None);
             continue;
         }
-        if !wanted.contains(&texture.image()) {
-            wanted.push(texture.image());
-        }
+        sampled.push(Some(texture.image()));
     }
-    wanted
+    sampled
 }
 
 /// The PNG magic number: eight bytes that no other format starts with.
@@ -529,7 +722,7 @@ fn decode_image(
             at,
             format!(
                 "its bytes are {found}, and this build decodes PNG only; every material \
-                 naming it shades with its base-colour factor alone"
+                 naming it shades without it, through its factors alone"
             ),
         );
         return None;
@@ -588,50 +781,21 @@ const GLTF_DEFAULT_ROW: mesh::GpuMaterial = mesh::GpuMaterial {
     flags: 0,
 };
 
-/// Which layer of one page a material's texture reference resolves to, or
-/// `none` — that page's own "no layer" value — when it resolves to nothing.
-///
-/// **The UV set is re-checked here, not only in `pack_page`.** Two materials can
-/// name one image with different `texCoord`s, and then the image *is* on the
-/// page — put there for the one that asked for set 0. Reading the layer map
-/// alone would hand it to the other one too, which would sample it with
-/// coordinates from a set the file did not mean, silently, having already logged
-/// that it would not.
-///
-/// An image that never reached the page falls back the same way, and `pack_page`
-/// has already said why; this only makes the row honest about it.
-fn layer_at(texture: Option<GltfTexture>, layers: &[Option<u32>], none: u32) -> u32 {
-    match texture {
-        Some(texture) if texture.tex_coord() == 0 => layers
-            .get(texture.image())
-            .copied()
-            .flatten()
-            .unwrap_or(none),
-        Some(_) | None => none,
-    }
-}
-
 /// The material table: the glTF default first, then the document's own rows with
 /// their texture columns pointed at the page.
 fn material_rows(
     scene: &GltfScene,
-    base_layers: &[Option<u32>],
-    normal_layers: &[Option<u32>],
+    layers: &LayerTable,
     skips: &mut Skips<'_>,
 ) -> Vec<mesh::GpuMaterial> {
     let mut rows = Vec::with_capacity(scene.materials().len() + 1);
     rows.push(GLTF_DEFAULT_ROW);
     for (index, row) in scene.materials().iter().enumerate() {
-        let layer = layer_at(
-            scene.base_color_textures()[index],
-            base_layers,
-            mesh::GpuMaterial::NO_PAGE,
-        );
-        let normal_layer = layer_at(
-            scene.normal_textures()[index],
-            normal_layers,
-            mesh::GpuMaterial::NO_PAGE,
-        );
+        // Every column the same way: `pack_page` has already settled which
+        // layer this material samples on each kind, UV set and lost images
+        // included, so there is nothing left to decide here.
+        let layer =
+            |kind: PageKind| layers[kind.index()][index].unwrap_or(mesh::GpuMaterial::NO_PAGE);
         if row.base_color[3] < 1.0 {
             skips.push(
                 "alphaMode",
@@ -644,11 +808,14 @@ fn material_rows(
             );
         }
         rows.push(mesh::GpuMaterial {
-            base_color_texture: layer,
+            base_color_texture: layer(PageKind::BaseColor),
             // `normal_scale` is already the document's: it is a material factor
             // and the importer put it on the row. Only the layer is this
-            // module's to fill.
-            normal_texture: normal_layer,
+            // module's to fill — and the same is true of `metallic`,
+            // `roughness` and `emissive` beside the two columns below.
+            normal_texture: layer(PageKind::Normal),
+            metallic_roughness_occlusion_texture: layer(PageKind::MetallicRoughnessOcclusion),
+            emissive_texture: layer(PageKind::Emissive),
             ..*row
         });
     }
@@ -1119,7 +1286,8 @@ mod tests {
         skinned_pair_bin, skinned_pair_json, textured_glb, textured_parts, triangle_json,
     };
     use crate::gltf_import::tests::{
-        NORMAL_SCALE, TANGENTS, normal_mapped_glb, tangent_bin, tangent_glb, tangent_json,
+        EMISSIVE_FACTOR, NORMAL_SCALE, TANGENTS, emissive_textured_glb, normal_mapped_glb,
+        packed_glb, tangent_bin, tangent_glb, tangent_json,
     };
     use crcbl_shaders::vertex::QTangent;
 
@@ -1416,6 +1584,285 @@ mod tests {
             ),
             (0, 0),
             "each kind numbers its own layers from zero"
+        );
+    }
+
+    /// [`OCCLUSION_SIDE`]² RGBA8 texels whose **red** channels are four
+    /// different values and whose other channels are zero.
+    ///
+    /// Zero rather than anything plausible, because the claim is that `r` alone
+    /// is taken from this image: a packer that copied the whole texel would
+    /// leave the packed layer's roughness and metalness at zero, and a packer
+    /// that took the wrong channel would write zero into `r`.
+    fn occlusion_side_texels() -> Vec<u8> {
+        (0..OCCLUSION_SIDE * OCCLUSION_SIDE)
+            .flat_map(|index| {
+                let red = 0x11 * (u8::try_from(index).expect("four texels") + 1);
+                [red, 0x00, 0x00, 0xFF]
+            })
+            .collect()
+    }
+
+    /// The side of [`two_map_packed_glb`]'s `occlusionTexture`, in texels —
+    /// smaller than the `metallicRoughnessTexture` beside it, so the resample
+    /// onto the packed page's extent is exercised.
+    const OCCLUSION_SIDE: u32 = 2;
+
+    /// A one-triangle document whose material names a **4×4**
+    /// `metallicRoughnessTexture` and a **2×2** `occlusionTexture` — two
+    /// different images, which is the arrangement SciFiHelmet ships and the one
+    /// that makes the packer do work.
+    ///
+    /// [`two_extents_glb`]'s construction exactly, with the second image spliced
+    /// into the `BIN` chunk and the JSON the same way.
+    fn two_map_packed_glb() -> Vec<u8> {
+        let (json, mut bin) = textured_parts(
+            &png_bytes(BASE_SIDE, BASE_SIDE, &base_side_texels()),
+            "image/png",
+            0,
+        );
+        let base_bin_len = bin.len();
+        while !bin.len().is_multiple_of(4) {
+            bin.push(0);
+        }
+        let occlusion_offset = bin.len();
+        let occlusion_png = png_bytes(OCCLUSION_SIDE, OCCLUSION_SIDE, &occlusion_side_texels());
+        bin.extend_from_slice(&occlusion_png);
+
+        let json = replacing(
+            &json,
+            r#""textures": [{ "source": 0 }],"#,
+            r#""textures": [{ "source": 0 }, { "source": 1 }],"#,
+        );
+        let json = replacing(
+            &json,
+            r#""images": [{ "name": "paint", "bufferView": 4, "mimeType": "image/png" }],"#,
+            r#""images": [
+    { "name": "paint", "bufferView": 4, "mimeType": "image/png" },
+    { "name": "shade", "bufferView": 5, "mimeType": "image/png" }
+  ],"#,
+        );
+        let json = replacing(
+            &json,
+            r#""baseColorTexture": { "index": 0, "texCoord": 0 }
+    }
+  }],"#,
+            r#""metallicRoughnessTexture": { "index": 0, "texCoord": 0 }
+    },
+    "occlusionTexture": { "index": 1, "texCoord": 0 }
+  }],"#,
+        );
+        let json = replacing(
+            &json,
+            &format!("\n  ],\n  \"buffers\": [{{ \"byteLength\": {base_bin_len} }}]"),
+            &format!(
+                ",\n    {{ \"buffer\": 0, \"byteOffset\": {occlusion_offset}, \"byteLength\": {} }}\n                   ],\n  \"buffers\": [{{ \"byteLength\": {} }}]",
+                occlusion_png.len(),
+                bin.len()
+            ),
+        );
+        glb(&json, Some(&bin))
+    }
+
+    /// **One image named by both halves of the packed page is one layer, as it
+    /// stands.**
+    ///
+    /// glTF splits occlusion, roughness and metallic across two slots and
+    /// authors pack all three into one image — five of the nine models on the
+    /// viewer's shelf do. The packer has to see that the two slots name the same
+    /// image and hand the device that image, rather than building two layers or
+    /// overwriting `r` with a resample of the same bytes.
+    ///
+    /// # Sabotage
+    ///
+    /// `packed_layer`'s same-image arm writing [`PACKED_NEUTRAL`] into `r`
+    /// instead of leaving the image alone. Red on 2026-09-06 with `"assertion
+    /// `left == right` failed: an image both slots name is the layer, texel for
+    /// texel: glTF's own packing is already r/g/b"`, `left` carrying `255` in
+    /// every red lane against the image's own `255, 0, 0, 255`.
+    #[test]
+    fn one_image_named_by_both_packed_slots_becomes_one_layer_as_it_stands() {
+        let converted = convert(&packed_glb());
+        assert_eq!(converted.skipped, [], "{:?}", converted.skipped);
+
+        let page = &converted.scene.page;
+        assert_eq!(
+            page.extent(PageKind::MetallicRoughnessOcclusion),
+            2,
+            "the packed page is sized by the one image in it"
+        );
+        assert_eq!(
+            page.layers(PageKind::MetallicRoughnessOcclusion).len(),
+            1,
+            "the two slots name one image, so they are one layer and not two"
+        );
+        assert_eq!(
+            &page.layers(PageKind::MetallicRoughnessOcclusion)[0][..],
+            &IMAGE_TEXELS[..],
+            "an image both slots name is the layer, texel for texel: glTF's own \
+             packing is already r/g/b"
+        );
+        for kind in [PageKind::BaseColor, PageKind::Normal, PageKind::Emissive] {
+            assert!(
+                page.layers(kind).is_empty(),
+                "this document names no {} texture",
+                kind.label()
+            );
+        }
+
+        assert_eq!(
+            converted.scene.materials[1],
+            mesh::GpuMaterial {
+                base_color: BASE_COLOR,
+                metallic_roughness_occlusion_texture: 0,
+                ..GLTF_DEFAULT_ROW
+            },
+            "the row keeps its factors and gains the packed page layer",
+        );
+    }
+
+    /// **A separate occlusion image supplies `r` and nothing else**, resampled
+    /// onto the packed page's extent.
+    ///
+    /// The other legal arrangement, and SciFiHelmet's: two images at two sizes.
+    /// The assertion is byte for byte over the whole layer, because the failure
+    /// this guards against is a channel — a packer that copied the occlusion
+    /// texel whole would zero the roughness and metalness this document
+    /// authored, and one that never wrote `r` at all would leave the
+    /// metallic-roughness image's unused red channel there instead.
+    ///
+    /// # Sabotage
+    ///
+    /// `packed_layer`'s separate-image arm writing `from[1]` — the occlusion
+    /// image's green, which this fixture authors as zero — into `texel[0]`.
+    /// Red on 2026-09-06 with `"assertion `left == right` failed: the occlusion
+    /// image supplies r, resampled onto the packed page's extent, and the
+    /// metallic-roughness image supplies everything else"`, `left` opening
+    /// `[0, 255, 0, 255, …]` where `right` opens `[17, 255, 0, 255, …]`.
+    #[test]
+    fn a_separate_occlusion_image_lands_its_red_in_the_packed_layer() {
+        let converted = convert(&two_map_packed_glb());
+        assert_eq!(converted.skipped, [], "{:?}", converted.skipped);
+
+        let page = &converted.scene.page;
+        assert_eq!(
+            page.extent(PageKind::MetallicRoughnessOcclusion),
+            BASE_SIDE,
+            "the packed page is sized by the larger of the two images it is made of"
+        );
+
+        // The metallic-roughness image at this extent is itself — the resample
+        // is an identity — and the occlusion image, half the side, covers a 2×2
+        // block of it per texel.
+        let occlusion = occlusion_side_texels();
+        let want: Vec<u8> = base_side_texels()
+            .chunks_exact(4)
+            .enumerate()
+            .flat_map(|(index, texel)| {
+                let index = u32::try_from(index).expect("sixteen texels");
+                let (x, y) = (index % BASE_SIDE, index / BASE_SIDE);
+                let scale = BASE_SIDE / OCCLUSION_SIDE;
+                let at = ((y / scale) * OCCLUSION_SIDE + x / scale) as usize * 4;
+                [occlusion[at], texel[1], texel[2], texel[3]]
+            })
+            .collect();
+        assert_eq!(
+            &page.layers(PageKind::MetallicRoughnessOcclusion)[0][..],
+            &want[..],
+            "the occlusion image supplies r, resampled onto the packed page's extent, \
+             and the metallic-roughness image supplies everything else"
+        );
+        assert_eq!(
+            converted.scene.materials[1].metallic_roughness_occlusion_texture, 0,
+            "the row names the layer the pair made"
+        );
+    }
+
+    /// **An `emissiveTexture` is its own page, beside the factor on the row.**
+    ///
+    /// # Sabotage
+    ///
+    /// `pack_page`'s `extents` table taking the emissive page's size from
+    /// `extent_of(&normal_images)`, which this document leaves empty. Red on
+    /// 2026-09-06 with `"assertion `left == right` failed: the emissive page is
+    /// sized by the one image in it / left: 0 / right: 2"`.
+    #[test]
+    fn an_emissive_map_lands_on_its_own_page_layer_and_the_row_names_it() {
+        let converted = convert(&emissive_textured_glb());
+        assert_eq!(converted.skipped, [], "{:?}", converted.skipped);
+
+        let page = &converted.scene.page;
+        assert_eq!(
+            page.extent(PageKind::Emissive),
+            2,
+            "the emissive page is sized by the one image in it"
+        );
+        assert_eq!(
+            &page.layers(PageKind::Emissive)[0][..],
+            &IMAGE_TEXELS[..],
+            "the image arrives texel for texel, in row-major order, unresampled"
+        );
+        for kind in [
+            PageKind::BaseColor,
+            PageKind::Normal,
+            PageKind::MetallicRoughnessOcclusion,
+        ] {
+            assert!(
+                page.layers(kind).is_empty(),
+                "this document names no {} texture",
+                kind.label()
+            );
+        }
+
+        assert_eq!(
+            converted.scene.materials[1],
+            mesh::GpuMaterial {
+                base_color: BASE_COLOR,
+                emissive: EMISSIVE_FACTOR,
+                emissive_texture: 0,
+                ..GLTF_DEFAULT_ROW
+            },
+            "the row keeps the importer's factor and gains the page layer",
+        );
+    }
+
+    /// **A document naming none of the three new slots allocates neither new
+    /// page and points neither new column.**
+    ///
+    /// The control for the three above, and the claim that stops the packer
+    /// building a neutral layer for every material that did not ask for one:
+    /// `PACKED_NEUTRAL` exists to fill a *missing channel* of a page a document
+    /// asked for, not to conjure a page it did not.
+    ///
+    /// # Sabotage
+    ///
+    /// `pack_page` calling `page.set_extent(kind, extent.unwrap_or(1))` for
+    /// every kind, so a kind no image reached gets a page anyway. Red on
+    /// 2026-09-06 with `"assertion `left == right` failed: a document naming
+    /// none of the three allocates neither new page / left: 1 / right: 0"`.
+    #[test]
+    fn a_document_naming_none_of_the_three_new_slots_leaves_both_columns_unpointed() {
+        let converted = convert_json(&triangle_json(BIN_CHUNK_BUFFER));
+
+        assert_eq!(converted.skipped, []);
+        for kind in [PageKind::MetallicRoughnessOcclusion, PageKind::Emissive] {
+            assert_eq!(
+                converted.scene.page.extent(kind),
+                0,
+                "a document naming none of the three allocates neither new page"
+            );
+            assert!(
+                converted.scene.page.layers(kind).is_empty(),
+                "a kind no image reached carries no layers at all"
+            );
+        }
+        assert_eq!(
+            (
+                converted.scene.materials[1].metallic_roughness_occlusion_texture,
+                converted.scene.materials[1].emissive_texture
+            ),
+            (mesh::GpuMaterial::NO_PAGE, mesh::GpuMaterial::NO_PAGE),
+            "both new columns keep the value that means the fragment stage reads no page"
         );
     }
 

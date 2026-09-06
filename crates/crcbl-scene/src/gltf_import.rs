@@ -57,13 +57,21 @@
 //! column is left at [`GpuMaterial::NO_PAGE`] for the page builder to point.
 //! Its `scale` is not a page layer and does go on the row — see `build`.
 //!
-//! `metallicRoughnessTexture`, `occlusionTexture` and `emissiveTexture` are not
-//! extracted. Not an oversight and not a decode question: [`GpuMaterial`] has a
-//! column for each and no shader reads one, so an image pulled out for them
-//! would be a page layer nothing samples. `docs/plan/43-render-standards.md`
-//! §2's later rungs are what spend them. The one whose absence is *visible* is
-//! the metallic-roughness map: a document that varies gloss over a surface
-//! arrives with its factor applied flat across it.
+//! `metallicRoughnessTexture`, `occlusionTexture` and `emissiveTexture` ride the
+//! same seam, and they arrive on it since 2026-09-06:
+//! [`GltfScene::metallic_roughness_textures`],
+//! [`GltfScene::occlusion_textures`] and [`GltfScene::emissive_textures`] each
+//! say which image a material's slot names, and each row's page column is left
+//! at [`GpuMaterial::NO_PAGE`] for [`crate::gltf_render`] to point. The first
+//! two land on one page between them — glTF packs occlusion, roughness and
+//! metallic into one image's `r`, `g` and `b`, and the page builder is what
+//! puts them there.
+//!
+//! **`occlusionTexture.strength` is not read.** glTF 2.0 §3.9.5 dials the
+//! channel back towards one, [`GpuMaterial`] has no field to carry the factor
+//! and `shaders/mesh.slang` shades at the specification's default of `1.0`, so
+//! a document that writes a strength loses it silently — `docs/backlog.md`
+//! holds what filling it would take.
 //!
 //! # An image that will not resolve is skipped, where a buffer that will not is
 //! refused
@@ -167,6 +175,9 @@ pub struct GltfScene {
     materials: Vec<GpuMaterial>,
     base_color_textures: Vec<Option<GltfTexture>>,
     normal_textures: Vec<Option<GltfTexture>>,
+    metallic_roughness_textures: Vec<Option<GltfTexture>>,
+    occlusion_textures: Vec<Option<GltfTexture>>,
+    emissive_textures: Vec<Option<GltfTexture>>,
     images: Vec<GltfImage>,
     nodes: Vec<GltfNode>,
     instances: Vec<GltfInstance>,
@@ -225,6 +236,55 @@ impl GltfScene {
     #[must_use]
     pub fn normal_textures(&self) -> &[Option<GltfTexture>] {
         &self.normal_textures
+    }
+
+    /// Which image each material's `pbrMetallicRoughness.metallicRoughnessTexture`
+    /// names, on [`base_color_textures`](Self::base_color_textures)' terms
+    /// exactly.
+    ///
+    /// glTF 2.0 §3.9.2 puts roughness in the image's `g` and metallic in its
+    /// `b`, and leaves `r` to `occlusionTexture`. The two slots are therefore
+    /// halves of one page rather than two pages, and
+    /// [`crate::gltf_render`]'s `pack_page` is where they are packed together;
+    /// the row's `metallic_roughness_occlusion_texture` column names the
+    /// resulting layer.
+    ///
+    /// The factors beside it — `metallicFactor` and `roughnessFactor` — are on
+    /// the row already, because a factor is a number and a layer is not; see
+    /// the [module docs](self).
+    #[inline]
+    #[must_use]
+    pub fn metallic_roughness_textures(&self) -> &[Option<GltfTexture>] {
+        &self.metallic_roughness_textures
+    }
+
+    /// Which image each material's `occlusionTexture` names, on
+    /// [`base_color_textures`](Self::base_color_textures)' terms exactly.
+    ///
+    /// The occlusion channel is the `r` of the same packed page
+    /// [`metallic_roughness_textures`](Self::metallic_roughness_textures)
+    /// fills the `g` and `b` of — and naming the *same image* from both slots
+    /// is the convention glTF authors use, which is what makes one page enough.
+    ///
+    /// **`strength` is not here and is not anywhere**: see the [module
+    /// docs](self).
+    #[inline]
+    #[must_use]
+    pub fn occlusion_textures(&self) -> &[Option<GltfTexture>] {
+        &self.occlusion_textures
+    }
+
+    /// Which image each material's `emissiveTexture` names, on
+    /// [`base_color_textures`](Self::base_color_textures)' terms exactly.
+    ///
+    /// The `emissiveFactor` beside it — times
+    /// `KHR_materials_emissive_strength` — is already on the row, in
+    /// [`GpuMaterial::emissive`], which `emissive_radiance` resolves. This is
+    /// the other half of that product, and it is a page layer.
+    #[inline]
+    #[must_use]
+    pub fn emissive_textures(&self) -> &[Option<GltfTexture>] {
+        &self.emissive_textures
     }
 
     /// The document's `images` array, in file order, each still encoded.
@@ -1116,33 +1176,53 @@ fn build(
     let base_color_textures = document
         .materials()
         .map(|material| {
-            material
-                .pbr_metallic_roughness()
-                .base_color_texture()
-                // **`Texture::source` panics on a texture that has none**, so
-                // this filter is load-bearing rather than tidy — see
-                // `gltf_check::TEXTURE_SOURCE_ABSENT`. A texture whose image an
-                // extension supplies becomes a material with no texture, which
-                // is the same place an undecodable image lands.
-                .filter(|info| texture_has_an_image(document, info.texture().index()))
-                .map(|info| GltfTexture {
-                    image: info.texture().source().index(),
-                    tex_coord: info.tex_coord(),
-                })
+            let info = material.pbr_metallic_roughness().base_color_texture();
+            slot(
+                document,
+                info.map(|info| (info.texture(), info.tex_coord())),
+            )
         })
         .collect();
     let normal_textures = document
         .materials()
         .map(|material| {
-            material
-                .normal_texture()
-                // Load-bearing for `base_color_textures`' reason, and the same
-                // one: `Texture::source` panics on a texture naming no image.
-                .filter(|info| texture_has_an_image(document, info.texture().index()))
-                .map(|info| GltfTexture {
-                    image: info.texture().source().index(),
-                    tex_coord: info.tex_coord(),
-                })
+            let info = material.normal_texture();
+            slot(
+                document,
+                info.map(|info| (info.texture(), info.tex_coord())),
+            )
+        })
+        .collect();
+    let metallic_roughness_textures = document
+        .materials()
+        .map(|material| {
+            let info = material
+                .pbr_metallic_roughness()
+                .metallic_roughness_texture();
+            slot(
+                document,
+                info.map(|info| (info.texture(), info.tex_coord())),
+            )
+        })
+        .collect();
+    let occlusion_textures = document
+        .materials()
+        .map(|material| {
+            let info = material.occlusion_texture();
+            slot(
+                document,
+                info.map(|info| (info.texture(), info.tex_coord())),
+            )
+        })
+        .collect();
+    let emissive_textures = document
+        .materials()
+        .map(|material| {
+            let info = material.emissive_texture();
+            slot(
+                document,
+                info.map(|info| (info.texture(), info.tex_coord())),
+            )
         })
         .collect();
     let materials = document
@@ -1280,6 +1360,9 @@ fn build(
         materials,
         base_color_textures,
         normal_textures,
+        metallic_roughness_textures,
+        occlusion_textures,
+        emissive_textures,
         images,
         skins: read_skins(document, buffers, key)?,
         clips: read_clips(document, buffers, key)?,
@@ -1366,6 +1449,27 @@ fn warn_dropped_features(document: &gltf::Document, key: &Path) {
 fn emissive_radiance(material: &gltf::Material<'_>) -> [f32; 3] {
     let strength = material.emissive_strength().unwrap_or(1.0);
     material.emissive_factor().map(|channel| channel * strength)
+}
+
+/// One material slot's reference to an image, as [`GltfScene`] carries it.
+///
+/// `texture` is the slot's own `(texture, texCoord)` pair, or [`None`] where
+/// the material names nothing in that slot. All five slots resolve through
+/// here, so the rule below is written once rather than five times.
+///
+/// **`Texture::source` panics on a texture that has none**, so the filter is
+/// load-bearing rather than tidy — see `gltf_check::TEXTURE_SOURCE_ABSENT`.
+/// A texture whose image an extension supplies becomes a material with no
+/// texture in that slot, which is the same place an undecodable image lands.
+fn slot(
+    document: &gltf::Document,
+    texture: Option<(gltf::Texture<'_>, u32)>,
+) -> Option<GltfTexture> {
+    let (texture, tex_coord) = texture?;
+    texture_has_an_image(document, texture.index()).then(|| GltfTexture {
+        image: texture.source().index(),
+        tex_coord,
+    })
 }
 
 /// Whether texture `index` names an image this document actually carries.
@@ -2252,6 +2356,138 @@ pub(crate) mod tests {
             ),
         );
         glb(&json, Some(&bin))
+    }
+
+    /// The `emissiveFactor` [`emissive_textured_glb`] authors.
+    ///
+    /// Three different channels and none of them the specification's default of
+    /// black, so a row that lost the factor — or swapped two of its channels —
+    /// reads differently from one that kept it.
+    pub(crate) const EMISSIVE_FACTOR: [f32; 3] = [0.5, 0.25, 0.125];
+
+    /// [`textured_glb`]'s document with one image named by
+    /// **`metallicRoughnessTexture` and `occlusionTexture` together** — glTF's
+    /// own packing convention — and no `baseColorTexture`.
+    ///
+    /// The base-colour slot is left empty for [`normal_mapped_glb`]'s reason:
+    /// the pages are indexed separately, so a document that filled both would
+    /// let a row pointed at the wrong page's layer still read the right number.
+    pub(crate) fn packed_glb() -> Vec<u8> {
+        let (json, bin) = textured_parts(&png_bytes(2, 2, &IMAGE_TEXELS), "image/png", 0);
+        let json = replacing(
+            &json,
+            r#""baseColorFactor": [0.25, 0.5, 0.75, 1.0],
+      "baseColorTexture": { "index": 0, "texCoord": 0 }
+    }"#,
+            r#""baseColorFactor": [0.25, 0.5, 0.75, 1.0],
+      "metallicRoughnessTexture": { "index": 0, "texCoord": 0 }
+    },
+    "occlusionTexture": { "index": 0, "texCoord": 0 }"#,
+        );
+        glb(&json, Some(&bin))
+    }
+
+    /// [`textured_glb`]'s document with its one image named by
+    /// **`emissiveTexture`** under [`EMISSIVE_FACTOR`], and no
+    /// `baseColorTexture` — [`packed_glb`]'s shape for the fourth page.
+    pub(crate) fn emissive_textured_glb() -> Vec<u8> {
+        let (json, bin) = textured_parts(&png_bytes(2, 2, &IMAGE_TEXELS), "image/png", 0);
+        let json = replacing(
+            &json,
+            r#""baseColorFactor": [0.25, 0.5, 0.75, 1.0],
+      "baseColorTexture": { "index": 0, "texCoord": 0 }
+    }"#,
+            &format!(
+                r#""baseColorFactor": [0.25, 0.5, 0.75, 1.0]
+    }},
+    "emissiveFactor": [{}, {}, {}],
+    "emissiveTexture": {{ "index": 0, "texCoord": 0 }}"#,
+                EMISSIVE_FACTOR[0], EMISSIVE_FACTOR[1], EMISSIVE_FACTOR[2]
+            ),
+        );
+        glb(&json, Some(&bin))
+    }
+
+    /// **The three slots rung 3 added arrive on the seam the other two ride**,
+    /// each naming the image the document named and each leaving the row's page
+    /// column at `NO_PAGE` for the page builder.
+    ///
+    /// One image from two slots is the case that matters: glTF's convention is
+    /// that `occlusionTexture` and `metallicRoughnessTexture` name the *same*
+    /// packed image, and an importer that reported one of them would build a
+    /// page with the occlusion channel missing and nothing saying so.
+    ///
+    /// # Sabotage
+    ///
+    /// `build`'s `occlusion_textures` reading `material.emissive_texture()`
+    /// instead of `material.occlusion_texture()`. Red on 2026-09-06 with
+    /// `"assertion failed: scene.occlusion_textures()[0].is_some()"`.
+    #[test]
+    fn a_material_naming_a_packed_map_reports_it_from_both_slots_and_points_no_page() {
+        let scene = import_glb_bytes(&packed_glb()).expect("a packed document imports");
+
+        let packed = scene.metallic_roughness_textures()[0]
+            .expect("the material names a metallicRoughnessTexture");
+        assert!(
+            scene.occlusion_textures()[0].is_some(),
+            "the occlusionTexture names the same image and has to be reported too"
+        );
+        let occlusion =
+            scene.occlusion_textures()[0].expect("the material names an occlusionTexture");
+        assert_eq!(
+            (packed.image(), occlusion.image()),
+            (0, 0),
+            "both slots name the document's one image"
+        );
+        assert_eq!((packed.tex_coord(), occlusion.tex_coord()), (0, 0));
+        assert!(
+            scene.base_color_textures()[0].is_none() && scene.emissive_textures()[0].is_none(),
+            "this document names neither of the other two slots"
+        );
+        assert_eq!(
+            scene.materials()[0].metallic_roughness_occlusion_texture,
+            GpuMaterial::NO_PAGE,
+            "the column is a page layer, which only the page builder knows"
+        );
+    }
+
+    /// **`emissiveTexture` arrives beside the factor, not instead of it.**
+    ///
+    /// The two are one product — `docs/plan/43-render-standards.md` §2's rung 3
+    /// — and they split across the seam: the factor is a number and rides the
+    /// row, the image is a page layer and rides beside it.
+    ///
+    /// # Sabotage
+    ///
+    /// `build`'s `emissive_textures` collecting `None` for every material.
+    /// Red on 2026-09-06 with `"the material names an emissiveTexture"`.
+    #[test]
+    fn a_material_with_an_emissive_texture_reports_its_image_and_keeps_the_factor() {
+        let scene =
+            import_glb_bytes(&emissive_textured_glb()).expect("an emissive document imports");
+
+        let texture = scene.emissive_textures()[0].expect("the material names an emissiveTexture");
+        assert_eq!(texture.image(), 0);
+        assert_eq!(texture.tex_coord(), 0);
+        assert_eq!(
+            scene.materials()[0].emissive,
+            EMISSIVE_FACTOR,
+            "the factor is a number and stays on the row"
+        );
+        assert_eq!(
+            scene.materials()[0].emissive_texture,
+            GpuMaterial::NO_PAGE,
+            "the layer beside it is the page builder's"
+        );
+    }
+
+    #[test]
+    fn a_material_naming_none_of_the_three_new_slots_reports_none_for_each() {
+        let scene = import_glb(&triangle_json(BIN_CHUNK_BUFFER)).unwrap();
+
+        assert_eq!(scene.metallic_roughness_textures(), [None]);
+        assert_eq!(scene.occlusion_textures(), [None]);
+        assert_eq!(scene.emissive_textures(), [None]);
     }
 
     #[test]

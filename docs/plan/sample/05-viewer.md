@@ -83,7 +83,7 @@ sentence on the status bar, because a page has no exit code to fail with.
 ## Milestone 4 — the PBR showcase (decided 2026-08-30)
 
 **The user's ask, 2026-08-30:** the viewer is the demo that showcases the PBR
-material set — not a new sample. It gains three things:
+material set — not a new sample. What it gains:
 
 1. **Every way of opening a model.** The command line on run, a drop on the
    window and a drop on the browser's canvas are the three doors, and all three
@@ -92,12 +92,6 @@ material set — not a new sample. It gains three things:
    rather than the browser's one-file `load_bytes`. What this item still lacks
    is X11, where `crcbl-shell` raises no drop event because XDND is
    unimplemented; `docs/backlog.md` carries that.
-2. **The full metallic-roughness set rendered.** Base colour and the normal map
-   are drawn today; the metallic-roughness-occlusion and emissive pages are the
-   dead `GpuMaterial` columns `docs/backlog.md` carries, waiting on the rung
-   that samples them in `docs/plan/43-render-standards.md`'s lighting order, and
-   the viewer on Suzanne is that rung's golden. Sun and sky, LTC area lights,
-   the atlas and the probe volume all show on this shelf as they land.
 
 **The shelf, as built (2026-08-30):** the `ESC` panel's `SHELF` row lists the
 nine models below and Suzanne opens when nothing is asked for, on both hosts.
