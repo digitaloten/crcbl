@@ -126,11 +126,14 @@ bitflags::bitflags! {
         /// frame into the target. [`Antialiasing::Fxaa`] is the rung a settings
         /// file names it by.
         ///
-        /// **In [`RenderEffects::DEFAULT_STACK`]**, unlike [`BLOOM`](Self::BLOOM):
-        /// this one is not a lens, it is a resolve, and it is the tier the
-        /// resolve slot carries by default — [`Antialiasing::from_effects`] of
-        /// the default stack answers [`Antialiasing::Fxaa`]. The higher tier,
-        /// [`CMAA2`](Self::CMAA2), is the one kept out, and its doc says why.
+        /// **Not in [`RenderEffects::DEFAULT_STACK`]**, and not on
+        /// [`BLOOM`](Self::BLOOM)'s grounds: this one is not a lens, it is a
+        /// resolve, and what keeps it out is that the slot holds one filter and
+        /// [`CMAA2`](Self::CMAA2) is the tier the default carries —
+        /// [`Antialiasing::from_effects`] of the default stack answers
+        /// [`Antialiasing::Cmaa2`]. So this is the *cheap* tier rather than the
+        /// absent one: a view's own stack, or a player writing
+        /// `antialiasing = "fxaa"`, asks for the one pass instead of the three.
         /// `docs/plan/49-antialiasing.md` is where the ladder is written down.
         const ANTIALIASING = 1 << 4;
         /// Volumetric fog — the froxel scatter, the column scan that turns it
@@ -168,7 +171,7 @@ bitflags::bitflags! {
         /// It also has no additive-zero form to land behind — an exposure
         /// measured from the frame is not the exposure a caller happened to
         /// set — so switching it on moves every frame it is on for, which is the
-        /// re-bless [`ANTIALIASING`](Self::ANTIALIASING) is held out by.
+        /// re-bless each tier of the resolve slot has already spent in turn.
         ///
         /// There is **no time constant** on it yet: the exposure a frame is
         /// drawn with is measured from that frame, so a cut between two
@@ -196,12 +199,13 @@ bitflags::bitflags! {
         /// [`ForwardRenderer::add_passes`] is where the choice is made, once,
         /// and `crate::cmaa2` is the pass group.
         ///
-        /// **Not in [`RenderEffects::DEFAULT_STACK`]**, on
-        /// [`ANTIALIASING`](Self::ANTIALIASING)'s original terms: it is a
-        /// resolve rather than a lens and belongs there on the merits, and what
-        /// keeps it out is that swapping the resolve moves every golden in the
-        /// suite at once. That flip is its own change with its own re-bless, and
-        /// `docs/plan/49-antialiasing.md` says it is the change after this one.
+        /// **In [`RenderEffects::DEFAULT_STACK`]**, on
+        /// [`ANTIALIASING`](Self::ANTIALIASING)'s terms and in its place: a
+        /// resolve is not a lens, so the slot belongs in the default, and the
+        /// tier the engine reaches for is the honest thing to put in it.
+        /// Swapping the slot moved every golden the bit is on for at once,
+        /// which is the re-bless `docs/plan/49-antialiasing.md` priced and which
+        /// was taken as a change of its own.
         ///
         /// The bit is numbered after the tiers it postdates rather than beside
         /// the one it replaces, so no existing flag's value moves. It kept the
@@ -258,38 +262,41 @@ impl RenderEffects {
     /// is a cost question rather than a correctness one.
     /// [`AUTO_EXPOSURE`](Self::AUTO_EXPOSURE) is out for a third, written on
     /// the bit: it takes a control away from the caller, and a view that set an
-    /// exposure has said what it wants done with it. [`CMAA2`](Self::CMAA2) is
-    /// out for a fourth, also written on the bit: the resolve slot is filled by
-    /// [`ANTIALIASING`](Self::ANTIALIASING), which *is* in here, and moving it
-    /// to the higher tier moves every golden in the suite — the re-bless
-    /// `docs/plan/49-antialiasing.md` puts in the change after this one.
+    /// exposure has said what it wants done with it.
+    /// [`ANTIALIASING`](Self::ANTIALIASING) is out for a fourth that is not a
+    /// refusal: the resolve slot holds one filter and [`CMAA2`](Self::CMAA2) —
+    /// which *is* in here — fills it, so the cheap tier is what a view or a
+    /// player asks for by name when it wants the one pass instead of the
+    /// three.
     /// [`CONTACT_SHADOWS`](Self::CONTACT_SHADOWS) is out for a fifth reason
     /// that is not a reason at all: `docs/plan/45-shadows.md` decided it belongs
     /// *here*, with the low preset clearing it, and it is parked outside only
     /// until the re-bless its first frame forces is taken on its own. It is the
     /// one member of this list that is expected to leave it.
     ///
-    /// So the default is the most correct picture, no lens and the cheap
-    /// antialiasing tier, and a view that wants more asks for it: through its
-    /// own stack, or through [`EffectOverride`], which is the layer that may
+    /// So the default is the most correct picture, no lens and the higher
+    /// antialiasing tier, and a view that wants otherwise asks for it: through
+    /// its own stack, or through [`EffectOverride`], which is the layer that may
     /// move a decision upward.
     ///
     /// This is what [`EffectRequest::default`]'s
     /// [`camera`](EffectRequest::camera) holds, and it is why adding the bloom
-    /// bit — and then the antialiasing bit — did not change a single frame the
-    /// engine already drew.
+    /// bit — and each antialiasing tier's bit in turn — did not change a single
+    /// frame the engine already drew on the change that added it.
     pub const DEFAULT_STACK: Self = Self::all().difference(
         Self::BLOOM
             .union(Self::VOLUMETRIC_FOG)
             .union(Self::AUTO_EXPOSURE)
-            .union(Self::CMAA2)
+            .union(Self::ANTIALIASING)
             // **Parked, not decided.** `docs/plan/45-shadows.md` puts
             // [`CONTACT_SHADOWS`](Self::CONTACT_SHADOWS) *in* this stack and has
             // the low preset clear it; it sits in this list because switching it
             // on moves every golden in the workspace at once, and that re-bless
             // is a change of its own rather than a rider on the change that
-            // built the pass. The other four are out on the merits and say so
-            // above; this one is out on timing and says so here.
+            // built the pass. The other four are out on the merits — three of
+            // them refused and the fourth displaced from a slot that holds one
+            // filter — and say so above; this one is out on timing and says so
+            // here.
             .union(Self::CONTACT_SHADOWS),
     );
 
@@ -384,7 +391,13 @@ impl Antialiasing {
     ///
     /// [`EffectRequest::resolve`] clears both before it sets the chosen one, so
     /// a set that reached it with both on cannot leave with both on.
-    const SLOT: RenderEffects = RenderEffects::ANTIALIASING.union(RenderEffects::CMAA2);
+    ///
+    /// **Public because a caller that wants *no* resolve has to name the slot
+    /// rather than a tier.** A fixture forcing one bit off leaves the other one
+    /// running — which is what a frame reading a single texel back against the
+    /// tonemap's own arithmetic cannot afford — and a fixture naming the bits by
+    /// hand is one that a third rung on the ladder would silently walk past.
+    pub const SLOT: RenderEffects = RenderEffects::ANTIALIASING.union(RenderEffects::CMAA2);
 
     /// The bits this tier sets, and no others.
     #[must_use]
@@ -717,19 +730,20 @@ mod tests {
 
         // 5. The antialiasing tier *replaces* the resolve slot rather than
         //    clamping it, which is the arm that fails if it is intersected with
-        //    the camera's set the way `video` is: the camera here asks for FXAA
-        //    and the player asked for CMAA2, and an intersection leaves neither.
-        let cmaa2 = RenderEffects::CMAA2;
+        //    the camera's set the way `video` is: the camera here asks for
+        //    CMAA2 and the player asked for FXAA, and an intersection leaves
+        //    neither.
+        let fxaa = RenderEffects::ANTIALIASING;
         let picked = EffectRequest {
             camera: RenderEffects::DEFAULT_STACK,
-            antialiasing: Some(Antialiasing::Cmaa2),
+            antialiasing: Some(Antialiasing::Fxaa),
             ..EffectRequest::default()
         };
         assert_eq!(
             picked.resolve(all),
             RenderEffects::DEFAULT_STACK
-                .difference(RenderEffects::ANTIALIASING)
-                .union(cmaa2),
+                .difference(RenderEffects::CMAA2)
+                .union(fxaa),
             "the player's tier must take the slot, not intersect with it"
         );
         assert_eq!(
@@ -744,9 +758,9 @@ mod tests {
 
         // 6. And it is applied *before* the override, which is the arm that
         //    fails if the two are swapped: game code forcing the resolve off is
-        //    the last word, and a tier applied after it would put CMAA2 back.
+        //    the last word, and a tier applied after it would put FXAA back.
         let forced_off_after = EffectRequest {
-            antialiasing: Some(Antialiasing::Cmaa2),
+            antialiasing: Some(Antialiasing::Fxaa),
             programmatic: EffectOverride::none().force(Antialiasing::SLOT, Some(false)),
             ..EffectRequest::default()
         };
@@ -757,7 +771,7 @@ mod tests {
         );
         let forced_on_after = EffectRequest {
             antialiasing: Some(Antialiasing::None),
-            programmatic: EffectOverride::none().force(RenderEffects::ANTIALIASING, Some(true)),
+            programmatic: EffectOverride::none().force(RenderEffects::CMAA2, Some(true)),
             ..EffectRequest::default()
         };
         assert_eq!(
@@ -768,9 +782,9 @@ mod tests {
 
         // 7. The device still clamps the tier, last and absolutely.
         assert_eq!(
-            picked.resolve(all.difference(cmaa2)),
-            RenderEffects::DEFAULT_STACK.difference(RenderEffects::ANTIALIASING),
-            "a device with no CMAA2 must not draw the tier the player picked"
+            picked.resolve(all.difference(fxaa)),
+            RenderEffects::DEFAULT_STACK.difference(RenderEffects::CMAA2),
+            "a device with no FXAA must not draw the tier the player picked"
         );
     }
 
@@ -840,7 +854,7 @@ mod tests {
         // `ANTIALIASING` row is born on.
         assert_eq!(
             Antialiasing::from_effects(RenderEffects::DEFAULT_STACK),
-            Antialiasing::Fxaa,
+            Antialiasing::Cmaa2,
         );
     }
 
@@ -855,7 +869,7 @@ mod tests {
     /// consumer that does exactly that.
     ///
     /// What it guards is the claim [`RenderEffects::DEFAULT_STACK`]'s docs make:
-    /// the lens, the froxel volume, auto-exposure, the higher antialiasing tier
+    /// the lens, the froxel volume, auto-exposure, the cheap antialiasing tier
     /// and — until its re-bless is taken — the contact march are what a view has
     /// to ask for, and they are the **only** ones. A
     /// default that quietly included one would have re-blessed every golden
@@ -863,9 +877,10 @@ mod tests {
     /// picture — which is the whole difficulty: a wrongly-defaulted post pass
     /// does not look like a bug.
     ///
-    /// The antialiasing resolve was held out on the same terms for exactly one
-    /// change, which is what re-blessed the suite; it is in the default now, and
-    /// this asserts that none of the other four followed it in.
+    /// The resolve slot has been through that twice, once per tier, and each
+    /// time it was a change of its own that re-blessed the suite;
+    /// [`RenderEffects::CMAA2`] is what fills it now, and this asserts that none
+    /// of the other four followed it in.
     /// [`RenderEffects::CONTACT_SHADOWS`] is the one on that path today, and
     /// this is what will go red on the change that moves it.
     #[test]
@@ -876,7 +891,7 @@ mod tests {
                 RenderEffects::BLOOM
                     .union(RenderEffects::VOLUMETRIC_FOG)
                     .union(RenderEffects::AUTO_EXPOSURE)
-                    .union(RenderEffects::CMAA2)
+                    .union(RenderEffects::ANTIALIASING)
                     .union(RenderEffects::CONTACT_SHADOWS)
             ),
         );
@@ -989,7 +1004,7 @@ mod tests {
 
         // The spelling every sample's summary line and debug panel already
         // print, which this must not have moved.
-        assert_eq!(RenderEffects::DEFAULT_STACK.row(), "shadows ao ssr aa");
+        assert_eq!(RenderEffects::DEFAULT_STACK.row(), "shadows ao ssr cmaa2");
         assert_eq!(RenderEffects::empty().row(), "none");
         assert_eq!(RenderEffects::BLOOM.row(), "bloom");
     }

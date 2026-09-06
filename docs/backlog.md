@@ -1810,15 +1810,9 @@ same change — `crcbl_render::smaa`, the three `smaa_*.slang` sources,
 `crcbl_shaders::smaa` with its two cooked tables and `cook-smaa`, the CI step
 that checked them, its own mesh e2e observer and the `"smaa"` word — so nothing
 in the tree spells SMAA any more and a settings file holding it warns and picks
-no tier. What the slice did not do:
+no tier. `RenderEffects::DEFAULT_STACK` carries the tier since the commit after,
+which is where the re-bless was spent. What the slice did not do:
 
-- **The default tier does not move with it, and that is the next commit.**
-  `RenderEffects::DEFAULT_STACK` still carries `ANTIALIASING` without `CMAA2`,
-  which is what kept every committed golden still through this slice. Flipping
-  the slot is a one-line change plus a re-bless of every golden the bit would
-  then be on for, and two tests pin the current answer and will go red on it,
-  which is intended: `apps/options`' `the_antialiasing_ladder_is_the_whole_enum`
-  and `crcbl-render`'s `a_tier_spells_one_word_and_sets_one_pair_of_bits`.
 - **The MSAA rungs (2×, 4×, 8×) above CMAA2 are not built** — rung 3 of the same
   decision. They need the multisampled depth prepass and the one depth-resolve
   pass that feeds `ssao.slang`, `ssr.slang` and the Hi-Z pyramid, and the entry
@@ -1837,10 +1831,35 @@ no tier. What the slice did not do:
   every frame measured came out of radv and lavapipe. The mesh e2e suite names
   no backend, so running it under `CRCBL_GPU=mtl`/`dx12`/`wgpu` is the whole of
   the missing evidence — no new test.
-- **No demo asks for `CMAA2`, so the browser has never run it**, and the
-  browser-gate cost is unmeasured: three passes where FXAA is one. The default
-  flip above is what would change that, and it is the reason to measure the
-  browser before taking it rather than after.
+- **A fresh `[engine.video]` section now reads as `medium, high`, and that is
+  not a bug.** The quality label is derived rather than stored, and the engine's
+  own defaults became the Medium/High column's values when the resolve slot
+  moved to CMAA2 — render scale 1, no clamp on the froxel pass, and that tier.
+  So `crcbl settings preset`, the console's bare `quality` and `apps/options`'
+  `QUALITY_ID` row all name a tier on a machine that has selected none. Nothing
+  is written to the file by saying nothing, which is the opt-in claim and is
+  what `a_run_that_selects_nothing_writes_nothing_and_asks_for_nothing` asserts.
+  Two fixtures had to stop using an empty file to reach the `custom` branch —
+  `apps/options`'
+  `entering_the_tier_row_walks_every_column_of_the_table_and_comes_back` and
+  `crcbl::settings::presets`'
+  `the_bare_command_prints_the_label_and_what_it_is_made_of` — and both now name
+  a render scale no column holds. Nobody has decided whether the label _should_
+  say `custom` for a file that says nothing; a stored "no tier selected" flag is
+  the only way to get that back, and this file's own argument against stored
+  labels is why it was not taken here.
+- **The tree no longer has one blessing adapter, and nothing says so but this
+  entry.** The CMAA2 default flip re-blessed `crates/crcbl/tests/golden/`,
+  `apps/lantern/tests/golden/` and `apps/quarry/tests/golden/` on radv and
+  `apps/alcove/tests/golden/` and `apps/sundial/tests/golden/` on lavapipe,
+  because that is where each set's own previous bless was —
+  `apps/sundial/tests/golden.rs`'s `ATLAS_EXTENT` sweep says lavapipe in as many
+  words, the alcove set moved there with `box_frame`, and the workspace-wide
+  re-bless that shipped the AO tangential rung says radv. Every suite is green
+  on both, so nothing is broken; what is missing is a place a blesser can read
+  the convention off before running `CRCBL_BLESS=1` on the wrong driver.
+  `docs/plan/49-antialiasing.md` records which set went where for this flip and
+  is not a general answer.
 - **The pass fusion plan 48 describes has not landed, so the edge detect
   computes its own luma.** `tonemap.slang` writes `1.0` into alpha;
   `cmaa2_edges.slang` therefore does the luma itself per pixel, which is one dot

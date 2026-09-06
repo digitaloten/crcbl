@@ -55,8 +55,8 @@ use crcbl::backend::{BACKEND_ENV_VAR, GpuBackend};
 use crcbl::hal::Format;
 use crcbl::math::Vec3;
 use crcbl::render::{
-    Camera, DirectionalLight, EffectOverride, EffectRequest, ForwardRenderer, Projection,
-    RenderEffects,
+    Antialiasing, Camera, DirectionalLight, EffectOverride, EffectRequest, ForwardRenderer,
+    Projection, RenderEffects,
 };
 use crcbl::scene::gltf_render::build_render_scene;
 use crcbl::screenshot::{ForwardScene, OffscreenSetup};
@@ -702,7 +702,7 @@ fn an_imported_emissive_texture_lights_the_half_of_the_quad_it_covers() {
         },
         Some(EffectRequest {
             programmatic: EffectOverride::none()
-                .force(RenderEffects::ANTIALIASING, Some(false))
+                .force(Antialiasing::SLOT, Some(false))
                 .force(RenderEffects::REFLECTIONS, Some(false))
                 .force(RenderEffects::SHADOWS, Some(false))
                 .force(RenderEffects::BLOOM, Some(false))

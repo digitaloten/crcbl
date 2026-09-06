@@ -78,7 +78,7 @@ use crcbl::backend::{BACKEND_ENV_VAR, GpuBackend};
 use crcbl::hal::{Features, Format, GeometryPath};
 use crcbl::screenshot::{OffscreenSetup, Scene};
 use crcbl_golden::{ChannelOrder, Golden, Image};
-use crcbl_render::RenderEffects;
+use crcbl_render::{Antialiasing, RenderEffects};
 
 /// What this binary calls itself in the lines [`Offscreen`] prints.
 ///
@@ -3669,9 +3669,11 @@ fn the_aa_scene_draws_the_same_frame_on_every_geometry_path() {
 /// filter did nothing has a clean hard silhouette in it, and a clean hard
 /// silhouette is what a slab looks like. So this draws
 /// [`Scene::Aa`]'s scene twice through
-/// [`aa_forward`](crcbl::screenshot::aa_forward) — once with the effect and once
-/// with the default stack, the same geometry, camera, sun and extent — and
-/// compares the two.
+/// [`aa_forward`](crcbl::screenshot::aa_forward) — once with the default stack
+/// and once with **both** resolve bits taken out of it, the same geometry,
+/// camera, sun and extent — and compares the two. Whichever tier the default
+/// carries is the one measured, which is what keeps this test about the slot
+/// rather than about one filter.
 ///
 /// Two assertions, and they fail on opposite mistakes:
 ///
@@ -3701,12 +3703,13 @@ fn the_resolve_is_what_puts_the_soft_pixels_there() {
             .expect("the readback is exactly one image")
     };
 
-    let resolved = frame(RenderEffects::DEFAULT_STACK.union(RenderEffects::ANTIALIASING));
-    // **`difference` and not the bare default.** The resolve is in
-    // `DEFAULT_STACK` now, so a control built on that alone is the resolved
-    // frame again under another name — and this test would compare a frame with
-    // itself and pass on any pair of numbers at all.
-    let control = frame(RenderEffects::DEFAULT_STACK.difference(RenderEffects::ANTIALIASING));
+    let resolved = frame(RenderEffects::DEFAULT_STACK);
+    // **Both bits of the slot, not one.** The resolve is in `DEFAULT_STACK`, so
+    // a control that cleared only the tier the default does not carry is the
+    // resolved frame again under another name — and this test would compare a
+    // frame with itself and pass on any pair of numbers at all. That is exactly
+    // what it did when the default's tier moved.
+    let control = frame(RenderEffects::DEFAULT_STACK.difference(Antialiasing::SLOT));
 
     let (soft, plain) = (soft_pixels(&resolved), soft_pixels(&control));
     let (mean, plain_mean) = (mean_luma(&resolved), mean_luma(&control));

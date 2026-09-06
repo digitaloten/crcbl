@@ -218,8 +218,8 @@ impl CameraStack {
     /// The file form of [`RenderEffects::DEFAULT_STACK`]: a pass exactly where
     /// that constant has a bit.
     ///
-    /// The three light-transport effects and the cheap resolve — a view that
-    /// has been given no lens. `default_stack().compile() ==
+    /// The three light-transport effects and the resolve the default carries —
+    /// a view that has been given no lens. `default_stack().compile() ==
     /// RenderEffects::DEFAULT_STACK` is asserted, so the two cannot drift: this
     /// is the same statement written twice, once as bits and once as a file, and
     /// the file is the one a demo can edit.
@@ -230,7 +230,7 @@ impl CameraStack {
             ambient_occlusion: Some(AmbientOcclusionPass {}),
             reflections: Some(ReflectionsPass {}),
             antialiasing: Some(AntialiasingPass {
-                tier: Antialiasing::Fxaa,
+                tier: Antialiasing::Cmaa2,
             }),
             ..Self::empty()
         }

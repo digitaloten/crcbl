@@ -1272,19 +1272,19 @@ fn bloom_sun() -> crcbl_render::DirectionalLight {
 /// is the file, and `bloom_stack_is_the_default_stack_plus_the_lens` is what
 /// holds it to the set this frame was blessed with.
 ///
-/// **The default stack plus the lens, not every effect.** They were the same set
-/// until the antialiasing resolve joined the effects outside the default — see
-/// `RenderEffects::DEFAULT_STACK` — and every-effect here would have quietly
-/// added the higher resolve tier to this fixture, which is a halo measured
-/// through an edge filter. Each effect held out of the default gets the fixture
-/// it is about; this one is about the chain.
+/// **The default stack plus the lens, not every effect.** Every-effect here
+/// would add the froxel volume and auto-exposure to this fixture, which is a
+/// halo measured through a curve nothing else in the suite runs, and it would
+/// set both bits of the resolve slot where the default sets one — see
+/// `RenderEffects::DEFAULT_STACK`. Each effect held out of the default gets the
+/// fixture it is about; this one is about the chain.
 const BLOOM_STACK_RON: &str = "\
 (
     shadows: Some(()),
     ambient_occlusion: Some(()),
     reflections: Some(()),
     bloom: Some(()),
-    antialiasing: Some((tier: fxaa)),
+    antialiasing: Some((tier: cmaa2)),
 )";
 
 /// [`BLOOM_STACK_RON`], parsed.
@@ -7999,7 +7999,16 @@ mod tests {
                 // the target. A resolve scheduled before it would filter the
                 // scene's high-dynamic-range values, where the thresholds it
                 // tests were fitted to a displayable image.
-                ("render", "fxaa"),
+                //
+                // Three rows rather than one, because
+                // `RenderEffects::DEFAULT_STACK` carries CMAA2: the edge detect
+                // and the shape classification are compute, and only the apply
+                // draws. `crcbl_render`'s
+                // `each_effect_toggle_removes_exactly_the_passes_it_owns` is
+                // where the swap between the two tiers is pinned.
+                ("compute", "cmaa2-edges"),
+                ("compute", "cmaa2-shapes"),
+                ("render", "cmaa2-apply"),
             ]);
             passes
         };

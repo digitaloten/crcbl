@@ -2298,13 +2298,16 @@ mod tests {
             crate::menu::antialiasing_rung(crate::menu::DEFAULT_ANTIALIASING),
         );
 
-        assert!(step(&mut menus, crate::menu::ANTIALIASING_ID, true));
+        // Downward, because the game's tier is now the **top** rung and an
+        // arrow key clamps at the end of the ladder where `ENTER` wraps — a
+        // nudge upward from here is the placement again rather than a step.
+        assert!(step(&mut menus, crate::menu::ANTIALIASING_ID, false));
         reconcile(&mut screen, &mut menus);
         let stepped = screen.antialiasing();
         assert_eq!(
             stepped,
-            Antialiasing::Cmaa2,
-            "the first step up from the game's tier is the rung above it",
+            Antialiasing::Fxaa,
+            "the first step down from the game's tier is the rung below it",
         );
         assert_eq!(screen.edits(), 1);
         assert_eq!(screen.saved(), &SaveState::Unsaved);
@@ -2391,10 +2394,20 @@ mod tests {
 
     /// `RESET` puts the tier back on the game's own rung — what an absent key
     /// means — and writes the key to say so.
+    ///
+    /// **The file names a rung the game's own is not**, or the reset would land
+    /// on the value that was already there and this could not fail:
+    /// `DEFAULT_ANTIALIASING` reads `RenderEffects::DEFAULT_STACK`, whose tier
+    /// is CMAA2.
     #[test]
     fn reset_takes_the_antialiasing_tier_back_to_the_games_own_rung() {
-        let (mut screen, mut menus) = screen("[engine.video]\nantialiasing = \"cmaa2\"\n");
-        assert_eq!(screen.antialiasing(), Antialiasing::Cmaa2);
+        let (mut screen, mut menus) = screen("[engine.video]\nantialiasing = \"fxaa\"\n");
+        assert_eq!(screen.antialiasing(), Antialiasing::Fxaa);
+        assert_ne!(
+            Antialiasing::Fxaa,
+            crate::menu::DEFAULT_ANTIALIASING,
+            "the fixture has to open off the game's own rung for the reset below to move it",
+        );
         reconcile(&mut screen, &mut menus);
 
         screen.apply(Action::Reset);
@@ -2458,22 +2471,28 @@ mod tests {
     /// **`ENTER` on the tier row walks every column of the table and comes back
     /// round**, writing each one into the keys as it goes.
     ///
-    /// A file that says nothing is on no tier, so the row is parked on the
-    /// bottom rung and the first press steps to the one above it — the same
-    /// place a press from an off-ladder anisotropy lands. What matters is that
-    /// all three columns are reachable: `medium` and `high` hold the same
-    /// values today, so a row that re-derived its rung from
-    /// [`selected`](crcbl::settings::presets::selected) every frame would be
-    /// pulled back onto `medium` after every press and could never reach `low`
-    /// again.
+    /// A file on no tier parks the row on the bottom rung, and the first press
+    /// steps to the one above it — the same place a press from an off-ladder
+    /// anisotropy lands. What matters is that all three columns are reachable:
+    /// `medium` and `high` hold the same values today, so a row that re-derived
+    /// its rung from [`selected`](crcbl::settings::presets::selected) every
+    /// frame would be pulled back onto `medium` after every press and could
+    /// never reach `low` again.
+    ///
+    /// **A scale off every column is what makes the fixture custom**, rather
+    /// than an empty file: the engine's own defaults are `medium`'s values —
+    /// see `crcbl::settings::presets`'
+    /// `a_run_that_selects_nothing_writes_nothing_and_asks_for_nothing` — so a
+    /// file saying nothing opens the row on `medium` and the walk would start
+    /// from the middle of the table.
     #[test]
     fn entering_the_tier_row_walks_every_column_of_the_table_and_comes_back() {
-        let (mut screen, mut menus) = screen("");
+        let (mut screen, mut menus) = screen("[engine.video]\nrender_scale = 0.6\n");
         reconcile(&mut screen, &mut menus);
         assert_eq!(
             hint(&mut menus, crate::menu::QUALITY_ID),
             crcbl::settings::presets::CUSTOM,
-            "a file that says nothing is on no tier",
+            "the fixture has to open on no tier for the walk below to be a walk",
         );
         assert_eq!(screen.edits(), 0, "placing the row was read as a step");
 

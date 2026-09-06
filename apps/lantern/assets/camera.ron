@@ -4,7 +4,7 @@ CameraStack(
     reflections: Some(ReflectionsPass()),
     bloom: None,
     antialiasing: Some(AntialiasingPass(
-        tier: fxaa,
+        tier: cmaa2,
     )),
     volumetric_fog: Some(VolumetricFogPass()),
     auto_exposure: None,

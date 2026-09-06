@@ -847,7 +847,7 @@ const EXPECTATIONS = {
     // the scatter binds a comparison sampler to a compute stage, which is the
     // one thing in that feature a backend could refuse where the artifact still
     // compiles.
-    effectsRow: 'effects: shadows ao ssr aa vfog',
+    effectsRow: 'effects: shadows ao ssr vfog cmaa2',
   },
   // **The demo whose subject is a comparison**, and the first on the site
   // whose controls are HTML rather than keys. `apps/alcove` is the
@@ -898,9 +898,9 @@ const EXPECTATIONS = {
     // A prefix rather than the whole row, which is where this differs from
     // lantern's: that row names `vfog` because lantern is the only view that
     // dispatches it, and this one is not making a claim about which of `ssr` and
-    // `aa` a given adapter kept. Measured identical on this machine's RDNA-3
-    // adapter and on SwiftShader — `effects: shadows ao ssr aa` on both — and it
-    // is the `ao` that is being asserted.
+    // `cmaa2` a given adapter kept. Measured identical on this machine's RDNA-3
+    // adapter and on SwiftShader — `effects: shadows ao ssr cmaa2` on both — and
+    // it is the `ao` that is being asserted.
     effectsRow: 'effects: shadows ao',
     // **The page's own controls**, and the block above the `range` and `zone`
     // blocks reads them. Every id here is one `web/pages/alcove.html` gives a
@@ -1074,9 +1074,10 @@ const EXPECTATIONS = {
     // draws and the loop still ticks.
     //
     // A prefix rather than the whole row, for alcove's reason: this is not a
-    // claim about which of `ao`, `ssr` and `aa` a given adapter kept. Measured
-    // on this machine's RDNA-3 adapter as `effects: shadows ao ssr aa`, and it
-    // is the `shadows` that is being asserted.
+    // claim about which of `ao`, `ssr` and `cmaa2` a given adapter kept.
+    // Measured on this machine's RDNA-3 adapter as
+    // `effects: shadows ao ssr cmaa2`, and it is the `shadows` that is being
+    // asserted.
     effectsRow: 'effects: shadows',
     // **The page's own controls**, and the block above the `range` and `zone`
     // blocks reads them. Every id here is one `web/pages/sundial.html` gives a

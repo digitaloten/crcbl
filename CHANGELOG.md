@@ -68,8 +68,9 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
   No lookup table: the shape rules are analytic, so nothing is cooked and
   nothing is committed as data. The tier is historyless, so it is golden-safe.
-  `RenderEffects::DEFAULT_STACK` is unchanged by this change — the resolve slot
-  still defaults to FXAA, and no golden moved.
+  `RenderEffects::DEFAULT_STACK` was unchanged by the change that built the
+  tier, so no golden moved with it; the slot moved onto CMAA2 in the change
+  after — see "The default antialiasing tier is CMAA2" under Changed.
 
 - **A camera's render stack is a RON file.**
   `docs/plan/43-render-standards.md`'s foundations block (b), and the first
@@ -84,7 +85,7 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
       shadows: Some(ShadowsPass()),
       ambient_occlusion: Some(AmbientOcclusionPass()),
       reflections: Some(ReflectionsPass()),
-      antialiasing: Some(AntialiasingPass(tier: fxaa)),
+      antialiasing: Some(AntialiasingPass(tier: cmaa2)),
   )
   ```
 
@@ -961,6 +962,37 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
   was the one job holding the demo site's deploy.
 
 ### Changed
+
+- **The default antialiasing tier is CMAA2.** `RenderEffects::DEFAULT_STACK`
+  carries `RenderEffects::CMAA2` where it carried `RenderEffects::ANTIALIASING`,
+  so every view that declares no render stack is resolved by the morphological
+  tier rather than by FXAA — which is `docs/plan/49-antialiasing.md`'s ladder
+  arriving at the rung it was built for. **FXAA stays as the cheap tier**, and a
+  view or a player that wants one fullscreen pass instead of two dispatches and
+  a draw asks for it by name: `[engine.video] antialiasing = "fxaa"`, the
+  `antialiasing fxaa` console command, the `ANTIALIASING` row in `apps/options`,
+  or `antialiasing: Some(AntialiasingPass(tier: fxaa))` in a camera-stack RON.
+  `CameraStack::default_stack` and `apps/lantern/assets/camera.ron` name the new
+  tier, and `RenderEffects::DEFAULT_STACK.row()` — the string every sample's
+  summary line and debug panel print — now reads `shadows ao ssr cmaa2`.
+
+  **Twenty-nine goldens moved**: seventeen under `crates/crcbl/tests/golden/`,
+  four under `apps/sundial/tests/golden/`, three each under
+  `apps/alcove/tests/golden/` and `apps/quarry/tests/golden/`, and two under
+  `apps/lantern/tests/golden/`. Each set was re-blessed where its own previous
+  bless was — `crcbl`, `lantern` and `quarry` on radv, `alcove` and `sundial` on
+  lavapipe — and every e2e suite was then run green on both drivers.
+
+  **`Antialiasing::SLOT` is public**, because a caller that wants no resolve has
+  to name the whole slot. A dozen fixtures had asked for none by forcing
+  `RenderEffects::ANTIALIASING` off, which under the new default left CMAA2
+  running; they name the slot now, so their frames are the frames they were.
+
+  One derived label moved with it: an `[engine.video]` section holding nothing
+  now reads back as `medium, high` rather than `custom`, because the engine's
+  own defaults are that column of the quality table — render scale 1, no clamp
+  on the froxel pass, and CMAA2. Nothing is written to the file by saying
+  nothing, which is what makes a preset opt-in, and that is unchanged.
 
 - **`QualityPreset`'s Medium and High columns write `Antialiasing::Cmaa2`**
   where they wrote `Antialiasing::Smaa`. The tier table in

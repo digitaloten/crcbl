@@ -25,8 +25,8 @@ use crcbl::hal::{
 };
 use crcbl::math::Vec3;
 use crcbl::render::{
-    DirectionalLight, EffectOverride, EffectRequest, ExposureAdaptation, ExposureBuffers,
-    ForwardRenderer, Projection, RenderEffects, TransientPool,
+    Antialiasing, DirectionalLight, EffectOverride, EffectRequest, ExposureAdaptation,
+    ExposureBuffers, ForwardRenderer, Projection, RenderEffects, TransientPool,
 };
 use crcbl::shaders::exposure::{
     BIN_COUNT, BIN_STRIDE, MEASURED_SIZE, adapt, bin_of, luma, measure,
@@ -95,7 +95,7 @@ fn draw_lit(
             .expect("the forward renderer builds");
     renderer.set_effect_request(EffectRequest {
         programmatic: EffectOverride::none()
-            .force(RenderEffects::ANTIALIASING, Some(false))
+            .force(Antialiasing::SLOT, Some(false))
             .force(RenderEffects::AUTO_EXPOSURE, Some(auto)),
         ..EffectRequest::default()
     });
@@ -556,7 +556,7 @@ fn draw_frames(count: usize, adaptation: ExposureAdaptation) -> (Vec<f32>, Vec<u
             .expect("the forward renderer builds");
     renderer.set_effect_request(EffectRequest {
         programmatic: EffectOverride::none()
-            .force(RenderEffects::ANTIALIASING, Some(false))
+            .force(Antialiasing::SLOT, Some(false))
             .force(RenderEffects::AUTO_EXPOSURE, Some(true)),
         ..EffectRequest::default()
     });

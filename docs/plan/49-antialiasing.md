@@ -19,10 +19,12 @@ blend along the edge it found, no history, no new attachment and no change to
 any pass in front of it. The cheapest thing that removes the staircase, and the
 tier that stays after the rung above it lands.
 
-**It is `RenderEffects::ANTIALIASING`, and it is in `DEFAULT_STACK`** — flipped
+**It is `RenderEffects::ANTIALIASING`, and it was in `DEFAULT_STACK`** — flipped
 in a second change, whose whole content is the re-bless the last item of the
-cost list below describes. Every frame the engine draws is resolved; the lens is
-now the only effect a view has to ask for by name.
+cost list below describes. It left again on 2026-09-06 when CMAA2 took the slot,
+and that flip is its own re-bless, recorded under "CMAA2 second". FXAA is the
+cheap rung now: every frame the engine draws is still resolved, and a view or a
+player that wants the one pass instead of the three asks for `fxaa` by name.
 
 **A debug view takes the resolve off again**, and
 `ForwardRenderer::resolved_effects` is where that happens rather than in any
@@ -182,6 +184,17 @@ FXAA does not leave when CMAA2 arrives. **It stays as the cheap tier**, on the
 terms `RenderEffects` already gives the other pairs: a tier that is off is a
 frame with fewer passes, not a shader branch.
 
+**The default tier moved to it on 2026-09-06**, the one-line change to
+`RenderEffects::DEFAULT_STACK` this file had been holding back, with
+`CameraStack::default_stack` and `apps/lantern/assets/camera.ron` naming the
+tier as data. Two things from that re-bless bind later rungs. A fixture that
+wants no resolve names the whole slot, `Antialiasing::SLOT`, rather than forcing
+one tier off — forcing `ANTIALIASING` off under this default leaves CMAA2
+running, and a third rung would walk past a fixture the same way. And the tree
+has no single blessing adapter: each golden set is re-blessed where its own last
+bless was, which `docs/notes/rendering.md` records set by set for this flip and
+`docs/backlog.md` carries as the convention still owed a home.
+
 **What the rung still owes is cross-backend evidence** — Metal, DX12 and WebGPU
 compile the artifacts, and only CI has run them — which `docs/backlog.md`
 carries, along with the constants this transcription chose rather than took from
@@ -276,14 +289,14 @@ of this ladder are the CS2 shape:
    `ANTIALIASING` row sits beside `ANISOTROPY`, is born on whatever
    `RenderEffects::DEFAULT_STACK` carries — which is what an absent key means —
    and is corrected to the file's rung on the first frame.
-   `RenderEffects::DEFAULT_STACK` did **not** change: which tier the default
-   carries is still the answer this row's default _is_, and flipping it is still
-   the user's call and a re-bless — **and the call is taken, 2026-08-30: it is
-   not flipped to SMAA.** CMAA2 becomes the default tier instead, so the goldens
-   re-bless once for the filter that stays rather than twice. CMAA2 landed
-   2026-09-06 and **the flip is the commit after it**: this slice moved no
-   golden, and the one that changes `DEFAULT_STACK`'s AA slot is the one that
-   re-blesses them. `web/tools/browser-e2e.mjs`'s `toFader` moved with the row
+   `RenderEffects::DEFAULT_STACK` did **not** change in that slice: which tier
+   the default carries is the answer this row's default _is_, and flipping it
+   was the user's call and a re-bless — **and the call was taken, 2026-08-30: it
+   is not flipped to SMAA.** CMAA2 became the default tier instead, so the
+   goldens re-blessed once for the filter that stays rather than twice. CMAA2
+   landed 2026-09-06 and **the flip was the commit after it**: that slice moved
+   no golden, and the one that changed `DEFAULT_STACK`'s AA slot is the one that
+   re-blessed them. `web/tools/browser-e2e.mjs`'s `toFader` moved with the row
    and the options browser gate was run locally.
 
    A file still holding the boolean reads as the meaning it had:
@@ -310,9 +323,8 @@ of this ladder are the CS2 shape:
    `a_dense_edge_frame_resolves_to_the_same_bytes_every_time` is what caught it
    and now holds the shape that replaced them. And it is **held to SMAA's
    observer**, the same scene and the same two claims, in
-   `crates/crcbl/tests/mesh_e2e/cmaa2.rs`. The default tier does not move with
-   it: flipping `RenderEffects::DEFAULT_STACK`'s AA slot to CMAA2 is the next
-   commit, and that is the one that re-blesses the goldens.
+   `crates/crcbl/tests/mesh_e2e/cmaa2.rs`. The default tier moved to it in the
+   commit after, which is the re-bless recorded under "CMAA2 second".
 3. **MSAA 2×, 4× and 8×** as the rungs above CMAA2, on the price the seventh
    decision above put on it: the depth prepass goes multisampled, and one
    **depth resolve** pass writes the single-sample image `ssao.slang`,

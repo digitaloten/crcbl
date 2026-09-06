@@ -792,7 +792,7 @@ mod tests {
         );
 
         // The rung the row is born on is the one an absent key means.
-        assert_eq!(DEFAULT_ANTIALIASING, Antialiasing::Fxaa);
+        assert_eq!(DEFAULT_ANTIALIASING, Antialiasing::Cmaa2);
         assert!(Antialiasing::ALL.contains(&DEFAULT_ANTIALIASING));
     }
 

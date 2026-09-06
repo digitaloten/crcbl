@@ -13441,7 +13441,7 @@ fn rebuilt_with_sampler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::effects::EffectOverride;
+    use crate::effects::{Antialiasing, EffectOverride};
     use crate::scene::{
         DEMO_CUBE, DEMO_DUNES, DEMO_OPEN_BOX, DEMO_PYRAMID, DEMO_TEXTURED, DEMO_TINTED,
         DEMO_UNTINTED,
@@ -13882,9 +13882,11 @@ mod tests {
                                     // And the resolve comes off for every one of them:
                                     // these frames are read back as data, so their colours
                                     // have to stay the ones the shader wrote — see
-                                    // `resolved_effects`.
+                                    // `resolved_effects`. The whole slot rather than one
+                                    // tier of it, because which tier the default carries
+                                    // is not what this is about.
                                     assert_eq!(
-                                        renderer.effects().contains(RenderEffects::ANTIALIASING),
+                                        renderer.effects().intersects(Antialiasing::SLOT),
                                         expected == DebugView::Shaded,
                                         "{set}"
                                     );
@@ -15906,11 +15908,11 @@ mod tests {
             }
             assert_eq!(
                 dispatches,
-                3 * (1 + shadow::CASCADES) + 1,
+                3 * (1 + shadow::CASCADES) + 1 + RESOLVE_DISPATCHES,
                 "the clearing pass, the cull pass and the draw-argument pass, in front of \
                  the draws — once for the camera and once per shadow cascade — plus topic \
                  18's one clustering dispatch, which is the camera's alone because a \
-                 cascade shades nothing"
+                 cascade shades nothing, plus the resolve's own"
             );
             assert_eq!(
                 seen, expected,
@@ -17302,7 +17304,13 @@ mod tests {
                 "ssr",
                 "ssr-blur",
                 "tonemap",
-                "fxaa",
+                // The resolve `RenderEffects::DEFAULT_STACK` carries, which is
+                // CMAA2's three rather than FXAA's one —
+                // `each_effect_toggle_removes_exactly_the_passes_it_owns` is
+                // where the swap between the two tiers is pinned.
+                "cmaa2-edges",
+                "cmaa2-shapes",
+                "cmaa2-apply",
                 "cull-stats-readback",
             ]
             .into_iter()
@@ -17666,7 +17674,7 @@ mod tests {
         // triple per cascade and one for the spot's slot.
         assert_eq!(
             first,
-            DrawGen::MAX_PASSES as usize * (2 + shadow::CASCADES) + 1,
+            DrawGen::MAX_PASSES as usize * (2 + shadow::CASCADES) + 1 + RESOLVE_DISPATCHES,
             "the drawing frame did not record the culls this test is about skipping"
         );
 
@@ -17686,7 +17694,7 @@ mod tests {
             );
             assert_eq!(
                 dispatches(&recorder, at),
-                DrawGen::MAX_PASSES as usize + 1,
+                DrawGen::MAX_PASSES as usize + 1 + RESOLVE_DISPATCHES,
                 "round {round} kept a shadow cull it had no pass to feed"
             );
             assert_eq!(
@@ -22743,6 +22751,17 @@ mod tests {
     /// say which pass any of them belonged to — so "the forward pass records one
     /// call per bucket" would become a claim about a total, which a shadow pass
     /// recording the wrong thing could satisfy.
+    /// The compute dispatches a default frame's **resolve** records, which
+    /// every dispatch count in this module sees and none of them is about.
+    ///
+    /// `RenderEffects::DEFAULT_STACK` carries `CMAA2`, whose edge detect and
+    /// shape classification are dispatches; its apply is a draw and does not
+    /// count here. `each_effect_toggle_removes_exactly_the_passes_it_owns` is
+    /// what pins the resolve's pass list itself, so a tier that grew a dispatch
+    /// fails there first and arrives here as a second red rather than as a
+    /// silent skew.
+    const RESOLVE_DISPATCHES: usize = 2;
+
     fn commands_in_pass(
         recorder: &crcbl_hal::null::Recorder,
         label: &str,

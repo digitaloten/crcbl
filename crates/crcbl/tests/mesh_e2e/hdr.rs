@@ -19,8 +19,8 @@ use crate::mesh_scene::{
     MESH_EXTENT, mesh_camera, place_cube, place_cube_at, render_mesh, render_mesh_lit,
 };
 use crcbl::render::{
-    DirectionalLight, EffectOverride, EffectRequest, Fog, ForwardRenderer, Light, PointLight,
-    Projection, RenderEffects, Sky, TransientPool,
+    Antialiasing, DirectionalLight, EffectOverride, EffectRequest, Fog, ForwardRenderer, Light,
+    PointLight, Projection, RenderEffects, Sky, TransientPool,
 };
 use crcbl_shaders::tonemap::TonemapCurve;
 
@@ -96,7 +96,7 @@ fn cube_frame_with(curve: TonemapCurve, exposure: f32) -> (crcbl_golden::Image, 
         ForwardRenderer::new(headless.device.as_ref(), headless.queue, headless.format)
             .expect("the forward renderer builds");
     renderer.set_effect_request(EffectRequest {
-        programmatic: EffectOverride::none().force(RenderEffects::ANTIALIASING, Some(false)),
+        programmatic: EffectOverride::none().force(Antialiasing::SLOT, Some(false)),
         ..EffectRequest::default()
     });
     renderer.set_tonemap_curve(curve);
@@ -313,7 +313,7 @@ fn emitting_cube_hdr(emissive: [f32; 3]) -> HdrTarget {
     .expect("the forward renderer builds");
     renderer.set_effect_request(EffectRequest {
         programmatic: EffectOverride::none()
-            .force(RenderEffects::ANTIALIASING, Some(false))
+            .force(Antialiasing::SLOT, Some(false))
             .force(RenderEffects::REFLECTIONS, Some(false)),
         ..EffectRequest::default()
     });
@@ -433,7 +433,7 @@ fn fogged_cube_hdr_via(fog: Fog, froxels: bool) -> HdrTarget {
             .expect("the forward renderer builds");
     renderer.set_effect_request(EffectRequest {
         programmatic: EffectOverride::none()
-            .force(RenderEffects::ANTIALIASING, Some(false))
+            .force(Antialiasing::SLOT, Some(false))
             .force(RenderEffects::REFLECTIONS, Some(false))
             .force(RenderEffects::VOLUMETRIC_FOG, Some(froxels)),
         ..EffectRequest::default()
@@ -894,7 +894,7 @@ fn sun_scattered_cube_hdr(
             .expect("the forward renderer builds");
     renderer.set_effect_request(EffectRequest {
         programmatic: EffectOverride::none()
-            .force(RenderEffects::ANTIALIASING, Some(false))
+            .force(Antialiasing::SLOT, Some(false))
             .force(RenderEffects::REFLECTIONS, Some(false))
             .force(RenderEffects::SHADOWS, Some(shadows))
             .force(RenderEffects::VOLUMETRIC_FOG, Some(true)),
@@ -943,7 +943,7 @@ fn lamplit_cube_hdr(light_scattering: f32) -> HdrTarget {
             .expect("the forward renderer builds");
     renderer.set_effect_request(EffectRequest {
         programmatic: EffectOverride::none()
-            .force(RenderEffects::ANTIALIASING, Some(false))
+            .force(Antialiasing::SLOT, Some(false))
             .force(RenderEffects::REFLECTIONS, Some(false))
             .force(RenderEffects::VOLUMETRIC_FOG, Some(true)),
         ..EffectRequest::default()
@@ -1405,7 +1405,7 @@ fn sky_cube_hdr(camera: &crcbl::render::Camera, sky: Sky, light: &DirectionalLig
             .expect("the forward renderer builds");
     renderer.set_effect_request(EffectRequest {
         programmatic: EffectOverride::none()
-            .force(RenderEffects::ANTIALIASING, Some(false))
+            .force(Antialiasing::SLOT, Some(false))
             .force(RenderEffects::REFLECTIONS, Some(false))
             .force(RenderEffects::AMBIENT_OCCLUSION, Some(false)),
         ..EffectRequest::default()
@@ -1679,7 +1679,7 @@ fn normals_view_hdr(camera: &crcbl::render::Camera) -> HdrTarget {
             .expect("the forward renderer builds");
     renderer.set_effect_request(EffectRequest {
         programmatic: EffectOverride::none()
-            .force(RenderEffects::ANTIALIASING, Some(false))
+            .force(Antialiasing::SLOT, Some(false))
             .force(RenderEffects::REFLECTIONS, Some(false)),
         ..EffectRequest::default()
     });
@@ -1730,7 +1730,7 @@ fn occlusion_probe_hdr(
             .expect("the forward renderer builds");
     renderer.set_effect_request(EffectRequest {
         programmatic: EffectOverride::none()
-            .force(RenderEffects::ANTIALIASING, Some(false))
+            .force(Antialiasing::SLOT, Some(false))
             .force(RenderEffects::REFLECTIONS, Some(false))
             .force(RenderEffects::AMBIENT_OCCLUSION, Some(occlusion)),
         ..EffectRequest::default()

@@ -2800,6 +2800,12 @@ fn a_word_that_is_not_a_tier_is_refused_and_offers_the_ones_that_are() {
 /// where a single key has since moved off it. The last is the point of deriving
 /// the label rather than storing it — `set` is right there, and a file edited
 /// by hand is the ordinary case.
+///
+/// **A machine that selected nothing reads `medium, high`, not `custom`**: the
+/// engine's own defaults are that column's values — render scale 1, no clamp on
+/// the froxel pass and the resolve tier `RenderEffects::DEFAULT_STACK` carries
+/// — so a derived label has nothing left to tell them apart. `custom` is the
+/// third answer below, where a key has actually moved off the tier.
 #[test]
 fn bare_preset_reports_the_tier_the_keys_are_on() {
     use crcbl::settings::presets::CUSTOM;
@@ -2810,13 +2816,8 @@ fn bare_preset_reports_the_tier_the_keys_are_on() {
     let fresh = settings(home, &["preset"]);
     assert_eq!(code(&fresh), 0, "{}", stderr(&fresh));
     assert!(
-        stdout(&fresh).contains(&format!("quality = {CUSTOM}")),
-        "a file that selected nothing is on no tier: {}",
-        stdout(&fresh)
-    );
-    assert!(
-        stdout(&fresh).contains("low"),
-        "nothing said what to type instead: {}",
+        stdout(&fresh).contains("quality = medium, high"),
+        "a file that selected nothing reads as the column the defaults are: {}",
         stdout(&fresh)
     );
 
@@ -2842,6 +2843,11 @@ fn bare_preset_reports_the_tier_the_keys_are_on() {
     assert!(
         stdout(&moved).contains(&format!("quality = {CUSTOM}")),
         "a moved key still reads as the tier it came from: {}",
+        stdout(&moved)
+    );
+    assert!(
+        stdout(&moved).contains("low"),
+        "nothing said what to type instead: {}",
         stdout(&moved)
     );
 

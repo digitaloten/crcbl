@@ -280,10 +280,15 @@ fn per_pass_gpu_timers_report_real_numbers() {
     );
     expected.extend(hiz.iter().map(String::as_str));
     expected.extend([
-        "ssr", "ssr-blur", "tonemap",
+        "ssr",
+        "ssr-blur",
+        "tonemap",
         // The antialiasing resolve, which every frame draws — see
-        // `RenderEffects::DEFAULT_STACK`.
-        "fxaa",
+        // `RenderEffects::DEFAULT_STACK`, whose tier is CMAA2 and whose three
+        // passes are two dispatches and a draw.
+        "cmaa2-edges",
+        "cmaa2-shapes",
+        "cmaa2-apply",
     ]);
     assert_eq!(
         timings

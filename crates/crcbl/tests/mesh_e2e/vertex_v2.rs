@@ -40,7 +40,7 @@ use crcbl::render::scene::{
     ProbeGrid, SceneDesc,
 };
 use crcbl::render::{
-    Camera, EffectOverride, EffectRequest, ForwardRenderer, InstanceDesc, Projection,
+    Antialiasing, Camera, EffectOverride, EffectRequest, ForwardRenderer, InstanceDesc, Projection,
     RenderEffects, TransientPool,
 };
 use crcbl_shaders::mesh::{GpuMaterial, GpuMesh, MeshVertex, vertex_bytes};
@@ -234,7 +234,7 @@ pub(crate) fn quad_frame(
     .expect("the forward renderer builds this description");
     renderer.set_effect_request(EffectRequest {
         programmatic: EffectOverride::none()
-            .force(RenderEffects::ANTIALIASING, Some(false))
+            .force(Antialiasing::SLOT, Some(false))
             .force(RenderEffects::REFLECTIONS, Some(false)),
         ..EffectRequest::default()
     });

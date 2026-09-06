@@ -48,8 +48,8 @@ use crate::vertex_v2::{flat_frame, pixel_at, quad_camera, quad_mesh};
 use crcbl::math::{Mat4, Vec3};
 use crcbl::render::scene::{Capacities, PAGE_EXTENT, PageDesc, PageKind, ProbeGrid, SceneDesc};
 use crcbl::render::{
-    Camera, DirectionalLight, EffectOverride, EffectRequest, ForwardRenderer, InstanceDesc,
-    RenderEffects, TransientPool,
+    Antialiasing, Camera, DirectionalLight, EffectOverride, EffectRequest, ForwardRenderer,
+    InstanceDesc, RenderEffects, TransientPool,
 };
 use crcbl_shaders::mesh::{GpuMaterial, GpuMesh};
 
@@ -159,7 +159,7 @@ fn lit_frame(description: &SceneDesc<'_>, material: usize) -> HdrTarget {
     .expect("the forward renderer builds this description");
     renderer.set_effect_request(EffectRequest {
         programmatic: EffectOverride::none()
-            .force(RenderEffects::ANTIALIASING, Some(false))
+            .force(Antialiasing::SLOT, Some(false))
             .force(RenderEffects::REFLECTIONS, Some(false))
             .force(RenderEffects::SHADOWS, Some(false))
             .force(RenderEffects::AMBIENT_OCCLUSION, Some(false)),

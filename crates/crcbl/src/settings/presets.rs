@@ -451,16 +451,22 @@ mod tests {
         }
     }
 
-    /// **A run that selects nothing asks for nothing**, which is what makes a
+    /// **A run that selects nothing writes nothing**, which is what makes a
     /// preset opt-in rather than a change to every frame in the tree.
     ///
     /// Both halves: the stack holds none of the covered keys, and the whole
     /// section reads back as the unrestricted one every golden was blessed at.
+    ///
+    /// **The label is not the third half, and it says `medium, high` here.**
+    /// The engine's own defaults are that column's values — render scale 1, no
+    /// clamp on the froxel pass, and the resolve tier
+    /// `RenderEffects::DEFAULT_STACK` carries — so a derived label has nothing
+    /// left to distinguish them by, and saying `custom` would be the drift a
+    /// stored label has. That the keys are *unwritten* is the opt-in claim, and
+    /// it is the loop below.
     #[test]
-    fn a_run_that_selects_nothing_is_on_no_tier_and_asks_for_nothing() {
+    fn a_run_that_selects_nothing_writes_nothing_and_asks_for_nothing() {
         let stack = stack_from("");
-        assert_eq!(selected(&stack), None);
-        assert_eq!(label(&stack), CUSTOM);
         for name in [RENDER_SCALE_KEY, ANTIALIASING_KEY, FOG_KEY] {
             assert!(
                 !stack.contains(&format!("{VIDEO_NAMESPACE}.{name}")),
@@ -468,6 +474,12 @@ mod tests {
             );
         }
         assert_eq!(video(&stack), VideoSettings::unrestricted());
+        assert_eq!(
+            current_values(&stack),
+            QualityPreset::Medium.values(),
+            "the defaults are a column of the table, and the label below is derived from that",
+        );
+        assert_eq!(label(&stack), "medium, high");
     }
 
     /// **The label is derived, so it is a tier only while every covered key
@@ -587,7 +599,13 @@ mod tests {
     #[test]
     fn the_bare_command_prints_the_label_and_what_it_is_made_of() {
         let registry = registry();
-        let mut host = ConsoleHost::new(stack_from(""));
+        // A scale no column of the table holds, because an empty file is
+        // `medium`'s values — see
+        // `a_run_that_selects_nothing_writes_nothing_and_asks_for_nothing` —
+        // and the `custom` branch is what this is about.
+        let mut host = ConsoleHost::new(stack_from(&format!(
+            "[{VIDEO_NAMESPACE}]\n{RENDER_SCALE_KEY} = 0.5\n"
+        )));
         let mut cx = Context::new(&registry, &mut host);
         quality.run(&mut cx, &[]).expect("printing cannot fault");
         let printed = cx.into_lines();

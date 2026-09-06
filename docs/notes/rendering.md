@@ -2276,3 +2276,39 @@ saving is the two dispatches themselves: each cost about a tenth of a
 millisecond on lavapipe whatever it was asked to do, which is that driver's
 fixed cost per dispatch, and the work they were doing did not go away — it moved
 into `cmaa2-shapes`, whose own row is unchanged.
+
+## The CMAA2 default flip: what moved and where it was blessed (2026-09-06)
+
+`RenderEffects::DEFAULT_STACK` took `CMAA2` in place of `ANTIALIASING`.
+Twenty-nine goldens moved: seventeen under `crates/crcbl/tests/golden/`, four
+under `apps/sundial/tests/golden/`, three each under `apps/alcove/tests/golden/`
+and `apps/quarry/tests/golden/`, and two under `apps/lantern/tests/golden/`. The
+`crcbl`, `lantern` and `quarry` sets were blessed on radv and the `alcove` and
+`sundial` sets on lavapipe — each where its own previous bless was — and every
+harness suite was then run green on both drivers. The largest moves the suites
+reported: `aa` 83.83% of pixels differ at 0.78% gross, `cube_97x61` 74.41% at
+5.73% gross, lantern's `room` 31.77% at 0.75% gross, sundial's plaza set 8.96%
+at 2.44% gross, alcove's court 4.10% at 0.77% gross, quarry's dolly-start trio
+about 6.7% at 0.42% gross with dolly-end unmoved.
+
+Rather less of the tree moved than the bit count suggested. A dozen fixtures
+across `crates/crcbl/tests/mesh_e2e/`, `gltf_e2e.rs` and `apps/viewer` had asked
+for no resolve by forcing `RenderEffects::ANTIALIASING` off, which under the new
+default left CMAA2 running and would have moved every one of their goldens;
+`Antialiasing::SLOT` went public for them to name instead. Three checks had
+become comparisons of the default against itself and were repointed at `fxaa`,
+the rung the default no longer carries:
+`the_players_antialiasing_tier_replaces_the_resolve_slot`,
+`the_players_video_clamp_reaches_the_frames` and
+`reset_takes_the_antialiasing_tier_back_to_the_games_own_rung`; and
+`the_resolve_is_what_puts_the_soft_pixels_there` was comparing a frame with
+itself and now clears both slot bits for its control. No non-golden threshold
+moved.
+
+Browser, on SwiftShader at load 9.3: the render-harness drive took 74.5 s of its
+180 s budget (three runs, 74.0/74.5/75.7 s) and lantern's first HUD line came at
+11.4 s against a 180 s cap. The earlier CMAA2-only measurement on `e665d61` read
+45.8 s and 8.8 s; the tree moved between the two, so the delta is not the flip's
+alone without an A/B nobody ran. The lantern demo gate's first run reddened on
+`web/tools/browser-e2e.mjs`'s pinned effects row, not on load, and the row moved
+to `shadows ao ssr vfog cmaa2`.

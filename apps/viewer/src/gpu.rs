@@ -1180,7 +1180,7 @@ pub fn key_light(camera: &Camera) -> DirectionalLight {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crcbl::render::{EffectOverride, EffectRequest, OrbitCamera, Projection};
+    use crcbl::render::{Antialiasing, EffectOverride, EffectRequest, OrbitCamera, Projection};
     use crcbl::screenshot::{ForwardScene, OffscreenSetup};
 
     /// The frame the grid proof below is drawn at.
@@ -1398,7 +1398,7 @@ mod tests {
     /// [`EffectRequest`](crcbl::render::EffectRequest).
     fn without_the_resolve(renderer: &mut ForwardRenderer) {
         renderer.set_effect_request(EffectRequest {
-            programmatic: EffectOverride::none().force(RenderEffects::ANTIALIASING, Some(false)),
+            programmatic: EffectOverride::none().force(Antialiasing::SLOT, Some(false)),
             ..EffectRequest::default()
         });
     }

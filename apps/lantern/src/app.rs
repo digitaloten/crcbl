@@ -874,9 +874,9 @@ mod tests {
         );
 
         for (off, row) in [
-            (RenderEffects::SHADOWS, "ao ssr aa vfog"),
-            (RenderEffects::AMBIENT_OCCLUSION, "shadows ssr aa vfog"),
-            (RenderEffects::REFLECTIONS, "shadows ao aa vfog"),
+            (RenderEffects::SHADOWS, "ao ssr vfog cmaa2"),
+            (RenderEffects::AMBIENT_OCCLUSION, "shadows ssr vfog cmaa2"),
+            (RenderEffects::REFLECTIONS, "shadows ao vfog cmaa2"),
         ] {
             let mut options = headless(4);
             options.effects.remove(off);
@@ -1062,7 +1062,7 @@ mod tests {
             room::View::Main.stack().difference(RenderEffects::SHADOWS),
             "the row did not reach the renderer, or took more than shadows",
         );
-        assert_eq!(engine.gpu().paths().effects_row(), "ao ssr aa vfog");
+        assert_eq!(engine.gpu().paths().effects_row(), "ao ssr vfog cmaa2");
         assert!(
             ui_text(&engine).iter().any(|text| text == "SHADOWS: OFF"),
             "the row's label must show what the frame now draws: {:?}",

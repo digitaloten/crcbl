@@ -59,8 +59,8 @@ use crcbl::hal::{
 };
 use crcbl::math::{Mat4, Vec3, Vec4};
 use crcbl::render::{
-    DirectionalLight, EffectOverride, EffectRequest, Fog, ForwardRenderer, FroxelBuffers, Light,
-    PointLight, Projection, RenderEffects, SpotLight, TransientPool,
+    Antialiasing, DirectionalLight, EffectOverride, EffectRequest, Fog, ForwardRenderer,
+    FroxelBuffers, Light, PointLight, Projection, RenderEffects, SpotLight, TransientPool,
 };
 use crcbl::shaders::fog::{exp_neg, optical_depth};
 use crcbl::shaders::light::{CLUSTER_FAR, CLUSTER_NEAR, KIND_SPOT, SLICE_RATIO};
@@ -176,7 +176,7 @@ fn draw_and_read_the_column(fog: Fog, shadows: bool) -> Column {
             .expect("the forward renderer builds");
     renderer.set_effect_request(EffectRequest {
         programmatic: EffectOverride::none()
-            .force(RenderEffects::ANTIALIASING, Some(false))
+            .force(Antialiasing::SLOT, Some(false))
             .force(RenderEffects::REFLECTIONS, Some(false))
             .force(RenderEffects::SHADOWS, Some(shadows))
             .force(RenderEffects::VOLUMETRIC_FOG, Some(true)),

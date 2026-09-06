@@ -1289,8 +1289,8 @@ mod tests {
                 .value
                 .to_string()
         };
-        assert_eq!(row("effects"), "shadows ao ssr aa vfog");
-        assert_eq!(row("monitor"), "shadows ao aa");
+        assert_eq!(row("effects"), "shadows ao ssr vfog cmaa2");
+        assert_eq!(row("monitor"), "shadows ao cmaa2");
     }
 
     /// **The player's `[engine.video]` clamp reaches both views, and the run's
@@ -1438,27 +1438,28 @@ mod tests {
 
         // **The antialiasing tier, which is the layer that replaces rather than
         // clamps** — the guard for `let antialiasing = ctx.antialiasing()`
-        // beside the line above. Both views ask for FXAA by carrying
+        // beside the line above. Both views ask for CMAA2 by carrying
         // `DEFAULT_STACK`'s resolve bit, so a tier that never arrived leaves
         // them exactly as the control above, and only a file naming the *other*
-        // rung can tell the two apart.
-        let storage = settings_file("[engine.video]\nantialiasing = \"cmaa2\"\n");
+        // rung can tell the two apart. That rung is `fxaa`, and it is the file
+        // written here for exactly that reason.
+        let storage = settings_file("[engine.video]\nantialiasing = \"fxaa\"\n");
         let (picked, picked_monitor) =
             effects_opened_with(crcbl::engine::SettingsSource::Source(&storage));
         let swapped = |stack: RenderEffects| {
             stack
-                .difference(RenderEffects::ANTIALIASING)
-                .union(RenderEffects::CMAA2)
+                .difference(RenderEffects::CMAA2)
+                .union(RenderEffects::ANTIALIASING)
         };
         assert_eq!(
             picked,
             swapped(main),
-            "`antialiasing = \"cmaa2\"` did not reach the room this sample draws",
+            "`antialiasing = \"fxaa\"` did not reach the room this sample draws",
         );
         assert_eq!(
             picked_monitor,
             swapped(monitor),
-            "`antialiasing = \"cmaa2\"` did not reach the monitor's own view",
+            "`antialiasing = \"fxaa\"` did not reach the monitor's own view",
         );
     }
 

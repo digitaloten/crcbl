@@ -118,9 +118,9 @@ Every sample takes the same flags: `--backend vk|mtl|dx12|webgpu|null`,
 `--headless`, `--frames N`, `--fullscreen`, `--pacing adaptive`,
 `--debug-overlay`. `F3` opens the debug panel, `F11` toggles fullscreen, `ESC`
 opens the menu, and `` ` `` opens the debug console — `help` lists every command
-and every setting the engine reads, `antialiasing cmaa2` sets one for the
-running frame, `debug_view ambient occlusion` draws a renderer's debug channel
-instead of the shaded picture (`shaded`, `heatmap`, `lod tint`, `normals`,
+and every setting the engine reads, `antialiasing fxaa` sets one for the running
+frame, `debug_view ambient occlusion` draws a renderer's debug channel instead
+of the shaded picture (`shaded`, `heatmap`, `lod tint`, `normals`,
 `ambient occlusion`, `motion`, `bent normal`, `cascades`, `shadow atlas`),
 `toggle` and `reset` flip and restore one, `bind` lists what drives every action
 in a sample that has them and `bind fire KeyJ` moves one, and `log` prints the
