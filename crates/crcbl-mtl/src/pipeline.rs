@@ -162,6 +162,10 @@ pub(crate) struct RasterState {
     pub(crate) clip: MTLDepthClipMode,
     /// `setDepthBias:slopeScale:clamp:`, in that order. Zeroes when the
     /// pipeline has no depth state, which is what Metal's own default is.
+    ///
+    /// Floats because that is what the selector takes, including for the
+    /// constant the seam counts as an `i32` — the widening is exact for every
+    /// integer an `f32`'s significand holds. See `crcbl_hal::DepthBias`.
     pub(crate) bias: [f32; 3],
 }
 
@@ -1059,7 +1063,7 @@ fn raster_state(
         clip: conv::depth_clip_mode(primitive.depth_clamp),
         bias: depth_stencil.map_or([0.0; 3], |state| {
             [
-                state.bias.constant,
+                state.bias.constant as f32,
                 state.bias.slope_scale,
                 state.bias.clamp,
             ]

@@ -60,10 +60,18 @@ const STREAM_MAGIC = new Uint8Array([
 /**
  * `tag::STREAM_VERSION`.
  *
- * `5` since the buffer fill lost its trailing `value` word and became a clear:
- * `CommandEncoder::fill_buffer` took a `u32` that most of the backends had to
- * refuse most values of, so the seam dropped it and the tag became
- * `CLEAR_BUFFER_TAG`. It went to `4` when `CreateGraphicsPipeline`'s
+ * `6` since `CreateGraphicsPipeline`'s depth bias stopped carrying its constant
+ * as an `f32` and started carrying it as an `i32`: `crcbl_hal::DepthBias`'s
+ * constant counts the depth buffer's minimum resolvable difference, which is
+ * what `GPUDepthBias` and D3D12's `DepthBias` both are, so the seam counts in
+ * whole units too and `readDepthStencilState` reads a signed word. The four
+ * bytes stayed four bytes, so nothing but this number could catch a decoder
+ * reading a small constant as a denormal or a negative one as a NaN.
+ *
+ * It went to `5` when the buffer fill lost its trailing `value` word and became
+ * a clear: `CommandEncoder::fill_buffer` took a `u32` that most of the backends
+ * had to refuse most values of, so the seam dropped it and the tag became
+ * `CLEAR_BUFFER_TAG`. To `4` when `CreateGraphicsPipeline`'s
  * multisample block lost its `mask` word — the seam dropped
  * `MultisampleState::mask` because Metal's pipeline descriptor has no member to
  * put it in, so every pipeline covers all of its samples and
@@ -72,14 +80,14 @@ const STREAM_MAGIC = new Uint8Array([
  * thing that carries one, and to `2` for the trailing `timestampWrites` both
  * pass commands grew.
  *
- * All four are *changed records* rather than new tags: an older decoder meeting
+ * Every one is a *changed record* rather than a new tag: an older decoder meeting
  * a newer stream reads the `alphaToCoverage` byte and three bytes of the
  * colour-target count as a sample mask and carries on, decoding a stream that
  * still parses and means something else — which is the one defect a version word
  * exists to catch, and the reason this half and `crcbl-webgpu`'s
  * `tag::STREAM_VERSION` move together in one commit.
  */
-const STREAM_VERSION = 5;
+const STREAM_VERSION = 6;
 
 // ── Caps ─────────────────────────────────────────────────────────────────────
 
@@ -1471,7 +1479,9 @@ class ByteReader {
    * red — followed by the two masks. **There is no `reference` word**: the value
    * a draw compares against is pass state on the seam as it is in WebGPU, and
    * the pass's own `SetStencilReference` command is the only thing that carries
-   * one. The three bias floats close it out, immediately after `writeMask`.
+   * one. The bias closes it out, immediately after `writeMask`: a signed
+   * `constant` — `GPUDepthBias` is an `i32` and so is the seam's field, so the
+   * word on the wire is one too — and then its two floats.
    *
    * @returns {{ format: string, depthWrite: boolean, depthCompare: string,
    *   stencil: object | null, bias: { constant: number, slopeScale: number, clamp: number } }}
@@ -1498,7 +1508,7 @@ class ByteReader {
       depthCompare,
       stencil,
       bias: {
-        constant: this.readF32(),
+        constant: this.readI32(),
         slopeScale: this.readF32(),
         clamp: this.readF32(),
       },

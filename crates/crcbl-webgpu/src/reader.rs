@@ -627,8 +627,9 @@ impl ByteReader<'_> {
     /// One [`DepthStencilState`] — the deepest optional chain on the seam.
     ///
     /// The stencil is behind a presence byte, and its `front` and `back` are read
-    /// in that order so a front/back swap is visible; the two masks and the
-    /// three bias floats follow. **No reference:** the value a draw compares
+    /// in that order so a front/back swap is visible; the two masks and the bias
+    /// follow — an `i32` constant, then two floats, which is the shape
+    /// [`STREAM_VERSION`](tag::STREAM_VERSION) `6` names. **No reference:** the value a draw compares
     /// against is pass state on the seam, carried by
     /// [`Command::SetStencilReference`] and
     /// by nothing else.
@@ -651,7 +652,7 @@ impl ByteReader<'_> {
             None
         };
         let bias = DepthBias {
-            constant: self.read_f32()?,
+            constant: self.read_i32()?,
             slope_scale: self.read_f32()?,
             clamp: self.read_f32()?,
         };

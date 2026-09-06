@@ -1050,26 +1050,23 @@ fn blend_state(targets: &[ColorTargetState], multisample: &MultisampleState) -> 
 /// Rasteriser state, including the depth bias D3D12 keeps here rather than with
 /// the depth test.
 ///
-/// **`DepthBias` is an integer in D3D12 and an `f32` in the seam**, because
-/// D3D12 defines a constant bias in units of the depth buffer's smallest
-/// resolvable difference — which is what `crcbl_hal::DepthBias::constant`
-/// documents it as too. Truncating rather than rounding keeps a bias no larger
-/// than the caller asked for, in whichever direction reversed-Z put the sign.
+/// **`DepthBias` is an `i32` on both sides**, and this is the API the seam's
+/// type follows: D3D12 defines a constant bias as a count of the depth buffer's
+/// smallest resolvable differences, which is what `crcbl_hal::DepthBias::constant`
+/// counts too, so the value crosses whole with no rounding step to argue about.
 fn rasterizer_state(
     primitive: &PrimitiveState,
     depth: Option<&DepthStencilState>,
     samples: u32,
 ) -> D3D12_RASTERIZER_DESC {
     let bias = depth.map_or_else(Default::default, |state| state.bias);
-    #[allow(clippy::cast_possible_truncation)]
-    let constant = bias.constant.trunc() as i32;
     D3D12_RASTERIZER_DESC {
         FillMode: conv::fill_mode(primitive.polygon_mode),
         CullMode: conv::cull_mode(primitive.cull_mode),
         // The seam's `FrontFace::Ccw` is counter-clockwise in framebuffer space,
         // which is exactly what this flag names.
         FrontCounterClockwise: matches!(primitive.front_face, crcbl_hal::FrontFace::Ccw).into(),
-        DepthBias: constant,
+        DepthBias: bias.constant,
         DepthBiasClamp: bias.clamp,
         SlopeScaledDepthBias: bias.slope_scale,
         // The seam's `depth_clamp` asks for clamping *instead of* clipping, so
@@ -1283,5 +1280,39 @@ mod tests {
         assert!(!clamped.FrontCounterClockwise.as_bool());
         assert!(!clamped.DepthClipEnable.as_bool());
         assert!(clamped.MultisampleEnable.as_bool());
+    }
+
+    /// The depth bias crosses whole: `D3D12_RASTERIZER_DESC::DepthBias` and
+    /// `crcbl_hal::DepthBias::constant` are the same `i32` counting the same
+    /// units, so nothing here rounds, truncates or clamps.
+    ///
+    /// The magnitude is past what an `f32` can count in whole units, which is
+    /// what says the value reaches D3D12 as an integer rather than through a
+    /// float. The sign is negative because that is the direction reversed-Z
+    /// needs, and a backend that took the magnitude would look almost right.
+    #[test]
+    fn the_depth_bias_constant_reaches_d3d12_whole() {
+        let bias = crcbl_hal::DepthBias {
+            constant: -((1 << 24) + 1),
+            slope_scale: 1.5,
+            clamp: 0.25,
+        };
+        let raster = rasterizer_state(
+            &PrimitiveState::default(),
+            Some(&DepthStencilState {
+                bias,
+                ..DepthStencilState::default()
+            }),
+            1,
+        );
+        assert_eq!(raster.DepthBias, bias.constant);
+        assert_eq!(raster.SlopeScaledDepthBias, bias.slope_scale);
+        assert_eq!(raster.DepthBiasClamp, bias.clamp);
+
+        // No depth state is no bias, rather than whatever the last descriptor left.
+        let none = rasterizer_state(&PrimitiveState::default(), None, 1);
+        assert_eq!(none.DepthBias, 0);
+        assert_eq!(none.SlopeScaledDepthBias, 0.0);
+        assert_eq!(none.DepthBiasClamp, 0.0);
     }
 }

@@ -963,7 +963,12 @@ fn create_rendering_pipeline(
         .viewport_count(1)
         .scissor_count(1);
     let bias = desc.depth_stencil.map(|depth| depth.bias);
-    let bias_enabled = bias.is_some_and(|bias| bias.constant != 0.0 || bias.slope_scale != 0.0);
+    let bias_enabled = bias.is_some_and(|bias| bias.constant != 0 || bias.slope_scale != 0.0);
+    // `depthBiasConstantFactor` is a float and the seam's count is an `i32`;
+    // widening is exact for every integer an `f32`'s 24-bit significand holds,
+    // which is every magnitude a depth bias is tuned to. See
+    // `crcbl_hal::DepthBias`.
+    let bias_constant = bias.map_or(0.0, |bias| bias.constant as f32);
     let rasterization = vk::PipelineRasterizationStateCreateInfo::default()
         .depth_clamp_enable(desc.primitive.depth_clamp)
         .rasterizer_discard_enable(false)
@@ -971,7 +976,7 @@ fn create_rendering_pipeline(
         .cull_mode(conv::cull_mode(desc.primitive.cull_mode))
         .front_face(conv::front_face(desc.primitive.front_face))
         .depth_bias_enable(bias_enabled)
-        .depth_bias_constant_factor(bias.map_or(0.0, |bias| bias.constant))
+        .depth_bias_constant_factor(bias_constant)
         .depth_bias_clamp(bias.map_or(0.0, |bias| bias.clamp))
         .depth_bias_slope_factor(bias.map_or(0.0, |bias| bias.slope_scale))
         .line_width(1.0);

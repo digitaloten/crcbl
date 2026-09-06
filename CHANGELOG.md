@@ -16,6 +16,21 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Breaking
 
+- **A depth-bias constant is a count, so it is an `i32`.**
+  `crcbl_hal::DepthBias::constant` was an `f32` and is now an `i32`; a caller
+  that wrote a fractional literal there no longer compiles. The field counts the
+  depth buffer's minimum resolvable difference, and the two APIs that name that
+  count in their own descriptor — D3D12's `D3D12_RASTERIZER_DESC::DepthBias` and
+  WebGPU's `GPUDepthBias` — are both signed 32-bit. WebGPU's
+  `[EnforceRange] long` conversion throws on a non-integer, so on that backend a
+  fraction was never a smaller nudge but a refused pipeline, and
+  `web/engine/gpu-replay.js` carried a refusal for it that goes with the type
+  that could express one. `crcbl-dx12` no longer truncates, `crcbl-vk` and
+  `crcbl-mtl` widen the count to the `f32` their own API takes — exact for every
+  integer a 24-bit significand holds — and `crcbl-webgpu`'s wire carries a
+  signed word: `tag::STREAM_VERSION` is `6`, so a page holding an older
+  `gpu-stream.js` is refused by the header rather than reading the constant as a
+  denormal.
 - **The seam refuses an occlusion query set rather than hand out one nothing can
   write.** `Device::create_query_set` now answers `HalError::Unsupported` for
   `QueryKind::Occlusion` on every backend — `crcbl-vk`, `crcbl-dx12`,

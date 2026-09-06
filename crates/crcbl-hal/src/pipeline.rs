@@ -919,11 +919,26 @@ pub struct StencilState {
 /// float depth buffer's precision varies across the range, so a constant bias
 /// tuned for a unorm buffer is meaningless here. Tune against the reversed-Z
 /// buffer, not against a tutorial.
+///
+/// # The constant counts units, so it is an `i32`
+///
+/// `constant` is a *count* of the depth buffer's minimum resolvable
+/// difference, and the two backends that name that count in their own API name
+/// it as an integer: D3D12's `D3D12_RASTERIZER_DESC::DepthBias` and WebGPU's
+/// `GPUDepthBias` are both signed 32-bit. WebGPU will not even take a
+/// non-integer — its `[EnforceRange] long` conversion throws rather than
+/// rounding — so a fraction is not a smaller nudge there, it is a refused
+/// pipeline. Vulkan and Metal spell the same count as a float
+/// (`depthBiasConstantFactor`, `setDepthBias:slopeScale:clamp:`), and an `f32`
+/// represents every integer up to its 24-bit significand exactly, so widening
+/// an `i32` bias for those two loses nothing at any magnitude a depth bias is
+/// tuned to. [`slope_scale`](Self::slope_scale) is the knob that varies
+/// continuously; this one steps.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DepthBias {
-    /// Constant offset, in units of the depth buffer's minimum resolvable
-    /// difference.
-    pub constant: f32,
+    /// Constant offset, counted in the depth buffer's minimum resolvable
+    /// differences. See the type docs on why this is not a float.
+    pub constant: i32,
     /// Offset scaled by the polygon's depth slope.
     pub slope_scale: f32,
     /// Maximum magnitude. Requires

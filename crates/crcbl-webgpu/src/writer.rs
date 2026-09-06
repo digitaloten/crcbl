@@ -290,16 +290,21 @@ impl ByteWriter {
     /// **The deepest optional chain on the seam.** The stencil rides a presence
     /// byte — the house rule for an optional field that is not a handle — and,
     /// when present, its `front` and `back` faces go over in that order, distinct
-    /// so a front/back swap is visible, followed by the three masks. The bias's
-    /// three floats cross as bit patterns through [`f32::to_le_bytes`], as every
-    /// float on this stream does.
+    /// so a front/back swap is visible, followed by the three masks. The bias
+    /// closes it out: an `i32` constant — the count `GPUDepthBias` is, see
+    /// [`DepthBias::constant`](crcbl_hal::DepthBias::constant) — and then its
+    /// two floats, as bit patterns through [`f32::to_le_bytes`] like every float
+    /// on this stream. The constant was an `f32` until
+    /// [`STREAM_VERSION`](tag::STREAM_VERSION) `6`, which is why that word moved
+    /// with it: the four bytes stay four bytes and mean something else, so
+    /// nothing but the version could refuse an older decoder's reading of them.
     ///
     /// **There is no stencil `reference` on the wire.** WebGPU has no such
     /// pipeline member and neither does the seam — the value a draw compares
     /// against is pass state, and
     /// [`set_stencil_reference`](StreamWriter::set_stencil_reference) is the only thing
     /// that carries it. The stencil block therefore ends at `write_mask`, and
-    /// the bias floats follow immediately; see
+    /// the bias follows immediately; see
     /// [`STREAM_VERSION`](tag::STREAM_VERSION), which this moved.
     fn put_depth_stencil_state(&mut self, state: &DepthStencilState) {
         self.put_u8(tag::format_code(state.format));
@@ -315,7 +320,7 @@ impl ByteWriter {
                 self.put_u32(stencil.write_mask);
             }
         }
-        self.put_f32(state.bias.constant);
+        self.put_i32(state.bias.constant);
         self.put_f32(state.bias.slope_scale);
         self.put_f32(state.bias.clamp);
     }

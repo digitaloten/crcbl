@@ -2426,7 +2426,7 @@ fn rich_graphics_pipeline() -> GraphicsPipelineDesc<'static> {
                 write_mask: 0xF0,
             }),
             bias: DepthBias {
-                constant: -2.0,
+                constant: -2,
                 slope_scale: 0.1,
                 clamp: 0.25,
             },
@@ -2464,9 +2464,9 @@ static TWO_TARGETS: [ColorTargetState; 2] = [
 /// **The whole nested tree survives a round trip field for field.**
 ///
 /// The claims that cost the most, stated as assertions at the end: the stencil's
-/// `front` and `back` differ in every field so a swap goes red, the bias floats
-/// are bit-exact including one no short decimal names, and the two colour targets
-/// stay in order with distinct formats.
+/// `front` and `back` differ in every field so a swap goes red, the bias's two
+/// floats are bit-exact including one no short decimal names, and the two colour
+/// targets stay in order with distinct formats.
 #[test]
 fn a_graphics_pipeline_carries_its_whole_nested_tree_field_for_field() {
     let desc = rich_graphics_pipeline();
@@ -2530,13 +2530,59 @@ fn a_graphics_pipeline_carries_its_whole_nested_tree_field_for_field() {
         bias.slope_scale, 0.1_f32,
         "the awkward decimal is bit-exact"
     );
-    assert_eq!(bias.constant, -2.0_f32);
+    assert_eq!(bias.constant, -2_i32);
     assert_eq!(color_targets.len(), 2);
     assert_ne!(
         color_targets[0].format, color_targets[1].format,
         "the two targets share a format, so a reversal would not be noticed"
     );
     assert!(color_targets[0].blend.is_some() && color_targets[1].blend.is_none());
+}
+
+/// **The bias constant crosses as an integer, not as a float that happens to
+/// hold one.**
+///
+/// [`DepthBias::constant`](crcbl_hal::DepthBias::constant) counts the depth
+/// buffer's minimum resolvable difference and is an `i32` for the reason
+/// `GPUDepthBias` is one, so the word on the wire is signed rather than a float.
+/// A round trip over the rich pipeline's `-2` cannot tell the two apart — every
+/// small integer survives both — so this uses the smallest positive integer an
+/// `f32` cannot represent: a stream that still carried the constant as a float
+/// decodes it one short, and the two floats beside it are asserted too so a
+/// four-byte shift cannot be what bought the pass.
+#[test]
+fn the_bias_constant_crosses_as_an_integer_rather_than_as_a_float() {
+    // One past the largest integer an `f32`'s 24-bit significand holds.
+    const PAST_F32_INTEGERS: i32 = (1 << 24) + 1;
+    assert_eq!(
+        PAST_F32_INTEGERS as f32 as i32,
+        PAST_F32_INTEGERS - 1,
+        "the value must be one a float round trip would lose, or this test proves nothing",
+    );
+
+    let mut depth_stencil = rich_graphics_pipeline()
+        .depth_stencil
+        .expect("the rich pipeline has depth-stencil state");
+    depth_stencil.bias.constant = PAST_F32_INTEGERS;
+    let desc = GraphicsPipelineDesc {
+        depth_stencil: Some(depth_stencil),
+        ..rich_graphics_pipeline()
+    };
+    let mut stream = StreamWriter::new();
+    stream.create_graphics_pipeline(handle(1, 1), &desc);
+
+    match &decode_stream(stream.bytes()).expect("a stream this crate wrote decodes")[0] {
+        Command::CreateGraphicsPipeline { depth_stencil, .. } => {
+            let bias = depth_stencil
+                .as_ref()
+                .expect("the descriptor carried depth-stencil state")
+                .bias;
+            assert_eq!(bias.constant, PAST_F32_INTEGERS);
+            assert_eq!(bias.slope_scale, 0.1_f32);
+            assert_eq!(bias.clamp, 0.25_f32);
+        }
+        other => panic!("expected CreateGraphicsPipeline, got {}", other.name()),
+    }
 }
 
 /// **An absent fragment is a depth-only pass and a distinct, shorter body** — the
@@ -2738,7 +2784,7 @@ fn every_nested_graphics_pipeline_enum_refuses_an_unclaimed_code() {
 ///
 /// * the stencil reference, which is pass state now (`StencilState` has no field
 ///   for it and [`Command::SetStencilReference`] is the only channel), so the
-///   stencil block ends at `write_mask` and the bias floats follow immediately;
+///   stencil block ends at `write_mask` and the bias follows immediately;
 /// * the sample mask, so the multisample block is the sample count and the
 ///   coverage flag with the colour-target count straight after.
 ///
@@ -2772,7 +2818,7 @@ fn neither_the_stencil_reference_nor_the_sample_mask_still_occupies_a_word() {
     at += 4 + 4; // read_mask, write_mask — and nothing after them
     let bias_at = at;
 
-    let constant = f32::from_le_bytes(
+    let constant = i32::from_le_bytes(
         whole[bias_at..bias_at + 4]
             .try_into()
             .expect("four bytes of bias constant"),
@@ -2786,7 +2832,7 @@ fn neither_the_stencil_reference_nor_the_sample_mask_still_occupies_a_word() {
         "the bias must start right after write_mask: a reference word here would push it out",
     );
 
-    // The multisample block follows the three bias floats. It is the sample
+    // The multisample block follows the bias's three words. It is the sample
     // count and the coverage flag with nothing between them — the seam carries
     // no sample mask, because `MTLRenderPipelineDescriptor` has no member to
     // hold one — and the colour-target count follows immediately. Same argument

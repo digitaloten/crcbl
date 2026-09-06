@@ -842,7 +842,8 @@ const EXPECTED = [
       },
       // `slopeScale` is the nearest f32 to 0.1 — the bit pattern the wire carries
       // — computed with `Math.fround` rather than written as `0.1`, which is a
-      // different double. `constant` and `clamp` are exact.
+      // different double. `constant` is a signed integer word (`GPUDepthBias` is
+      // an i32 and so is the seam's field), and `clamp` is exact.
       bias: { constant: -2, slopeScale: Math.fround(0.1), clamp: 0.25 },
     },
     multisample: { samples: 4, alphaToCoverage: true },
@@ -2374,25 +2375,27 @@ async function main() {
   );
   // The version is a `u16` at offset 8, so its low byte alone says 1 — the
   // version this format spoke before both pass commands grew a
-  // `timestampWrites`, before the stencil block lost its `reference` word and
-  // before the buffer fill lost its `value`, and exactly the buffer an older
-  // wasm would send. The two halves ship as separate artifacts and are cached
-  // independently, which is what makes this reachable at all.
+  // `timestampWrites`, before the stencil block lost its `reference` word,
+  // before the buffer fill lost its `value` and before the depth bias's
+  // constant became an `i32`, and exactly the buffer an older wasm would send.
+  // The two halves ship as separate artifacts and are cached independently,
+  // which is what makes this reachable at all.
   checkRefused(
     withByte(fixture, 8, 1),
-    { kind: 'UnsupportedVersion', found: 1, expected: 5 },
+    { kind: 'UnsupportedVersion', found: 1, expected: 6 },
     'a stream from a build that speaks another version is refused'
   );
   // And the version immediately before this one, which is the interesting case
-  // rather than a distant number: a `4` stream differs from a `5` only by the
-  // trailing `value` word on `FillBuffer`, so every byte before it decodes
+  // rather than a distant number: a `5` stream differs from a `6` only in how
+  // the depth bias's constant is spelled — four bytes either way, an `f32`
+  // there and an `i32` here — so every byte before and after it decodes
   // identically and the header word is the only thing that can catch it. The
-  // same was true of `3` against `4`, which differed only by the sample-mask
-  // word inside `CreateGraphicsPipeline`.
+  // same was true of `4` against `5`, which differed only by the trailing
+  // `value` word on `FillBuffer`.
   checkRefused(
-    withByte(fixture, 8, 4),
-    { kind: 'UnsupportedVersion', found: 4, expected: 5 },
-    'the previous version, which differs only by a word mid-command, is refused'
+    withByte(fixture, 8, 5),
+    { kind: 'UnsupportedVersion', found: 5, expected: 6 },
+    'the previous version, which differs only by how one word is spelled, is refused'
   );
 
   // ---- no byte anywhere turns a decode into an indexing throw -------------

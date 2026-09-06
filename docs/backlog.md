@@ -9577,29 +9577,6 @@ either. Written down so a green group M is not read as covering them.
   does not catch a lost visibility word. That mapping is held by
   `gpu-replay.mjs`'s bit-by-bit table and by the fixture instead.
 
-### WebGPU cannot carry a fractional depth-bias constant
-
-`crcbl_hal::DepthBias::constant` is an `f32`, and the field's own doc tunes the
-reversed-Z shadow-acne bias as a float against a float depth buffer. **WebGPU's
-`GPUDepthBias` is an `i32`.** The two slope fields (`slope_scale`, `clamp`) are
-floats and map directly, but the constant cannot: WebIDL's `[EnforceRange] long`
-conversion throws on a non-integer, so a fractional constant cannot reach
-`createRenderPipeline` at all.
-
-The WebGPU replayer refuses a fractional or out-of-`i32` constant loudly, naming
-it, rather than truncating — `1.9` silently becoming `1` would change a tuned
-bias invisibly. So an integer constant works and a fractional one is rejected on
-this backend only; the other three carry the float.
-
-**DECIDED 2026-09-06 —** `DepthBias::constant` becomes an `i32` on the seam.
-Precedent: D3D12's `DepthBias` and WebGPU's `GPUDepthBias` are both integer, and
-Vulkan's float `depthBiasConstantFactor` takes an integer value exactly — wgpu's
-`DepthBiasState::constant` is an `i32` for that reason — while the engine's own
-shadow constants are integral already. Work: change the field in `crcbl-hal`'s
-`pipeline.rs`, rewrite its doc so it no longer discusses fractional magnitudes,
-drop the WebGPU replayer's fractional refusal, and follow the compiler to the
-call sites.
-
 ### A `GPUSampler` reports nothing but its label, so no browser check can confirm one
 
 Group L asserts `instanceof GPUSampler` and an empty device error queue, and

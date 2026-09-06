@@ -6809,6 +6809,25 @@ async function main() {
         ? 'no stencil reference reaches createRenderPipeline (it is a per-pass value, and the wire carries none)'
         : `a stencil reference reached the descriptor (${JSON.stringify(pd.depthStencil)})`
     );
+    // **The bias constant reaches `depthBias` as the integer the seam counted.**
+    // `crcbl_hal::DepthBias::constant` is an `i32` for the reason `GPUDepthBias`
+    // is one, so there is no rounding step between them — this is what says the
+    // replayer added none, and that the constant did not swap places with one of
+    // the two floats beside it on the wire.
+    const biasCarried =
+      Number.isInteger(pd.depthStencil.depthBias) &&
+      pd.depthStencil.depthBias ===
+        graphicsPipeline.depthStencil.bias.constant &&
+      pd.depthStencil.depthBiasSlopeScale ===
+        graphicsPipeline.depthStencil.bias.slopeScale &&
+      pd.depthStencil.depthBiasClamp ===
+        graphicsPipeline.depthStencil.bias.clamp;
+    check(
+      biasCarried,
+      biasCarried
+        ? 'the depth bias reaches createRenderPipeline as the integer constant and two floats the wire carried'
+        : `the depth bias is not what the stream asked for (${JSON.stringify(pd.depthStencil)})`
+    );
     check(
       replayer.graphicsPipelines.get(graphicsPipeline.pipeline) !== undefined &&
         !replayer.hasReplies &&
@@ -6892,17 +6911,6 @@ async function main() {
         'must be 1 or 4',
         () => rasterReady(),
       ],
-      [
-        {
-          ...graphicsPipeline,
-          depthStencil: {
-            ...graphicsPipeline.depthStencil,
-            bias: { ...graphicsPipeline.depthStencil.bias, constant: 1.5 },
-          },
-        },
-        'GPUDepthBias is an integer',
-        () => rasterReady(),
-      ],
       // The depth format is gated, so the same command is a refusal on a device
       // without the feature — the pipeline the happy path built.
       [graphicsPipeline, 'depth32float-stencil8', () => readyWithDevice()],
@@ -6939,7 +6947,7 @@ async function main() {
     check(
       wrong.length === 0,
       wrong[0] ??
-        'PolygonMode::Line, depth_clamp without the feature, a bad sample count, a fractional depthBias and a gated depth format are each refused by name, none thrown'
+        'PolygonMode::Line, depth_clamp without the feature, a bad sample count and a gated depth format are each refused by name, none thrown'
     );
   }
   {

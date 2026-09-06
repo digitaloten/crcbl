@@ -48,16 +48,26 @@ pub const STREAM_MAGIC: &[u8; 8] = b"CRCBLGPU";
 
 /// Current stream format version.
 ///
-/// `4` since `CreateGraphicsPipeline`'s multisample block lost its `mask` word:
-/// the seam dropped `MultisampleState::mask` because
-/// `MTLRenderPipelineDescriptor` has no member to put it in, so every pipeline
-/// now rasterises with all samples covered and the replayer fills
-/// `GPUMultisampleState.mask` itself.
+/// `6` since `CreateGraphicsPipeline`'s depth bias stopped carrying its constant
+/// as an `f32` and started carrying it as an `i32`:
+/// [`DepthBias::constant`](crcbl_hal::DepthBias::constant) is a count of the
+/// depth buffer's minimum resolvable difference, which D3D12 and WebGPU both
+/// spell as a signed 32-bit integer, so the seam does too. **The word did not
+/// change size**, which is exactly why it is a version bump: an older decoder
+/// reading the new stream takes a small positive constant as a denormal a hair
+/// from zero and a negative one as a NaN, refuses neither, and finds every byte
+/// after it still lined up.
 ///
 /// It went to `5` when the buffer fill lost its trailing `value` word and
 /// became a clear: `CommandEncoder::fill_buffer` took a `u32` that three of the
 /// five backends had to refuse most values of, so the seam dropped it — see
-/// [`CLEAR_BUFFER_TAG`]. To `3` when the stencil block lost its trailing
+/// [`CLEAR_BUFFER_TAG`].
+///
+/// To `4` when `CreateGraphicsPipeline`'s multisample block lost its `mask` word:
+/// the seam dropped `MultisampleState::mask` because
+/// `MTLRenderPipelineDescriptor` has no member to put it in, so every pipeline
+/// now rasterises with all samples covered and the replayer fills
+/// `GPUMultisampleState.mask` itself. To `3` when the stencil block lost its trailing
 /// `reference` word —
 /// [`StencilState::reference`](crcbl_hal::StencilState) left the seam for the
 /// same reason, leaving
@@ -66,12 +76,12 @@ pub const STREAM_MAGIC: &[u8; 8] = b"CRCBLGPU";
 /// commands grew; see [`REPLY_VERSION`] for the rule this follows.
 ///
 /// Every one of those is a **changed record**, the kind a decoder cannot
-/// notice: an older `gpu-stream.js` meeting this stream reads the
+/// notice: an older `gpu-stream.js` meeting a newer stream reads the
 /// `alpha_to_coverage` byte and three bytes of the colour-target count as a
 /// sample mask and carries on, decoding a stream that still parses and means
 /// something else. A new tag would not have moved these words, which is why
 /// they are version bumps and not new commands.
-pub const STREAM_VERSION: u16 = 5;
+pub const STREAM_VERSION: u16 = 6;
 
 /// Bytes before the first command: [`STREAM_MAGIC`], [`STREAM_VERSION`], and the
 /// sequence number of the first command in the buffer.

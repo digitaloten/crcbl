@@ -497,8 +497,7 @@ pub enum Command {
     /// [`depth_clamp`](crcbl_hal::PrimitiveState::depth_clamp) without
     /// `depth-clip-control`, a
     /// [`samples`](crcbl_hal::MultisampleState::samples) count that is neither `1`
-    /// nor `4`, a fractional
-    /// [`DepthBias.constant`](crcbl_hal::DepthBias::constant), a feature-gated
+    /// nor `4`, a feature-gated
     /// [`format`](crcbl_hal::ColorTargetState) — are the replayer's, because only
     /// it faces WebGPU, and each is a value the wire form claims. **No stencil
     /// reference crosses**: it is pass state on the seam as it is in WebGPU, and

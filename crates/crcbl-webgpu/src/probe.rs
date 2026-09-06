@@ -2242,7 +2242,7 @@ pub const PROBE_GRAPHICS_PIPELINE_DESC: GraphicsPipelineDesc<'static> = Graphics
         depth_compare: CompareOp::Greater,
         stencil: None,
         bias: DepthBias {
-            constant: 0.0,
+            constant: 0,
             slope_scale: 0.0,
             clamp: 0.0,
         },
@@ -4491,7 +4491,7 @@ pub const fn probe_stencil_pipeline_desc() -> GraphicsPipelineDesc<'static> {
                 write_mask: 0,
             }),
             bias: DepthBias {
-                constant: 0.0,
+                constant: 0,
                 slope_scale: 0.0,
                 clamp: 0.0,
             },

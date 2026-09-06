@@ -1389,18 +1389,6 @@ const BLEND_OPERATION = Object.freeze({
 const COLOR_WRITE_BIT = Object.freeze({ R: 1, G: 2, B: 4, A: 8 });
 
 /**
- * The largest integer a `GPUDepthBias` (`[EnforceRange] long`, an `i32`) holds.
- *
- * `crcbl_hal::DepthBias::constant` is an `f32` on the seam but WebGPU's
- * `depthBias` is an integer, so a value outside `i32` — or a fractional one —
- * cannot be passed as-is: WebIDL's `[EnforceRange]` conversion of either throws
- * a `TypeError` synchronously out of `createRenderPipeline`. Refused here with
- * the value named instead. See {@link Replayer#createGraphicsPipeline}.
- */
-const MAX_DEPTH_BIAS = 0x7fff_ffff;
-const MIN_DEPTH_BIAS = -0x8000_0000;
-
-/**
  * The largest `maxAnisotropy` a `GPUSize32` carries.
  *
  * WebIDL converts a `double` to an `unsigned long` **modularly** unless the
@@ -5642,13 +5630,12 @@ export class Replayer {
    *     {@link Replayer#setStencilReference} is the only thing that decides what
    *     a draw compares against. Binding a pipeline must therefore leave the
    *     pass's current reference alone, which on WebGPU it cannot help doing.
-   *   * **`DepthBias.constant` is `f32` on the seam and `GPUDepthBias` is an
-   *     integer.** A non-integer (or out-of-`i32`) value would make WebIDL's
-   *     `[EnforceRange] long` conversion throw synchronously, so it is refused by
-   *     name rather than silently truncated — `1.9` must not become `1`. **This is
-   *     a seam/WebGPU precision mismatch worth a backlog entry:** the engine's
-   *     reversed-Z bias is tuned as a float, and an integer bias may not reproduce
-   *     it. `depthBiasSlopeScale` and `depthBiasClamp` are floats and map directly.
+   *   * **`DepthBias.constant` needs no check.** It is an `i32` on the seam for
+   *     the reason `GPUDepthBias` is one — both count the depth buffer's minimum
+   *     resolvable difference in whole units — so the decoded word is already in
+   *     range and already an integer, and there is nothing for WebIDL's
+   *     `[EnforceRange] long` conversion to throw on. `depthBiasSlopeScale` and
+   *     `depthBiasClamp` are floats and map directly.
    *   * **`samples` must be 1 or 4.** WebGPU allows no other `count`; any other is
    *     refused by name.
    *   * **Each format goes through {@link webgpuTextureFormatFor}** — the
@@ -5743,28 +5730,14 @@ export class Replayer {
         this.#deviceError(`${named} depth-stencil ${format.reason}`);
         return;
       }
-      const constant = ds.bias.constant;
-      if (
-        !Number.isInteger(constant) ||
-        constant < MIN_DEPTH_BIAS ||
-        constant > MAX_DEPTH_BIAS
-      ) {
-        // A seam/WebGPU precision mismatch: DepthBias.constant is an f32 and
-        // GPUDepthBias is an i32. Refused rather than silently truncated (`1.9`
-        // must not become `1`), and worth a backlog entry — the reversed-Z bias
-        // is tuned as a float and an integer bias may not reproduce it.
-        this.#deviceError(
-          `${named} sets a depthBias constant of ${constant}, and GPUDepthBias is an integer (i32): ` +
-            "WebGPU's [EnforceRange] long conversion throws on a non-integer or out-of-range value, " +
-            'so the seam refuses it rather than rounding the float the engine tuned'
-        );
-        return;
-      }
       depthStencil = {
         format: format.name,
         depthWriteEnabled: ds.depthWrite,
         depthCompare: SAMPLER_COMPARE_FUNCTION[ds.depthCompare],
-        depthBias: constant,
+        // No range or integrality check: the seam's constant is an `i32` and
+        // `readDepthStencilState` decodes a signed word, so `[EnforceRange]`
+        // has nothing left to throw on. See the class docs above.
+        depthBias: ds.bias.constant,
         depthBiasSlopeScale: ds.bias.slopeScale,
         depthBiasClamp: ds.bias.clamp,
       };

@@ -3,6 +3,61 @@
 Records kept so they are not re-derived: measurements, investigations, ideas
 considered and declined, and lessons. Open work lives in `docs/backlog.md`.
 
+### SHIPPED — the depth-bias constant is an `i32` on the seam
+
+Closes "WebGPU cannot carry a fractional depth-bias constant", decided and built
+2026-09-06. `crcbl_hal::DepthBias::constant` was an `f32`; it is now an `i32`,
+and the WebGPU replayer's refusal of a fractional one is gone because the type
+can no longer express one.
+
+**Why the integer is the right side to land on.** The field counts the depth
+buffer's minimum resolvable difference, and the two APIs that name that count in
+their own descriptor both spell it as a signed 32-bit integer:
+`D3D12_RASTERIZER_DESC::DepthBias` and WebGPU's `GPUDepthBias`. WebGPU will not
+take anything else — its `[EnforceRange] long` conversion throws synchronously
+out of `createRenderPipeline` on a non-integer — so on that backend a fraction
+was never a smaller nudge, it was a refused pipeline. wgpu's
+`DepthBiasState::constant` is an `i32` for the same reason. Vulkan and Metal
+spell the count as a float (`depthBiasConstantFactor`,
+`setDepthBias:slopeScale:clamp:`), and both take an integral value exactly, so
+they were the two that could give ground.
+
+**The one thing an `f32` bought and this gives up**, stated so it is not
+rediscovered as a bug: `crates/crcbl-vk/src/pipeline.rs` and
+`crates/crcbl-mtl/src/pipeline.rs` widen the `i32` to the `f32` their API takes,
+which is exact only up to the 24-bit significand — `2^24 + 1` reaches those two
+as `2^24`. D3D12 and WebGPU carry the full `i32`. Nothing in the engine is
+anywhere near that magnitude (the renderer's own pipelines all use
+`DepthBias::default()`, and sundial's shadow bias is a separate console constant
+counted in cascade texels, not this field), so the divergence is documented
+rather than guarded.
+
+**The wire moved with it.** `tag::STREAM_VERSION` is `6`: the constant crosses
+through `put_i32`/`read_i32` instead of `put_f32`/`read_f32`, and
+`web/engine/gpu-stream.js`'s `readDepthStencilState` reads a signed word. Four
+bytes stayed four bytes, which is precisely the changed-record shape only a
+version word can catch — an older decoder takes a small positive constant as a
+denormal and a negative one as a NaN, refuses neither, and finds every byte
+after it still lined up.
+`crates/crcbl-webgpu/tests/fixtures/canonical-stream.bin` was re-blessed;
+`cmp -l` against the old file shows two runs and nothing else, the version byte
+and the four bias bytes (`00 00 00 C0` → `FE FF FF FF`).
+
+**What was verified, and where.** The wire claim is
+`the_bias_constant_crosses_as_an_integer_rather_than_as_a_float` in
+`crates/crcbl-webgpu/tests/stream.rs`, which round-trips `2^24 + 1` — the
+smallest positive integer an `f32` cannot hold — so a stream still carrying the
+constant as a float decodes one short. Shown red by putting `put_f32`/`read_f32`
+back: `left: 16777216, right: 16777217`. The replayer's side is a check in
+`web/tools/gpu-replay.mjs` that the decoded constant reaches
+`createRenderPipeline` as an integer unchanged, shown red by adding `0.5` to it.
+D3D12's `the_depth_bias_constant_reaches_d3d12_whole` in
+`crates/crcbl-dx12/src/pipeline.rs` pins that nothing truncates any more — it
+runs in CI's `build + test (windows-latest)` sweep, not on this machine, so it
+has been type-checked here and never executed. Metal's widening has no test at
+all; `crates/crcbl-mtl/src/pipeline.rs`'s `raster_state` is only type-checked,
+by the cross-target clippy pass.
+
 ### SHIPPED — `crcbl-mtl` stops re-binding what the encoder already holds
 
 Half (1) of "Metal's debug layer warns on every bind, and the mesh suite pays
