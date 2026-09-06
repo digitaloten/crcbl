@@ -88,14 +88,6 @@ Decision record; the decision is in `docs/backlog.md`.
   `DirectionalLight` already uses, re-bless on both local adapters, and check
   the browser gate, which has its own copies.
 
-- **The sun disc is not drawn.** The sky-view LUT holds the scattered sky, as
-  Hillaire's does; the disc is whatever `DirectionalLight` the scene set. A
-  camera pointed at the sun sees a bright aureole and no sun in it. Adding one
-  is a screen-space term in `sky.slang` — the angle between the ray and
-  `SkyParams::atmosphere.xyz` against a limb-darkened disc — and it needs a
-  decision about how bright, because the real value blows out an `Rgba16Float`
-  target on purpose.
-
 - **No aerial perspective.** The paper's third LUT — the froxel volume that puts
   the air in _front_ of a surface — is not built. `crcbl_render::volumetric`'s
   column is the tree's froxel pass and does not read the atmosphere's medium.
@@ -2515,3 +2507,86 @@ halves stand 9.234 and 228.562 apart on `disc` and 27.387 and 258.306 on `box`
 recorded sabotages were re-run on radv under the new arm and still fire — the
 reference swap at column 469, and the shipped filter on both sides through the
 anti-vacuity clause.
+
+## The sun disc: the fit, what clamped, what moved (2026-09-06)
+
+`docs/backlog.md`'s "What the atmosphere shipped without" decided the disc on
+2026-09-06 and this is what building it found. `sky.slang`'s `sun_disc` and
+`crcbl_shaders::atmosphere::SkyView::disc_radiance` are the two spellings.
+
+**The limb-darkening fit.** Hillaire 2020's `SunLimbDarkening` is
+`1 - u(1 - mu^a)` with `u = [1, 1, 1]`, so the factor collapses to `mu^a` with
+`a = [0.397, 0.503, 0.652]`. `docs/plan/44-lighting.md` lets no transcendental
+reach a colour, so the `pow` had to go. A polynomial in `mu` is hopeless — the
+function has an infinite derivative at `mu = 0`, and the best degree-seven
+polynomial in `mu` still misses `mu^0.397` by 3.8e-2. The substitution is what
+fixes it: under `t = mu^{1/2^k}` the target becomes `t^{2^k a}`, and each square
+root is IEEE-exact, so the substitution costs nothing in determinism. The sweep,
+Lawson-weighted least squares over a grid uniform in `t`, worst channel:
+
+| `k` (square roots) | degree 4 | degree 5 | degree 6 | degree 7 |
+| ------------------ | -------- | -------- | -------- | -------- |
+| 1                  | 5.6e-3   | 3.9e-3   | 3.0e-3   | 2.3e-3   |
+| 2                  | 9.1e-4   | 4.5e-4   | 2.5e-4   | 1.5e-4   |
+| 3                  | 9.6e-5   | 5.1e-5   | 5.8e-6   | 2.1e-6   |
+| 4                  | 3.6e-2   | 1.1e-2   | 2.8e-3   | 5.1e-4   |
+
+`k = 3` (`t = mu^{1/8}`, four square roots from `mu²`) at degree six is what
+ships, as `SUN_LIMB_FIT`. Measured in the `f32` arithmetic that actually runs,
+against `mu.powf(a)` in `f64` over two hundred thousand nodes uniform in `t`:
+**6.033e-6 on red, 6.999e-7 on green, 3.682e-6 on blue.** `k = 4` falls apart
+again because the exponent `16a` climbs past what a low-degree polynomial holds
+on `[0, 1]`. `the_limb_fit_tracks_the_papers_curve` is the standing statement.
+
+**The normalisation is a departure from the paper, on purpose.** Hillaire
+multiplies the limb factor into the sun's radiance as authored, so his disc
+emits `2/(a + 2)` of the light it stands for — 0.834, 0.799, 0.754 of it. Limb
+darkening redistributes energy across the disc rather than removing it, and this
+engine has a `DirectionalLight` beside the disc that the forward pass shades
+with, so the factor is divided by its own mean and the shape is the paper's
+while the total is the light's. That mean is closed form and exactly so: the
+disc's `dω` is `2π dc` in the ray's cosine and this module's radial coordinate
+`r²` is linear in `1 - c`, so `dω = Ω·2r dr` with no small-angle approximation,
+and `∫₀¹ 2r (1-r²)^{a/2} dr = 2/(a + 2)`.
+`the_disc_integrates_back_to_the_suns_illuminance` integrates the shipped
+function over the cap and recovers the illuminance to **2.035e-6** relative.
+
+**Two cosines are compared as versines.** `1 - cos(0.2665°)` is 1.0817e-5, and
+an `f32` cosine of 0.999_989 has already thrown away the digits that difference
+is made of — computing the solid angle from an `f32` cosine reads `1/Ω` as 14752
+where it is 14713, a quarter of a per cent. So `SUN_ANGULAR_RADIUS_VERSINE` is
+stored as the versine and never as the cosine, and a ray's own angle from the
+sun arrives the same way: `½|d − s|²`, which is `1 − d·s` formed where the two
+vectors differ rather than where they agree. There is no `acos` anywhere in the
+disc.
+
+**What clamps.** Nothing, in anything this tree draws. The disc is the
+illuminance over `SUN_SOLID_ANGLE` and the limb mean — 17634 times it on red for
+a sun above the air — and `apps/sundial` is the brightest atmosphere on a
+golden: its disc reads **21225/17641/12879** at `FIXTURE_TICK` and
+**17557/11418/5502** at `GRAZING_TICK`, against `MAX_RADIANCE`'s 65504. The
+clamp is there for a scene that scales its sun, and
+`the_sky_over_the_plaza_is_the_host_lut` prints and asserts both figures rather
+than leaving the question to a comment.
+
+**What moved.** One golden in the workspace: `apps/sundial`'s `plaza-grazing`,
+**eight pixels**, blessed on lavapipe. At the bottom of the sun's arc the
+plaza's camera has the sun 10° up and 22° across, which is inside a 60° lens
+looking 13.6° down — two saturated pixels at (200, 20) and (200, 21) and six of
+CMAA2's own skirt around them, `max channel delta 197`. Every other golden in
+the tree is byte-identical, including `atmosphere_mirror`: `ssr.slang` reads
+`SkyView::radiance` and not the disc, the block's new row is zeroes on a
+gradient frame, and `min(x, 65504)` is exact for every value either sky
+produces.
+
+**A two-degree lens is what made the disc testable.** At an ordinary field of
+view the sun is one or two pixels — `plaza-grazing` shows two of them — so a
+fixture there could only ask whether some pixels are bright.
+`crcbl::screenshot::sun_disc_forward` frames `ATMOSPHERE_SUNS[2]` through
+`SUN_DISC_FOV_Y` of two degrees, where the disc is about a quarter of the
+frame's height and its profile is picture. Its illuminance is 6.5e-5 rather than
+one, for the same reason: at one, every pixel of the disc is four orders of
+magnitude past the top of an eight-bit frame and the fixture measures a white
+circle, which is true of any disc of any profile. At 6.5e-5 the centre reads
+233.00/194.75/143.00 on radv and the limb is inside the range, so the frame
+carries Hillaire's curve and the transmittance's reddening both.

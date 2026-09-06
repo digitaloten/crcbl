@@ -212,23 +212,74 @@ The record behind this — the argument, the options and the measurements — is
 `crcbl_shaders::atmosphere` and `crcbl_render::ForwardRenderer::set_atmosphere`
 landed with `docs/plan/43-render-standards.md` §8's sky. What they left:
 
-**DECIDED 2026-09-06 —** the sun disc is drawn in `sky.slang` with radiance =
-the `DirectionalLight`'s illuminance divided by the disc's solid angle, Hillaire
-2020's limb darkening, clamped to `Rgba16Float`'s maximum, with bloom and
-exposure carrying the rest; aerial perspective is Hillaire's third LUT — a
-32×32×32 camera froxel volume of transmittance and in-scatter — built by the
-atmosphere module and composed in `volumetric-composite` beside the local fog.
-That is the shipped form in Unreal's `SkyAtmosphere` and in Hillaire 2020, and
-Unreal likewise keeps the two volumes separate and composes them rather than
-merging them. It schedules the disc in `sky.slang` and the third LUT with its
-composite; the rest — ground black, the rough lobe's azimuth, the ramp share,
-Metal and D3D12 — stays as recorded.
+**DECIDED 2026-09-06 —** aerial perspective is Hillaire's third LUT — a 32×32×32
+camera froxel volume of transmittance and in-scatter — built by the atmosphere
+module and composed in `volumetric-composite` beside the local fog. That is the
+shipped form in Unreal's `SkyAtmosphere` and in Hillaire 2020, and Unreal
+likewise keeps the two volumes separate and composes them rather than merging
+them. The rest — ground black, the rough lobe's azimuth, the ramp share, Metal
+and D3D12 — stays as recorded.
 
 The demo half of that decision is done: **`apps/sundial` draws under the
 atmosphere**, `crcbl_sundial::sun::Sky::atmosphere` is where its sun becomes
 one, five of its goldens were re-blessed on lavapipe and the suite is green on
 both adapters and in the browser gate. It is the only app that drives one, so it
-is where the disc and the third LUT will be looked at.
+is where the third LUT will be looked at.
+
+The sun disc half is done too — `sky.slang`'s `sun_disc` and
+`crcbl_shaders::atmosphere::SkyView::disc_radiance`, `docs/notes/rendering.md`'s
+"The sun disc" for the fit and the measurements — and it left four things:
+
+- **A mirror shows the sky without the sun in it.** `ssr.slang`'s
+  `sky_environment` reads the sky-view LUT, which holds the scattered air alone,
+  and the disc is a second term that only `sky.slang` adds — so a reflection of
+  the sun's own direction is the aureole and not the sun. `SkyView::radiance` is
+  deliberately still the scattered sky for that reason and
+  `SkyView::drawn_radiance` is the one that carries the disc. Hillaire 2020 and
+  Unreal's `SkyAtmosphere` both do the same, and nothing in the tree can
+  currently reach it: the `AtmosphereMirror` fixture's sun is 45° off a 37.6°
+  half-lens. Doing it means `SsrParams` carrying the disc row too and a fixture
+  whose reflected rays reach the sun; whether it is wanted at all is the real
+  question, because a screen-space reflection of a body four orders of magnitude
+  brighter than its surroundings is where a temporal pass starts to fizz.
+
+- **A sub-pixel disc is not prefiltered, so it pops.** The disc is drawn where
+  the ray's angle from the sun is inside its radius, with no coverage term. At
+  an ordinary field of view the sun is one or two pixels across —
+  `plaza-grazing` shows two of them at `apps/sundial`'s 60° lens — so which
+  pixels light up is which pixel centres happen to fall inside it, and a moving
+  camera or sun makes that flicker. The usual answer, a one-texel `smoothstep`
+  on the radius (Hillaire, Unreal), was **considered and declined**: for a disc
+  smaller than a pixel it spreads a blob of unit peak over a pixel-sized
+  support, which is `(pixel/θ_sun)²` times the energy the disc should carry —
+  fifty times, at a ten-to-one ratio — and the whole point of the radiance's
+  construction is that the disc and the `DirectionalLight` carry the same
+  energy. The energy-correct form is to widen the disc to the pixel and divide
+  the radiance by the same factor, i.e. an effective `θ = max(θ_sun, pixel)`,
+  which needs the pixel's angular size in `SkyParams` and makes a golden depend
+  on the extent in a new way. Neither has been built. What is verified: nothing
+  here is animated, so no golden in the tree shows the artefact, and
+  `plaza-grazing`'s eight moved pixels are what a sub-pixel disc looks like when
+  it does land on a centre.
+
+- **The disc is reddened by the air and the shading is not.** `SkyViewBuild`
+  multiplies the disc by the transmittance along the sun's direction, so a low
+  sun's disc is orange; `crcbl_render::DirectionalLight::color` is what the
+  forward pass shades with and nothing attenuates it. At `apps/sundial`'s
+  `GRAZING_TICK` the printed disc is 17557/11418/5502 against an illuminance of
+  1.4/1.358/1.288 — the air is keeping most of the red and about a fifth of the
+  blue — so the sun in the sky is a different colour from the sun on the
+  pavement. Attenuating the light too is a one-line change in the renderer and a
+  re-bless of every atmosphere golden; it is not obviously right, because a
+  scene author sets `DirectionalLight::color` expecting it to be the light they
+  get. It needs a decision, not a patch.
+
+- **`SkyParams` grew and Metal and D3D12 have not run it.** The block is sixteen
+  bytes longer and `sky.slang` reads one more `float4`; no _binding_ changed, so
+  `crcbl_dx12::dxil`'s rows are untouched and the layout is the one every
+  backend already agreed about. Still, the only verdict on `msl/sky.metal` and
+  `dxil/sky.fragment.dxil` is CI's software adapters — there is no Apple or
+  Windows hardware here.
 
 - **The share between the LUT and the bands is argued, not measured.**
   `sky_environment` takes `sharpness_of`'s ramp because that ramp is already

@@ -248,9 +248,9 @@ impl SkyPass {
     /// feeds both passes.
     ///
     /// `sky_view` is `None` on a gradient frame, and then the block's sun row
-    /// is [`sky::ATMOSPHERE_OFF`] and the LUT buffer is left alone — so a frame
-    /// blessed before an atmosphere existed writes exactly the bytes it used
-    /// to.
+    /// is [`sky::ATMOSPHERE_OFF`], its disc row is zero and the LUT buffer is
+    /// left alone — so a frame blessed before an atmosphere existed writes
+    /// exactly the bytes it used to.
     ///
     /// **The LUT is written on every atmosphere frame** rather than only when
     /// it changes, which is a memory copy of
@@ -285,6 +285,22 @@ impl SkyPass {
                     [sun[0], sun[1], sun[2], sky::ATMOSPHERE_ON]
                 }
                 None => [0.0, 0.0, 0.0, sky::ATMOSPHERE_OFF],
+            },
+            // The sun's own disc, which the LUT above does not hold: a quarter
+            // of a degree against texels several degrees across. Zero on a
+            // gradient frame, where the shader takes the other arm and reads
+            // none of these lanes.
+            sun_disc: match sky_view {
+                Some(view) => {
+                    let disc = view.sun_disc();
+                    [
+                        disc[0],
+                        disc[1],
+                        disc[2],
+                        atmosphere::SUN_ANGULAR_RADIUS_VERSINE,
+                    ]
+                }
+                None => [0.0; 4],
             },
         };
         device.write_buffer(self.uniforms[frame], 0, &params.to_bytes())?;

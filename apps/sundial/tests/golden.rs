@@ -1709,6 +1709,14 @@ fn sky_ray(camera: &Camera, extent: (u32, u32), column: u32, row: u32) -> [f32; 
 /// writes the LUT's radiance, no surface is in front of it, the arm is
 /// [`Arm::scene_referred`] so the operator is the clamp at
 /// `crcbl::shaders::tonemap::DEFAULT_EXPOSURE`, and the target is sRGB.
+///
+/// **`drawn_radiance` and not `radiance`**, so the sun's own disc is predicted
+/// rather than excused. It matters here in a way it does not in an empty
+/// fixture: this plaza's sun crosses the top of the frame, so a band and a disc
+/// can meet without anybody having moved either. None of [`SKY_BANDS`] is on
+/// the sun at the two ticks this suite draws — `plaza-grazing` is where the
+/// disc lands, two pixels of it, nowhere near a band — and the model is what
+/// keeps that from being a thing to check by hand.
 fn predicted_sky_channel(
     view: &crcbl::shaders::atmosphere::SkyView,
     camera: &Camera,
@@ -1723,7 +1731,7 @@ fn predicted_sky_channel(
     let y1 = (centre.1 + SKY_BAND.1).min(extent.1.saturating_sub(1));
     for y in y0..=y1 {
         for x in x0..=x1 {
-            let radiance = view.radiance(sky_ray(camera, extent, x, y));
+            let radiance = view.drawn_radiance(sky_ray(camera, extent, x, y));
             total += srgb_encode(radiance[channel].min(1.0));
             count += 1;
         }
@@ -1805,6 +1813,13 @@ fn sky_band_at(extent: (u32, u32), band: (f32, f32)) -> (u32, u32) {
 /// structure in it rather than nine readings of one flat field; and the sun's
 /// two ticks must **differ** at a band, so the sky follows the clock rather
 /// than being marched once from whatever pose happened to build the renderer.
+///
+/// It closes on the sun's own **disc**, which the LUT does not hold and
+/// `sky.slang` draws beside it. This plaza is where the engine's brightest
+/// atmosphere lands on a golden — the disc is this sun's illuminance over a
+/// solid angle of seven hundredths of a milli-steradian — so this is where the
+/// question of whether it reaches `MAX_RADIANCE` is worth asking, and the
+/// answer is printed rather than assumed.
 ///
 /// **Shown red before it was green** (2026-09-06, radv): with
 /// `renderer.set_atmosphere(...)` commented out of [`build`], every reading
@@ -1894,6 +1909,36 @@ fn the_sky_over_the_plaza_is_the_host_lut() {
         sun::FIXTURE_TICK,
         sun::GRAZING_TICK,
     );
+
+    // **The sun's own disc, and whether it clips.** A radiance integrated over
+    // the solid angle it fills is an illuminance, so the disc is this sun's
+    // illuminance over `SUN_SOLID_ANGLE` — about fourteen thousand times it,
+    // and the one place in this fixture where a number that large reaches the
+    // scene target. `sky.slang` clamps at `MAX_RADIANCE` and this is what says
+    // whether the clamp is doing anything here: at both of the ticks this suite
+    // draws it is not, so what the plaza shows is the disc's own profile rather
+    // than a flat white circle, and the two goldens can be read as pictures of
+    // Hillaire's sun.
+    for tick in [sun::FIXTURE_TICK, sun::GRAZING_TICK] {
+        let disc = crcbl::shaders::atmosphere::SkyView::build(
+            &sun::Sky::at(tick).atmosphere().parameters(),
+        )
+        .sun_disc();
+        let ceiling = crcbl::shaders::atmosphere::MAX_RADIANCE;
+        eprintln!(
+            "sundial golden: at tick {tick} the sun's disc is {:.0}/{:.0}/{:.0} against the \
+             scene target's {ceiling:.0}",
+            disc[0], disc[1], disc[2],
+        );
+        for (name, channel) in [("red", 0), ("green", 1), ("blue", 2)] {
+            assert!(
+                disc[channel] < ceiling,
+                "at tick {tick} the disc's {name} is {} and the scene target holds {ceiling}, \
+                 so this fixture's sun is clipped and its goldens are not the profile",
+                disc[channel],
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

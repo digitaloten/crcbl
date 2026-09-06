@@ -1615,6 +1615,123 @@ pub fn atmosphere_forward(
     })
 }
 
+/// How bright the sun is above the atmosphere in [`sun_disc_forward`].
+///
+/// **Far under [`ATMOSPHERE_ILLUMINANCE`], and the disc's own arithmetic is
+/// why.** A radiance integrated over the solid angle it fills is an
+/// illuminance, so the sun's disc is its illuminance over
+/// `crcbl_shaders::atmosphere::SUN_SOLID_ANGLE` — about fourteen thousand times
+/// it. A sun of one would put every pixel of the disc four orders of magnitude
+/// past the top of an eight-bit frame, and the fixture would measure a white
+/// circle: true, and true of any disc of any colour with any profile.
+///
+/// This lands the disc's centre in the upper half of the range with its limb
+/// well inside it, so the frame carries Hillaire's curve rather than a clipped
+/// silhouette of it. The sky around it is then very dark, which is the same
+/// scaling and is not a problem: the LUT has its own fixture.
+const SUN_DISC_ILLUMINANCE: f32 = 6.5e-5;
+
+/// Which of [`ATMOSPHERE_SUNS`] [`sun_disc_forward`] frames.
+///
+/// The low sun facing the camera. **Low**, so the transmittance along the sun's
+/// own direction has taken enough blue out to be read off the frame — a sun
+/// overhead draws a disc that is very nearly the illuminance's own colour, and
+/// a fixture that could not tell the two apart would not be measuring the
+/// transmittance at all.
+const SUN_DISC_SUN: usize = 2;
+
+/// The vertical field of view [`sun_disc_camera`] frames the disc with, in
+/// radians.
+///
+/// **Two degrees**, which is not a camera anybody would ship and is the whole
+/// point: the sun is 0.533° across, so at a normal lens it is one or two pixels
+/// and a fixture could only ask whether they are bright. At this lens the disc
+/// is about a quarter of the frame's height, and the limb-darkening profile,
+/// the edge and the reddening are each several dozen pixels of picture.
+const SUN_DISC_FOV_Y: f32 = 2.0 * std::f32::consts::PI / 180.0;
+
+/// The atmosphere [`sun_disc_forward`] draws.
+///
+/// [`ATMOSPHERE_SUNS`]' low sun at `SUN_DISC_ILLUMINANCE`. **Public because
+/// the test predicts the frame from it**, on [`atmosphere_sky`]'s terms.
+#[must_use]
+pub fn sun_disc_sky() -> crcbl_render::Atmosphere {
+    crcbl_render::Atmosphere {
+        sun_direction: glam::Vec3::from_array(ATMOSPHERE_SUNS[SUN_DISC_SUN]),
+        sun_illuminance: glam::Vec3::splat(SUN_DISC_ILLUMINANCE),
+        altitude_km: 0.0,
+    }
+}
+
+/// The sky-view LUT [`sun_disc_sky`] resolves to, marched on the host.
+///
+/// [`atmosphere_view`]'s job for this scene, and it goes through
+/// `crcbl_render::Atmosphere` for that function's reason — the normalisation
+/// the renderer applies is on this side of the comparison too. It carries the
+/// disc as well as the scattered sky: `SkyView::drawn_radiance` is what the
+/// frame is read against.
+#[must_use]
+pub fn sun_disc_view() -> crate::shaders::atmosphere::SkyView {
+    crate::shaders::atmosphere::SkyView::build(&sun_disc_sky().parameters())
+}
+
+/// The camera [`sun_disc_forward`] is seen through: at the origin, looking
+/// **straight at the sun** through `SUN_DISC_FOV_Y`, two degrees of it.
+///
+/// The target is [`sun_disc_sky`]'s own unnormalised direction rather than a
+/// second spelling of it, so the disc lands at the middle of the frame by
+/// construction and not by a number somebody worked out once.
+///
+/// Public so the test can unproject a pixel into the same world ray
+/// `sky.slang` does — [`atmosphere_camera`]'s reason.
+#[must_use]
+pub fn sun_disc_camera() -> Camera {
+    Camera {
+        eye: glam::Vec3::ZERO,
+        target: glam::Vec3::from_array(ATMOSPHERE_SUNS[SUN_DISC_SUN]),
+        up: glam::Vec3::Y,
+        projection: Projection::Perspective {
+            fov_y: SUN_DISC_FOV_Y,
+            near: 0.05,
+        },
+    }
+}
+
+/// An empty scene under [`sun_disc_sky`], framed on the sun itself.
+///
+/// [`atmosphere_forward`] with a long lens: no instances, so every pixel is
+/// `sky.slang`'s background arm, and every effect refused so that nothing
+/// filters the profile this measures. Bloom in particular would take the
+/// brightest thing in the frame and spread it over the disc's own edge, which
+/// is the edge the fixture is about.
+///
+/// # Errors
+///
+/// [`OffscreenError::Hal`] if the renderer cannot be built.
+pub fn sun_disc_forward(
+    device: &dyn Device,
+    queue: QueueHandle,
+    format: Format,
+) -> Result<ForwardScene, OffscreenError> {
+    let mut renderer =
+        ForwardRenderer::with_scene(device, queue, format, &crate::render::scene::demo())?;
+    renderer.set_effect_request(EffectRequest {
+        camera: crcbl_render::RenderEffects::empty(),
+        ..EffectRequest::default()
+    });
+    renderer.set_atmosphere(Some(sun_disc_sky()));
+    Ok(ForwardScene {
+        camera: sun_disc_camera(),
+        // Nothing to light — see [`atmosphere_forward`], whose sun this is.
+        sun: crcbl_render::DirectionalLight {
+            color: glam::Vec3::ZERO,
+            ambient: glam::Vec3::ZERO,
+            ..crcbl_render::DirectionalLight::default()
+        },
+        renderer: Box::new(renderer),
+    })
+}
+
 /// The sun [`Scene::AtmosphereMirror`]'s atmosphere is built around.
 ///
 /// Not normalised, for [`ATMOSPHERE_SUNS`]' reason: `crcbl_render::Atmosphere`

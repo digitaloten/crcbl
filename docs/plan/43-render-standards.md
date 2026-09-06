@@ -1216,13 +1216,32 @@ claim: the three bands answer those two blocks identically, the frame separates
 them by 1.640 in red, and both sit inside 0.09 levels of the host's own
 `SkyView`.
 
-**What the rung does not do**, each on purpose: no sun disc (the LUT holds the
-scattered sky, and the disc is the `DirectionalLight` the forward pass already
-shades with); no aerial perspective (the paper's froxel volume — §4's column is
-this tree's, and it does not read this); and the ground below the horizon is
-black rather than an idealised sphere's bounce, because what bounces off a
-scene's floor is [50-irradiance-probes.md](50-irradiance-probes.md)'s volume and
-adding a second one here would count it twice.
+**The sun's own disc is drawn beside the LUT**, because no LUT could hold it:
+the sun is 0.533° across against texels several degrees wide. `sky.slang`'s
+`sun_disc` is the second term of the atmosphere arm, and its radiance is the
+`DirectionalLight`'s own illuminance over the disc's solid angle — so the disc
+and the light the forward pass shades with carry the same energy, which
+`crcbl_shaders::atmosphere`'s `the_disc_integrates_back_to_the_suns_illuminance`
+is the statement of. Hillaire 2020's limb darkening shapes it, divided by its
+own mean over the disc so that shaping moves energy rather than removing a fifth
+of it; the transmittance along the sun's own direction reddens it, so a low sun
+is orange and one under the horizon has no disc at all. The paper's factor is a
+`pow` and §44's rule lets no transcendental reach a colour, so the exponent is
+spent at authoring time into `SUN_LIMB_FIT` — a degree-six polynomial in
+`mu^{1/8}`, four square roots, within 6.1e-6 of the paper's curve. The result is
+clamped to `Rgba16Float`'s largest finite value; bloom and the exposure pass
+carry the range under it, and at `apps/sundial`'s brightest tick the disc reads
+21225/17641/12879 against that ceiling of 65504, so nothing clips.
+`render_e2e`'s `a_sun_disc_is_drawn_where_the_host_puts_it` frames the sun
+through a two-degree lens and holds six bands of the profile to the host's own
+`SkyView::drawn_radiance`, inside 0.34 levels on both local adapters.
+
+**What the rung does not do**, each on purpose: no aerial perspective (the
+paper's froxel volume — §4's column is this tree's, and it does not read this);
+and the ground below the horizon is black rather than an idealised sphere's
+bounce, because what bounces off a scene's floor is
+[50-irradiance-probes.md](50-irradiance-probes.md)'s volume and adding a second
+one here would count it twice.
 
 An analytic fit (Preetham) was considered and declined, 2026-08-30: cheaper to
 compute, visibly wrong at low sun, and it saves a LUT the tree already knows how

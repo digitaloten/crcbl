@@ -39,15 +39,23 @@
 // below, and this pass reads one bilinear tap out of it. So the expensive sky
 // and the cheap one cost the same four loads and a blend.
 //
+// The **sun itself** is not in that LUT and could not be: it is a quarter of a
+// degree wide against texels several degrees across. It is drawn here instead,
+// out of one uploaded radiance and the ray's own angle from the sun — see
+// `sun_disc` below.
+//
 // # No transcendental reaches the colour
 //
 // `docs/plan/44-lighting.md`'s rule, and this file needs no escape from it on
 // either arm: the gradient is a smoothstep, which is a cubic, and the LUT read
 // is `sqrt`, `floor` and a blend — multiplies and adds, IEEE-exact on every
-// target. The one place floats are not bit-identical across backends is the
-// ray, which comes out of two matrix products; both skies are continuous in the
-// ray, so a last-place difference there moves the colour by a last place too
-// rather than flipping a decision.
+// target. The sun's disc is where an atmosphere would normally reach for one —
+// Hillaire's limb darkening is a `pow` — and it does not: the exponent is spent
+// at authoring time into `SUN_LIMB_FIT` and what runs here is a polynomial in
+// four square roots. The one place floats are not bit-identical across backends
+// is the ray, which comes out of two matrix products; both skies are continuous
+// in the ray, so a last-place difference there moves the colour by a last place
+// too rather than flipping a decision.
 
 /// The uniform block this pass reads. `crcbl_shaders::sky::SkyParams` is the
 /// Rust mirror and `crcbl_render::sky_pass` is what writes it.
@@ -82,6 +90,20 @@ struct SkyParams
     /// before the atmosphere existed writes exactly the bytes it used to with a
     /// `w` of zero.
     float4 atmosphere;
+    /// The sun's own disc: the radiance at its **centre** in `xyz`, and in `w`
+    /// the versine of its angular radius.
+    ///
+    /// Both are the host's — `crcbl_shaders::atmosphere::SkyView::sun_disc` and
+    /// `SUN_ANGULAR_RADIUS_VERSINE`. The angle is carried here rather than
+    /// spelled as a constant below because a number written on both sides of
+    /// the seam is a number that drifts, and this one has nowhere to be caught:
+    /// the disc is a quarter of a degree wide, so a wrong radius is a disc that
+    /// is still round and still in the right place.
+    ///
+    /// It is a **versine** and not a cosine for the reason that constant gives:
+    /// `1 − cos(0.2665°)` is a hundred-thousandth, and an `f32` cosine has
+    /// already thrown away the digits that difference is made of.
+    float4 sun_disc;
 };
 
 [[vk::binding(0, 0)]]
@@ -111,6 +133,34 @@ static const uint SKY_VIEW_WIDTH = 96;
 
 /// `crcbl_shaders::atmosphere::SKY_VIEW_HEIGHT`, which is the direction's `y`.
 static const uint SKY_VIEW_HEIGHT = 64;
+
+/// `crcbl_shaders::atmosphere::SUN_LIMB_FIT`: Hillaire 2020's centre-to-limb
+/// factor, in ascending powers of `t = mu^(1/8)`, one channel per lane.
+///
+/// The paper's own factor is `mu^a`, and `docs/plan/44-lighting.md` lets no
+/// transcendental reach a colour — so the `pow` is spent at authoring time and
+/// what arrives here is a polynomial in four square roots of `mu²`. That host
+/// constant's doc carries the fit and the error it reaches, and
+/// `crcbl_shaders::atmosphere`'s `the_shader_spells_the_limb_fit_the_host_does`
+/// is what keeps these seven rows equal to it.
+static const float3 SUN_LIMB_FIT[7] = {
+    float3(-5.773441e-6, 3.9952874e-7, -3.3330298e-6),
+    float3(8.344246e-4, -4.951302e-5, 3.6370038e-4),
+    float3(-2.2686722e-2, 1.0525344e-3, -6.56718e-3),
+    float3(7.779043e-1, -1.0455616e-2, 4.6844255e-2),
+    float3(3.7402597e-1, 9.8949695e-1, -1.8627837e-1),
+    float3(-1.7161113e-1, 2.444076e-2, 1.0402074),
+    float3(4.154471e-2, -4.485891e-3, 1.0543691e-1),
+};
+
+/// `crcbl_shaders::atmosphere::MAX_RADIANCE` — the largest finite value an
+/// `Rgba16Float` attachment holds.
+///
+/// The disc is four orders of magnitude brighter than the sky it sits in, and a
+/// radiance past this reaches the attachment as an infinity that the bloom
+/// chain then spreads over the whole frame. Bloom and the exposure pass are
+/// what carry the rest of the range.
+static const float SCENE_TARGET_MAX = 65504.0;
 
 /// The reversed-Z **near** plane, which is where the ray is unprojected from.
 static const float NDC_NEAR = 1.0;
@@ -198,6 +248,48 @@ float3 atmosphere_radiance(float3 direction)
     return sky_view_at(direction.y, cosine);
 }
 
+/// `crcbl_shaders::atmosphere::SkyView::disc_radiance`: the sun's own disc seen
+/// along `direction`, and zero everywhere off it.
+///
+/// The whole of the sun's illuminance is here rather than in the LUT — the LUT
+/// holds the air's scattered light, as the paper's does — so this is the
+/// illuminance over the disc's solid angle, shaped by Hillaire's limb darkening
+/// and reddened by the transmittance along the sun's own direction. The host
+/// folded all three of those into `camera.sun_disc.rgb`; what is left here is
+/// where in the disc the ray lands.
+///
+/// **Two cosines are compared as versines**, which is the one arithmetic choice
+/// in this function. `1 − dot(direction, sun)` is a hundred-thousandth formed
+/// out of two numbers that are both within a millionth of one, so it keeps
+/// almost none of its digits; `½|direction − sun|²` is the same quantity with
+/// no cancellation in it, because the subtraction happens where the two vectors
+/// differ rather than where they agree. There is no `acos` and no angle
+/// anywhere in it.
+float3 sun_disc(float3 direction)
+{
+    float3 apart = direction - camera.atmosphere.xyz;
+    float versine = 0.5 * dot(apart, apart);
+    // The disc's own radial coordinate, squared: zero at the centre and one at
+    // the limb. `camera.sun_disc.w` is the versine of the sun's angular radius.
+    float radius_squared = versine / camera.sun_disc.w;
+    if (radius_squared >= 1.0)
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    // `mu` is the cosine against the solar surface's own normal, and the fit's
+    // variable is its eighth root — so four square roots of `mu²`, each of them
+    // exact on every backend.
+    float root = sqrt(sqrt(sqrt(sqrt(1.0 - radius_squared))));
+    float3 limb = SUN_LIMB_FIT[6];
+    for (int power = 5; power >= 0; --power)
+    {
+        limb = limb * root + SUN_LIMB_FIT[power];
+    }
+    // The fit crosses a few millionths under zero at the very limb, and a
+    // negative radiance is not something to hand an attachment.
+    return camera.sun_disc.rgb * max(limb, float3(0.0, 0.0, 0.0));
+}
+
 [shader("vertex")]
 FullscreenOutput vertexMain(uint index: SV_VertexID)
 {
@@ -228,7 +320,16 @@ float4 fragmentMain(FullscreenOutput input) : SV_Target
     float3 direction = normalize(mul(camera.inv_view, float4(along, 0.0)).xyz);
 
     // Opaque: this is the furthest thing in the frame and nothing is behind it.
-    float3 radiance = camera.atmosphere.w > 0.0 ? atmosphere_radiance(direction)
-                                                : sky_radiance(direction);
-    return float4(radiance, 1.0);
+    //
+    // The atmosphere arm is two terms because the LUT is one: it holds the
+    // scattered sky, and the sun itself is a disc a quarter of a degree wide
+    // that no 96x64 table could carry. The gradient arm has no sun in it at
+    // all, so it stays the one expression it has always been.
+    float3 radiance = camera.atmosphere.w > 0.0
+                          ? atmosphere_radiance(direction) + sun_disc(direction)
+                          : sky_radiance(direction);
+    // The clamp is a no-op on every value the gradient or the LUT can produce
+    // and is what stops the disc reaching the attachment as an infinity.
+    float3 ceiling = float3(SCENE_TARGET_MAX, SCENE_TARGET_MAX, SCENE_TARGET_MAX);
+    return float4(min(radiance, ceiling), 1.0);
 }

@@ -207,7 +207,7 @@ pub(crate) fn smoothstep(u: f32) -> f32 {
 /// world-space ray, three rows are the gradient that ray is evaluated against,
 /// and the fourth row is [`SkyParams::atmosphere`] — the sun the sky-view LUT
 /// was built around, and the switch between the two skies.
-pub const PARAMS_SIZE: usize = 64 + 64 + 48 + 16;
+pub const PARAMS_SIZE: usize = 64 + 64 + 48 + 16 + 16;
 
 /// The uniform block, matching `struct SkyParams` in `shaders/sky.slang`.
 ///
@@ -239,6 +239,20 @@ pub struct SkyParams {
     /// and two square roots. [`crate::atmosphere::SkyView::radiance`] is the
     /// same arithmetic on the host.
     pub atmosphere: [f32; 4],
+    /// The sun's own disc: the radiance at its **centre** in `xyz`, and in `w`
+    /// the versine of its angular radius.
+    ///
+    /// [`crate::atmosphere::SkyView::sun_disc`] and
+    /// [`crate::atmosphere::SUN_ANGULAR_RADIUS_VERSINE`], and zero in every
+    /// lane on a gradient frame — `sky.slang` reads none of them there.
+    ///
+    /// **The angle travels in the block rather than as a shader constant**, so
+    /// there is one spelling of it. The three radiances travel here rather than
+    /// as the sun's illuminance because the disc's radiance is that illuminance
+    /// over a solid angle, through a limb mean and a transmittance, and every
+    /// one of those is a host quantity the device would otherwise have to be
+    /// handed separately.
+    pub sun_disc: [f32; 4],
 }
 
 /// [`SkyParams::atmosphere`]'s `w` on a frame whose sky is the gradient.
@@ -263,13 +277,15 @@ impl SkyParams {
             .chain(self.inv_view)
             .chain(self.sky.into_iter().flatten())
             .chain(self.atmosphere)
+            .chain(self.sun_disc)
         {
             bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
             at += 4;
         }
         debug_assert_eq!(
             at, PARAMS_SIZE,
-            "the two matrices, the three gradient rows and the sun row fill the block exactly"
+            "the two matrices, the three gradient rows, the sun row and the disc row fill the \
+             block exactly"
         );
         bytes
     }
@@ -586,8 +602,11 @@ mod tests {
         let atmosphere = source
             .find("float4 atmosphere;")
             .expect("sky.slang declares `float4 atmosphere;`");
+        let sun_disc = source
+            .find("float4 sun_disc;")
+            .expect("sky.slang declares `float4 sun_disc;`");
         assert!(
-            inv_proj < inv_view && inv_view < sky && sky < atmosphere,
+            inv_proj < inv_view && inv_view < sky && sky < atmosphere && atmosphere < sun_disc,
             "sky.slang declares the block in a different order than `to_bytes` writes it"
         );
     }
@@ -605,6 +624,7 @@ mod tests {
             inv_view,
             sky: DAYLIGHT.rows(),
             atmosphere: [0.25, 0.5, -0.75, ATMOSPHERE_ON],
+            sun_disc: [7.0, 8.0, 9.0, 1.0e-5],
         }
         .to_bytes();
 
@@ -622,7 +642,10 @@ mod tests {
             assert_eq!(lane(base + 12), 0.0, "the row's `w` is unread padding");
         }
         for (lane_at, expected) in [(176, 0.25), (180, 0.5), (184, -0.75), (188, ATMOSPHERE_ON)] {
-            assert_eq!(lane(lane_at), expected, "the sun row closes the block");
+            assert_eq!(lane(lane_at), expected, "the sun row follows the gradient");
+        }
+        for (lane_at, expected) in [(192, 7.0), (196, 8.0), (200, 9.0), (204, 1.0e-5)] {
+            assert_eq!(lane(lane_at), expected, "the disc row closes the block");
         }
     }
 
@@ -640,8 +663,11 @@ mod tests {
             ..SkyParams::default()
         }
         .to_bytes();
+        // The **sun** row's `w`, which is a `float4` back from the end of the
+        // block rather than at it: [`SkyParams::sun_disc`] follows it.
         let arm = |bytes: &[u8; PARAMS_SIZE]| {
-            f32::from_le_bytes(bytes[PARAMS_SIZE - 4..].try_into().expect("four"))
+            let at = PARAMS_SIZE - size_of::<[f32; 4]>() - size_of::<f32>();
+            f32::from_le_bytes(bytes[at..at + 4].try_into().expect("four"))
         };
         assert_eq!(
             arm(&off),

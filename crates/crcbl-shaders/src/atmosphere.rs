@@ -582,6 +582,153 @@ pub fn sky_view_u_of(cosine: f32) -> f32 {
     ((1.0 - cosine.clamp(-1.0, 1.0)) * 0.5).max(0.0).sqrt()
 }
 
+/// The sun's angular **radius**, in degrees.
+///
+/// The IAU's solar semidiameter at one astronomical unit — 959.63 arcseconds,
+/// which is 0.26656° — rounded to four decimal places, so the sun is 0.533°
+/// across. The Earth's orbit moves that by about ±1.7% over a year and this
+/// constant does not model it: one sun, at its mean distance.
+///
+/// It is a **degree** measure and nothing here consumes it: the runtime wants
+/// [`SUN_ANGULAR_RADIUS_VERSINE`], and this constant is what
+/// `the_suns_versine_is_the_angle_it_names` derives that from. A degree cannot
+/// become a versine without a `cos`, so the conversion is a test rather than an
+/// expression.
+pub const SUN_ANGULAR_RADIUS_DEGREES: f32 = 0.2665;
+
+/// `1 − cos` of [`SUN_ANGULAR_RADIUS_DEGREES`] — the disc's **versine**.
+///
+/// **The versine and not the cosine**, and the reason is the only interesting
+/// thing about this constant. The cosine is 0.999_989: an `f32` holds it to
+/// about a ten-millionth, which is a tenth of the difference from one that
+/// every use here actually wants. Subtracting it from one therefore throws away
+/// most of the digits before the arithmetic starts — the difference reads
+/// 1.0788e-5 where the true value is 1.0817e-5, a quarter of a per cent, and a
+/// disc built from it is a shade narrow and a shade bright. Stored this way the
+/// subtraction never happens.
+///
+/// The same argument is why [`SkyView::disc_radiance`] forms a direction's own
+/// versine as `½|d − s|²` rather than as `1 − d·s`.
+pub const SUN_ANGULAR_RADIUS_VERSINE: f32 = 1.081_728_7e-5;
+
+/// The solid angle the sun's disc subtends, in steradians.
+///
+/// `2π(1 − cos θ)`, the exact area of a spherical cap, from
+/// [`SUN_ANGULAR_RADIUS_VERSINE`]. It is what turns the sun's illuminance into
+/// the disc's radiance — see [`SkyView::disc_radiance`].
+pub const SUN_SOLID_ANGLE: f32 = 2.0 * core::f32::consts::PI * SUN_ANGULAR_RADIUS_VERSINE;
+
+/// Hillaire 2020's limb-darkening exponents, one per channel.
+///
+/// The paper's `SunLimbDarkening`: a centre-to-limb factor of
+/// `1 − u(1 − μ^a)` with `u = [1, 1, 1]` and these three `a`, where `μ` is the
+/// cosine of the angle between the ray and the solar surface's own normal —
+/// `μ = √(1 − (θ/θ_sun)²)` across the disc. With `u` one in every channel the
+/// factor collapses to `μ^a`, which is why no `u` is spelled here: a constant
+/// that is one everywhere is arithmetic nobody can get wrong.
+///
+/// The exponent is smallest on red, so red keeps the most of its centre's
+/// brightness towards the edge and blue the least — the limb of the sun is
+/// redder than its middle.
+pub const SUN_LIMB_EXPONENTS: [f32; 3] = [0.397, 0.503, 0.652];
+
+/// The mean of `μ^a` over the disc, one per channel.
+///
+/// Closed form, and exactly so: the disc's element of solid angle is `2π dc`
+/// in the ray's cosine `c` against the sun's centre, and this module's own
+/// radial coordinate is `r² = (1 − c)/(1 − cos θ_sun)` — linear in `c`. So
+/// `dω = Ω·2r dr` with no small-angle approximation in it, and
+///
+/// ```text
+/// ⟨μ^a⟩ = ∫₀¹ 2r (1 − r²)^{a/2} dr = ∫₀¹ 2 μ^{a+1} dμ = 2/(a + 2)
+/// ```
+///
+/// **[`SkyView::disc_radiance`] divides by it**, which is a departure from the
+/// paper worth naming: Hillaire multiplies the limb factor into the sun's
+/// radiance as authored, so his disc emits a fifth less than the light it
+/// stands for. Limb darkening redistributes energy across the disc rather than
+/// removing it, and this engine's disc has a `DirectionalLight` beside it that
+/// the forward pass shades with — so the shape is the paper's and the total is
+/// the light's. `the_disc_integrates_back_to_the_suns_illuminance` is that
+/// claim.
+pub const SUN_LIMB_MEAN: [f32; 3] = [
+    2.0 / (SUN_LIMB_EXPONENTS[0] + 2.0),
+    2.0 / (SUN_LIMB_EXPONENTS[1] + 2.0),
+    2.0 / (SUN_LIMB_EXPONENTS[2] + 2.0),
+];
+
+/// The limb-darkening fit's coefficients: ascending powers of
+/// `t = μ^{1/8}`, three channels per row.
+///
+/// **`μ^a` is a `pow`, and `docs/plan/44-lighting.md` lets no transcendental
+/// reach a colour**, so the paper's curve is spent at authoring time instead —
+/// the way [`crate::dfg`]'s split-sum table and [`crate::ltc`]'s fit are.
+///
+/// A polynomial in `μ` itself is hopeless here: `μ^{0.397}` has an infinite
+/// derivative at the limb, and the best degree-7 polynomial in `μ` still misses
+/// it by 3.8e-2. Under `t = μ^{1/8}` — four square roots, each of them
+/// IEEE-exact — the target becomes `t^{8a}` with an exponent above three, which
+/// a low-degree polynomial fits comfortably. The coefficients are a
+/// Lawson-weighted least-squares (near-minimax) fit over a uniform grid in `t`,
+/// and `the_limb_fit_tracks_the_papers_curve` is what states and holds the
+/// error it reaches.
+pub const SUN_LIMB_FIT: [[f32; 3]; SUN_LIMB_FIT_DEGREE + 1] = [
+    [-5.773_441e-6, 3.995_287_4e-7, -3.333_029_8e-6],
+    [8.344_246e-4, -4.951_302e-5, 3.637_003_8e-4],
+    [-2.268_672_2e-2, 1.052_534_4e-3, -6.567_18e-3],
+    [7.779_043e-1, -1.045_561_6e-2, 4.684_425_5e-2],
+    [3.740_259_7e-1, 9.894_969_5e-1, -1.862_783_7e-1],
+    [-1.716_111_3e-1, 2.444_076e-2, 1.040_207_4],
+    [4.154_471e-2, -4.485_891e-3, 1.054_369_1e-1],
+];
+
+/// The degree of [`SUN_LIMB_FIT`]'s polynomial.
+///
+/// Six, which is where the fit stops paying: the sweep that produced it read
+/// 5.1e-5 at degree five and 4.6e-7 at degree seven, and this rung sits an
+/// order of magnitude under `Rgba16Float`'s own precision at the top of the
+/// range. `the_limb_fit_tracks_the_papers_curve` prints what it reaches.
+pub const SUN_LIMB_FIT_DEGREE: usize = 6;
+
+/// Square roots taken to reach [`SUN_LIMB_FIT`]'s variable from `μ²`.
+///
+/// `t = μ^{1/8} = (μ²)^{1/16}`, so four of them.
+const SUN_LIMB_FIT_ROOTS: usize = 4;
+
+/// The largest finite value an `Rgba16Float` scene target can hold.
+///
+/// The IEEE-754 binary16 maximum, which is a property of the format rather than
+/// a choice: the sun's disc is four orders of magnitude brighter than the sky
+/// around it, and a radiance past this reaches the attachment as an infinity
+/// that the bloom chain and the exposure pass then spread across the frame.
+/// `shaders/sky.slang` clamps to it and [`SkyView::drawn_radiance`] mirrors
+/// that.
+pub const MAX_RADIANCE: f32 = 65504.0;
+
+/// Hillaire 2020's centre-to-limb factor at `mu_squared = μ²`, one per channel.
+///
+/// [`SUN_LIMB_FIT`] evaluated by Horner in `t = (μ²)^{1/16}` and floored at
+/// zero — the fit crosses a few millionths under zero at the very limb, and a
+/// negative radiance is not a thing this can be allowed to hand a colour.
+/// `shaders/sky.slang`'s `sun_limb` is the same arithmetic in the same order,
+/// held to this one by `the_shader_spells_the_limb_fit_the_host_does`.
+#[must_use]
+pub fn sun_limb(mu_squared: f32) -> [f32; 3] {
+    let mut root = mu_squared.clamp(0.0, 1.0);
+    for _ in 0..SUN_LIMB_FIT_ROOTS {
+        root = root.sqrt();
+    }
+    let mut out = [0.0f32; 3];
+    for (channel, slot) in out.iter_mut().enumerate() {
+        let mut value = SUN_LIMB_FIT[SUN_LIMB_FIT_DEGREE][channel];
+        for power in (0..SUN_LIMB_FIT_DEGREE).rev() {
+            value = value * root + SUN_LIMB_FIT[power][channel];
+        }
+        *slot = value.max(0.0);
+    }
+    out
+}
+
 /// The sun and the viewpoint a sky-view LUT is built for.
 ///
 /// Everything else about the sky is the planet, and the planet is the committed
@@ -647,6 +794,14 @@ pub struct SkyView {
     /// direction into the LUT's sun-relative coordinates without the caller
     /// having to hold the pair together.
     sun_direction: [f32; 3],
+    /// The radiance at the centre of the sun's disc, in linear RGB —
+    /// [`Self::sun_disc`], and what [`Self::disc_radiance`] scales by the limb.
+    ///
+    /// Resolved when the march starts rather than when the disc is read: it is
+    /// the sun's illuminance over [`SUN_SOLID_ANGLE`] and
+    /// [`SUN_LIMB_MEAN`], reddened by the transmittance along the sun's own
+    /// direction, and none of those depend on which way a ray points.
+    sun_disc: [f32; 3],
 }
 
 impl SkyView {
@@ -694,6 +849,75 @@ impl SkyView {
     #[must_use]
     pub fn sun_direction(&self) -> [f32; 3] {
         self.sun_direction
+    }
+
+    /// The radiance at the **centre** of the sun's disc, in linear RGB.
+    ///
+    /// What `crcbl_render::sky_pass` uploads and `shaders/sky.slang` scales by
+    /// the limb — see [`Self::disc_radiance`], which is the same value along a
+    /// direction.
+    #[must_use]
+    pub fn sun_disc(&self) -> [f32; 3] {
+        self.sun_disc
+    }
+
+    /// The sun's own disc seen along `direction`, in linear RGB, and zero
+    /// everywhere off it.
+    ///
+    /// **The disc carries the whole of the sun's illuminance.** A radiance
+    /// integrated over the solid angle it fills is an illuminance, so the disc's
+    /// is [`Atmosphere::sun_illuminance`] over [`SUN_SOLID_ANGLE`] — and then
+    /// over [`SUN_LIMB_MEAN`], so that shaping it by Hillaire's limb darkening
+    /// moves energy across the disc instead of removing a fifth of it. That is
+    /// the invariant `the_disc_integrates_back_to_the_suns_illuminance` holds:
+    /// this function integrated over the cap is the illuminance the sun's own
+    /// transmittance leaves, and so the disc and the `DirectionalLight` the
+    /// forward pass shades with are one sun rather than two.
+    ///
+    /// `direction` should be unit length, as [`Self::sun_direction`] is. The
+    /// angle between them arrives as a **versine** — `½|d − s|²`, which is
+    /// `1 − d·s` formed without the cancellation that expression suffers when
+    /// the two are a quarter of a degree apart — and the disc's own radial
+    /// coordinate is that versine over [`SUN_ANGULAR_RADIUS_VERSINE`]. There is
+    /// no `acos` in it and no angle: two cosines are compared as versines.
+    ///
+    /// `shaders/sky.slang`'s `sun_disc` is the same arithmetic on the device.
+    #[must_use]
+    pub fn disc_radiance(&self, direction: [f32; 3]) -> [f32; 3] {
+        let apart = [
+            direction[0] - self.sun_direction[0],
+            direction[1] - self.sun_direction[1],
+            direction[2] - self.sun_direction[2],
+        ];
+        let versine = 0.5 * (apart[0] * apart[0] + apart[1] * apart[1] + apart[2] * apart[2]);
+        let radius_squared = versine / SUN_ANGULAR_RADIUS_VERSINE;
+        if radius_squared >= 1.0 {
+            return [0.0; 3];
+        }
+        let limb = sun_limb(1.0 - radius_squared);
+        let mut out = [0.0f32; 3];
+        for (channel, slot) in out.iter_mut().enumerate() {
+            *slot = self.sun_disc[channel] * limb[channel];
+        }
+        out
+    }
+
+    /// What `shaders/sky.slang` writes along `direction` on an atmosphere
+    /// frame: [`Self::radiance`] plus [`Self::disc_radiance`], clamped to
+    /// [`MAX_RADIANCE`].
+    ///
+    /// The host mirror of that pass's whole fragment stage, so a test that
+    /// predicts a drawn pixel calls this and a test that is about the scattered
+    /// sky alone — a reflection, an irradiance — calls [`Self::radiance`].
+    #[must_use]
+    pub fn drawn_radiance(&self, direction: [f32; 3]) -> [f32; 3] {
+        let scattered = self.radiance(direction);
+        let disc = self.disc_radiance(direction);
+        let mut out = [0.0f32; 3];
+        for (channel, slot) in out.iter_mut().enumerate() {
+            *slot = (scattered[channel] + disc[channel]).min(MAX_RADIANCE);
+        }
+        out
     }
 
     /// The LUT read bilinearly at an azimuth cosine and a direction's `y`, the
@@ -932,6 +1156,10 @@ pub struct SkyViewBuild {
     /// The viewpoint's radius from the planet's centre, on [`Self::sun_side`]'s
     /// terms.
     view_radius: f32,
+    /// The radiance at the centre of the sun's disc, on [`Self::sun_side`]'s
+    /// terms — resolved once at [`Self::start`] and carried through to
+    /// [`SkyView::sun_disc`].
+    sun_disc: [f32; 3],
     /// The rows marched so far, in [`SkyView::radiance`]'s order.
     ///
     /// Its length is [`Self::rows_done`] times [`SKY_VIEW_WIDTH`], which is why
@@ -949,11 +1177,27 @@ impl SkyViewBuild {
         // used through the two cosines the march takes, so it needs no basis
         // vectors.
         let sun_side = (1.0 - sun_up * sun_up).max(0.0).sqrt();
+        let view_radius = atmosphere.view_radius_km();
+        // The air between the viewpoint and the sun, along the sun's own
+        // direction. A sun under the horizon has the planet in the way, and
+        // reading the table there would draw a disc through the ground; the
+        // paper's own listing takes the same branch.
+        let transmittance = if meets_the_ground(view_radius, sun_up) {
+            [0.0f32; 3]
+        } else {
+            sample_transmittance(view_radius, sun_up)
+        };
+        let mut sun_disc = [0.0f32; 3];
+        for (channel, slot) in sun_disc.iter_mut().enumerate() {
+            *slot = atmosphere.sun_illuminance[channel] * transmittance[channel]
+                / (SUN_SOLID_ANGLE * SUN_LIMB_MEAN[channel]);
+        }
         Self {
             atmosphere: *atmosphere,
             sun_side,
             sun_up,
-            view_radius: atmosphere.view_radius_km(),
+            view_radius,
+            sun_disc,
             radiance: Vec::with_capacity(SKY_VIEW_WIDTH * SKY_VIEW_HEIGHT),
         }
     }
@@ -1032,6 +1276,7 @@ impl SkyViewBuild {
         SkyView {
             radiance: self.radiance,
             sun_direction: self.atmosphere.sun_direction,
+            sun_disc: self.sun_disc,
         }
     }
 }
@@ -2013,6 +2258,9 @@ mod tests {
         let uniform = SkyView {
             radiance: vec![[0.25, 0.5, 1.0]; SKY_VIEW_WIDTH * SKY_VIEW_HEIGHT],
             sun_direction: LOW_SUN.sun_direction,
+            // No disc: this is a claim about the quadrature weights, and a sun
+            // in the field would be a second thing the projection is reading.
+            sun_disc: [0.0; 3],
         };
         let probe = uniform.irradiance();
         let mut worst = 0.0f32;
@@ -2476,5 +2724,478 @@ mod tests {
                 towards[channel]
             );
         }
+    }
+
+    /// How far [`sun_limb`] may sit from Hillaire's `mu^a`, in absolute terms.
+    ///
+    /// **Measured rather than chosen.** The fit is a Lawson-weighted
+    /// least-squares polynomial in `t = mu^{1/8}`, and the sweep that produced
+    /// it read 5.1e-5 at degree five, 5.8e-6 at the degree
+    /// [`SUN_LIMB_FIT_DEGREE`] ships and 4.6e-7 at degree seven. The test below
+    /// prints what the shipped `f32` evaluation actually reaches; this is a
+    /// round figure just above it, and it is fifty times under the `2^-11`
+    /// relative step an `Rgba16Float` attachment quantises the result to
+    /// anyway.
+    const MAX_LIMB_ERROR: f64 = 1.0e-5;
+
+    /// How far the disc's integral may sit from the illuminance it carries, as
+    /// a share of it.
+    ///
+    /// The construction is exact in real arithmetic — see [`SUN_LIMB_MEAN`] —
+    /// so what is left is [`MAX_LIMB_ERROR`] spread over the disc and the `f32`
+    /// rounding of a value that arrives through a division, four square roots
+    /// and a Horner. The test prints what it reaches.
+    const MAX_DISC_ENERGY_ERROR: f64 = 1.0e-5;
+
+    /// The constants that describe the disc are the angle they are named for.
+    ///
+    /// [`SUN_ANGULAR_RADIUS_VERSINE`] and [`SUN_LIMB_MEAN`] are both written as
+    /// literals, because reaching either from [`SUN_ANGULAR_RADIUS_DEGREES`]
+    /// and [`SUN_LIMB_EXPONENTS`] takes a `cos` and a division the runtime path
+    /// is not allowed. This is where that conversion happens, in `f64`, once.
+    #[test]
+    fn the_suns_versine_is_the_angle_it_names() {
+        let radius = f64::from(SUN_ANGULAR_RADIUS_DEGREES).to_radians();
+        let versine = 1.0 - radius.cos();
+        let miss = relative(f64::from(SUN_ANGULAR_RADIUS_VERSINE), versine);
+        eprintln!(
+            "crcbl atmosphere: the sun's angular radius is {SUN_ANGULAR_RADIUS_DEGREES}°, whose \
+             versine is {versine:.9e} against the stored {SUN_ANGULAR_RADIUS_VERSINE:e} — \
+             {miss:.2e} apart; the disc fills {SUN_SOLID_ANGLE:e} sr, so a sun of unit \
+             illuminance is {} at its centre on red",
+            1.0 / (SUN_SOLID_ANGLE * SUN_LIMB_MEAN[0]),
+        );
+        assert!(
+            miss <= f64::from(f32::EPSILON),
+            "the stored versine {SUN_ANGULAR_RADIUS_VERSINE:e} is {miss:.2e} from \
+             `1 - cos({SUN_ANGULAR_RADIUS_DEGREES}°)`, which is more than a rounding to `f32`"
+        );
+        // The mean is the closed form its doc derives, and nothing rounds it
+        // out of being one: `2/(a + 2)`.
+        for (channel, exponent) in SUN_LIMB_EXPONENTS.into_iter().enumerate() {
+            let expected = 2.0 / (f64::from(exponent) + 2.0);
+            assert!(
+                relative(f64::from(SUN_LIMB_MEAN[channel]), expected) <= f64::from(f32::EPSILON),
+                "channel {channel}'s limb mean is {} where `2/(a + 2)` is {expected}",
+                SUN_LIMB_MEAN[channel]
+            );
+        }
+    }
+
+    /// [`sun_limb`] is Hillaire 2020's `mu^a` to [`MAX_LIMB_ERROR`].
+    ///
+    /// **The claim the fit exists to make.** The paper's factor is a `pow` and
+    /// this workspace lets none reach a colour, so what ships is a polynomial;
+    /// the only thing that makes that legitimate is a bound on the difference,
+    /// and this is where it is taken. The sweep walks a grid uniform in the
+    /// fit's own variable — a grid uniform in `mu` puts almost no nodes in the
+    /// half of `t` below 0.25, which is exactly where a fit of a function with
+    /// an infinite derivative at zero goes wrong.
+    ///
+    /// It also asserts the two ends, which the error bound alone does not
+    /// pin: a factor that is not one at the disc's centre is a sun of the wrong
+    /// brightness, and one that does not reach zero at the limb is a disc with
+    /// a step in its edge.
+    #[test]
+    fn the_limb_fit_tracks_the_papers_curve() {
+        let mut worst = [0.0f64; 3];
+        let mut worst_at = [0.0f64; 3];
+        let nodes = 200_001;
+        for node in 0..nodes {
+            let root = node as f64 / (nodes - 1) as f64;
+            // `t = mu^{1/8}`, so `mu = t^8` and `mu² = t^16`.
+            let mu = root.powi(8);
+            let measured = sun_limb((mu * mu) as f32);
+            for (channel, exponent) in SUN_LIMB_EXPONENTS.into_iter().enumerate() {
+                let expected = mu.powf(f64::from(exponent));
+                let miss = (f64::from(measured[channel]) - expected).abs();
+                if miss > worst[channel] {
+                    worst[channel] = miss;
+                    worst_at[channel] = mu;
+                }
+            }
+        }
+        eprintln!(
+            "crcbl atmosphere: the degree-{SUN_LIMB_FIT_DEGREE} limb fit misses Hillaire's \
+             `mu^a` by at most {:.3e}/{:.3e}/{:.3e} (at mu {:.4}/{:.4}/{:.4}) against a budget \
+             of {MAX_LIMB_ERROR:e}",
+            worst[0], worst[1], worst[2], worst_at[0], worst_at[1], worst_at[2],
+        );
+        for (channel, miss) in worst.into_iter().enumerate() {
+            assert!(
+                miss <= MAX_LIMB_ERROR,
+                "channel {channel}'s limb fit misses `mu^{}` by {miss:.3e} at mu {:.4}, against \
+                 a budget of {MAX_LIMB_ERROR:e}",
+                SUN_LIMB_EXPONENTS[channel],
+                worst_at[channel],
+            );
+        }
+        let centre = sun_limb(1.0);
+        let limb = sun_limb(0.0);
+        for channel in 0..3 {
+            assert!(
+                (f64::from(centre[channel]) - 1.0).abs() <= MAX_LIMB_ERROR,
+                "the disc's centre is darkened to {} on channel {channel}, where the paper's \
+                 factor is one there",
+                centre[channel]
+            );
+            assert!(
+                f64::from(limb[channel]) <= MAX_LIMB_ERROR,
+                "the disc's limb reaches {} on channel {channel}, where the paper's factor is \
+                 zero there",
+                limb[channel]
+            );
+        }
+    }
+
+    /// **The disc carries the whole of the sun's illuminance.**
+    ///
+    /// [`SkyView::disc_radiance`]'s invariant, and the reason
+    /// [`SUN_LIMB_MEAN`] exists: integrating a radiance over the solid angle it
+    /// fills gives back an illuminance, and this one has to be the illuminance
+    /// the `DirectionalLight` beside it shades with — otherwise a scene has two
+    /// suns of different brightnesses in it and nothing says so.
+    ///
+    /// The quadrature is Simpson's in the fit's own variable `t`, where the
+    /// integrand is a polynomial: `dω = Ω·2r dr` exactly — the disc's radial
+    /// coordinate is linear in the ray's cosine and `dω = 2π dc` — and
+    /// `2r dr = d(r²) = d(1 − t^16) = −16 t^15 dt`. So the whole integral is
+    /// `Ω ∫₀¹ 16 t^15 L(t) dt` with `L` a degree-six polynomial in `t`, and
+    /// what is left in the residual below is the `f32` arithmetic and the fit,
+    /// not the rule.
+    ///
+    /// **Two atmospheres**, because the transmittance is the one part of the
+    /// disc that is not the light: at the top of the atmosphere there is no air
+    /// to redden the sun and the integral is the illuminance itself, and at sea
+    /// level it is that illuminance times what the air leaves — the same
+    /// [`sample_transmittance`] the build reads, so this asserts the
+    /// normalisation rather than re-deriving the physics.
+    #[test]
+    fn the_disc_integrates_back_to_the_suns_illuminance() {
+        let mut worst = 0.0f64;
+        for atmosphere in [
+            LOW_SUN,
+            Atmosphere {
+                sun_illuminance: [3.0, 2.0, 1.0],
+                ..LOW_SUN
+            },
+            Atmosphere {
+                altitude_km: TOP_RADIUS_KM - GROUND_RADIUS_KM,
+                ..LOW_SUN
+            },
+        ] {
+            let sky = SkyView::build(&atmosphere);
+            let sun = atmosphere.sun_direction;
+            // A unit vector perpendicular to the sun, so a ray at a given
+            // cosine can be built without a trigonometric function: the sun's
+            // own horizontal component turned a quarter turn about `+Y`.
+            let flat = (sun[0] * sun[0] + sun[2] * sun[2]).sqrt();
+            assert!(flat > 0.0, "this fixture's sun is not straight overhead");
+            let across = [sun[2] / flat, 0.0, -sun[0] / flat];
+
+            let intervals = 4096;
+            let mut total = [0.0f64; 3];
+            for (channel, band) in total.iter_mut().enumerate() {
+                let at = |root: f64| {
+                    let radius_squared = 1.0 - root.powi(16);
+                    let cosine = 1.0 - radius_squared * f64::from(SUN_ANGULAR_RADIUS_VERSINE);
+                    let sine = (1.0 - cosine * cosine).max(0.0).sqrt();
+                    let direction = [
+                        (cosine * f64::from(sun[0]) + sine * f64::from(across[0])) as f32,
+                        (cosine * f64::from(sun[1]) + sine * f64::from(across[1])) as f32,
+                        (cosine * f64::from(sun[2]) + sine * f64::from(across[2])) as f32,
+                    ];
+                    16.0 * root.powi(15) * f64::from(sky.disc_radiance(direction)[channel])
+                };
+                let step = 1.0 / f64::from(intervals);
+                let mut sum = at(0.0) + at(1.0);
+                for node in 1..intervals {
+                    let weight = if node % 2 == 1 { 4.0 } else { 2.0 };
+                    sum += weight * at(f64::from(node) * step);
+                }
+                *band = f64::from(SUN_SOLID_ANGLE) * sum * step / 3.0;
+            }
+
+            let transmittance = sample_transmittance(atmosphere.view_radius_km(), sun[1]);
+            for channel in 0..3 {
+                let expected = f64::from(atmosphere.sun_illuminance[channel])
+                    * f64::from(transmittance[channel]);
+                let miss = relative(total[channel], expected);
+                worst = worst.max(miss);
+                assert!(
+                    miss <= MAX_DISC_ENERGY_ERROR,
+                    "at {} km the disc integrates to {} on channel {channel} where the sun \
+                     delivers {expected} — {miss:.3e} apart, against a budget of \
+                     {MAX_DISC_ENERGY_ERROR:e}",
+                    atmosphere.altitude_km,
+                    total[channel],
+                );
+            }
+        }
+        eprintln!(
+            "crcbl atmosphere: over three suns the disc's integral misses the illuminance it \
+             carries by at most {worst:.3e}, against a budget of {MAX_DISC_ENERGY_ERROR:e}"
+        );
+        assert!(worst > 0.0, "an integral that is exact has not been taken");
+    }
+
+    /// The disc is a disc: bright at its centre, darker towards its limb, and
+    /// nothing at all outside it.
+    ///
+    /// The shape claim [`the_disc_integrates_back_to_the_suns_illuminance`]
+    /// cannot make — a disc of the right total energy and the wrong profile
+    /// passes that one — and it is also what says the versine comparison finds
+    /// the edge where the angle says it is rather than a rounding away from it.
+    #[test]
+    fn the_disc_darkens_towards_its_limb_and_stops_at_it() {
+        let sky = SkyView::build(&LOW_SUN);
+        let sun = LOW_SUN.sun_direction;
+        let flat = (sun[0] * sun[0] + sun[2] * sun[2]).sqrt();
+        let across = [sun[2] / flat, 0.0, -sun[0] / flat];
+        let at = |radius: f64| {
+            let cosine = 1.0 - radius * radius * f64::from(SUN_ANGULAR_RADIUS_VERSINE);
+            let sine = (1.0 - cosine * cosine).max(0.0).sqrt();
+            sky.disc_radiance([
+                (cosine * f64::from(sun[0]) + sine * f64::from(across[0])) as f32,
+                (cosine * f64::from(sun[1]) + sine * f64::from(across[1])) as f32,
+                (cosine * f64::from(sun[2]) + sine * f64::from(across[2])) as f32,
+            ])
+        };
+
+        let centre = at(0.0);
+        for (channel, reading) in centre.into_iter().enumerate() {
+            // [`MAX_LIMB_ERROR`] and not equality: the fit's own value at the
+            // centre is one to within that, and the stored radiance is what it
+            // multiplies.
+            let stored = sky.sun_disc()[channel];
+            let miss = relative(f64::from(reading), f64::from(stored));
+            assert!(
+                miss <= MAX_LIMB_ERROR,
+                "the ray straight at the sun reads {reading} on channel {channel} where the \
+                 disc's own centre is {stored}"
+            );
+        }
+        let mut previous = centre;
+        for step in 1..=20 {
+            let sample = at(f64::from(step) / 20.0);
+            for channel in 0..3 {
+                assert!(
+                    sample[channel] < previous[channel],
+                    "the disc is no darker at {}/20 of its radius than at {}/20 on channel \
+                     {channel}: {} against {}",
+                    step,
+                    step - 1,
+                    sample[channel],
+                    previous[channel],
+                );
+            }
+            previous = sample;
+        }
+        // And it stops. A hair inside the limb is still lit; a hair outside is
+        // not, and neither is the far side of the sky.
+        assert!(at(0.999)[0] > 0.0, "the disc is dark inside its own limb");
+        assert_eq!(at(1.001), [0.0; 3], "the disc reaches past its limb");
+        assert_eq!(
+            sky.disc_radiance([-sun[0], -sun[1], -sun[2]]),
+            [0.0; 3],
+            "the anti-solar point holds a sun"
+        );
+        // Blue is darkened most, which is Hillaire's exponents in the order the
+        // paper writes them and the reason the sun's limb is redder than its
+        // middle. Read as a share of each channel's own centre, since the three
+        // channels do not start at the same radiance.
+        let edge = at(0.9);
+        let shares: Vec<f32> = (0..3).map(|c| edge[c] / centre[c]).collect();
+        assert!(
+            shares[0] > shares[1] && shares[1] > shares[2],
+            "at nine tenths of its radius the disc keeps {shares:?} of its centre, which is not \
+             a limb that reddens"
+        );
+    }
+
+    /// A sun under the horizon draws no disc, and one at the top of the
+    /// atmosphere draws an unreddened one.
+    ///
+    /// The transmittance branch [`SkyViewBuild::start`] takes. Without it a
+    /// viewpoint on the ground reads the table along a ray that goes through
+    /// the planet, and the sun sets by sinking into a floor with its disc still
+    /// lit behind it.
+    #[test]
+    fn a_sun_under_the_horizon_draws_no_disc() {
+        let under = Atmosphere {
+            sun_direction: [0.984_807_7, -0.173_648_18, 0.0],
+            ..LOW_SUN
+        };
+        let sky = SkyView::build(&under);
+        assert_eq!(
+            sky.sun_disc(),
+            [0.0; 3],
+            "a sun below the horizon still has a disc"
+        );
+        assert_eq!(sky.disc_radiance(under.sun_direction), [0.0; 3]);
+
+        // Above the air the disc is the illuminance over the solid angle and
+        // the limb mean, with nothing taken out of it.
+        let above = Atmosphere {
+            altitude_km: TOP_RADIUS_KM - GROUND_RADIUS_KM,
+            ..LOW_SUN
+        };
+        let thin = SkyView::build(&above);
+        let ground = SkyView::build(&LOW_SUN);
+        for channel in 0..3 {
+            assert!(
+                thin.sun_disc()[channel] > ground.sun_disc()[channel],
+                "channel {channel}'s disc is no brighter above the air ({}) than under it ({})",
+                thin.sun_disc()[channel],
+                ground.sun_disc()[channel],
+            );
+        }
+        // And the air reddens what is left: a sun ten degrees up loses more
+        // blue than red on the way down.
+        let share = |channel: usize| ground.sun_disc()[channel] / thin.sun_disc()[channel];
+        assert!(
+            share(0) > share(2),
+            "the air leaves {} of the disc's red and {} of its blue, which is not a reddened sun",
+            share(0),
+            share(2),
+        );
+    }
+
+    /// [`SkyView::drawn_radiance`] is the two terms `sky.slang` adds, held
+    /// under [`MAX_RADIANCE`].
+    ///
+    /// The clamp is not decoration: the disc is the illuminance over
+    /// [`SUN_SOLID_ANGLE`], which is fourteen thousand times it, so a sun bright
+    /// enough to matter in a scene reaches an `Rgba16Float` attachment as an
+    /// infinity — and an infinity in the scene target is a bloom chain that
+    /// spreads a `NaN` over the frame. Bloom and the exposure pass carry the
+    /// range under it.
+    #[test]
+    fn the_drawn_sky_is_the_two_terms_under_the_targets_maximum() {
+        let sky = SkyView::build(&LOW_SUN);
+        // Away from the sun there is no disc, so the drawn sky is the LUT.
+        let away = [-LOW_SUN.sun_direction[0], 0.5, 0.0];
+        assert_eq!(sky.drawn_radiance(away), sky.radiance(away));
+
+        let sun = LOW_SUN.sun_direction;
+        let drawn = sky.drawn_radiance(sun);
+        for (channel, reading) in drawn.into_iter().enumerate() {
+            let scattered = sky.radiance(sun)[channel];
+            assert!(
+                reading > scattered,
+                "the drawn sky at the sun reads {reading} on channel {channel} where the \
+                 scattered sky alone reads {scattered}"
+            );
+        }
+
+        // A sun bright enough to clip does, and the LUT under it does not
+        // reach the top on its own — so the clamp is the disc's.
+        let fierce = SkyView::build(&Atmosphere {
+            sun_illuminance: [1.0e4; 3],
+            ..LOW_SUN
+        });
+        let clipped = fierce.drawn_radiance(sun);
+        assert_eq!(
+            clipped,
+            [MAX_RADIANCE; 3],
+            "a sun of {:?} does not reach the target's maximum",
+            fierce.sun_disc()
+        );
+        for channel in 0..3 {
+            assert!(
+                fierce.radiance(sun)[channel] < MAX_RADIANCE,
+                "the scattered sky alone reaches the clamp, so the assertion above is not \
+                 about the disc"
+            );
+        }
+    }
+
+    /// `sky.slang` spells the disc the way this module does.
+    ///
+    /// [`the_shader_reads_the_lut_the_way_the_host_does`]' claim for the second
+    /// half of the pass: Slang has no `#include`, so the fit's coefficients and
+    /// the arithmetic around them are written twice, and this is what keeps the
+    /// two copies one function. The coefficients are **parsed** rather than
+    /// compared as text, because the two languages do not spell a float the
+    /// same way.
+    #[test]
+    fn the_shader_spells_the_limb_fit_the_host_does() {
+        let source = include_str!("../shaders/sky.slang");
+        let table = source
+            .split_once("static const float3 SUN_LIMB_FIT[7] = {")
+            .expect("sky.slang declares `SUN_LIMB_FIT`")
+            .1
+            .split_once("};")
+            .expect("the table ends")
+            .0;
+        let rows: Vec<[f32; 3]> = table
+            .split("float3(")
+            .skip(1)
+            .map(|row| {
+                let lanes: Vec<f32> = row
+                    .split_once(')')
+                    .expect("a row closes")
+                    .0
+                    .split(',')
+                    .map(|lane| lane.trim().parse::<f32>().expect("a float literal"))
+                    .collect();
+                [lanes[0], lanes[1], lanes[2]]
+            })
+            .collect();
+        assert_eq!(
+            rows.len(),
+            SUN_LIMB_FIT.len(),
+            "sky.slang carries {} rows of the limb fit and this module carries {}",
+            rows.len(),
+            SUN_LIMB_FIT.len()
+        );
+        for (power, row) in rows.into_iter().enumerate() {
+            assert_eq!(
+                row, SUN_LIMB_FIT[power],
+                "sky.slang's limb fit differs from this module's at t^{power}"
+            );
+        }
+
+        let body = source
+            .split_once("float3 sun_disc(float3 direction)\n{")
+            .expect("sky.slang declares `sun_disc`")
+            .1
+            .split_once("\n}")
+            .expect("the function has a body")
+            .0;
+        for line in [
+            // The versine, formed where the two vectors differ.
+            "float versine = 0.5 * dot(apart, apart);",
+            // The disc's radial coordinate, against the angle the block carries.
+            "float radius_squared = versine / camera.sun_disc.w;",
+            // Four square roots, which is `mu^{1/8}` out of `mu²`.
+            "float root = sqrt(sqrt(sqrt(sqrt(1.0 - radius_squared))));",
+            // Horner from the top, which is the order `sun_limb` evaluates in.
+            "limb = limb * root + SUN_LIMB_FIT[power];",
+        ] {
+            assert!(
+                body.contains(line),
+                "sky.slang's `sun_disc` no longer contains `{line}`, so it and \
+                 `SkyView::disc_radiance` are drawing different discs"
+            );
+        }
+        assert!(
+            source.contains("atmosphere_radiance(direction) + sun_disc(direction)"),
+            "sky.slang's atmosphere arm no longer adds the disc to the scattered sky"
+        );
+        let ceiling = source
+            .split_once("static const float SCENE_TARGET_MAX = ")
+            .expect("sky.slang declares `SCENE_TARGET_MAX`")
+            .1
+            .split_once(';')
+            .expect("the constant ends")
+            .0
+            .trim()
+            .parse::<f32>()
+            .expect("the constant is a literal");
+        assert_eq!(
+            ceiling, MAX_RADIANCE,
+            "sky.slang clamps at {ceiling} where this module's mirror clamps at {MAX_RADIANCE}"
+        );
     }
 }

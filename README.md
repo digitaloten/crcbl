@@ -57,22 +57,24 @@ What is real today:
   committed and whose sun-dependent view is marched on the host, so the
   background, the ambient term and a missed reflection are one atmosphere — a
   mirror reads that view along its reflected direction, out of the very buffer
-  the background draws from, and the device pays four buffer loads for it;
-  volumetric fog, bloom, auto-exposure, CMAA2 and FXAA, render-scale upscaling,
-  GPU skinning, alpha-masked cutout materials cut in the depth prepass and the
-  shadows as well as in the shading and routed per draw bucket, so an opaque
-  mesh keeps its vertex-only depth stage in a scene that has a cutout in it;
-  double-sided materials, drawn through a cull-none twin of every pass and lit
-  through a reversed normal on the back face; the whole glTF metallic-roughness
-  texture set, read out of the document and drawn — base colour, tangent-space
-  normals, the packed occlusion-roughness-metallic map and emissive, each its
-  own array page in its own format, with occlusion scaling the indirect terms
-  alone; specular antialiasing that widens the lobe by the screen-space variance
-  of the shading normal, an ACES-fitted tonemap and a screen-space grid, with
-  mesh shaders and bindless where the device has them; and a split-screen
-  comparison seam that resolves one frame's data two ways either side of a
-  vertical line — two occlusion algorithms, or two shadow filters — each side
-  carrying its own timer row in the debug panel.
+  the background draws from, and the device pays four buffer loads for it, with
+  the sun's own limb-darkened disc drawn beside it, carrying exactly the
+  illuminance the scene is shaded by; volumetric fog, bloom, auto-exposure,
+  CMAA2 and FXAA, render-scale upscaling, GPU skinning, alpha-masked cutout
+  materials cut in the depth prepass and the shadows as well as in the shading
+  and routed per draw bucket, so an opaque mesh keeps its vertex-only depth
+  stage in a scene that has a cutout in it; double-sided materials, drawn
+  through a cull-none twin of every pass and lit through a reversed normal on
+  the back face; the whole glTF metallic-roughness texture set, read out of the
+  document and drawn — base colour, tangent-space normals, the packed
+  occlusion-roughness-metallic map and emissive, each its own array page in its
+  own format, with occlusion scaling the indirect terms alone; specular
+  antialiasing that widens the lobe by the screen-space variance of the shading
+  normal, an ACES-fitted tonemap and a screen-space grid, with mesh shaders and
+  bindless where the device has them; and a split-screen comparison seam that
+  resolves one frame's data two ways either side of a vertical line — two
+  occlusion algorithms, or two shadow filters — each side carrying its own timer
+  row in the debug panel.
 - **glTF import** with meshlet building, a cluster DAG and QEM simplification.
 - **A server-authoritative game stack** — fixed-tick simulation, snapshots,
   interpolation, an ECS, physics, input mapping, audio, persistence and a job

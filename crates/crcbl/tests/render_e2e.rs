@@ -6975,16 +6975,35 @@ fn atmosphere_ray(camera: &crcbl::render::Camera, column: u32, row: u32) -> [f32
 /// there is no shading; the tonemap is
 /// `crcbl_shaders::tonemap::DEFAULT_EXPOSURE` and a clamp, which is the
 /// identity below one; the target is sRGB, so the encode is the last step.
+///
+/// **`drawn_radiance` and not `radiance`**, which is the whole of what this
+/// model has to say about the sun's disc: `sky.slang` draws the scattered LUT
+/// *plus* the disc, so a band that lands on the sun is predicted rather than
+/// excused. None of [`ATMOSPHERE_BANDS`] does at the moment, and this is what
+/// keeps that from being a thing anybody has to check by hand when a band or a
+/// sun moves.
 fn predicted_atmosphere_channel(
     sky: &crcbl::shaders::atmosphere::SkyView,
     camera: &crcbl::render::Camera,
     centre: (u32, u32),
     channel: usize,
 ) -> f32 {
+    predicted_drawn_channel(sky, camera, centre, ATMOSPHERE_BAND, channel)
+}
+
+/// [`predicted_atmosphere_channel`] over a block of any size — what
+/// [`a_sun_disc_is_drawn_where_the_host_puts_it`] reads its own bands through.
+fn predicted_drawn_channel(
+    sky: &crcbl::shaders::atmosphere::SkyView,
+    camera: &crcbl::render::Camera,
+    centre: (u32, u32),
+    half: (u32, u32),
+    channel: usize,
+) -> f32 {
     let mut total = 0.0f32;
     let mut count = 0u32;
-    for (x, y) in block_pixels(centre, ATMOSPHERE_BAND) {
-        let radiance = sky.radiance(atmosphere_ray(camera, x, y));
+    for (x, y) in block_pixels(centre, half) {
+        let radiance = sky.drawn_radiance(atmosphere_ray(camera, x, y));
         total += srgb_encode(radiance[channel].min(1.0)) * 255.0;
         count += 1;
     }
@@ -7498,6 +7517,236 @@ fn an_atmosphere_frame_is_the_host_lut() {
         worst_at.2,
         crcbl::screenshot::ATMOSPHERE_SUNS.len(),
         ATMOSPHERE_BANDS.len(),
+    );
+}
+
+/// The disc's radial coordinate at pixel `at`: zero at the sun's centre, one at
+/// its limb.
+///
+/// `crcbl_shaders::atmosphere::SkyView::disc_radiance`'s own coordinate, formed
+/// the same way — the versine between the ray and the sun over
+/// `SUN_ANGULAR_RADIUS_VERSINE`, with no angle anywhere in it. The test below
+/// reads it to say where its bands are rather than carrying pixel offsets whose
+/// meaning depends on a field of view somewhere else.
+fn sun_disc_radius(camera: &crcbl::render::Camera, sun: [f32; 3], at: (u32, u32)) -> f32 {
+    let ray = atmosphere_ray(camera, at.0, at.1);
+    let apart = [ray[0] - sun[0], ray[1] - sun[1], ray[2] - sun[2]];
+    let versine = 0.5 * (apart[0] * apart[0] + apart[1] * apart[1] + apart[2] * apart[2]);
+    (versine / crcbl::shaders::atmosphere::SUN_ANGULAR_RADIUS_VERSINE).sqrt()
+}
+
+/// The block the sun's disc is read through, as a half-extent in pixels.
+///
+/// Smaller than [`ATMOSPHERE_BAND`], because the field it sits on is not flat:
+/// the disc's profile falls from its centre to its limb over a few dozen pixels
+/// at this lens, so a block only a few across is one the prediction and the
+/// frame average over the same slope.
+const SUN_DISC_BAND: (u32, u32) = (2, 2);
+
+/// How far off the sun's centre the ring bands are read, in pixels.
+///
+/// About seven tenths of the disc's radius — [`the_bands_sit_where_the_disc_is`]
+/// is what says so rather than this sentence. Far enough out that the limb has
+/// visibly darkened the profile and well short of the edge, where the curve is
+/// steepest and a ray that differs in its last place moves a level.
+const SUN_DISC_RING: u32 = 18;
+
+/// How far off the sun's centre the off-disc band is read, in pixels.
+///
+/// Comfortably past the limb, so it is the scattered LUT with no disc in it at
+/// all — the aureole, which at this fixture's illuminance is a level or two.
+const SUN_DISC_OFF: u32 = 40;
+
+/// How far a sun-disc band may sit from the host's own prediction of it, in
+/// levels of 255.
+///
+/// **Swept on both local adapters before it was fixed**, over six bands × three
+/// channels: the worst miss measured **0.28** levels on the discrete adapter
+/// (radv, an RX 7900 XTX) and **0.34** on the software one (lavapipe). It is
+/// the same figure [`ATMOSPHERE_MIRROR_LEVELS`] carries and for the same
+/// reason — what is left between the two sides is the frame's own eight-bit
+/// quantisation against a prediction that has none — and the two adapters
+/// differing in the second digit where the flat-sky fixture had them agreeing
+/// to four is the field: this one falls by about two levels per pixel at the
+/// ring, so the last place the two matrix products differ in is worth more
+/// here than it is on a sky.
+const SUN_DISC_LEVELS: f32 = 0.9;
+
+/// The least the disc's centre must sit above its ring, in levels of red.
+///
+/// Anti-vacuity, and it is Hillaire's limb darkening specifically: a disc drawn
+/// as a flat bright circle predicts and measures the same number at both bands
+/// and would pass every comparison above. **Swept**: the frame reads the two
+/// 14.12 levels apart on both adapters, and a flat disc reads them zero
+/// apart.
+const SUN_DISC_LIMB_APART: f32 = 8.0;
+
+/// The least the disc must sit above the sky beside it, in levels of red.
+///
+/// The other anti-vacuity clause, and the one the rung is actually about: a
+/// pass that drew no disc leaves the sun's own pixels reading the scattered
+/// aureole, which at this illuminance rounds to nothing at all. **Swept**: the
+/// frame reads 233.00 levels between the two on both adapters, and the
+/// sabotage in this test's own doc read them zero apart.
+const SUN_DISC_SKY_APART: f32 = 100.0;
+
+/// The bands sit where [`a_sun_disc_is_drawn_where_the_host_puts_it`] says they
+/// do — the geometry its assertions rest on, checked rather than described.
+fn the_bands_sit_where_the_disc_is(camera: &crcbl::render::Camera, sun: [f32; 3]) {
+    let centre = (EXTENT.0 / 2, EXTENT.1 / 2);
+    let radius = |at| sun_disc_radius(camera, sun, at);
+    assert!(
+        radius(centre) < 0.1,
+        "the frame's middle sits {} of the way to the disc's limb, so this camera is not \
+         looking at the sun",
+        radius(centre)
+    );
+    for at in sun_disc_ring(centre) {
+        let ring = radius(at);
+        assert!(
+            (0.6..0.85).contains(&ring),
+            "the ring band at {at:?} sits at {ring} of the disc's radius, which is not the \
+             shoulder of the profile this fixture reads"
+        );
+    }
+    let off = radius((centre.0, centre.1 - SUN_DISC_OFF));
+    assert!(
+        off > 1.2,
+        "the off-disc band sits at {off} of the disc's radius, which is not off the disc"
+    );
+}
+
+/// The four ring bands, one on each side of the sun's centre.
+const fn sun_disc_ring(centre: (u32, u32)) -> [(u32, u32); 4] {
+    [
+        (centre.0 - SUN_DISC_RING, centre.1),
+        (centre.0 + SUN_DISC_RING, centre.1),
+        (centre.0, centre.1 - SUN_DISC_RING),
+        (centre.0, centre.1 + SUN_DISC_RING),
+    ]
+}
+
+/// **The sun's own disc is drawn, and it is the disc the host predicts.**
+///
+/// `docs/plan/43-render-standards.md` §8's last piece. The sky-view LUT holds
+/// the air's scattered light and nothing else — the sun is a quarter of a
+/// degree across against texels several degrees wide — so until `sky.slang`
+/// drew a disc, the brightest thing in a real sky was missing from every frame
+/// that had one, and the pixels it should have covered read the aureole around
+/// it.
+///
+/// `crcbl::screenshot::sun_disc_forward` frames the sun through a two-degree
+/// lens, so the disc is about a quarter of the frame's height and the profile
+/// is picture rather than a pixel. Four claims, in order:
+///
+/// 1. **Six bands agree with the host** — the disc's centre, four on its
+///    shoulder and one off it — on all three channels, through
+///    `SkyView::drawn_radiance`, which is the scattered LUT plus the disc. That
+///    is the claim about the shader: the fit's coefficients, the versine
+///    comparison and the four square roots are each written twice, in Slang and
+///    in Rust, and a disagreement in any of them lands here.
+/// 2. **The disc darkens towards its limb** by at least
+///    [`SUN_DISC_LIMB_APART`], which a flat bright circle does not.
+/// 3. **It stands over the sky beside it** by at least
+///    [`SUN_DISC_SKY_APART`], which is what a pass that drew no disc fails.
+/// 4. **And it is reddened**: the sun's illuminance is white and the disc is
+///    not, because it is seen through ten degrees' worth of air.
+///
+/// **Shown red before it was green** (2026-09-06, radv): with
+/// `crcbl_render::sky_pass`'s block writing a disc radiance of zero — the frame
+/// the pass drew before this rung, which is the scattered LUT alone — all
+/// fifteen readings inside the disc failed and the first read `band (128, 96),
+/// red measures 0.00 and the host predicts 232.72, a miss of 232.72 level(s)
+/// against a budget of 0.9`. The off-disc band passed in the same run, which is
+/// what says the sabotage removed the sun and not the sky.
+#[test]
+#[ignore = "needs a real GPU and a backend pin; run tests/run-render-e2e.sh"]
+fn a_sun_disc_is_drawn_where_the_host_puts_it() {
+    crcbl_core::log::init_logging();
+
+    let camera = crcbl::screenshot::sun_disc_camera();
+    let sky = crcbl::screenshot::sun_disc_view();
+    let sun = sky.sun_direction();
+    the_bands_sit_where_the_disc_is(&camera, sun);
+
+    let setup = OffscreenSetup::open_forward(EXTENT.0, EXTENT.1, |device, queue, format| {
+        crcbl::screenshot::sun_disc_forward(device, queue, format).map(scene_referred)
+    })
+    .unwrap_or_else(|why| panic!("a GPU backend opens for the sun disc scene: {why}"));
+    let mut setup = Offscreen::guard(SUITE, setup);
+    let format = setup.format();
+    let ((width, height), pixels) = setup.draw_and_readback().expect("the frame renders");
+    setup.finish();
+    let image =
+        Image::from_readback(width, height, &pixels, channel_order(format)).expect("one image");
+
+    let centre = (EXTENT.0 / 2, EXTENT.1 / 2);
+    let off = (centre.0, centre.1 - SUN_DISC_OFF);
+    let mut worst = 0.0f32;
+    let mut worst_at = (centre, 0usize);
+    let mut faults = Vec::new();
+    for at in std::iter::once(centre)
+        .chain(sun_disc_ring(centre))
+        .chain(std::iter::once(off))
+    {
+        for (name, channel) in [("red", 0), ("green", 1), ("blue", 2)] {
+            let measured = block_channel(&image, at, SUN_DISC_BAND, channel);
+            let predicted = predicted_drawn_channel(&sky, &camera, at, SUN_DISC_BAND, channel);
+            let miss = (measured - predicted).abs();
+            if miss > worst {
+                worst = miss;
+                worst_at = (at, channel);
+            }
+            if miss > SUN_DISC_LEVELS {
+                faults.push(format!(
+                    "band {at:?}, {name} measures {measured:.2} and the host predicts \
+                     {predicted:.2}, a miss of {miss:.2} level(s) against a budget of \
+                     {SUN_DISC_LEVELS}"
+                ));
+            }
+        }
+    }
+    assert!(faults.is_empty(), "{}", faults.join("\n"));
+
+    let red = 0;
+    let middle = block_channel(&image, centre, SUN_DISC_BAND, red);
+    let shoulder = sun_disc_ring(centre)
+        .into_iter()
+        .map(|at| block_channel(&image, at, SUN_DISC_BAND, red))
+        .fold(f32::NEG_INFINITY, f32::max);
+    let darkening = middle - shoulder;
+    assert!(
+        darkening > SUN_DISC_LIMB_APART,
+        "the disc's centre measures {middle:.2} on red and its brightest shoulder band \
+         {shoulder:.2}, {darkening:.2} level(s) apart against a floor of \
+         {SUN_DISC_LIMB_APART} — a disc drawn as a flat circle answers both bands with one \
+         number, and Hillaire's limb darkening is what this fixture is reading"
+    );
+
+    let beside = block_channel(&image, off, SUN_DISC_BAND, red);
+    let over = middle - beside;
+    assert!(
+        over > SUN_DISC_SKY_APART,
+        "the disc measures {middle:.2} on red and the sky {SUN_DISC_OFF} pixels off it \
+         {beside:.2}, {over:.2} level(s) apart against a floor of {SUN_DISC_SKY_APART} — a \
+         pass that draws no disc leaves the sun's own pixels reading the aureole, which is \
+         what these two numbers being close means"
+    );
+
+    let [middle_red, middle_green, middle_blue] =
+        [0, 1, 2].map(|channel| block_channel(&image, centre, SUN_DISC_BAND, channel));
+    assert!(
+        middle_red > middle_green && middle_green > middle_blue,
+        "the disc's centre measures {middle_red:.2}/{middle_green:.2}/{middle_blue:.2}, which \
+         is not a white sun reddened by the air it is seen through"
+    );
+
+    eprintln!(
+        "crcbl render e2e: sun disc — the shader and the host agree to {worst:.2} level(s) at \
+         worst, at band {:?} channel {}, over 6 bands × 3 channels; the centre reads \
+         {middle_red:.2}/{middle_green:.2}/{middle_blue:.2}, its shoulder {shoulder:.2} on red \
+         and the sky beside it {beside:.2}",
+        worst_at.0, worst_at.1,
     );
 }
 
