@@ -6828,7 +6828,10 @@ impl ForwardRenderer {
             0,
             &tonemap::TonemapParams {
                 exposure: self.exposure,
-                curve: self.tonemap_curve,
+                // **Resolved rather than requested**, on `resolved_effects`'
+                // terms: a readout view runs the clamp whatever the caller set,
+                // because its pixels are data — see `resolved_tonemap_curve`.
+                curve: self.resolved_tonemap_curve(),
                 // **The switch, and it is this frame's effects rather than the
                 // caller's request**: a device that refused the effect draws the
                 // frame with the number a caller set, and reading a buffer no
@@ -12292,6 +12295,28 @@ impl ForwardRenderer {
         }
     }
 
+    /// Which tonemap operator the next frame runs:
+    /// [`tonemap_curve`](Self::tonemap_curve)'s answer for a shaded frame, and
+    /// the clamp for a readout.
+    ///
+    /// **[`resolved_effects`](Self::resolved_effects)' argument, applied to the
+    /// operator instead of to the resolve.** A debug view's pixels *are* data —
+    /// an encoded normal, an occlusion channel, a cascade's colour code — and a
+    /// curve is a monotone remapping of every one of them. `apps/alcove`'s
+    /// `--bent-view` reads a normal back and compares it against the geometry's
+    /// own, which under ACES is 49 code values out; the clamp is the identity on
+    /// `0..=1`, so it is the operator that leaves a readout readable. A caller
+    /// that wants a curved readout has none, deliberately: there is no reading
+    /// it would make easier.
+    #[must_use]
+    pub const fn resolved_tonemap_curve(&self) -> tonemap::TonemapCurve {
+        if matches!(self.debug_view(), DebugView::Shaded) {
+            self.tonemap_curve
+        } else {
+            tonemap::TonemapCurve::Clamp
+        }
+    }
+
     /// Which effects this **device** permits, which is the fourth layer and
     /// clamps last.
     ///
@@ -13660,6 +13685,30 @@ mod tests {
                 "and it must differ from the block a default renderer writes",
             );
         }
+
+        // **A readout runs the clamp whatever was selected**, and the selection
+        // survives it: the caller's curve is still the caller's, the frame's is
+        // the identity, and the shaded frame after gets the curve back.
+        renderer.set_normals_view(true);
+        assert_eq!(renderer.tonemap_curve(), TonemapCurve::Aces);
+        assert_eq!(renderer.resolved_tonemap_curve(), TonemapCurve::Clamp);
+        renderer
+            .begin_frame(device.as_ref(), &camera, &light, (64, 48))
+            .expect("write");
+        assert_eq!(
+            recorder
+                .buffer_bytes(renderer.tonemap_uniforms[renderer.frame])
+                .expect("begin_frame wrote the block"),
+            crcbl_shaders::tonemap::TonemapParams {
+                exposure: crcbl_shaders::tonemap::DEFAULT_EXPOSURE,
+                curve: TonemapCurve::Clamp,
+                auto_exposure: false,
+            }
+            .to_bytes(),
+            "a debug view's block must carry the clamp, since its pixels are data",
+        );
+        renderer.set_normals_view(false);
+        assert_eq!(renderer.resolved_tonemap_curve(), TonemapCurve::Aces);
 
         renderer.destroy(device.as_ref());
     }

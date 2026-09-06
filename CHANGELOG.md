@@ -2993,7 +2993,11 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
   and ODT, two changes of primaries around a rational polynomial.
   `ForwardRenderer::set_tonemap_curve` and `ForwardRenderer::tonemap_curve` are
   how a view asks for it and reads back what it got, and
-  `crcbl_shaders::tonemap::TonemapCurve` is the selector both sides share.
+  `crcbl_shaders::tonemap::TonemapCurve` is the selector both sides share. A
+  debug view runs the clamp whatever was selected —
+  `ForwardRenderer::resolved_tonemap_curve` is the operator the frame block
+  carries, on `resolved_effects`' terms — because a readout's pixels are data
+  and a curve is a remapping of every one of them.
 
   **Nothing in the tree looks different yet**, deliberately. Exposure-and-clamp
   stays the default because it is the identity on `0..=1`, so every 2D sample —
