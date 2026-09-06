@@ -72,13 +72,15 @@ that crosses the wire from it is the yaw the player was looking along.
 
 **Two things differ from the Scope above, and both are decisions rather than
 gaps.** The map is authored in `apps/puppet/src/map.rs` rather than as a `.scn/`
-dir, because there is no `.scn/` anywhere in this tree and no `apps/editor`. And
-the character is a **greybox humanoid authored in code** —
-`apps/puppet/src/rig.rs` authors the whole skeleton and its boxes with an idle
-stance and a walk cycle, no asset on disk and no glTF parse — rather than the
-stock rig this doc names. That keeps the exit criterion "character + clips
-imported from a stock glTF with zero manual fixup" **entirely unmet**: it is the
-asset-pipeline honesty check, and a rig the sample authored cannot answer it.
+dir, because there is no `.scn/` anywhere in this tree and no `apps/editor`. The
+first of those two is `ROADMAP.md`'s **P11C**, which lands the scene directory
+without the editor, so the map's blocker is that row alone. And the character is
+a **greybox humanoid authored in code** — `apps/puppet/src/rig.rs` authors the
+whole skeleton and its boxes with an idle stance and a walk cycle, no asset on
+disk and no glTF parse — rather than the stock rig this doc names. That keeps
+the exit criterion "character + clips imported from a stock glTF with zero
+manual fixup" **entirely unmet**: it is the asset-pipeline honesty check, and a
+rig the sample authored cannot answer it.
 
 **One engine limit is visible in the picture rather than merely absent from the
 feature list**: the slopes are **rounded**, because `crcbl-phys` has no oriented

@@ -10,13 +10,17 @@ function and acceptance test.
 
 - **Source**: glTF skins (joint hierarchy, inverse bind matrices) + animation
   channels (TRS curves, sampled). Import extends the stage 6 pipeline — no new
-  source format. **The arrow that is still missing is the one out of the
-  importer**: nothing converts a `GltfSkin` + `GltfClip` into `crcbl-anim`'s
-  `Skeleton` and `Clip`, so the only rig any sample plays is
-  `apps/puppet/src/rig.rs`, authored in code with no asset on disk. That
-  conversion is index bookkeeping belonging to whoever holds both crates, and
-  `crcbl-anim` deliberately depends on neither `crcbl-scene` nor `gltf` so a
-  browser build that only plays cooked clips never links a parser.
+  source format. **The arrow out of the importer exists, in an application
+  rather than in a crate**: `apps/viewer/src/anim.rs` converts a `GltfSkin` +
+  `GltfClip` into `crcbl-anim`'s `Skeleton` and `Clip` — `skeleton_of` walks
+  `skin.joints()` in order so a palette index stays the one `JOINTS_0` means,
+  and `joint_of` maps a channel's node index through the skin's joint list — and
+  viewer plays what it produces. `apps/puppet/src/rig.rs` is still the only rig
+  authored in code with no asset on disk. That conversion is index bookkeeping
+  belonging to whoever holds both crates, and `crcbl-anim` deliberately depends
+  on neither `crcbl-scene` nor `gltf` so a browser build that only plays cooked
+  clips never links a parser; viewer is the first thing in the tree that holds
+  both.
 - **Cooked**: per-clip compressed curve tracks (fixed-rate resample +
   quantization; curve-fitting later if size demands), skeleton = flat joint
   array (parent indices, bind pose). `crcbl import` grows `--skeletons/--clips`;
@@ -79,9 +83,10 @@ What this stage still owes:
 ## Testing (topic 12)
 
 - Golden poses: sample clip at fixed times → joint palette hash vs blessed
-  values (per glTF sample-model suite: Fox, CesiumMan, RiggedFigure). Unbuilt,
-  and blocked on the cook: nothing in the tree turns a `.glb` rig into a
-  `Skeleton`.
+  values (per glTF sample-model suite: Fox, CesiumMan, RiggedFigure). Unbuilt —
+  but no longer blocked on the cook: `apps/viewer/src/anim.rs` turns a `.glb`
+  rig into a `Skeleton` and a `Clip` at load. What is missing is the test, not a
+  way to reach one.
 - Blend math unit tests vs hand-computed two-joint cases.
 - State machine property test: scripted param sequences → deterministic
   state/time hash (server side — rides the determinism harness).
@@ -128,6 +133,9 @@ the sample proves the evaluation stack without proving the pipeline.
   **skinned-output pool region is double-buffered (prev/current ping-pong) from
   day one** — a pool-layout decision that is nearly free now and a
   skinning-pipeline rewrite later. **Followed**: `SkinnedRegion` reserves two
-  runs and `Skinning::begin_frame` alternates. Nothing reads the other half —
-  there is no TAA pass — so the prev region is memory bought now and spent
-  later, deliberately.
+  runs and `Skinning::begin_frame` alternates, and the other half is read every
+  frame — `shaders/mesh.slang`'s `INSTANCE_BASE_VERTEX_OVERRIDE` arm loads
+  `previous_position` from `instance.previous_base_vertex`, so a deformed
+  instance's motion is its own rather than its body's, and that feeds
+  `DebugView::Motion`. There is still no TAA pass, which is what the region was
+  reserved for; the consumer it has today is the motion target.

@@ -94,15 +94,12 @@ on the hot path.
   CLI/env overrides. First-write wins upward; `settings.toml` stores only
   user-changed values (diff vs defaults — small files, upgrade-friendly). **All
   four layer kinds exist and only one is ever populated** (corrected 2026-08-27;
-  this bullet said two existed). `SettingsLayer` in
-  `crates/crcbl-store/src/settings.rs` has `EngineDefaults`, `GameDefaults`,
-  `UserFile` and `CliOverrides` variants, `SettingsStack::add` appends any of
-  them so a later layer wins, and a write always lands in the user file. What is
-  missing is producers, not mechanism: `GameDefaults` and `CliOverrides` are
-  constructed nowhere in the workspace but that module's own tests, and
-  `SettingsStack::platform` returns a stack holding the player's file and
-  nothing under it — which is what the `crcbl settings` CLI's one-layer stack is
-  honest about.
+  this bullet said two existed). What the variants are and how a stack resolves
+  them is `crates/crcbl-store/src/settings.rs`' own documentation; what this
+  plan owes is the gap: **producers, not mechanism.** `GameDefaults` and
+  `CliOverrides` are constructed nowhere in the workspace but that module's own
+  tests, and `SettingsStack::platform` returns a stack holding the player's file
+  and nothing under it.
 - Namespaced: `[engine.video]`, `[engine.audio]`, `[engine.input]`, `[game.*]`
   free for the game. Typed access API with serde structs + defaults; unknown
   keys warn, never crash. **Every key in the first two namespaces is now
@@ -112,14 +109,8 @@ on the hot path.
   resolution — apply-on-confirm pattern provided by the engine). **The hot-apply
   half is built; apply-on-confirm is not** (re-checked 2026-09-01, correcting a
   2026-08-27 reading that said neither was and that no settings screen existed).
-  `crcbl::settings::apply` is the one place a key is written and applied
-  together, driving a `Stage`, and its `Applied` answer is exactly this
-  distinction: `Live` when the running process has a seam that shows the key,
-  `NextStart` when it has none. `apps/options` is a settings screen and drives
-  it — its `QUALITY` row writes a whole tier through
-  `crcbl::settings::presets::select` and the rows below it move on the frame it
-  lands — and `crcbl settings preset` reaches the same writer from a terminal,
-  where nothing has a seam and the answer is always `NextStart`.
+  `crcbl::settings::apply` and its `Applied::Live` / `Applied::NextStart` answer
+  are that half, and the module documents itself.
 
   What is still owed is the **confirm-and-revert flow**: nothing in
   `crcbl::settings` mentions confirming or reverting, so a resolution change

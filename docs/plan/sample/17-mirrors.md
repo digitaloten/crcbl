@@ -15,10 +15,13 @@ compared.
 ## Proves
 
 - **Every reflection technique the engine ships draws the same scene**,
-  selectable live and comparable side by side: the fixed-stride screen-space
-  march that ships today, the Hi-Z march, roughness by cone tracing over a
-  colour mip chain, the planar reflection the render-to-texture camera gives,
-  and — where the device offers it — the ray-traced path.
+  selectable live and comparable side by side. The ladder holds four rungs — the
+  Hi-Z march that ships today, roughness by cone tracing over a colour mip
+  chain, the planar reflection the render-to-texture camera gives, and, where
+  the device offers it, the ray-traced path. (The fixed-stride march is not a
+  fifth: Hi-Z replaced it in 2026-08-27 rather than joining it, and nothing in
+  the tree can draw it.) **The two the first milestone compares are the Hi-Z
+  march and planar reflections** — see the status section below.
 - **The screen-space failure boundary is visible on purpose.** The scene puts a
   reflected object where a camera move takes it off screen, so the moment
   screen-space information runs out is a thing the demo shows rather than a
@@ -73,9 +76,17 @@ Nothing exists. The gate is not scaffolding — it is that the ladder has one ru
 built. `crates/crcbl-render/src/ssr.rs` and
 `crates/crcbl-shaders/shaders/ssr.slang` ship one march — Hi-Z since 2026-08-27,
 which replaced the fixed stride rather than joining it as a second selectable
-technique; cone tracing and planar reflection are still owed by
-[18-render-features.md](../18-render-features.md), and a comparison demo with
-one technique in it is `apps/lantern` with extra steps.
+technique — and a comparison demo with one technique in it is `apps/lantern`
+with extra steps.
+
+**The ladder is [47-reflections.md](../47-reflections.md)'s, not
+[18-render-features.md](../18-render-features.md)'s** (corrected 2026-09-06;
+`ROADMAP.md` said 18 and 18 is the index). **The second rung this sample waits
+on is planar reflections**, which is the industry answer for a mirror and for
+water — Unreal's planar reflection actor, HDRP's planar reflection probes — and
+therefore the rung that makes a comparison rather than a second screen-space
+march against the first. Cone tracing is a third rung and the ray-traced path a
+fourth, the latter joining with P7C.
 
 So this sample lands **after the second rung**, and its first milestone compares
 exactly two techniques. That is deliberate: a two-way comparison is where the
@@ -91,13 +102,12 @@ What is still this sample's own is the selector and the second rung.
 
 ## Milestones
 
-1. **Two rungs and the harness.** The shipped march against whichever rung lands
-   first, split-screen, per-technique timing, golden coverage for both.
+1. **Two rungs and the harness.** The Hi-Z march against planar reflection
+   through the render-to-texture camera — the rung that is not screen-space at
+   all, and therefore the one that shows what the screen-space rungs are
+   approximating — split-screen, per-technique timing, golden coverage for both.
 2. **The roughness row and the cone-traced rung.**
-3. **Planar reflection through the render-to-texture camera**, which is the rung
-   that is not screen-space at all and therefore the one that shows what the
-   screen-space rungs are approximating.
-4. **The ray-traced rung**, gated on P7C, and the device clamp that removes it.
+3. **The ray-traced rung**, gated on P7C, and the device clamp that removes it.
 
 ## Exit criteria
 

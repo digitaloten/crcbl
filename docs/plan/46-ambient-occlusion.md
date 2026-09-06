@@ -280,17 +280,20 @@ Refused, with the reasons:
   eighth of its occlusion, which is the budget this section already declined to
   spend a colour target on.
 
-### The horizon integral: its arc cosine, its trap, and what it deleted
+### The horizon integral: the trap it hides, and why there are two bodies
 
-**The arc cosine is this crate's, not the target's.** Every angle in the
-integral comes through one, no target specifies its accuracy, and two
-rasterisers disagreeing about `acos` is precisely the driver divergence the
-section above argued GTAO would _avoid_. `crcbl_shaders::ssao::acos_approx` is
-Abramowitz and Stegun 4.4.45 — a degree-three minimax fit and a square root,
-both exactly specified — swept against `f64::acos` to `MAX_ACOS_ERROR`, and
-`ssao.slang` carries the same four coefficients under a test that compares them
-as values. The bound is asserted from _below_ as well: a ceiling nothing
-approaches would pass on the intrinsic the polynomial exists to refuse.
+Two things bind anyone who touches the integral. Neither is a description of the
+shipped pass — `crcbl_shaders::ssao` and `shaders/ssao.slang` are that.
+
+**Every angle comes through an arc cosine, and it must not be the target's.** No
+shading language specifies `acos`'s accuracy, and two rasterisers disagreeing
+about it is precisely the driver divergence the section above argued GTAO would
+_avoid_. `crcbl_shaders::ssao::acos_approx` is Abramowitz and Stegun 4.4.45 — a
+degree-three minimax fit and a square root, both exactly specified — swept
+against `f64::acos` to `MAX_ACOS_ERROR`, with the bound asserted from below as
+well, because a ceiling nothing approaches would pass on the intrinsic the
+polynomial exists to refuse. Reaching for the intrinsic is the mistake this
+refuses.
 
 **The trap, written down because it draws a picture rather than an error.** The
 tilt of the surface inside a slice is signed by which side of the view direction
@@ -303,30 +306,20 @@ flat floor stops being unoccluded and picks up a smooth wash growing towards the
 frame's edges — a vignette, which is a thing renderers have, and would have been
 blessed. What caught it was `probes`' flatness assertion, which measures two
 blocks of one flat floor a fifth of the frame apart and allows half a channel
-level between them; the wash was three. The guard is now
+level between them; the wash was three. The guard is
 `the_slice_tilt_is_signed_against_the_view_orthogonal_tangent`.
 
-Two things the horizon integral made unnecessary, both deleted rather than left
-as machinery:
-
-- **The depth bias.** `SsaoParams::bias` and `forward.rs`'s `SSAO_BIAS` existed
-  because half of a flat surface's own samples land marginally in front of it
-  once depth is quantised, which a threshold comparison turns into grey haze. A
-  horizon integral has no threshold: a sample in the surface's own plane lands
-  exactly on the tangent, where the integral is stationary. Swept from zero to
-  0.4 radians of angular bias against the same frames and it moved nothing that
-  the sign fix above did not move further, so the uniform is gone and `params.y`
-  is padding.
-- **A self-occlusion fudge at all.** There is none in the shipped code, which is
-  why `probes`' floor now matches its AO-off render byte for byte.
-
-**The eight-tap body is back beside it since 2026-09-04**, on the
-FXAA-under-CMAA2 pattern the decision above asked for — see that section. What
-it kept of this list is the bias: a threshold comparison needs one and a horizon
-integral does not, so `ssao_hemisphere.slang` declares `DEPTH_BIAS_RADII` and
-takes it as a share of the sampling radius rather than as the fixed 0.02
-view-space units `forward.rs`'s `SSAO_BIAS` held, because the radius is a
-console variable now. `params.y` stays the slice count and no uniform came back.
+**The depth bias is a property of the body, and that is why the two bodies are
+two shaders.** A horizon integral has no threshold — a sample in the surface's
+own plane lands exactly on the tangent, where the integral is stationary — so
+`SsaoParams::bias` and `forward.rs`'s `SSAO_BIAS` were deleted with it rather
+than left as machinery, and `params.y` carries the slice count. The eight-tap
+body beside it is a threshold comparison and needs one: `ssao_hemisphere.slang`
+declares `DEPTH_BIAS_RADII` and takes its bias as a **share of the sampling
+radius**, not the fixed 0.02 view-space units the old uniform held, because the
+radius is a console variable now. One shader cannot hold both — the bias is not
+a parameter the two disagree about, it is a term one has and the other must not
+— which is the reason the cheap tier is a second body rather than a branch.
 
 **DECIDED 2026-08-30 — which tiers get which.** The user's call, on the question
 of where the widened target is worth its bandwidth:
@@ -433,10 +426,13 @@ scene-independent here — `MIN_RADIUS_PIXELS` lets a distant or flat pixel leav
 the march early — so a denser room is the remaining candidate, and it has not
 been isolated.
 
-**It is not a comparison.** The eight-tap hemisphere is deleted, so what GTAO
-costs _against what it replaced_ is not measurable from this tree — recovering
-it is the `git show` the tier note above describes, and a quality seam that
-offered the cheaper rung would need exactly that number to be honest about it.
+**It is not a comparison, and it no longer has to be a `git show`.** The
+eight-tap hemisphere was rebuilt on 2026-09-04 — `shaders/ssao_hemisphere.slang`
+is that body, and `crcbl_render::ssao`'s `r_ssao_technique` selects which body
+each side of the comparison seam runs — so what GTAO costs against what it
+replaced is a console variable rather than a reconstruction. The figure has
+still not been taken with the two bodies side by side, which is what a quality
+seam offering the cheaper rung would need to be honest about it.
 
 ### Half resolution, and the reconstruction that carries it (built 2026-09-02)
 
@@ -450,22 +446,20 @@ full-resolution pixel beside a silhouette has half-resolution neighbours on the
 _other_ surface, and weighting those by distance alone averages the background's
 occlusion into the foreground's rim.
 
-Its tap loop reads the block's own sample and the next one along each axis — one
-tap where the two grids coincide, two where they do not — and weights each by
-distance and by how near its surface is, on the depth tolerance
-`ssao_blur.slang` shares. A tap on the far plane takes no share at all. The
-nearest tap keeps a floor it cannot lose, so a pixel whose every tap is rejected
-— a surface thinner than the occlusion grid — still has a divisor rather than
-dividing zero by zero.
+The one property of its tap loop that is a constraint rather than an
+implementation detail: **the nearest tap keeps a floor it cannot lose**, so a
+pixel whose every tap is rejected — a surface thinner than the occlusion grid —
+still has a divisor rather than dividing zero by zero. The loop itself is
+`ssao_upsample.slang`'s own documentation.
 
 **What it cost is quality on the tangential axis**, not correctness: the blur's
 footprint now spans twice as much of the frame, so each tile phase pairs with a
 wider spread of distances from an edge, and the pair that shipped until
 2026-09-03 became markedly less smooth there — 1 sharp edge on the tangential
 line became 37. That is what moving both defaults to the rung on that date
-bought back. `docs/backlog.md`'s "What the AO default change of 2026-09-03 did
-not cover" carries the sweep the test's thresholds come off, and is where those
-numbers belong, since they move whenever the pass does.
+bought back. `docs/notes/rendering.md`'s "What the AO default change of
+2026-09-03 did not cover" carries the sweep the test's thresholds come off, and
+is where those numbers belong, since they move whenever the pass does.
 
 `crates/crcbl/tests/forward_e2e/occlusion.rs` is the harness: the silhouette is
 measured on both axes, the reconstruction is held to the nearest gathered sample
@@ -560,9 +554,9 @@ scale.
 **What that measurement does _not_ price is the widening**, and it cannot: the
 target is `Rgba8Unorm` on both sides of the switch, so what the switch turns off
 is the arithmetic and not the bandwidth. Recovering the `R8Unorm` figure would
-mean compiling a chain that writes one channel — the same exercise the tier note
-above describes for the eight-tap body, against a tree that no longer has one.
-`docs/backlog.md` carries it.
+mean compiling a chain that writes one channel, which nothing in the tree does —
+and unlike the eight-tap body, which came back on 2026-09-04, there is no
+variable that selects it. `docs/backlog.md` carries it.
 
 **Two goldens moved and both were reviewed before blessing.** `crcbl`'s `probes`
 scene, whose diff is the ceiling and floor bands — the surfaces a room occludes

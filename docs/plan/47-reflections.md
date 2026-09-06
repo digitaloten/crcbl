@@ -409,5 +409,15 @@ that collects both, and it is one slice because they share the march.
   for the render-to-texture mirror this document already names. Nothing above
   weakens that paragraph: a planar pass is per-plane, is a second geometry pass
   per mirror, and is useless on anything curved.
+
+  **They are nevertheless the reflection ladder's second rung, and the mirrors
+  gate is this document's** (2026-09-06; `ROADMAP.md` pointed at
+  [18-render-features.md](18-render-features.md), which is the index).
+  [sample/17-mirrors.md](sample/17-mirrors.md) compares **the Hi-Z march against
+  planar reflections**, which is a comparison rather than two screen-space
+  marches, and it is what the industry ships for a mirror and for water —
+  Unreal's planar reflection actor, HDRP's planar reflection probes. Cone
+  tracing is the third rung and the ray-traced path the fourth, joining at P7C.
+
 - **Ray-traced reflections stay at P7C**, unchanged. This slice improves the
   raster twin; it does not move the row the twin exists beside.

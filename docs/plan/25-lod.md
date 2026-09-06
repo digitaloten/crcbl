@@ -85,30 +85,30 @@ worst error of any cluster that went into it — monotone up the DAG by
 construction, which is what makes a cut well-defined. Detail still varies across
 a level, because different _groups_ differ; it does not vary within one.
 
-### How a DAG reaches the renderer (decided 2026-08-12)
+### The boundary a DAG has to cross to reach the renderer
 
 `crcbl-render` cannot see `crcbl-scene` — that would pull `gltf` into the
 renderer, and it is a deliberate boundary — and `crcbl-shaders` has no
-dependencies at all by design. So a DAG built by `build_cluster_dag` has no path
-to `ClusterPool`, and the renderer's clusters are hand-written cooked constants
-(`cube_clusters`, `pyramid_clusters`, `open_box_clusters`).
+dependencies at all by design. Every asset path from the builder to
+`ClusterPool` has to satisfy both, now and later.
 
-**The seam is a cooked artifact, mirroring the shader arrangement.** A tool
-generates the DAG from the builder and writes it into `crcbl-shaders`; the
-artifact is committed; a `--check` mode regenerates and compares, and CI runs it
-the way it already runs "shaders (committed artifacts match their sources)". The
-DAG's vertex tables index the position stream — stream 0 of the split vertex
-layout [43-render-standards.md](43-render-standards.md) §2 decided on 2026-08-30
-— so a cluster's cut is the same on the prepass and the forward pass. That keeps
-`crcbl-shaders` dependency-free, makes the existing hand-written constants a
-generated case of the same thing, and is a bake output in the sense topic 6
-means — when the real asset pipeline arrives it replaces the generator, not the
-consumer.
+**The one that does is a cooked artifact, mirroring the shader arrangement**: a
+tool generates the DAG from the builder and writes it into `crcbl-shaders`, the
+artifact is committed, and a `--check` mode regenerates and compares. Built:
+`crates/crcbl-shaders/tools/cook-clusters.rs` is the generator,
+`crates/crcbl-shaders/clusters/dunes.dag` the committed artifact,
+`crcbl_shaders::cluster_dag::dunes_dag` the decoder, and
+`crates/crcbl-render/src/scene.rs` the consumer. It is a bake output in the
+sense topic 6 means, which is the part that binds later work: **when the real
+asset pipeline arrives it replaces the generator, not the consumer.** The
+hand-written constants (`cube_clusters`, `pyramid_clusters`,
+`open_box_clusters`) are still in the tree as test fixtures, and are no longer
+what the renderer's clusters are.
 
-Rejected as a **delivery mechanism**: generating the data from a dev-dependency
-at test time, which gives tests data and leaves the shipping path with none; and
-a conversion in a crate that can see both, which the renderer still cannot
-reach.
+Rejected as a **delivery mechanism**, and rejected for any future one:
+generating the data from a dev-dependency at test time, which gives tests data
+and leaves the shipping path with none; and a conversion in a crate that can see
+both, which the renderer still cannot reach.
 
 A dev-dependency is nevertheless how the generator _runs_, and that is not the
 rejected thing — the shipping path reads the committed artifact either way.

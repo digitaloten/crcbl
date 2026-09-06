@@ -2519,8 +2519,11 @@ KTX2 with Basis Universal UASTC, transcoded at load to BC7, ASTC or ETC2 per
 `Capability`, which is Khronos' own pipeline (`KHR_texture_basisu`) and what
 three.js, Babylon and Bevy ship for the web tier. The encoder is a pinned
 `basisu` CLI run by the bake tool, the way `compile-shaders.sh` pins slangc, and
-the loader is the `basis-universal` crate's transcoder feature plus `ktx2`.
-Those are new dependencies and land with this slice, not ahead of it.
+the loader is the `basis-universal` crate's transcoder feature plus `ktx2`. Plan
+43 §2 carries the specification. **Not yet chosen: the pinned `basisu` version**
+— 43 §2 fixes the pinning mechanism, and the version is picked when the rung is
+built, the way `SLANG_VERSION` was. Those are new dependencies and land with
+this slice, not ahead of it.
 
 ### The raster lighting stack: what its twelve calls left (2026-08-30)
 
@@ -2720,7 +2723,8 @@ arguing them; the rows below have a paragraph and no decision record.
 `Rgba8`, authored as a `.cube` file and cooked at load, identity when absent,
 carried as a `CameraStack` field: Unreal applies its LUT post-tonemap, Unity a
 log-encoded one and Godot 4 a 3D LUT colour correction, and `.cube` is the
-Adobe/Resolve interchange every authoring tool writes. It schedules the
+Adobe/Resolve interchange every authoring tool writes. Specified 2026-09-06 in
+`docs/plan/48-post-processing.md`'s colour-grading section; what is owed is the
 `CameraStack` field, the cook and the pass. Order-independent transparency is
 answered too — refused now, per-object sorted alpha blending instead; see "No
 transparent pass, and therefore no depth sort" below.
@@ -3175,38 +3179,16 @@ the only alpha blending in the renderer composites rather than shades —
 `crcbl_render::debug_draw` and `crcbl_render::bloom`'s upsample — and none of
 them sorts.
 
-**DECIDED 2026-09-06 —** five answers. OIT is refused now: per-object
-back-to-front sorted alpha blending is the default in Unreal, Unity HDRP and
-URP, Godot 4 and Frostbite, and weighted-blended OIT (McGuire & Bavoil 2013) is
-an opt-in approximation in all of them, so it stays an unscheduled opt-in effect
-while the sort is built. Global order is one indirect call per blended slot: the
-CPU records `Capacities::blended` draw slots at a fixed stride, the GPU radix
-sort writes each slot's arguments in depth order and zeroes the instance count
-of the unused ones, which runs on every `EmitTail` including WebGPU's, where
-there is no indirect count, and `EmitTail::Count` may additionally bound the
-loop — the shape WebGPU-targeting GPU-driven renderers use (Bevy's sorted
-transparent phase, wgpu's indirect batching), where zero-count draws are free.
-Blended surfaces cast no shadows and are excluded from `depth_partitions`, as
-translucent shadows are off by default in Unreal and transparent shadow casting
-is off by default in Unity. The pass runs after `ssr` and after
-`volumetric-composite`, with a blended fragment applying the froxel fog itself
-by sampling the integrated volume at its depth — Frostbite's and Unreal's
-"translucency samples the volumetric fog texture" — because blended surfaces are
-neither SSR sources nor receivers. And `BLEND` is exclusive with `MASK`,
-following glTF's single `alphaMode`, for six modes in total. It schedules the
-rung at the size this entry gives it, in plan 43 §3's delivery table.
-
-**Sized.** Small in `crcbl-hal`, `gltf_import` (the `AlphaMode::Blend` arm and
-`warn_dropped_features` change together, as the `BLEND` importer entry near the
-top of this file says), `args.rs` and `render-harness`; medium in
-`screenshot.rs` and `render_e2e.rs` (a fixture in `Scene::AlphaMask`'s shape,
-with a control band the quad never covers so "the blend happened" is two claims,
-not one); large in `forward.rs` (a fourth `SidedPipelines`, `RENDER_PASSES` and
-its doc list, `blended_partitions`) and in the sort shader, which has nothing in
-the tree to reuse.
-
-**Blocks.** Glass, water, foliage alpha, and `20-particles.md`'s alpha-blended
-particle buckets. Additive effects do not need it.
+**DECIDED 2026-09-06 —** five answers, specified in
+`docs/plan/53-transparency.md`: order-independent transparency is refused for
+now and per-object sorted alpha blending is built; the global order is one
+indirect call per blended slot, written by a GPU radix sort over 64-bit
+`(depth, instance)` keys with unused slots zeroed, so it runs on every
+`EmitTail`; blended surfaces cast no shadows; the pass runs after `ssr` and
+`volumetric-composite` with the fragment applying the froxel fog itself; and
+`BLEND` is exclusive with `MASK`, six modes. The rung's size, its crate-by-crate
+change list, its fixture and what it unblocks are in that plan. What is owed is
+the rung.
 
 ### Occlusion culling: depth pyramid / two-phase (2026-08-27)
 

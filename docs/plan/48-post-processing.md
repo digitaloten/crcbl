@@ -12,7 +12,8 @@ Pipeline order (all at internal render resolution, before the topic 15
 render-scale upscale; UI composites after, at native resolution):
 
 ```
-scene (HDR RGBA16F) → bloom (down/upsample chain) → exposure + tonemap → FXAA → [upscale] → UI
+scene (HDR RGBA16F) → bloom (down/upsample chain) → exposure + tonemap + grade
+  → antialiasing resolve (FXAA | CMAA2) → [upscale] → UI
 ```
 
 **`[upscale]` was built on 2026-08-27**, and the order above stopped being a
@@ -153,6 +154,70 @@ request.
   `set_exposure_adaptation`, `set_tonemap_curve`) whose types have no serialized
   form yet — `docs/backlog.md` lists which. The settings UI (topic 14 P10)
   exposing quality toggles is the `[engine.video]` layer's, and it is wired.
+
+### Colour grading: a post-tonemap 3D LUT, decided 2026-09-06
+
+[43-render-standards.md](43-render-standards.md) §6 marks colour grading, depth
+of field and lens artefacts **missing**, and grading is the one of the three
+that the pass order is a contract for, so it is specified here and the other two
+follow it.
+
+**The form is a post-tonemap 3D lookup table**, which is what Unreal, Unity and
+Godot 4 all ship. It is applied to the display-referred colour the tonemap
+produced, so a grade is a function of what the viewer sees rather than of the
+scene's radiance, and an artist's grade survives a change of tonemap operator
+rather than being invalidated by one.
+
+- **32³ texels in `Rgba8Unorm`**, an `ImageType::D3` image sampled trilinearly.
+  32 is the size every tool writes and every engine reads, and it is small
+  enough — 128 KB — that it costs nothing to keep resident per camera. Not an
+  sRGB view: the texels _are_ the graded output and decoding them once more
+  would apply the transfer function twice.
+
+  It is the **engine's first 3D image**. `ImageType::D3` and `ImageViewType::D3`
+  are already on the seam and answered by every backend; what has no 3D form is
+  `crcbl_render::transient`'s pool, whose `TransientImageDesc` has no depth
+  field ([51-volumetrics.md](51-volumetrics.md) records that). A LUT is uploaded
+  once and never transient, so it is created directly and does not wait on that.
+
+- **Authored as `.cube`, cooked at load.** Adobe's `.cube` is what Resolve,
+  Photoshop, Lightroom and every grading tool export, so an artist's file drops
+  in with no conversion — the same argument
+  [06-assets-scenes.md](06-assets-scenes.md) makes for glTF. The text form is
+  parsed into the image at load rather than committed as a cooked artifact,
+  because the parse is a float triple per line and 32,768 lines is not a build
+  step worth having.
+
+- **Identity when absent, exactly — by skipping the lookup, not by neutralising
+  it.** A camera with no grade sets a flag in the tonemap's block and the sample
+  is not taken. Neither alternative is actually the identity: a 1³ table returns
+  its one texel for every input, and a 32³ ramp still costs a trilinear fetch
+  and re-quantises the result to eight bits, so a frame that asked for no grade
+  would not be the frame drawn before grading existed. That is the same
+  additive-zero discipline the upscale and the adaptation blend already keep,
+  and it is what says no golden in this tree moves when the field lands.
+
+- **It is a `CameraStack` field**, not a `RenderEffects` bit: a grade is a
+  parameter with a value, and the stack rung above records exactly that gap —
+  every pass type but the antialiasing slot is field-less because no per-pass
+  parameter has a serialized form. Grading is the first pass to need one, so it
+  is where that shape gets decided: a path to a `.cube`, resolved against the
+  stack file's own directory.
+
+- **Where it sits: after the tonemap, before the antialiasing resolve.** After
+  the tonemap because that is what "post-tonemap LUT" means; before the resolve
+  because the resolve's whole job is to smooth the picture that will be
+  displayed, and grading afterwards would move colours across edges the resolve
+  had already reconciled. The pass-fusion decision below says why it rides
+  **inside** the tonemap pass rather than adding a fullscreen round trip: the
+  tonemap writes the resolve's luma into its own alpha channel, so the grade has
+  to be applied before that write or the resolve reads the luma of an ungraded
+  frame.
+
+**Depth of field and lens artefacts stay missing, and they follow this rung.**
+Both are display-referred effects with parameters, so each needs the same
+serialized-parameter shape the LUT field settles, and neither has a reason to be
+built before there is a curve and a grade to defocus and to flare.
 
 ### Pass fusion, taken 2026-08-30: two round trips the stack does not need
 

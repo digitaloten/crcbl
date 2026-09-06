@@ -89,11 +89,16 @@ this document has been tested against code.
 
 **What it is waiting on, and it is not one thing.**
 
-- **Milestone 2 waits on the editor, which does not exist.** There is no
-  `apps/editor` and there is no `.scn/` directory anywhere in this tree. The
-  workspace `Cargo.toml` records the absence as deliberate — the editor is a
-  later phase — and `docs/plan/08-editor.md` is its design. Every "editor-built"
-  and "authored in the editor" line in this doc inherits that.
+- **Milestone 2 waits on the editor, which does not exist — and on the scene
+  directory, which is now a row of its own.** There is no `apps/editor` and
+  there is no `.scn/` directory anywhere in this tree. The workspace
+  `Cargo.toml` records the editor's absence as deliberate — it is a later phase
+  — and `docs/plan/08-editor.md` is its design. The `.scn/` half was split out
+  on 2026-09-06: `ROADMAP.md`'s **P11C** lands the directory-of-RON-chunks
+  format ([06-assets-scenes.md](../06-assets-scenes.md)) ahead of P12 and
+  independent of it, so a wave that saves and reloads no longer waits on an
+  editor. Every "editor-built" and "authored in the editor" line in this doc
+  still inherits P12.
 - **Milestone 3 waits on a wire.** `crcbl-net` ships `InMemoryTransport` and
   nothing else: no UDP transport, no LAN host discovery, no lobby browser. So
   "co-op over real transport" and the 4-player LAN exit criterion have no

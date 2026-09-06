@@ -51,20 +51,21 @@ The Unreal material/material-instance split, minus the graph:
   parenting — child overrides a subset). This is what artists and designers
   author, and it **hot-reloads** through the stage 6 watcher.
 - Runtime: an instance resolves to one **material table row** (parameters
-  packed) plus its texture reference. Authoring changes; the GPU path does not.
+  packed) plus its texture references. Authoring changes; the GPU path does not.
 
   **That reference is not a bindless index, and the difference matters here.**
   `crates/crcbl-render/src/material_table.rs` says so directly:
-  `GpuMaterial::base_color_texture` is a **layer of the one `Texture2DArray`
-  `mesh.slang` binds** — an `ArrayPages` page — and deliberately not a
-  `BindingModel::Bindless` descriptor slot. A layer index needs nothing of a
-  device, whereas a descriptor array needs `DESCRIPTOR_INDEXING`, which
-  `crcbl-mtl` withdraws; so one column serves every backend and the table never
-  has to know which binding model the device it is bound on selected. An
-  authoring layer therefore resolves a texture reference to a **page**, and what
-  bounds it is the page's layer count — checked by
-  `ForwardRenderer::with_scene`, because the table itself stores an index and
-  cannot tell a valid layer from an out-of-range one.
+  `GpuMaterial::base_color_texture` is a **layer of a `Texture2DArray`
+  `mesh.slang` binds** — an `ArrayPages` page, one array per map, four of them
+  (`base_color_textures`, `normal_textures`, `mro_textures`,
+  `emissive_textures`) — and deliberately not a `BindingModel::Bindless`
+  descriptor slot. A layer index needs nothing of a device, whereas a descriptor
+  array needs `DESCRIPTOR_INDEXING`, which `crcbl-mtl` withdraws; so one column
+  serves every backend and the table never has to know which binding model the
+  device it is bound on selected. An authoring layer therefore resolves a
+  texture reference to a **page**, and what bounds it is the page's layer count
+  — checked by `ForwardRenderer::with_scene`, because the table itself stores an
+  index and cannot tell a valid layer from an out-of-range one.
 
 - `standard_pbr`'s first three parameters already exist in that row and are
   already shaded: `crcbl_shaders::mesh::GpuMaterial` carries `base_color`,

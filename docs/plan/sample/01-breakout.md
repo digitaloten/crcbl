@@ -80,7 +80,10 @@ would be the panel bending the game rather than reporting on it.
 Still owed from the milestones below: **milestone 3, the layout from a file.**
 The brick grid is still in code. There is no `.scn/` directory anywhere in this
 tree and no `apps/editor`, so both halves of that milestone are waiting on
-things outside this sample.
+things outside this sample — but **they are two rows now, not one**: the `.scn/`
+scene directory is `ROADMAP.md`'s **P11C** and lands without the editor, so the
+"layout from a scene file" half unblocks there and only "layout edited in the
+editor" waits on P12.
 
 ## Milestones
 

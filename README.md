@@ -26,9 +26,9 @@ or the browser.
 > sections before moving.
 
 **Pre-1.0 and moving.** Frames draw on every backend, several samples are
-playable, and fifteen of them ship as browser demos that double as the engine's
-continuous cross-backend regression test. The API breaks when a caller needs it
-to.
+playable, and seventeen of them ship as browser demos that double as the
+engine's continuous cross-backend regression test. The API breaks when a caller
+needs it to.
 
 What is real today:
 
@@ -44,31 +44,35 @@ What is real today:
   AppKit, Win32, the browser canvas, and a headless backend that CI runs
   everything through.
 - **A GPU-driven forward renderer.** Culling and draw generation on the GPU, a
-  shadow pass, depth prepass, ground-truth ambient occlusion with bent normals,
-  SSR, clustered lights — point, spot and rectangular area lights shaded by
-  linearly transformed cosines — an irradiance probe clipmap that re-centres on
-  the camera by whole probe steps, whose probes each carry a visibility map,
-  captured on the GPU and taken again for the probes a step exposes, so a probe
-  a fragment cannot see past a wall lends it no light, and reflective shadow
-  maps that refill those probes from the sun and from every shadowed point and
-  spot light, every frame, for a scene that asks for it; a physically based sky
-  whose planet-only scattering tables are cooked and committed and whose
-  sun-dependent view is marched on the host, so the background, the ambient term
-  and a missed reflection are one atmosphere — a mirror reads that view along
-  its reflected direction, out of the very buffer the background draws from, and
-  the device pays four buffer loads for it; volumetric fog, bloom,
-  auto-exposure, CMAA2 and FXAA, render-scale upscaling, GPU skinning,
-  alpha-masked cutout materials cut in the depth prepass and the shadows as well
-  as in the shading and routed per draw bucket, so an opaque mesh keeps its
-  vertex-only depth stage in a scene that has a cutout in it; double-sided
-  materials, drawn through a cull-none twin of every pass and lit through a
-  reversed normal on the back face; the whole glTF metallic-roughness texture
-  set, read out of the document and drawn — base colour, tangent-space normals,
-  the packed occlusion-roughness-metallic map and emissive, each its own array
-  page in its own format, with occlusion scaling the indirect terms alone;
-  specular antialiasing that widens the lobe by the screen-space variance of the
-  shading normal, tonemapping and a screen-space grid, with mesh shaders and
-  bindless where the device has them.
+  shadow pass, screen-space contact shadows that sharpen what a cascade texel is
+  too coarse to hold, depth prepass, ground-truth ambient occlusion with bent
+  normals, SSR, clustered lights — point, spot and rectangular area lights
+  shaded by linearly transformed cosines — an irradiance probe clipmap that
+  re-centres on the camera by whole probe steps, whose probes each carry a
+  visibility map, captured on the GPU and taken again for the probes a step
+  exposes, so a probe a fragment cannot see past a wall lends it no light, and
+  reflective shadow maps that refill those probes from the sun and from every
+  shadowed point and spot light, every frame, for a scene that asks for it; a
+  physically based sky whose planet-only scattering tables are cooked and
+  committed and whose sun-dependent view is marched on the host, so the
+  background, the ambient term and a missed reflection are one atmosphere — a
+  mirror reads that view along its reflected direction, out of the very buffer
+  the background draws from, and the device pays four buffer loads for it;
+  volumetric fog, bloom, auto-exposure, CMAA2 and FXAA, render-scale upscaling,
+  GPU skinning, alpha-masked cutout materials cut in the depth prepass and the
+  shadows as well as in the shading and routed per draw bucket, so an opaque
+  mesh keeps its vertex-only depth stage in a scene that has a cutout in it;
+  double-sided materials, drawn through a cull-none twin of every pass and lit
+  through a reversed normal on the back face; the whole glTF metallic-roughness
+  texture set, read out of the document and drawn — base colour, tangent-space
+  normals, the packed occlusion-roughness-metallic map and emissive, each its
+  own array page in its own format, with occlusion scaling the indirect terms
+  alone; specular antialiasing that widens the lobe by the screen-space variance
+  of the shading normal, tonemapping and a screen-space grid, with mesh shaders
+  and bindless where the device has them; and a split-screen comparison seam
+  that resolves one frame's data two ways either side of a vertical line — two
+  occlusion algorithms, or two shadow filters — each side carrying its own timer
+  row in the debug panel.
 - **glTF import** with meshlet building, a cluster DAG and QEM simplification.
 - **A server-authoritative game stack** — fixed-tick simulation, snapshots,
   interpolation, an ECS, physics, input mapping, audio, persistence and a job
@@ -110,30 +114,30 @@ cargo run -p viewer -- your.glb
 ./tools/fetch-shelf.sh                      # the rest of the Khronos CC0 shelf
 ```
 
-Every sample takes the same flags: `--backend vk|mtl|dx12|null`, `--headless`,
-`--frames N`, `--fullscreen`, `--pacing adaptive`, `--debug-overlay`. `F3` opens
-the debug panel, `F11` toggles fullscreen, `ESC` opens the menu, and `` ` ``
-opens the debug console — `help` lists every command and every setting the
-engine reads, `antialiasing cmaa2` sets one for the running frame,
-`debug_view ambient occlusion` draws a renderer's debug channel instead of the
-shaded picture (`shaded`, `heatmap`, `lod tint`, `normals`, `ambient occlusion`,
-`motion`, `bent normal`, `cascades`, `shadow atlas`), `toggle` and `reset` flip
-and restore one, `bind` lists what drives every action in a sample that has them
-and `bind fire KeyJ` moves one, and `log` prints the log filter and
-`log warn,crcbl_vk=trace` installs one for the running process — in a browser as
-well as a terminal — `master_volume 0.5` moves a bus on the mix that is already
-playing, `save` writes it to the settings file, and `config video` runs
-`video.cfg` out of that same settings directory, one console line per line. An
-**`autoexec.cfg`** in that directory needs no asking: the engine runs it once at
-start-up, before the first frame, which is the only way to set a variable in a
-run that is over before anybody could type — a `--frames N` capture, say. A
-machine without one boots in silence. `Ctrl`+`V` pastes into the input line
-wherever the platform has a clipboard to read. The same keys work in the browser
-demos: the shim leaves `` ` `` to the engine and passes every character typed at
-the console through. On a device with no keys there is a **CONSOLE** button
-beside the pause button once the canvas has been touched, and the panel it opens
-draws its own keyboard: three layers, every printable character the engine's
-font has, and a return key that sends the line.
+Every sample takes the same flags: `--backend vk|mtl|dx12|webgpu|null`,
+`--headless`, `--frames N`, `--fullscreen`, `--pacing adaptive`,
+`--debug-overlay`. `F3` opens the debug panel, `F11` toggles fullscreen, `ESC`
+opens the menu, and `` ` `` opens the debug console — `help` lists every command
+and every setting the engine reads, `antialiasing cmaa2` sets one for the
+running frame, `debug_view ambient occlusion` draws a renderer's debug channel
+instead of the shaded picture (`shaded`, `heatmap`, `lod tint`, `normals`,
+`ambient occlusion`, `motion`, `bent normal`, `cascades`, `shadow atlas`),
+`toggle` and `reset` flip and restore one, `bind` lists what drives every action
+in a sample that has them and `bind fire KeyJ` moves one, and `log` prints the
+log filter and `log warn,crcbl_vk=trace` installs one for the running process —
+in a browser as well as a terminal — `master_volume 0.5` moves a bus on the mix
+that is already playing, `save` writes it to the settings file, and
+`config video` runs `video.cfg` out of that same settings directory, one console
+line per line. An **`autoexec.cfg`** in that directory needs no asking: the
+engine runs it once at start-up, before the first frame, which is the only way
+to set a variable in a run that is over before anybody could type — a
+`--frames N` capture, say. A machine without one boots in silence. `Ctrl`+`V`
+pastes into the input line wherever the platform has a clipboard to read. The
+same keys work in the browser demos: the shim leaves `` ` `` to the engine and
+passes every character typed at the console through. On a device with no keys
+there is a **CONSOLE** button beside the pause button once the canvas has been
+touched, and the panel it opens draws its own keyboard: three layers, every
+printable character the engine's font has, and a return key that sends the line.
 
 `CRCBL_SHELL=x11` forces a windowing backend and `CRCBL_LOG=debug` prints every
 shell event.
@@ -270,7 +274,7 @@ crates/crcbl-ui         crates/crcbl-sprite   crates/crcbl-audio
 crates/crcbl-assets     crates/crcbl-store    crates/crcbl-jobs
 crates/crcbl-console    the debug console's registry: variables, commands, the line
 crates/crcbl-core       ids, handles, arenas, time, logging
-crates/crcbl-shaders    Slang sources, and the SPIR-V, WGSL, MSL and DXIL built from them
+crates/crcbl-shaders    Slang sources, the SPIR-V, WGSL, MSL and DXIL built from them, and the cooked cluster blobs
 crates/crcbl-wl-scanner the Wayland protocol code generator, run at build time
 crates/crcbl-vfx        particle simulation: pooled effects, a fixed modifier menu
 crates/crcbl-greybox    greybox prototyping primitives, sized in real-world metres
@@ -280,6 +284,8 @@ crates/crcbl-cli        the `crcbl` binary
 apps/                   the samples
 web/                    the demo site and its hand-written ES modules
 docs/plan/              the design docs and the canonical roadmap
+docs/backlog.md         what was raised and not finished: owed work, gaps, decisions
+docs/notes/             records kept so they are not re-derived, by topic
 ```
 
 ## License

@@ -142,9 +142,11 @@ instead, on a machine that was already struggling.
   composites the UI after it at native resolution.
 
 Both numbers can move independently and a menu must show them as two rows. The
-one thing they share is that **`render_scale` is now half-built**: the renderer
-resamples for real, and nothing on the settings or shell side can ask it to —
-see the correction below.
+one thing they share is that **`render_scale` reaches the renderer from the
+settings side only**: the renderer resamples for real and
+`crcbl::settings::render_scale` reads the key — the table above says so, and
+`apps/options` writes it — but no `Shell` request carries a render scale, so
+nothing on the **shell** side can ask for one. See the correction below.
 
 ### Refresh rate is read, never written
 

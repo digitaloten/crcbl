@@ -260,31 +260,30 @@ with a defined sim-side policy for the stepped interval (drop or fast-forward
 the skipped ticks, logged and surfaced in the netgraph). Absolutism replaced by
 a documented threshold.
 
-## Correction (priority, 2026-08-03)
+## The wasm threading rules (measured 2026-08-03, corrected 2026-08-23)
 
-**This topic is moved up: the wasm target is to reach thread-topology parity
-with native, rather than staying single-threaded as a post-MVP note.** What
-follows is what was measured before committing, because two of the three
-findings change the shape of the work rather than its schedule.
+**This topic is moved up: the wasm target reaches thread-topology parity with
+native, rather than staying single-threaded as a post-MVP note.** Building one
+is now a command anyone runs — `./web/build.sh --threads`, gated by
+`.github/workflows/ci.yml`'s `jobs-worker-e2e` — so what is kept here is not how
+that was brought up but the part no amount of work removes: two link-time rules
+that fail **silently** when they are missed, and three platform ceilings.
 
-### Finding 1 — a threaded wasm artifact builds today
-
-`RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals" cargo +nightly build --target wasm32-unknown-unknown -Z build-std=std,panic_abort`
-compiles clean on `nightly-2026-07-02`, with one warning:
-`unstable feature specified for -Ctarget-feature: atomics`.
-
-**Cost: it is nightly, and `rust-toolchain.toml` pins an exact stable on
-purpose** — its own comment calls a floating channel a broken promise, because
+**It needs a second, pinned nightly for that target only**, in the shape the
+`decoder-fuzz` job already uses. The build wants
+`-C target-feature=+atomics,+bulk-memory,+mutable-globals` and
+`-Z build-std=std,panic_abort`, and `rust-toolchain.toml` pins an exact stable
+on purpose — its own comment calls a floating channel a broken promise, because
 every clippy job runs `-D warnings` and a new release turns CI red on an
-untouched repository. A threaded wasm build therefore needs a _second_, pinned
-nightly for that target only, in the shape the `decoder-fuzz` job already uses.
+untouched repository.
 
-**Correction (2026-08-23): that command's artifact is not usable by a worker, so
-this finding read stronger than it was.** Built exactly as above,
-`crcbl_horde.wasm` has **zero imports** and **exports** its memory. A worker can
-only attach to a memory the host constructs and the module imports, so nothing
-about that artifact is threaded beyond the atomic instructions being legal. The
-link arguments are the missing half:
+### The link arguments, and the two rules that fail silently
+
+Atomics alone are not a threaded artifact. A module built with the target
+features and none of the arguments below has **zero imports** and **exports**
+its memory, and a worker can only attach to a memory the host constructs and the
+module **imports** — so nothing about such an artifact is threaded beyond the
+atomic instructions being legal. The missing half is link-time:
 
 ```
 -C link-arg=--shared-memory  -C link-arg=--import-memory
@@ -294,36 +293,34 @@ link arguments are the missing half:
 -C link-arg=--export=__stack_pointer
 ```
 
-With those, the module imports `env.memory`, and the bootstrap was **run**
-rather than designed: under `node:worker_threads`, three workers instantiated
-the same module against one shared memory and each executed Rust — shared-heap
-allocation, a shared `AtomicU32`, and a per-worker `thread_local` all behaved,
-and the main thread's own `thread_local` survived. Each worker needs its
-`__stack_pointer` set and `__wasm_init_tls` called before it runs anything. Do
-not expect either omission to announce itself. Skipping `__wasm_init_tls`
-sometimes traps and sometimes does not: `__tls_base`'s initial value is a layout
-accident, measured at 1048576 in one build — where it collides with the initial
-`__stack_pointer` and the corruption trapped — and at zero in another, where
-every worker's thread-locals aliased one harmless address and a
-`const`-initialised `thread_local!` read and wrote it without complaint.
-Skipping the `__stack_pointer` write is silently wrong in the same way. Both
-have to be gated by observing separation directly.
+With those the module imports `env.memory`. Two rules then bind every host that
+starts a worker, and **neither omission announces itself**:
 
-**Two facts from that session belong in this plan, not only in the backlog.**
-First, `Mutex` and `Condvar` work across workers, which is what decides whether
-the pool needs redesigning: a worker blocked in `Condvar::wait` was woken with
-the right count by three others, and a `wait_timeout(500 ms)` with nothing to
-satisfy it returned in 500 ms reporting `timed_out` rather than in microseconds
-— so it is a real futex wait, and `Pool` needs no change to run on workers.
-Second, omitting the `__stack_pointer` export is a **silent** failure: every
-worker keeps the main thread's stack, a closure that merely allocates still
-returns the right answer every time, and the damage appears only where a worker
-writes a large stack array. Any gate over this has to make a worker use its
-stack.
+- **`__wasm_init_tls` must be called on each worker before it runs anything.**
+  Skipping it sometimes traps and sometimes does not, because `__tls_base`'s
+  initial value is a layout accident: measured at 1048576 in one build, where it
+  collided with the initial `__stack_pointer` and the corruption trapped, and at
+  zero in another, where every worker's thread-locals aliased one harmless
+  address and a `const`-initialised `thread_local!` read and wrote it without
+  complaint.
+- **Each worker must have its own `__stack_pointer` set.** Omitting it is
+  silently wrong in the same way: every worker keeps the main thread's stack, a
+  closure that merely allocates still returns the right answer every time, and
+  the damage appears only where a worker writes a large stack array.
 
-### Finding 2 — `std::thread::spawn` compiles on wasm and fails at run time
+So **any gate over this has to make a worker use its stack** and observe the
+separation directly. A correct answer proves nothing here.
 
-This is the one that matters. In `library/std/src/sys/thread/mod.rs`, the arm
+**`Mutex` and `Condvar` do work across workers, which is what decides that
+`Pool` needs no redesign to run on them**: a worker blocked in `Condvar::wait`
+was woken with the right count by three others, and a `wait_timeout(500 ms)`
+with nothing to satisfy it returned in 500 ms reporting `timed_out` rather than
+in microseconds — a real futex wait rather than a spin.
+
+### `std::thread::spawn` compiles on wasm and fails at run time
+
+This is the rule the crate's whole shape follows from. In
+`library/std/src/sys/thread/mod.rs`, the arm
 `all(target_family = "wasm", target_feature = "atomics")` takes **only `sleep`**
 from `thread/wasm.rs`; `Thread`, `available_parallelism`, `yield_now` and
 `set_name` all come from `thread/unsupported.rs`, where `Thread::new` returns
@@ -341,7 +338,7 @@ topology above starts through that seam. Designing it in from the start is
 cheap; retrofitting it after `std::thread::spawn` is written through the crate
 is not, which is the whole reason this was measured before any code.
 
-### Finding 3 — the ceiling, which parity cannot reach
+### The ceiling, which parity cannot reach
 
 Three gaps stay open however much work is done, and they are properties of the
 platform:
@@ -480,7 +477,7 @@ gate is a gate.
   wanted for real the instrument is a targeted stress harness — many short runs
   under interleaving pressure, with a failure counter — not another runner.
 
-- **Finding 1's threaded-wasm measurement is a command anyone can run**, not a
+- **The threaded-wasm measurement is a command anyone can run**, not a
   measurement someone once took: `./web/build.sh --threads` builds every demo
   crate that way and gates each artifact's worker-capable surface with
   `web/tools/check-exports.mjs --threads`. It needs `rust-src` on
