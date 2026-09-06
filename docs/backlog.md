@@ -5702,10 +5702,6 @@ slice does not re-derive it:
 - **A tier is not an affix.** `loot::Rarity` scales the experience a find
   teaches, because no verb in shard _uses_ an item. An affix on an item's own
   effect needs a use verb before it needs an affix system.
-- **No browser check plays all six through.** `web/tools/browser-e2e.mjs`'s
-  shard blocks cover explore, fight, save and resume; nothing presses `F` or
-  reads `level`/`xp` off the heartbeat, so milestone 1's first exit criterion is
-  open on the page rather than in the build.
 - **Sector streaming.** The zone is one fixed `zone::LAYOUT`. The plan wants
   modular pieces "assembled per seed", and the pieces are the part slice 1 built
   — a seeded assembler over them, and the border locking `docs/plan/25-lod.md`

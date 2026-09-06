@@ -1880,6 +1880,67 @@ const EXPECTATIONS = {
       // this.
       full: 100,
     },
+    // **AND WHAT THE BODY LEFT**, which is the two verbs of
+    // `docs/plan/sample/15-shard.md`'s six the blocks above cannot reach: loot
+    // and level. A stack only exists once a foe has fallen, so this is driven
+    // from inside the fight block rather than from a session of its own — and
+    // every field here is either a column of the `[HUD]` line
+    // `apps/shard/src/app.rs` logs or a constant of the game read off the
+    // source that owns it.
+    //
+    // **The two tables are the whole of the prediction.** `xp` on the heartbeat
+    // is a total the page computed; what this block knows independently is what
+    // each kind and each tier is worth, and multiplying that out against what
+    // actually fell is what makes "the number went up" into "the number is the
+    // one the rules give". A build that paid a flat rate per kill passes every
+    // "it rose" check going and fails these.
+    loot: {
+      // Take what is lying in reach — `ACTION_PICKUP`'s binding, and an action
+      // that crosses the wire as an intent bit rather than a key the frame
+      // side reads, so a tap is answered inside a tick like the blow above.
+      take: { code: 'KeyF', key: 'f', text: 'f', virtualKeyCode: 70 },
+      // The line `Stage::drop_loot` logs on the tick a foe falls: which kind
+      // fell, which tier it left, and where the stack lies. **Not a `[HUD]`
+      // field**, and it is the only place a page says which foe went down —
+      // `foes` is a count. It is logged *before* the heartbeat of that tick,
+      // which is what lets the two be read off one cut of the log below.
+      dropped:
+        /loot: the ([a-z]+) left an? ([a-z]+) .* at (-?[\d.]+) (-?[\d.]+)/,
+      // What felling each kind teaches, from `foe::Kind::experience`.
+      kill: { husk: 20, adept: 35, warden: 60 },
+      // What taking each tier teaches, from `loot::Rarity::experience`.
+      find: { common: 5, uncommon: 15, rare: 40 },
+      // The total each level begins at, from `level::THRESHOLDS`. A table
+      // rather than a curve on the game's side too, which is why this can be
+      // written out here at all.
+      thresholds: [0, 30, 75, 130],
+      // The running total, and the level `level::level_for` makes of it. `xp`
+      // is **monotone** — nothing spends it and nothing takes it away — so a
+      // reader that polls late cannot miss a level, and it reads zero on every
+      // beat before the first foe falls, which is the control both claims
+      // below rest on.
+      experience: /\bxp: (\d+)/,
+      level: /\blevel: (\d+)/,
+      // The loot loop's own three: how many stacks are in the grid, how many
+      // are lying about, and how many have ever been taken. `picked` is the
+      // monotone one — `floor` rises on a kill and falls on a pickup, so a
+      // reader that missed both would see it back where it started.
+      carried: /\bcarried: (\d+)/,
+      floor: /\bfloor: (\d+)/,
+      picked: /\bpicked: (\d+)/,
+      // Where the character is standing, which is what decides *which* stack
+      // `Stage::take_loot` answers with: the nearest inside
+      // `loot::LOOT_REACH_M`, measured from the feet.
+      across: /\bpx: (-?[\d.]+)/,
+      along: /\bpz: (-?[\d.]+)/,
+      // That radius, in metres. **Past the cleave's reach on purpose** — see
+      // `loot::LOOT_REACH_M`, which is set so that a body the character could
+      // reach to fell is one they can loot from where they are standing. It is
+      // why this block presses the key where the fight left them rather than
+      // walking anywhere, and it is what the failure text below measures the
+      // gap against when a pickup does not land.
+      reach: 2.5,
+    },
     // **AND THE CHARACTER COMING BACK**, which is slice 3 and the last two of
     // `docs/plan/sample/15-shard.md`'s six verbs. Every pattern here is a field
     // of the `[HUD]` line `apps/shard/src/app.rs` logs.
@@ -6374,6 +6435,177 @@ try {
     // a key of, exactly as the walk block above hands one back.
     await zoneKey(fight.strike, 'keyUp');
     await zoneKey(fight.walk, 'keyUp');
+
+    // ---- and what the body left, which is loot and level --------------------
+    // **The two verbs of the six that nothing on this page has played.** The
+    // blocks above walk a room, put a light out, fell a foe and reload the
+    // document; all of it passes on a build where a corpse leaves nothing and a
+    // character learns nothing, and `docs/plan/sample/15-shard.md`'s milestone 1
+    // asks for a session that plays all six through.
+    //
+    // It runs here rather than in a block of its own because a stack only
+    // exists once something has fallen: this is the same session, the same
+    // character, standing where the fight left them. Three claims, and the
+    // control for all three is the run up to the walk key — `xp` read zero and
+    // `level` read the first on every beat of it, so nothing here is about a
+    // counter that was always climbing.
+    //
+    // * felling one is worth **exactly** what its kind teaches. Which kind fell
+    //   is read off `Stage::drop_loot`'s own line rather than assumed, and what
+    //   that kind is worth is this file's table — so a build that paid a flat
+    //   rate per kill, or paid twice, fails here and passes everything above.
+    // * taking what it left is worth **exactly** what its tier teaches, and the
+    //   stack moves: one more carried, one more picked, one fewer on the floor.
+    //   The tier is the one the page announced for that drop, so this is the
+    //   rarity roll reaching the character's total rather than a colour on a
+    //   cell.
+    // * and the two together cross a row of `level::THRESHOLDS`, so the
+    //   character **levels**. The doorway husk is the foe the fight block fells
+    //   and on `loot::DEFAULT_SEED` — the seed the page runs — the stack it
+    //   leaves rolls above the commonest tier, so the kill on its own is short
+    //   of the first row and the *pickup* is what turns the level. That is
+    //   asserted rather than described, so a seed or a table where the pair
+    //   stopped crossing goes red here with both numbers in the message. Both
+    //   halves: the level the heartbeat reports is the one the table gives for
+    //   the experience printed beside it, and it is no longer the one the
+    //   character opened at.
+    if (EXPECTED.loot) {
+      const loot = EXPECTED.loot;
+
+      // One beat with nothing held, so everything below is read off a settled
+      // zone: no blow can land with the strike key up, so nothing further can
+      // fall and every drop line the kill produced has arrived.
+      const settling = hud().length;
+      await until(async () => (hud().length > settling ? hud().length : null));
+
+      // **One cut of the log, so the kill and the drop cannot disagree.**
+      // `Stage::drop_loot` logs inside the tick and `Shard::log_heartbeat` at
+      // the end of it, so every fall already inside `xp` on the last heartbeat
+      // has its own line above that heartbeat — and a fall logged after it is
+      // one this reading correctly does not count.
+      const lastBeatAt = consoleLines.reduce(
+        (at, line, index) => (line.includes('[HUD]') ? index : at),
+        -1
+      );
+      const drops = consoleLines
+        .slice(0, lastBeatAt)
+        .map((line) => line.match(loot.dropped))
+        .filter((found) => found !== null)
+        .map((found) => ({
+          kind: found[1],
+          tier: found[2],
+          x: Number(found[3]),
+          z: Number(found[4]),
+        }));
+      const owed = drops.reduce(
+        (total, drop) => total + (loot.kill[drop.kind] ?? Number.NaN),
+        0
+      );
+      const learned = latest(loot.experience);
+      const opened = numbersSince(loot.experience, 0).slice(0, beforeFight);
+      const wasIgnorant =
+        opened.length > 0 && opened.every((seen) => seen === 0);
+      check(
+        'C',
+        'and felling it teaches the character what its kind is worth',
+        drops.length > 0 && learned === owed && wasIgnorant,
+        !wasIgnorant
+          ? `xp read ${[...new Set(opened)].join(', ')} over ${opened.length} beat(s) ` +
+              `before the walk key went down, so a total that has risen says ` +
+              `nothing here`
+          : drops.length === 0
+            ? `nothing left a stack over ${hud().length - beforeFight} beat(s) of ` +
+              `fighting, so there is nothing the kill could have been worth`
+            : `${drops.map((drop) => drop.kind).join(', ')} fell for ${owed} ` +
+              `against ${learned} on the heartbeat, from 0 on all ` +
+              `${opened.length} beat(s) before`
+      );
+
+      // Which stack the pickup will answer with: the nearest to the feet, which
+      // is `Stage::loot_in_reach`'s rule. Nothing is walked at — see
+      // `loot.reach` — so this is the drop the fight left them standing over.
+      const stoodAt = { x: latest(loot.across), z: latest(loot.along) };
+      const gapTo = (drop) =>
+        Math.hypot(drop.x - stoodAt.x, drop.z - stoodAt.z);
+      const nearest = drops.reduce(
+        (best, drop) =>
+          best === null || gapTo(drop) < gapTo(best) ? drop : best,
+        /** @type {{kind: string, tier: string, x: number, z: number} | null} */ (
+          null
+        )
+      );
+      const worth =
+        nearest === null ? Number.NaN : (loot.find[nearest.tier] ?? Number.NaN);
+      const carriedBefore = latest(loot.carried) ?? 0;
+      const pickedBefore = latest(loot.picked) ?? 0;
+      const floorBefore = latest(loot.floor) ?? 0;
+      const beforeTake = hud().length;
+      await tapZoneKey(loot.take);
+      const took = await until(async () => {
+        const carrying = latest(loot.carried);
+        const picked = latest(loot.picked);
+        const total = latest(loot.experience);
+        const level = latest(loot.level);
+        return carrying !== null &&
+          picked !== null &&
+          total !== null &&
+          level !== null &&
+          carrying > carriedBefore
+          ? { carrying, picked, total, level, floor: latest(loot.floor) }
+          : null;
+      });
+      check(
+        'C',
+        'and the pickup key takes the stack it left, for what its tier is worth',
+        took !== null &&
+          took.carrying === carriedBefore + 1 &&
+          took.picked === pickedBefore + 1 &&
+          took.floor === floorBefore - 1 &&
+          took.total === learned + worth,
+        took === null
+          ? `nothing was taken over ${hud().length - beforeTake} beat(s): ` +
+              `${carriedBefore} carried and ${floorBefore} on the floor, with the ` +
+              `nearest stack ${nearest === null ? 'nowhere' : `${gapTo(nearest).toFixed(2)} m off`} ` +
+              `against a reach of ${loot.reach} m`
+          : `a ${nearest?.tier} stack came off the floor for ${worth}: carried ` +
+              `${carriedBefore} → ${took.carrying}, picked ${pickedBefore} → ` +
+              `${took.picked}, floor ${floorBefore} → ${took.floor}, xp ` +
+              `${learned} → ${took.total}`
+      );
+
+      // Which level the table gives for the experience the page is reporting.
+      // The reported total rather than the predicted one, so this asks whether
+      // the *pair* on the line agree — a build whose level ran ahead of its own
+      // experience fails here whatever the two checks above did.
+      const levelFor = (experience) =>
+        loot.thresholds.reduce(
+          (level, threshold, row) =>
+            experience >= threshold ? row + 1 : level,
+          1
+        );
+      const began = numbersSince(loot.level, 0).slice(0, beforeFight);
+      const wasFirst = began.length > 0 && began.every((seen) => seen === 1);
+      const want = took === null ? null : levelFor(took.total);
+      check(
+        'C',
+        'and the kill and the find together turn the level over',
+        took !== null &&
+          want !== null &&
+          took.level === want &&
+          want > 1 &&
+          wasFirst,
+        !wasFirst
+          ? `the character was past the first level before the fight: level read ` +
+              `${[...new Set(began)].join(', ')} over ${began.length} beat(s), so a ` +
+              `level that has turned says nothing here`
+          : took === null
+            ? 'nothing was picked up, so the pair never came to a level'
+            : `${took.total} experience is level ${want} by the table and the ` +
+              `heartbeat reads ${took.level}, against level 1 on all ` +
+              `${began.length} beat(s) before; the row is at ` +
+              `${loot.thresholds[1]}`
+      );
+    }
   }
 
   // **AND THE CHARACTER COMING BACK, WHICH NOTHING ABOVE CAN SEE.**

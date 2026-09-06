@@ -203,12 +203,14 @@ run over.
 
 **Milestone 1**
 
-- A complete play session — explore, fight, loot, level, save, resume — in a
-  browser, from the same build that runs natively. **All six verbs are in that
-  build** as of 2026-09-07, but nothing yet plays them through on the page:
-  `web/tools/browser-e2e.mjs`'s shard blocks cover explore, fight, save and
-  resume, and a block that presses `F` and reads the level pair off the
-  heartbeat is what closes this.
+- ✅ A complete play session — explore, fight, loot, level, save, resume — in a
+  browser, from the same build that runs natively. Met 2026-09-07: the loot
+  section at the end of `web/tools/browser-e2e.mjs`'s fight block is the last
+  two verbs. It presses `F` where the fight left the character, and reads the
+  kill's worth, the find's worth and the level pair off the `[HUD]` heartbeat —
+  the kill pays what `foe::Kind::experience` gives the kind that actually fell,
+  the find pays what its tier does, and the two together cross the first row of
+  `level::THRESHOLDS`, so the level turns on the pickup.
 - Golden frames per `GeometryPath` from a fixed camera set, plus the
   human-reviewed comparison recorded here.
 - Recorded browser budget for real 3D content, and the peak wasm memory figure.

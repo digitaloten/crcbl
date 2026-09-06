@@ -961,6 +961,41 @@ case "$DEMO" in
             echo "               and every other fight check would still be green" >&2
             exit 1
         fi
+        # And once more for loot and level, which are the two of that plan's six
+        # verbs the block above leaves lying on the floor. Everything up to here
+        # is a foe going down, and all of it passes on a build where a corpse
+        # leaves nothing and a character learns nothing —
+        # `docs/plan/sample/15-shard.md`'s milestone 1 asks for a session that
+        # plays all six through, and these two are what that criterion was
+        # waiting on.
+        #
+        # Two names, one per verb, and each is the whole of its claim:
+        #
+        #  - 'the pickup key takes the stack it left' is the only thing anywhere
+        #    that presses `F` in a browser. Without it the loot loop — the drop,
+        #    the reach, the grid — is ungated on the page, and the driver's own
+        #    fight checks are green either way.
+        #  - 'the kill and the find together turn the level over' is the only
+        #    thing that reads the level pair off the heartbeat. Without it, a
+        #    build whose level ran ahead of its own experience, or never moved
+        #    at all, passes every other check here.
+        #
+        # Renaming either of them in the driver is meant to fail here and be
+        # renamed here too.
+        TOOK="$(grep -F 'the pickup key takes the stack it left' "${OUTPUT}.plain" || true)"
+        if [ -z "$TOOK" ]; then
+            echo "crcbl web e2e: the driver never pressed $DEMO's pickup key; the loot" >&2
+            echo "               verb is ungated in a browser, and a build whose felled" >&2
+            echo "               foes left nothing would be green" >&2
+            exit 1
+        fi
+        LEVELLED="$(grep -F 'the kill and the find together turn the level over' "${OUTPUT}.plain" || true)"
+        if [ -z "$LEVELLED" ]; then
+            echo "crcbl web e2e: the driver never read $DEMO's level off the heartbeat;" >&2
+            echo "               the level verb is ungated in a browser, and a character" >&2
+            echo "               who learns nothing from a kill would be green" >&2
+            exit 1
+        fi
         # And once more for the save, which is slice 3 and the last two of that
         # plan's six verbs. Everything above happens inside one session, and all
         # of it passes on a page that keeps nothing: a document that is never
