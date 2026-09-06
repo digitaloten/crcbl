@@ -78,7 +78,7 @@ use crcbl::backend::{BACKEND_ENV_VAR, GpuBackend};
 use crcbl::hal::{Features, Format, GeometryPath};
 use crcbl::screenshot::{ForwardScene, OffscreenSetup, Scene};
 use crcbl::shaders::tonemap::TonemapCurve;
-use crcbl_golden::{ChannelOrder, Golden, Image};
+use crcbl_golden::{ChannelOrder, Golden, Image, srgb_encode};
 use crcbl_render::{Antialiasing, RenderEffects};
 
 /// What this binary calls itself in the lines [`Offscreen`] prints.
@@ -3954,22 +3954,6 @@ const PROBE_INTERPOLATION_DELTA: f32 = 5.0;
 /// **It is also the anti-vacuity claim**, and a stronger one than a floor: it
 /// asserts a *value*, so an unpainted frame misses it by the whole of the value.
 const PROBE_MIRROR_LEVELS: f32 = 1.0;
-
-/// The sRGB transfer function, encoding linear light into the swapchain's
-/// levels.
-///
-/// The standard piecewise curve — IEC 61966-2-1, and what Vulkan's
-/// `*_SRGB` formats are defined to apply on a write. Written out rather than
-/// reached for because nothing in this workspace has needed it before: the
-/// engine hands linear colour to an sRGB attachment and the hardware encodes it,
-/// so this is the only place that has ever had to say what the hardware did.
-fn srgb_encode(linear: f32) -> f32 {
-    if linear <= 0.003_130_8 {
-        12.92 * linear
-    } else {
-        1.055 * linear.powf(1.0 / 2.4) - 0.055
-    }
-}
 
 /// The open box's face called `name`, read out of the mesh the room is made of.
 ///

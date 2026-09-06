@@ -120,16 +120,6 @@ pub(crate) fn assert_the_camera_maps_a_world_unit_to_a_pixel() {
     }
 }
 
-/// sRGB encode, the transfer function an `Rgba8UnormSrgb` attachment applies on
-/// the way out.
-fn srgb_encode(linear: f32) -> f32 {
-    if linear <= 0.003_130_8 {
-        12.92 * linear
-    } else {
-        1.055f32.mul_add(linear.powf(1.0 / 2.4), -0.055)
-    }
-}
-
 /// sRGB decode, what the sampler and the blender apply on the way in.
 pub(crate) fn srgb_decode(encoded: f32) -> f32 {
     if encoded <= 0.040_45 {
@@ -141,7 +131,9 @@ pub(crate) fn srgb_decode(encoded: f32) -> f32 {
 
 /// The 8-bit value a linear channel is stored as.
 pub(crate) fn srgb_byte(linear: f32) -> u8 {
-    (srgb_encode(linear) * 255.0).round().clamp(0.0, 255.0) as u8
+    crcbl_golden::srgb_encode_level(linear)
+        .round()
+        .clamp(0.0, 255.0) as u8
 }
 
 /// The background byte triple the clear lands on, which is what every "this

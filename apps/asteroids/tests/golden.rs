@@ -34,12 +34,12 @@
 //! level as well as a ratio, and a sprite pass that never reached the device
 //! drops it to the clear and fails the absolute claim first.
 //!
-//! # Why the debug overlay is off
+//! # The invocation is `crcbl-sample-test`'s
 //!
-//! It is on by default in a debug build and it draws frame times. A golden of a
-//! frame with `0.007 ms` written on it is a golden that fails on the next
-//! machine. `--no-debug-overlay` is part of the invocation for that reason and
-//! `run-asteroids-golden.sh` passes it.
+//! [`SampleRun`] runs the binary, checks its summary and hands back the frame,
+//! because four other samples' suites want the same thing — see that crate.
+//! What stays here is what is about *this frame*: the claims below, and the
+//! constants they are measured against.
 //!
 //! # Feature-gated *and* ignored
 //!
@@ -60,9 +60,9 @@
 #![cfg(feature = "golden-e2e")]
 
 use std::path::PathBuf;
-use std::process::Command;
 
 use crcbl_golden::{Golden, Image};
+use crcbl_sample_test::{Block, SampleRun, required_backend};
 
 /// How many frames the run presents before the one that gets written.
 ///
@@ -95,9 +95,7 @@ const MIN_COLORS: usize = 128;
 
 /// Half-extents, in pixels, of the block each claim below averages over.
 ///
-/// A block rather than a pixel, because a single pixel is a sample of the
-/// rasteriser as much as of the picture: a glyph edge or a nine-slice seam
-/// landing a pixel either way moves it.
+/// A block rather than a pixel, for the reason [`Block`] gives.
 const BLOCK: (u32, u32) = (6, 6);
 
 /// A flat interior of the rock drifting down the left margin, clear of the
@@ -155,146 +153,9 @@ const BUTTON_BLUENESS: f32 = 1.4;
 /// the clear colour and would fail it — see the module docs.
 const DREW_AT_ALL: f32 = 6.0;
 
-/// Which backend drew, from the environment.
-///
-/// **Required, with no default.** Every backend draws this field identically by
-/// construction, so a run that fell back to another one produces a frame that
-/// passes and proves nothing about the one that was wanted —
-/// `crcbl::backend::open` would otherwise answer the question for you. The same
-/// argument `tests/run-asteroids-golden.sh` makes, made where it can actually be
-/// enforced.
-fn required_backend() -> String {
-    std::env::var(crcbl::backend::BACKEND_ENV_VAR).unwrap_or_else(|_| {
-        panic!(
-            "{} is not set, so nothing would pin the backend and a fallback would pass. \
-             Run tests/run-asteroids-golden.sh, which names one.",
-            crcbl::backend::BACKEND_ENV_VAR
-        )
-    })
-}
-
-/// Runs the real binary with `--screenshot` and hands back the file it wrote.
-///
-/// The output path is under `CARGO_TARGET_TMPDIR`, which cargo gives an
-/// integration test for exactly this and which is already inside the `/target`
-/// ignore — so there is no new ignore rule and a reviewer has a path to open.
-///
-/// **The stale file is removed first**, and its absence is what makes the
-/// assertion below mean anything: a `--screenshot` that quietly did nothing
-/// would otherwise pass on the previous run's picture forever.
-fn screenshot_from_a_real_run(backend: &str) -> (Image, String) {
-    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("field.png");
-    match std::fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => panic!("could not clear {}: {error}", path.display()),
-    }
-
-    let output = Command::new(env!("CARGO_BIN_EXE_asteroids"))
-        .args([
-            "--backend",
-            backend,
-            "--frames",
-            &FRAMES.to_string(),
-            // Not because a headless run needs saying — `--screenshot` turns it
-            // on — but because saying it is how this suite records that the
-            // picture is of the offscreen ring and not of a window.
-            "--headless",
-            "--no-debug-overlay",
-            "--screenshot",
-        ])
-        .arg(&path)
-        .output()
-        .expect("the asteroids binary runs");
-
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    assert_eq!(
-        output.status.code(),
-        Some(0),
-        "asteroids exited {:?} on {backend}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-        output.status.code()
-    );
-    // The binary's log, re-emitted whether or not it passed. `.output()` keeps
-    // the child's stderr, and until now a green run showed none of it — so a
-    // `vk validation:` line the layer wrote there reached nothing.
-    // `tests/run-asteroids-golden.sh` reads this suite's log for exactly that line
-    // and for the messenger's own announcement, and both live in the child's
-    // stderr, not this process's.
-    eprint!("{stderr}");
-    // The run has to have played the game, not merely started and stopped: a
-    // frame written by a run that never reached the simulation is a picture of
-    // start-up, and the summary is the only thing that can tell the two apart
-    // from out here.
-    assert!(
-        stdout.contains(&format!("{FRAMES} frames")),
-        "the summary does not say the run presented {FRAMES} frames:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("WaitingToStart"),
-        "the run left the title screen, so this is not the frame the golden was \
-         blessed on:\n{stdout}"
-    );
-
-    assert!(
-        path.exists(),
-        "asteroids exited 0 and wrote no {} — `--screenshot` did nothing",
-        path.display()
-    );
-    let image = Image::load_png(&path).expect("the screenshot is a readable PNG");
-    assert_eq!(
-        (image.width(), image.height()),
-        EXTENT,
-        "the binary wrote a {}x{} frame, which is not the extent the golden was blessed at",
-        image.width(),
-        image.height()
-    );
-    (image, adapter_line(&stderr))
-}
-
-/// The adapter the binary opened, read out of its own log.
-///
-/// From the run rather than from the environment this test exported: a variable
-/// that never reached the process and a pin that was honoured look identical
-/// from outside. `tests/run-asteroids-golden.sh` reads this line back out of the
-/// suite for the same reason.
-fn adapter_line(stderr: &str) -> String {
-    stderr
-        .lines()
-        .find(|line| line.contains(" adapter \""))
-        .map(|line| line[line.find("hal: ").map_or(0, |at| at + "hal: ".len())..].to_string())
-        .unwrap_or_else(|| panic!("the run never said which adapter it opened:\n{stderr}"))
-}
-
-/// The mean brightness of a [`BLOCK`]-sized block around `centre`, out of 255.
-fn brightness(image: &Image, centre: (u32, u32)) -> f32 {
-    channel_mean(image, centre, None)
-}
-
-/// The mean of one channel over the same block, out of 255.
-fn channel(image: &Image, centre: (u32, u32), index: usize) -> f32 {
-    channel_mean(image, centre, Some(index))
-}
-
-/// `index` names a channel, or `None` averages the three colour channels.
-fn channel_mean(image: &Image, centre: (u32, u32), index: Option<usize>) -> f32 {
-    let mut total = 0.0f32;
-    let mut count = 0u32;
-    for y in centre.1.saturating_sub(BLOCK.1)..=(centre.1 + BLOCK.1).min(image.height() - 1) {
-        for x in centre.0.saturating_sub(BLOCK.0)..=(centre.0 + BLOCK.0).min(image.width() - 1) {
-            let pixel = image.pixel(x, y).expect("inside the frame");
-            total += match index {
-                Some(index) => f32::from(pixel[index]),
-                None => (f32::from(pixel[0]) + f32::from(pixel[1]) + f32::from(pixel[2])) / 3.0,
-            };
-            count += 1;
-        }
-    }
-    total / count as f32
-}
-
 /// The claims in front of the golden: it drew, and it drew in the right places.
 fn inspect(image: &Image) {
+    let block = Block::new(image, BLOCK);
     let colors = image.distinct_colors(MIN_COLORS);
     assert!(
         colors >= MIN_COLORS,
@@ -303,8 +164,8 @@ fn inspect(image: &Image) {
     );
 
     // ---- 1. a rock is drawn into the space beside it -----------------------
-    let rock = brightness(image, ROCK_AT);
-    let space = brightness(image, SPACE_AT);
+    let rock = block.brightness(ROCK_AT);
+    let space = block.brightness(SPACE_AT);
     eprintln!("asteroids golden: rock {rock:.1}/255, space {space:.1}/255");
     assert!(
         rock > ROCK_DREW,
@@ -317,8 +178,8 @@ fn inspect(image: &Image) {
     );
 
     // ---- 2. the title card is a menu on top of the field -------------------
-    let button = brightness(image, BUTTON_AT);
-    let panel = brightness(image, PANEL_AT);
+    let button = block.brightness(BUTTON_AT);
+    let panel = block.brightness(PANEL_AT);
     eprintln!("asteroids golden: FLY button {button:.1}/255, title card {panel:.1}/255");
     assert!(
         panel > DREW_AT_ALL,
@@ -331,8 +192,8 @@ fn inspect(image: &Image) {
     );
 
     // ---- 3. the button's panel is blue, in that order ----------------------
-    let button_blue = channel(image, BUTTON_AT, 2);
-    let button_red = channel(image, BUTTON_AT, 0);
+    let button_blue = block.channel(BUTTON_AT, 2);
+    let button_red = block.channel(BUTTON_AT, 0);
     eprintln!("asteroids golden: button blue {button_blue:.1}, red {button_red:.1}");
     assert!(
         button_blue > button_red * BUTTON_BLUENESS,
@@ -345,8 +206,19 @@ fn inspect(image: &Image) {
 #[test]
 #[ignore = "needs a real GPU and a backend pin; run tests/run-asteroids-golden.sh"]
 fn the_frame_the_binary_wrote_matches_its_golden() {
-    let backend = required_backend();
-    let (image, adapter) = screenshot_from_a_real_run(&backend);
+    let backend = required_backend("tests/run-asteroids-golden.sh");
+    let (image, adapter) = SampleRun {
+        name: "asteroids",
+        binary: env!("CARGO_BIN_EXE_asteroids"),
+        tmp_dir: env!("CARGO_TARGET_TMPDIR"),
+        file: "field.png",
+        frames: FRAMES,
+        extent: EXTENT,
+        args: &[],
+        stdout_contains: &["WaitingToStart"],
+        simulation_advanced: false,
+    }
+    .screenshot(&backend);
     eprintln!("asteroids golden: device on {adapter}");
     inspect(&image);
 

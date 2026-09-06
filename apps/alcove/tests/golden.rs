@@ -30,7 +30,7 @@ use crcbl::render::{Camera, EffectOverride, EffectRequest, ForwardRenderer, Rend
 use crcbl::screenshot::{ForwardScene, OffscreenSetup};
 use crcbl::shaders::tonemap::TonemapCurve;
 use crcbl_alcove::{court, occlusion};
-use crcbl_golden::{ChannelOrder, Golden, Image};
+use crcbl_golden::{ChannelOrder, Golden, Image, srgb_encode_level};
 
 /// The extent the checked-in goldens are blessed at.
 const EXTENT: (u32, u32) = (256, 192);
@@ -479,29 +479,6 @@ fn channels(image: &Image, centre: (u32, u32), half: (u32, u32)) -> [f32; 3] {
     assert!(count > 0, "an empty block at {centre:?} measures nothing");
     #[allow(clippy::cast_precision_loss)]
     total.map(|sum| sum / count as f32)
-}
-
-/// `value` in linear light, as the swapchain's sRGB encode writes it, out of
-/// 255.
-///
-/// IEC 61966-2-1's transfer function, which the Vulkan specification's sRGB
-/// conversion is. It is here because the bent-direction claim compares a colour
-/// **derived from the court's own geometry** against a readback byte, and the
-/// value `mesh.slang` returns is not the value that lands in the buffer: the
-/// bent view writes the encoded direction straight into the `Rgba16Float` scene
-/// target, the tonemap resolves that as the identity on `[0, 1]` at the default
-/// exposure, and the swapchain encodes on the way out. Every other claim in this
-/// file compares two readbacks with each other and needed no such thing.
-///
-/// A transcription of `crcbl`'s own `forward_e2e::depth_probe::srgb_encode`,
-/// which is `pub(crate)` to one test binary and cannot be reached from another.
-fn srgb_encode(value: f32) -> f32 {
-    let encoded = if value <= 0.003_130_8 {
-        value * 12.92
-    } else {
-        1.055 * value.powf(1.0 / 2.4) - 0.055
-    };
-    encoded * 255.0
 }
 
 /// [`BLOCK`] scaled to `extent`.
@@ -1244,9 +1221,9 @@ fn the_silhouette_does_not_print_on_the_wall_behind_it() {
 /// nothing inside the shipped occlusion radius of it, so the average unblocked
 /// direction there is the floor's own normal and the frame draws `+Y` exactly:
 /// measured at 0.48 codes on both adapters, which is the distance from
-/// `srgb_encode(0.5)` to the byte it rounds to. It is set an order under the
-/// thinnest lean below, so it is a bound that separates "the direction is the
-/// normal" from "the direction leans" rather than one that admits both.
+/// `srgb_encode_level(0.5)` to the byte it rounds to. It is set an order under
+/// the thinnest lean below, so it is a bound that separates "the direction is
+/// the normal" from "the direction leans" rather than one that admits both.
 const OPEN_FLOOR_BENT_TOLERANCE: f32 = 2.5;
 
 /// How far the crease's bent direction must lean out of the slot, in 0-255
@@ -1283,9 +1260,9 @@ const CONTACT_BENT_LEAN: f32 = 18.0;
 ///   within the shipped radius of [`court::OPEN_FLOOR`], so the average
 ///   unblocked direction there is the floor's own normal — `+Y` — and the view
 ///   draws a direction as `n * 0.5 + 0.5`, so the pixel is
-///   `(0.5, 1.0, 0.5)` in linear light. [`srgb_encode`] is what turns that into
-///   the byte the swapchain writes; nothing else in this file needed it, because
-///   every other claim compares two readbacks with each other.
+///   `(0.5, 1.0, 0.5)` in linear light. [`srgb_encode_level`] is what turns
+///   that into the byte the swapchain writes; nothing else in this file needed
+///   it, because every other claim compares two readbacks with each other.
 /// * **Three enclosed points**, each of which must lean **out of** its own
 ///   enclosure. All three open towards `+z`, and not by coincidence: the alcove's
 ///   mouth is cut in its `+z` face, the slot's near end is the end the fixed
@@ -1341,7 +1318,11 @@ fn the_bent_direction_is_the_normal_on_open_floor_and_leans_out_of_an_enclosure(
     // `+Y` — the floor's own normal — encoded `n * 0.5 + 0.5` and put through the
     // swapchain's sRGB encode, which is the only place in this file a claim is
     // made against a derived colour rather than against a second readback.
-    let up = [srgb_encode(0.5), srgb_encode(1.0), srgb_encode(0.5)];
+    let up = [
+        srgb_encode_level(0.5),
+        srgb_encode_level(1.0),
+        srgb_encode_level(0.5),
+    ];
     let drift = (0..3)
         .map(|at| (open[at] - up[at]).abs())
         .fold(0.0f32, f32::max);
@@ -1498,7 +1479,7 @@ fn the_bent_direction_view_draws_the_sentinel_grey_where_no_direction_was_gather
     // The byte an `Rgba8Unorm` channel holds where there is no direction, put
     // through the swapchain's encode exactly as the open-floor claim above puts
     // the floor's own normal through it.
-    let grey = srgb_encode(f32::from(crcbl::shaders::ssao::BENT_NORMAL_NONE) / 255.0);
+    let grey = srgb_encode_level(f32::from(crcbl::shaders::ssao::BENT_NORMAL_NONE) / 255.0);
 
     let (shipped, paths, _) = draw(EXTENT, Arm::shipped().as_bent_direction());
 
@@ -1690,7 +1671,11 @@ fn the_bent_direction_beside_a_silhouette_is_the_walls_own_normal() {
     // The far wall's inner face looks down `+z`, encoded `n * 0.5 + 0.5` and put
     // through the swapchain's encode — the open-floor claim's derived colour, for
     // the one surface this pose is about.
-    let normal = [srgb_encode(0.5), srgb_encode(0.5), srgb_encode(1.0)];
+    let normal = [
+        srgb_encode_level(0.5),
+        srgb_encode_level(0.5),
+        srgb_encode_level(1.0),
+    ];
     let off = |here: [f32; 3]| {
         (0..3)
             .map(|at| (here[at] - normal[at]).abs())

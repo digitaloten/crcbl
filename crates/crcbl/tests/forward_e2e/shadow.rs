@@ -87,7 +87,7 @@ struct ShadowFrame {
     /// Carried because the atlas viewer's check compares a **derived** grey
     /// against a readback byte, and what a fragment wrote is not what lands in
     /// the buffer where the surface preferred an sRGB format — see
-    /// [`crate::depth_probe::srgb_encode`]. The fixture takes whatever the
+    /// [`crcbl_golden::srgb_encode`]. The fixture takes whatever the
     /// surface offers, so which of the two happened is a fact about the run
     /// rather than a constant.
     format: Format,
@@ -1471,7 +1471,7 @@ fn atlas_texel_under(at: (u32, u32)) -> (u32, u32) {
 /// The grey the viewer draws for a texel holding `depth`, as a readback level.
 ///
 /// `atlas_view.slang`'s mapping, then the swapchain's own encode — see
-/// [`crate::depth_probe::srgb_encode`], and the field on [`ShadowFrame`] that
+/// [`crcbl_golden::srgb_encode`], and the field on [`ShadowFrame`] that
 /// says which of the two happened.
 fn expected_level(depth: f32, format: Format) -> f32 {
     use crcbl::shaders::atlas_view::{DEPTH_CLEAR, EMPTY_GREY, OCCUPIED_FLOOR};
@@ -1481,7 +1481,7 @@ fn expected_level(depth: f32, format: Format) -> f32 {
         EMPTY_GREY
     };
     let encoded = match format {
-        Format::Rgba8UnormSrgb | Format::Bgra8UnormSrgb => crate::depth_probe::srgb_encode(grey),
+        Format::Rgba8UnormSrgb | Format::Bgra8UnormSrgb => crcbl_golden::srgb_encode(grey),
         _ => grey,
     };
     encoded * 255.0

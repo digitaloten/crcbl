@@ -7649,32 +7649,43 @@ there. What it does not do, and why:
   silhouette fit that re-ran on every orbit step would be tighter and is not
   written.
 
-### DECIDED — five copies of the golden harness helper
+### Three sample goldens do not check that the simulation advanced
 
-The record behind this — the argument, the options and the measurements — is in
-`docs/notes/samples.md` under this heading.
+`apps/breakout` and `apps/flappy` set `SampleRun::simulation_advanced`, which
+asserts the run's summary reports a _simulated_ tick count of at least half its
+frame count. `apps/asteroids`, `apps/horde` and `apps/hud` do not, and never did
+— found by diffing the five copies before they were merged into
+`apps/crcbl-sample-test` on 2026-09-06. The check exists because a build whose
+`Game::tick` did nothing presents its frames, writes a byte-identical image and
+passes every pixel claim; flappy's suite was measured against exactly that by
+emptying `tick`, and its first version asserted the loop's count instead and
+passed the frozen build twice.
 
-`screenshot_from_a_real_run`, `adapter_line`, `brightness`, `channel`,
-`channel_mean` and `required_backend` now exist five times over, in
-`apps/{breakout,flappy,hud,asteroids,horde}/tests/golden.rs`. This is duplicated
-**knowledge**, not duplicated shape: a fix to the adapter-line parse or to the
-stale-file removal has to land in five places, and the copy that gets missed
-stays green while testing something slightly different.
+The fixture kept each caller's behaviour rather than quietly adding an assertion
+to three suites. Turning it on is one field per suite. **Unverified:** whether
+each of those three samples' `--frames` summary carries an `(N simulated)`
+figure at all — `apps/hud`'s subject is a ticker rather than a game loop. So the
+work is: read each summary, set the flag where the figure exists, and say in the
+suite why not where it does not.
 
-It was left duplicated deliberately while the mechanism was being proved, and
-the obvious home does not work: `crcbl-golden` would have to depend on `crcbl`
-to spawn a sample binary and read `BACKEND_ENV_VAR`, which inverts the
-dependency the whole crate exists to avoid.
+### Three test copies of `srgb_decode` are still uncollected
 
-**DECIDED 2026-09-06 —** option (a): a test-support crate, `crcbl-sample-test`,
-under `apps/`, taken as a dev-dependency by each sample. One copy of the helper
-with five callers is what a shared test fixture is for, and a dev-dependency
-keeps it out of every shipped binary. It schedules the crate and the five
-call-site changes. The same crate takes `srgb_encode`, which `apps/sundial`'s
-and `apps/alcove`'s golden suites and four of `crates/crcbl`'s e2e binaries each
-carry a copy of (counted 2026-09-06 when sundial's atmosphere guard added the
-seventh); a host-side prediction of a swapchain byte is the one arithmetic every
-golden suite shares, and seven transcriptions of one curve is how one drifts.
+`crates/crcbl/tests/render_e2e.rs`,
+`crates/crcbl/tests/sprite_e2e/sprite/mod.rs` and `apps/alcove/tests/golden.rs`
+each carry the inverse of the curve that moved to `crcbl_golden::srgb` on
+2026-09-06; `apps/viewer/src/gpu.rs`'s `linear_of` and
+`apps/breakout/src/art.rs`'s `to_linear` are two more, both inside those crates'
+own `#[cfg(test)]` modules. Deliberately out of scope for that slice, which was
+decided around `srgb_encode` alone.
+
+`crcbl_render::mip`'s `srgb_to_linear`/`linear_to_srgb` are **not** in this set
+and must stay where they are: they are shipped engine code (mip generation), and
+`crcbl-golden` is a dev-dependency the engine cannot take.
+
+Adding `crcbl_golden::srgb::decode` and pinning the round trip against the 8-bit
+table is small. The reason to do it is that three transcriptions of one curve is
+how `sprite_e2e`'s `srgb_encode` came to use a fused `mul_add` while the other
+five did not — a different function by a fraction of an ulp, undetected.
 
 ### horde's golden spends its whole tolerance budget
 

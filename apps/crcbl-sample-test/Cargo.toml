@@ -1,0 +1,30 @@
+[package]
+name = "crcbl-sample-test"
+description = "Crucible sample golden-suite fixture: run a sample binary, read the frame it wrote"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# **A support crate, not a sample.** It sits under `apps/` because what it
+# supports is `apps/*/tests/golden.rs` and nothing else, and because
+# `crcbl-golden` — the obvious home — cannot take it: this needs `crcbl` to read
+# `crcbl::backend::BACKEND_ENV_VAR` and to spawn a sample binary, and
+# `crcbl-golden` is a leaf that every one of those suites depends on. The arrow
+# would have to run backwards.
+#
+# It has no `src/main.rs`, so `tools/check-windowed-samples.sh` and the demo
+# lists pass over it, and nothing names it outside a dev-dependency table — so
+# it reaches no shipped binary, which is `crcbl-golden`'s own rule.
+
+[dependencies]
+# For `backend::BACKEND_ENV_VAR` alone — the variable a golden suite refuses to
+# run without, which is what makes "the backend was pinned" a fact rather than a
+# hope. Every caller already depends on `crcbl`, so the arrow costs them nothing.
+crcbl = { workspace = true }
+# `Image`, which is what a caller gets back and what every claim reads.
+crcbl-golden = { workspace = true }
+
+[lints]
+workspace = true

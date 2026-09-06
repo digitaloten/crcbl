@@ -67,6 +67,7 @@ use crcbl::hal::{
     ReadbackState, Rect2d, RenderPassDesc, ResourceState, SamplerDesc, StoreOp, SubmitInfo,
     SurfaceError, SwapchainDesc,
 };
+use crcbl_golden::srgb_encode;
 
 /// The size every offscreen test in this file renders at.
 ///
@@ -1058,27 +1059,6 @@ fn a_surface_offers_an_srgb_format_and_preferred_format_picks_it() {
 }
 
 // --- a frame's worth of the seam -------------------------------------------
-
-/// The sRGB transfer function, encoding linear light into a display format's
-/// levels.
-///
-/// The standard piecewise curve — IEC 61966-2-1, which is what Vulkan's
-/// `*_SRGB` formats, Metal's `*_sRGB` ones and D3D12's `*_SRGB` ones are each
-/// defined to apply on a write. Transcribed rather than reached for because
-/// this workspace has no shared home for it: `tests/render_e2e.rs`,
-/// `crcbl-vk`'s `vk_e2e/sprite` and `vk_e2e/depth_probe`, and
-/// `crcbl-scene`'s `gltf_render` each carry their own, and a test binary
-/// cannot borrow another test binary's. The constants are the specification's,
-/// and [`a_render_pass_clear_reaches_memory_with_the_colour_it_was_given`] is
-/// what checks the transcription: it asserts against a value the hardware
-/// produced independently.
-fn srgb_encode(linear: f32) -> f32 {
-    if linear <= 0.003_130_8 {
-        12.92 * linear
-    } else {
-        1.055 * linear.powf(1.0 / 2.4) - 0.055
-    }
-}
 
 /// The byte a channel of `CLEAR` must arrive as, given the target's format.
 ///

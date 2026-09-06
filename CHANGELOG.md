@@ -62,6 +62,13 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **`crcbl_golden::srgb`** — the sRGB transfer function as a host-side
+  prediction of what an `*_SRGB` format writes, re-exported at the crate root as
+  `srgb_encode` (the `[0, 1]` signal) and `srgb_encode_level` (the same scaled
+  to 255 levels). Its unit tests pin the curve against IEC 61966-2-1's own
+  anchors — the two ends, the linear segment's slope, the knee, and two rows of
+  the 8-bit table — where the seven test-side copies it replaces were pinned
+  against nothing, and one of them had drifted to a fused multiply-add.
 - **The fetched glTF shelf is a gate, not a directory of files.**
   `apps/viewer/assets/shelf.expect` is a committed manifest — an outcome, two
   spaces, a document key, in `shelf.sha256`'s shape — naming what each of the
@@ -1048,6 +1055,12 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- **The five sample golden suites share one harness.**
+  `apps/{asteroids,breakout,flappy,horde,hud}` drive their binaries through a
+  new test-support crate, `apps/crcbl-sample-test`, instead of five copies of
+  `screenshot_from_a_real_run` and its readers. It is a dev-dependency with
+  `publish = false`, so it reaches no shipped binary; every golden, constant and
+  claim is unchanged.
 - **`crcbl-mtl` no longer re-issues a `set*` whose argument is already in the
   slot.** A per-encoder cache — `crcbl_mtl::bind_cache`, the state cache
   wgpu-hal's Metal `CommandState` and MoltenVK's

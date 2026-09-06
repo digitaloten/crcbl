@@ -59,6 +59,7 @@ version = "0.1.0"
 dependencies = [
  "crcbl",
  "crcbl-golden",
+ "crcbl-sample-test",
  "crcbl-sprite",
 ]
 
@@ -143,6 +144,7 @@ version = "0.1.0"
 dependencies = [
  "crcbl",
  "crcbl-golden",
+ "crcbl-sample-test",
  "crcbl-sprite",
 ]
 
@@ -487,6 +489,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "crcbl-sample-test"
+version = "0.1.0"
+dependencies = [
+ "crcbl",
+ "crcbl-golden",
+]
+
+[[package]]
 name = "crcbl-scene"
 version = "0.1.0"
 dependencies = [
@@ -679,6 +689,7 @@ version = "0.1.0"
 dependencies = [
  "crcbl",
  "crcbl-golden",
+ "crcbl-sample-test",
  "crcbl-sprite",
 ]
 
@@ -831,6 +842,7 @@ version = "0.1.0"
 dependencies = [
  "crcbl",
  "crcbl-golden",
+ "crcbl-sample-test",
  "crcbl-sprite",
 ]
 
@@ -840,6 +852,7 @@ version = "0.1.0"
 dependencies = [
  "crcbl",
  "crcbl-golden",
+ "crcbl-sample-test",
 ]
 
 [[package]]

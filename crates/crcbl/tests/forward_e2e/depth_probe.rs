@@ -46,6 +46,7 @@ use crcbl::hal::{
 use crcbl::shaders::dfg;
 use crcbl::shaders::ltc;
 use crcbl::shaders::mesh;
+use crcbl_golden::srgb_encode;
 
 /// Two overlapping quads, the **near one drawn first**, so the depth test is the
 /// only thing deciding what is visible.
@@ -1330,27 +1331,6 @@ fn pixels_unlike_the_corner(frame: &crcbl_golden::Image) -> usize {
         .chunks_exact(4)
         .filter(|pixel| *pixel != corner)
         .count()
-}
-
-/// `value` in linear light, encoded the way this probe's `Rgba8UnormSrgb`
-/// swapchain encodes what a fragment wrote into it.
-///
-/// IEC 61966-2-1's transfer function, which the Vulkan specification's sRGB
-/// conversion is. It is here because the occlusion assertion below compares a
-/// *derived* colour with a readback byte, and the value `mesh.slang` returns is
-/// not the value that lands in the buffer — the other assertions in this file
-/// read either a linear attachment or a channel ordering, and needed no such
-/// thing.
-///
-/// `pub(crate)` since [`crate::shadow`]'s atlas-viewer check wanted the same
-/// conversion: two transcriptions of one transfer function in one test binary
-/// are two things to keep in step, and this is the one that was here first.
-pub(crate) fn srgb_encode(value: f32) -> f32 {
-    if value <= 0.003_130_8 {
-        value * 12.92
-    } else {
-        1.055 * value.powf(1.0 / 2.4) - 0.055
-    }
 }
 
 /// Both of a probe frame's colour attachments, read back.

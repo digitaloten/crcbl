@@ -127,6 +127,11 @@ crcbl-vfx = { path = "crates/crcbl-vfx", version = "0.1.0" }
 # and the CLI all speak. It depends on nothing but `core`/`std`, so the arrow
 # into it costs every target the same nothing — see that crate's own manifest.
 crcbl-console = { path = "crates/crcbl-console", version = "0.1.0" }
+# The golden suites' shared fixture, `apps/crcbl-sample-test`. A path-only
+# workspace member like every crate above, and a `[dev-dependencies]` entry
+# wherever it is named — see that crate's own manifest for why it is under
+# `apps/` rather than beside `crcbl-golden`.
+crcbl-sample-test = { path = "apps/crcbl-sample-test", version = "0.1.0" }
 bytemuck = { version = "1", features = ["derive"] }
 
 [workspace.lints.rust]

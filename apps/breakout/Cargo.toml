@@ -53,6 +53,7 @@ crcbl-sprite = { workspace = true, features = ["bake"] }
 # see `crates/crcbl/Cargo.toml`.
 [dev-dependencies]
 crcbl-golden = { workspace = true }
+crcbl-sample-test = { workspace = true }
 
 [lints]
 workspace = true

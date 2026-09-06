@@ -30,7 +30,7 @@ use crcbl::math::Vec3;
 use crcbl::render::{Camera, EffectOverride, EffectRequest, ForwardRenderer, RenderEffects};
 use crcbl::screenshot::{ForwardScene, OffscreenSetup};
 use crcbl::shaders::tonemap::TonemapCurve;
-use crcbl_golden::{ChannelOrder, Golden, Image};
+use crcbl_golden::{ChannelOrder, Golden, Image, srgb_encode_level};
 use crcbl_sundial::{filter, plaza, sun};
 
 /// The extent the checked-in goldens are blessed at.
@@ -1653,21 +1653,6 @@ const SKY_SPREAD: f32 = 20.0;
 /// on lavapipe between [`sun::FIXTURE_TICK`] and [`sun::GRAZING_TICK`].
 const SKY_TICK_APART: f32 = 10.0;
 
-/// The sRGB transfer function, encoding linear light into the swapchain's
-/// levels.
-///
-/// A transcription of `crcbl`'s own `forward_e2e::depth_probe::srgb_encode`,
-/// which is `pub(crate)` to one test binary and cannot be reached from another —
-/// `apps/alcove/tests/golden.rs` carries the same copy for the same reason.
-fn srgb_encode(value: f32) -> f32 {
-    let encoded = if value <= 0.003_130_8 {
-        value * 12.92
-    } else {
-        1.055 * value.powf(1.0 / 2.4) - 0.055
-    };
-    encoded * 255.0
-}
-
 /// The world direction `sky.slang` shades pixel `(column, row)` along.
 ///
 /// The shader's own unprojection restated through `glam`: unproject two points
@@ -1732,7 +1717,7 @@ fn predicted_sky_channel(
     for y in y0..=y1 {
         for x in x0..=x1 {
             let radiance = view.drawn_radiance(sky_ray(camera, extent, x, y));
-            total += srgb_encode(radiance[channel].min(1.0));
+            total += srgb_encode_level(radiance[channel].min(1.0));
             count += 1;
         }
     }

@@ -209,9 +209,62 @@ say which `(mesh, primitive)` each of its `instances` came from, or to carry
 per-instance bounds; neither exists, and adding one to `crcbl-scene` for a
 cosmetic framing difference was not worth it here.
 
-### DECIDED — five copies of the golden harness helper
+### SHIPPED — one golden-harness fixture, and the curve moved to `crcbl-golden`
 
-Decision record; the decision is in `docs/backlog.md`.
+Record of the decision and of what landed. Option (a) was taken on 2026-09-06
+and built the same day.
+
+**What is in the tree now.** `apps/crcbl-sample-test` is a lib-only workspace
+member — no `src/main.rs`, so `tools/check-windowed-samples.sh` and every demo
+list pass over it — taken as a `[dev-dependencies]` entry by `apps/asteroids`,
+`apps/breakout`, `apps/flappy`, `apps/horde` and `apps/hud`. It carries
+`required_backend`, `adapter_line`, `SampleRun` (the run-the-binary half that
+was `screenshot_from_a_real_run`) and `Block` (`brightness` and `channel` over a
+fixed half-extent, which was `brightness`/`channel`/`channel_mean`). Each suite
+keeps its own constants, its own `inspect` and its own goldens; nothing about a
+picture moved.
+
+`srgb_encode` went the other way, into `crcbl_golden::srgb` as `encode` and
+`encode_level`, re-exported at that crate's root as `srgb_encode` and
+`srgb_encode_level`. **Not** into the sample-test crate, and the reason is the
+dependency direction: the fixture needs `crcbl` — for
+`crcbl::backend::BACKEND_ENV_VAR` and to spawn a sample binary — while four of
+the curve's callers are `crates/crcbl`'s own e2e binaries, which would then have
+to dev-depend on a crate that depends on them. The curve depends on nothing at
+all, so it belongs on the leaf every golden suite already reaches. Its callers
+now: `crcbl`'s `render_e2e`, `hal_seam_e2e`, `forward_e2e::depth_probe`,
+`forward_e2e::shadow` and `sprite_e2e`, plus `apps/sundial` and `apps/alcove`.
+`crcbl_golden::srgb`'s own unit tests pin it against IEC 61966-2-1's anchors —
+the two ends, the linear segment's slope, the knee, and two rows of the 8-bit
+table — rather than against a run of the code.
+
+**The copies had drifted, and this is what differed.** Diffed before the move:
+
+- `adapter_line` was byte-identical in all five.
+- `required_backend` differed only in the harness script it names, which is now
+  an argument.
+- `brightness`, `channel` and `channel_mean` differed in **shape**:
+  `apps/breakout` threaded the block's half-extent through as a parameter that
+  every call site passed `BLOCK` to, while the other four closed over the
+  `BLOCK` const directly. `Block` binds it once, which is the four's behaviour
+  with the one's explicitness.
+- `screenshot_from_a_real_run` differed in **what it checks**, and this is the
+  drift that mattered: `apps/breakout` and `apps/flappy` assert the summary's
+  _simulated_ tick count moved — the check flappy's suite first got wrong by
+  asserting the loop's count instead, which passed a frozen build twice — and
+  `apps/asteroids`, `apps/horde` and `apps/hud` never gained it. The fixture
+  keeps each caller's behaviour (`simulation_advanced`) rather than quietly
+  adding an assertion to three suites; closing that gap is open work in
+  `docs/backlog.md`.
+- The `srgb_encode` copies differed in two ways. `apps/sundial`'s and
+  `apps/alcove`'s return a level out of 255 where the other four return `[0, 1]`
+  — both shapes are kept, as `encode_level` and `encode`. And `sprite_e2e`'s
+  used `1.055f32.mul_add(…, -0.055)` where every other copy used
+  `1.055 * … - 0.055`; a fused multiply-add rounds once instead of twice, so
+  that copy was a different function by a fraction of an ulp. It now uses the
+  same one as everything else.
+
+The options weighed, kept because (b) will look attractive again:
 
 - **(a) A small support crate under `apps/`** that the sample test targets
   depend on. Clean, and it is where the knowledge belongs; costs a workspace
