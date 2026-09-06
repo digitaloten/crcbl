@@ -2844,8 +2844,9 @@ Not urgent: the error is bounded by how much the reflection contributes, and
 
 That topic was split into one document per technique — `44-lighting.md` through
 `50-irradiance-probes.md`, with `18-render-features.md` kept as the index that
-holds the interactions, the delivery table and the risks. A hundred and twenty
-citations in forty files (2026-08-29) — doc comments, shader headers and test
+holds the interactions, the delivery table and the risks. A hundred and
+twenty-eight citations in forty-eight files (re-counted 2026-09-06; 120 in 40 on
+2026-08-29, and it grows with each rung) — doc comments, shader headers and test
 headers across `crcbl-shaders`, `crcbl-render`, `crcbl`, `crcbl-vk`,
 `apps/lantern`, `apps/shard` and `apps/breach` name
 `docs/plan/18-render-features.md` and then name a section — "'s shadow section",
@@ -3117,27 +3118,6 @@ container image matching the runner's is the only way to hold the variable still
 — or have the job print the measured counts as a build annotation so a drift
 from two toward the ceiling is visible without reading the log. Neither was
 attempted.
-
-### `cargo doc` without `--all-features` does not build (2026-08-28)
-
-CI's rustdoc gate is `cargo doc --workspace --all-features --no-deps --locked`
-and it is green. The **bare** form — `cargo doc --workspace --no-deps`, which is
-what a contributor types and what this session's own instructions name — fails
-with six
-`unresolved link to `crate::bake``errors, all in`crcbl-sprite`: `crpix.rs`once and`load.rs`five times, including`crate::bake::duration_ms`and`crate::bake::aseprite_json`. `bake`is behind the crate's`bake`feature,`load`is behind`load`, and the default resolution enables `load`
-without it.
-
-Nothing about the shipped documentation is wrong — with every feature on, every
-link resolves. What is wrong is that the crate's docs assume a feature its own
-default build does not have.
-
-**Not fixed, and the fix is a convention decision rather than an edit.** Three
-routes: spell the six links as plain code, which loses them when `bake` is on;
-gate each with `cfg_attr(feature = "bake", doc = …)`, which is six multi-line
-doc comments split in half; or make `bake` non-optional and drop the feature,
-which is the simplest and changes what the crate compiles for everyone. Only
-`crcbl-sprite` was checked — whether another crate has the same shape under a
-different feature was not.
 
 ### Unfinished work from the rendering plans
 
@@ -7078,11 +7058,11 @@ Three things it did not settle:
   constant: the other three effects model light transport present in the scene,
   bloom is a lens. If it should be on by default instead, that is a re-bless of
   every forward golden in the tree on four backends, and its own slice.
-- **`apps/lantern` cannot show the effect it now ships.** It has no `--no-bloom`
-  flag and no menu row, and neither of its stacks carries `BLOOM`, so the
-  lighting fixture draws no bloom. Giving it the flag is small; giving it a
-  golden with bloom in it is the re-bless above in miniature and would want the
-  firefly fixture first.
+- **`apps/lantern` draws no bloom by default, and has no golden with it.**
+  Neither built-in stack carries `BLOOM`, so the shipped fixture is bloomless —
+  but `--stack <PATH>` (`apps/lantern/src/args.rs`) can now hand it one at run
+  time. What is still owed is a golden with bloom in it, which is the re-bless
+  above in miniature and would want the firefly fixture first.
 
 ### Two of the four teardown reporters only warn, and both are deferred
 
@@ -8921,6 +8901,10 @@ not an afternoon, and **the count is target-dependent** — `crcbl-dx12`'s
 Windows-gated modules document nothing on Linux and add their own under
 `--target x86_64-pc-windows-msvc`.
 
+Only `crcbl-sprite` was audited for doc links that cross a feature seam (fixed
+2026-09-06, `d6c4446`); whether another crate has the same shape under a
+different feature was never checked.
+
 ### What is still declared but not driven
 
 The seam suite drives most of `Capability::ALL` with real GPU work; the tally it
@@ -9670,15 +9654,15 @@ is exercised only against the stub. Nothing verifies what a real Dawn does with
 `maxAnisotropy: 16`. Deliberate — the probe exists for the `lod_max` sentinel,
 and an anisotropy probe would be measuring the machine rather than the seam.
 
-### `CHANGELOG.md`'s `[Unreleased]` is 12,090 lines, because no tag has been cut
+### `CHANGELOG.md`'s `[Unreleased]` is 13,390 lines, because no tag has been cut
 
-Measured 2026-09-03. The file's own header says why — "There are no tags yet, so
-everything so far is unreleased" — so this is the design working, not a defect.
-It is recorded because of what it costs: the section is past the point where a
-reader can find anything in it, and **BCTP step 2 assumes `[Unreleased]` is
-small enough to audit by eye** before moving it under a version heading. Cutting
-`v0.1.0` would move all of it under one heading and leave the next release's
-entries readable again.
+Measured 2026-09-06 (12,090 on 2026-09-03). The file's own header says why —
+"There are no tags yet, so everything so far is unreleased" — so this is the
+design working, not a defect. It is recorded because of what it costs: the
+section is past the point where a reader can find anything in it, and **BCTP
+step 2 assumes `[Unreleased]` is small enough to audit by eye** before moving it
+under a version heading. Cutting `v0.1.0` would move all of it under one heading
+and leave the next release's entries readable again.
 
 That is the user's call, not one to make unasked: a first tag starts the release
 pipeline, and the link block at the bottom of the file has never been exercised.
@@ -12872,13 +12856,16 @@ docs/notes/simulation.md under its own heading.
   (`crates/crcbl-audio/tests/burst-reference.wav`), not one per sample that
   emits sound, which is what the exit criterion asks for; asteroids and horde
   both synthesise deterministically from fixed seeds.
-- **The transcendental policy is two conflicting policies.** `05-physics.md`
-  requires the `libm` crate; `13-audio.md` requires own polynomial
-  approximations plus a CI deny. Neither exists. `libm` would be a new
-  dependency and therefore a user decision.
-- **`DeviceId` is per-kind on every backend**, which blocks local-multiplayer
-  device assignment that `19-input.md` says is supported "from day one". A test
-  asserting two devices are distinguishable would pass vacuously.
+- **The transcendental policy is decided and unbuilt.** Settled 2026-09-06 — see
+  "The transcendental policy is decided; the deny mechanism is not built". No
+  `Cargo.toml` names `libm` directly (it is in `Cargo.lock` only as a transitive
+  dependency) and there is no `clippy.toml` in the workspace.
+- **`DeviceId` is per-kind on three backends of four** — Win32, X11 and AppKit —
+  which blocks the local-multiplayer device assignment `19-input.md` says is
+  supported "from day one". Wayland allocates one id per `wl_seat`
+  (`crates/crcbl-shell/src/wayland/mod.rs`), so a distinguishability test would
+  pass vacuously on three and have something to say on one; no such test exists
+  and nothing brings up a second seat.
 - **`21-jobs.md`'s threaded-wasm finding is reproducible again** since
   `rust-src` was installed on `nightly-2026-07-02` (2026-08-22). Re-verified by
   running finding 1's build; the P5B entry above carries the command, its
@@ -15947,11 +15934,6 @@ set is empty are in `docs/notes/rendering.md` under this heading.
   exercises the runner's own path and not one below it, which
   `--force-geometry indirect-per-batch --force-binding array-pages` now makes
   possible and no job does.
-- **The camera layer is still untested against a real source**, because it has
-  none — there is no render-stack RON and nothing reads one. `[engine.video]` no
-  longer belongs in that sentence: `seam_from_outside.rs` drives it from a real
-  `StorageSource` through a real `GpuContext` and asserts the frame loses the
-  passes the file switched off.
 - **`EffectOverride::force(.., None)` — releasing an override — has no caller
   outside its unit test.** It is there because a settings row returning to
   "auto" is the obvious consumer and leaving the tri-state out would have made
