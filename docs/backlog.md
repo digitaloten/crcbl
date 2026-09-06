@@ -7653,7 +7653,11 @@ dependency the whole crate exists to avoid.
 under `apps/`, taken as a dev-dependency by each sample. One copy of the helper
 with five callers is what a shared test fixture is for, and a dev-dependency
 keeps it out of every shipped binary. It schedules the crate and the five
-call-site changes.
+call-site changes. The same crate takes `srgb_encode`, which `apps/sundial`'s
+and `apps/alcove`'s golden suites and four of `crates/crcbl`'s e2e binaries each
+carry a copy of (counted 2026-09-06 when sundial's atmosphere guard added the
+seventh); a host-side prediction of a swapchain byte is the one arithmetic every
+golden suite shares, and seven transcriptions of one curve is how one drifts.
 
 ### horde's golden spends its whole tolerance budget
 
