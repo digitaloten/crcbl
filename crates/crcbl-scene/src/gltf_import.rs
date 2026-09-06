@@ -183,6 +183,7 @@ pub struct GltfScene {
     instances: Vec<GltfInstance>,
     skins: Vec<GltfSkin>,
     clips: Vec<GltfClip>,
+    unsupported_required: Vec<String>,
 }
 
 impl GltfScene {
@@ -336,6 +337,24 @@ impl GltfScene {
     #[must_use]
     pub fn clips(&self) -> &[GltfClip] {
         &self.clips
+    }
+
+    /// Every name in the document's `extensionsRequired` that this importer
+    /// does not implement, in file order.
+    ///
+    /// Empty is a document this importer can honour in full — which is not the
+    /// same as one that arrived intact, since an *optional* extension it
+    /// ignores leaves nothing here.
+    ///
+    /// **The document still loaded**: [`import_gltf`] draws it without them and
+    /// warns, for the reason `warn_unsupported_extensions` states at length. So
+    /// this is what a caller reads to say that what is on screen is not what
+    /// the file describes — and it is the one thing in that warning a test can
+    /// assert, which is what `apps/viewer`'s shelf manifest does.
+    #[inline]
+    #[must_use]
+    pub fn unsupported_required_extensions(&self) -> &[String] {
+        &self.unsupported_required
     }
 }
 
@@ -1171,7 +1190,7 @@ fn build(
     buffers: &[Vec<u8>],
     key: &Path,
 ) -> Result<GltfScene, StorageError> {
-    warn_dropped_features(document, key);
+    let unsupported_required = warn_dropped_features(document, key);
     let images = read_images(source, document, buffers, key)?;
     let base_color_textures = document
         .materials()
@@ -1366,21 +1385,28 @@ fn build(
         images,
         skins: read_skins(document, buffers, key)?,
         clips: read_clips(document, buffers, key)?,
+        unsupported_required,
     })
 }
 
 /// Warn, once per feature, about everything the document uses and this importer
-/// does not read.
+/// does not read, and hand back the *required* extensions among them.
 ///
-/// A log line rather than a field on [`GltfScene`], because there is nothing for
-/// a caller to *do* with a morph target this crate did not parse — the value is
-/// that a mesh standing at its base shape has an explanation somewhere. The
-/// counts are the document's own, and the key is what makes a line actionable
-/// when a hundred files went past.
+/// A log line rather than a field on [`GltfScene`] for most of these, because
+/// there is nothing for a caller to *do* with a morph target this crate did not
+/// parse — the value is that a mesh standing at its base shape has an
+/// explanation somewhere. The counts are the document's own, and the key is
+/// what makes a line actionable when a hundred files went past.
+///
+/// The one exception is the return value, which is
+/// [`GltfScene::unsupported_required_extensions`]: a document drawn without an
+/// extension it declared *required* is a document whose picture is wrong, and
+/// that is a thing a caller reports and a test asserts rather than a thing only
+/// a log knows.
 ///
 /// Skins and animations used to be counted here and are now read; see
 /// [`GltfScene::skins`] and [`GltfScene::clips`].
-fn warn_dropped_features(document: &gltf::Document, key: &Path) {
+fn warn_dropped_features(document: &gltf::Document, key: &Path) -> Vec<String> {
     let root = document.as_json();
     let morph_targets: usize = root
         .meshes
@@ -1395,7 +1421,7 @@ fn warn_dropped_features(document: &gltf::Document, key: &Path) {
             key.display(),
         );
     }
-    warn_unsupported_extensions(root, key);
+    let unsupported_required = warn_unsupported_extensions(root, key);
 
     // Counted off the JSON for `texture_has_an_image`'s reason. Reported
     // separately from the extension lines because a texture can lose its image
@@ -1432,6 +1458,8 @@ fn warn_dropped_features(document: &gltf::Document, key: &Path) {
             key.display(),
         );
     }
+
+    unsupported_required
 }
 
 /// The linear radiance a material emits, as `GpuMaterial::emissive` wants it.
@@ -1494,7 +1522,8 @@ fn texture_has_an_image(document: &gltf::Document, index: usize) -> bool {
 const IMPLEMENTED_EXTENSIONS: &[&str] = &["MSFT_lod"];
 
 /// Name every extension the document declares and this importer does not
-/// implement, `extensionsRequired` louder than `extensionsUsed`.
+/// implement, `extensionsRequired` louder than `extensionsUsed`, and hand the
+/// required ones back for [`GltfScene::unsupported_required_extensions`].
 ///
 /// **The file, the feature and the reason**, which is what
 /// `docs/plan/sample/05-viewer.md`'s exit criteria ask of a document that did
@@ -1514,7 +1543,7 @@ const IMPLEMENTED_EXTENSIONS: &[&str] = &["MSFT_lod"];
 /// **That trade only holds while the report is loud**, which is what this
 /// function is for. `docs/backlog.md` carries the decision, because the honest
 /// answer may yet be a flag.
-fn warn_unsupported_extensions(root: &gltf::json::Root, key: &Path) {
+fn warn_unsupported_extensions(root: &gltf::json::Root, key: &Path) -> Vec<String> {
     let unsupported = |names: &[String]| -> Vec<String> {
         names
             .iter()
@@ -1547,6 +1576,8 @@ fn warn_unsupported_extensions(root: &gltf::json::Root, key: &Path) {
             optional.join(", "),
         );
     }
+
+    required
 }
 
 /// The encoded bytes of every image the document names, in order.
@@ -2164,6 +2195,34 @@ pub(crate) mod tests {
                 .iter()
                 .any(|line| line.contains("MSFT_lod") || line.contains("REQUIRES")),
             "an implemented extension was reported as unsupported: {warnings:#?}",
+        );
+    }
+
+    /// **The required extensions are on the scene, not only in the log.**
+    ///
+    /// A warning is for the person watching a run go past; this is what a
+    /// caller reports beside the model and what a test can assert, which is
+    /// what makes `apps/viewer`'s `shelf.expect` able to say that a model is
+    /// expected to draw without something it declared it needed. The optional
+    /// entry in the same document is deliberately absent: the document itself
+    /// says the picture is right without it.
+    #[test]
+    fn the_scene_carries_the_required_extensions_the_importer_lacks() {
+        let scene = import_glb(&with_extensions(
+            r#""KHR_animation_pointer", "MSFT_lod""#,
+            r#""KHR_materials_sheen", "MSFT_lod""#,
+        ))
+        .expect("the fixture imports");
+        assert_eq!(
+            scene.unsupported_required_extensions(),
+            ["KHR_materials_sheen"],
+            "the scene does not name exactly the required extensions this importer lacks",
+        );
+
+        let plain = import_glb(&triangle_json(BIN_CHUNK_BUFFER)).expect("the fixture imports");
+        assert!(
+            plain.unsupported_required_extensions().is_empty(),
+            "a document declaring no extension has one",
         );
     }
 

@@ -2,6 +2,7 @@
 //! host finds them.
 //!
 //! ```text
+//!   apps/viewer/assets/shelf.expect   ── the import outcome, one model a line
 //!   apps/viewer/assets/shelf.sha256   ── the file list, one sha256 a line
 //!        │
 //!        ├─ tools/fetch-shelf.sh ──▶ apps/viewer/assets/shelf/<Name>/glTF/…
@@ -37,6 +38,18 @@
 //! this crate's tests look for on disk. The table below holds what a checksum
 //! file cannot say: the name, the entry document, the licence and whether the
 //! browser tab ships it.
+//!
+//! # What each model is expected to import as
+//!
+//! `apps/viewer/assets/shelf.expect` is the second committed list, in the same
+//! shape as the first: an outcome, two spaces, a document's key. It says of
+//! every model on the shelf whether this importer honours it in full or draws
+//! it without an extension it declared it required, and
+//! `every_shelf_model_imports_as_this_manifest_says` parses every fetched model
+//! and asserts it. That is what makes the fetched corpus a *gate* rather than a
+//! directory of files whose existence is checked: a re-pin that changed a
+//! model, or an importer change that lost a feature, has to be blessed into
+//! that file instead of being absorbed in silence.
 //!
 //! # What the browser ships, and why it is three of them
 //!
@@ -601,6 +614,180 @@ mod tests {
                  tools/fetch-shelf.sh to check them",
                 SHELF.len() - fetched.len(),
                 SHELF.len(),
+                root.display(),
+            );
+        }
+    }
+
+    /// The manifest every shelf model's import is blessed against — see the
+    /// [module docs](super).
+    const EXPECTED: &str = include_str!("../assets/shelf.expect");
+
+    /// What importing one shelf model is expected to do.
+    ///
+    /// There is deliberately no variant for a document that fails to import: a
+    /// model on this shelf that no longer opens is the failure the gate exists
+    /// to report, not an outcome anybody blesses.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Outcome {
+        /// It imports, and this importer implements every extension it declares
+        /// in `extensionsRequired`.
+        Ok,
+        /// It imports and is drawn without the named extensions, which it
+        /// declared it required — so what is on screen is not what the file
+        /// describes. In the document's own order.
+        Unsupported(Vec<String>),
+    }
+
+    impl std::fmt::Display for Outcome {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Ok => f.write_str("Ok"),
+                Self::Unsupported(names) => write!(f, "Unsupported({})", names.join(", ")),
+            }
+        }
+    }
+
+    impl Outcome {
+        /// One manifest value, or `None` for a word that is not one.
+        fn parse(value: &str) -> Option<Self> {
+            if value == "Ok" {
+                return Some(Self::Ok);
+            }
+            let names = value
+                .strip_prefix("Unsupported(")?
+                .strip_suffix(')')?
+                .split(',')
+                .map(|name| name.trim().to_owned())
+                .collect::<Vec<_>>();
+            (!names.iter().any(String::is_empty)).then_some(Self::Unsupported(names))
+        }
+
+        /// What `model` actually imported as.
+        fn of(model: &Model) -> Self {
+            if model.unsupported.is_empty() {
+                Self::Ok
+            } else {
+                Self::Unsupported(model.unsupported.clone())
+            }
+        }
+    }
+
+    /// `shelf.expect`, parsed: the shelf index a line names and what it expects.
+    ///
+    /// Panics rather than returning an error, because every caller is a test
+    /// and a manifest that does not parse is the same failure as one that
+    /// disagrees with the shelf.
+    fn manifest() -> Vec<(usize, Outcome)> {
+        let mut rows: Vec<(usize, Outcome)> = Vec::new();
+        for line in EXPECTED.lines() {
+            let line = line.trim_end();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (value, key) = line
+                .split_once("  ")
+                .unwrap_or_else(|| panic!("{line:?} is not `<outcome>  <key>`"));
+            let outcome = Outcome::parse(value)
+                .unwrap_or_else(|| panic!("{value:?} is not an outcome shelf.expect may hold"));
+            let index = SHELF
+                .iter()
+                .position(|entry| entry.key().to_str() == Some(key))
+                .unwrap_or_else(|| panic!("shelf.expect names {key}, which is not on the shelf"));
+            assert!(
+                !rows.iter().any(|(listed, _)| *listed == index),
+                "shelf.expect names {key} twice",
+            );
+            rows.push((index, outcome));
+        }
+        for (index, entry) in SHELF.iter().enumerate() {
+            assert!(
+                rows.iter().any(|(listed, _)| *listed == index),
+                "no line of shelf.expect names {}, so nothing says what it should import as",
+                entry.key().display(),
+            );
+        }
+        rows
+    }
+
+    /// The manifest is well formed and covers the shelf exactly, which is the
+    /// half of the gate that runs with no shelf fetched.
+    ///
+    /// The coverage half is [`manifest`]'s own assertions — a row for every
+    /// model and a model for every row — and calling it is what runs them. What
+    /// is here beside that is the grammar, including the `Unsupported` form no
+    /// model on the shelf needs yet: a value the file may hold and nothing
+    /// parses is a value that would be discovered to be unparseable on the day
+    /// somebody blessed one.
+    #[test]
+    fn the_expectation_manifest_covers_the_shelf_exactly() {
+        manifest();
+        assert_eq!(
+            Outcome::parse("Unsupported(KHR_materials_sheen, KHR_texture_transform)"),
+            Some(Outcome::Unsupported(vec![
+                "KHR_materials_sheen".to_owned(),
+                "KHR_texture_transform".to_owned(),
+            ])),
+            "the manifest cannot express a model drawn without two extensions",
+        );
+        for value in ["ok", "Unsupported", "Unsupported()", "Unsupported(A,)"] {
+            assert_eq!(
+                Outcome::parse(value),
+                None,
+                "{value:?} parsed as an outcome"
+            );
+        }
+    }
+
+    /// **Every model on the shelf imports, and imports as `shelf.expect`
+    /// says.** This is the gate the fetched corpus exists to be: real documents
+    /// from a suite nobody here authored, each opened through the same path a
+    /// file on the command line takes, with the outcome blessed by hand.
+    ///
+    /// Skipped — loudly, by name — for models that have not been fetched, on
+    /// `every_shelf_file_is_on_disk_once_the_shelf_is_fetched`'s terms exactly:
+    /// only Suzanne is committed, `tools/fetch-shelf.sh` is what makes the rest
+    /// run, and CI's `test (linux)` job calls it.
+    #[test]
+    fn every_shelf_model_imports_as_this_manifest_says() {
+        let root = root();
+        let mut absent = Vec::new();
+        for (index, want) in manifest() {
+            let entry = &SHELF[index];
+            if !root.join(entry.key()).exists() {
+                absent.push(entry.name);
+                continue;
+            }
+            let (model, _) = open_at(&root, index).unwrap_or_else(|why| {
+                panic!(
+                    "{} no longer imports: {why}\n\
+                     shelf.expect says it should be {want}",
+                    entry.name,
+                )
+            });
+            let got = Outcome::of(&model);
+            eprintln!("{}: {got}", entry.name);
+            assert_eq!(
+                got, want,
+                "{} imports as `{got}` and shelf.expect says `{want}` — bless the \
+                 change into apps/viewer/assets/shelf.expect if it is wanted",
+                entry.name,
+            );
+        }
+        assert!(
+            absent.iter().all(|name| *name != SHELF[DEFAULT].name),
+            "{} has no {} — either the shelf root is wrong or the committed \
+             files were deleted",
+            root.display(),
+            SHELF[DEFAULT].name,
+        );
+        if !absent.is_empty() {
+            eprintln!(
+                "SKIPPED {} of {} shelf models: {} are not in {} — run \
+                 tools/fetch-shelf.sh to import them",
+                absent.len(),
+                SHELF.len(),
+                absent.join(", "),
                 root.display(),
             );
         }

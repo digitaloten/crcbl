@@ -600,15 +600,18 @@ jobs:
       # which only Suzanne is committed, because a repository with no LFS is not
       # where a demo's texture set belongs. `apps/viewer/src/shelf.rs`'s
       # `every_shelf_file_is_on_disk_once_the_shelf_is_fetched` checks the
-      # committed half everywhere and *announces a skip* for the rest, so
-      # without this step the shelf's own gate would pass on every runner
-      # without ever asking its question. This is where it asks it.
+      # committed half everywhere and *announces a skip* for the rest, and
+      # `every_shelf_model_imports_as_this_manifest_says` parses each fetched
+      # model against `apps/viewer/assets/shelf.expect` on the same terms — so
+      # without this step both would pass on every runner without ever asking
+      # their question. This is where they ask it.
       #
-      # Only here. The macOS and Windows legs below run the same test and take
+      # Only here. The macOS and Windows legs below run the same tests and take
       # the skip: the fetch is 138 MB and the thing it would prove — that a
-      # pinned upstream commit still serves the files this repository hashed —
-      # is not a per-platform claim. `web/build.sh` fetches the browser subset
-      # for itself, so the Pages build and the browser gates need nothing here.
+      # pinned upstream commit still serves the files this repository hashed,
+      # and that they still import as they were blessed to — is not a
+      # per-platform claim. `web/build.sh` fetches the browser subset for
+      # itself, so the Pages build and the browser gates need nothing here.
       - name: Fetch the viewer's model shelf
         timeout-minutes: 10
         run: ./tools/fetch-shelf.sh

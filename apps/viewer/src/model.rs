@@ -81,6 +81,16 @@ pub struct Model {
     /// point the imported document exists, and the node-to-skin mapping this
     /// needs lives on the [`GltfScene`] and nowhere downstream of it.
     pub skinned: Skinned,
+    /// Every extension the document declared **required** that the importer
+    /// does not implement —
+    /// [`GltfScene::unsupported_required_extensions`](crcbl::scene::GltfScene::unsupported_required_extensions).
+    ///
+    /// Empty is the ordinary case. It is not a [`Skip`]: a skip names a
+    /// conversion that could not be made, and this names a document that
+    /// converted whole and still does not look like itself. Kept here because
+    /// the imported scene is dropped at the end of [`load_from`] and this is
+    /// the last point it exists.
+    pub unsupported: Vec<String>,
 }
 
 /// What [`crate::gpu`] needs to draw this document's skinned geometry: the
@@ -360,6 +370,7 @@ pub fn load_from(
     // conversion measures the description exactly and leaves no headroom, and
     // every skinned instance needs room the description does not describe.
     reserve_for_skinning(&mut render.scene.capacities, &skinned);
+    let unsupported = imported.unsupported_required_extensions().to_vec();
     Ok(Model {
         key,
         render,
@@ -367,6 +378,7 @@ pub fn load_from(
         rig,
         playable,
         skinned,
+        unsupported,
     })
 }
 

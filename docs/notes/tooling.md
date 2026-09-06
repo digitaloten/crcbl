@@ -481,9 +481,52 @@ So the choice is boilerplate against a dependency, with no safety difference —
 which is a smaller question than it looked, and is why it is stated plainly
 rather than argued.
 
-### DECIDED — how the glTF corpus becomes a gate
+### SHIPPED — how the glTF corpus becomes a gate
 
-Decision record; the decision is in `docs/backlog.md`.
+Record of the decision and of what landed. Option (b) was taken on 2026-09-06
+and finished the same day.
+
+**What is in the tree now.** `apps/viewer/assets/shelf.expect` is a committed
+manifest in `shelf.sha256`'s shape — a value, two spaces, a key — naming the
+import outcome of every model on the shelf: `Ok` for a document this importer
+honours in full, `Unsupported(<extension>, …)` for one it draws without an
+extension the file declared in `extensionsRequired`. `apps/viewer`'s
+`every_shelf_model_imports_as_this_manifest_says` opens each fetched model
+through `shelf::open_at` — the same path a file named on the command line takes,
+meshlet build and framing box included — and asserts the outcome against that
+line. A model the manifest does not name, a manifest line naming no shelf row,
+and a model that no longer imports at all are each a failure that names the
+model. Unfetched models are skipped loudly by name, on
+`every_shelf_file_is_on_disk_once_the_shelf_is_fetched`'s terms exactly, and
+CI's `test (linux)` job is where the fetch makes it ask its real question.
+
+**The importer gained the one observable the manifest needs.**
+`GltfScene::unsupported_required_extensions` carries what
+`warn_unsupported_extensions` had only ever logged, and `apps/viewer`'s
+`model::Model::unsupported` carries it past the point the imported scene is
+dropped. Before this the required-extension report was a warning line and
+nothing could assert it.
+
+**All nine shelf models are `Ok`, and none of them declares an extension at
+all** — measured, not assumed: `grep extensionsRequired` over the fetched shelf
+matches nothing. So the `Unsupported` arm is a form the manifest can express and
+the corpus does not yet exercise; it is parsed and round-tripped by
+`the_expectation_manifest_covers_the_shelf_exactly` rather than left untested.
+That is the shape of the first content-policy question below — a document whose
+required extension this importer lacks — made blessable in advance of a corpus
+that holds one.
+
+**What the gate does not catch.** It asserts that a model imports and which
+extensions it was drawn without. A change that silently degrades a model it
+still imports — dropped normals, a lost texture, a coarser LOD — moves no
+outcome and passes. That is a golden-image question, not a manifest one, and
+`crates/crcbl/tests/gltf_e2e.rs` is still one synthetic textured quad.
+
+**Cost, measured:** the walk adds 27.5 s to a debug `cargo test -p viewer` on
+this machine with the shelf present (nine documents through meshlet build and
+simplification), and nothing on a machine that has not fetched it.
+
+The argument that produced the decision follows.
 
 - **(a) Vendor a pinned subset.** A dozen or two models committed in a corpus
   directory beside `crcbl-scene`'s own tests, so the gate is hermetic, runs
@@ -505,7 +548,57 @@ measurement to gate; **(a)** is the only one that is hermetic. Whichever lands
 forces the two content-policy questions recorded with the measurement below — a
 document whose required extension this importer lacks (18 of the 116 load
 anyway), and the non-ASCII asset key that refuses `Unicode❤♻Test` — because a
-gate has to assert an expected outcome for each.
+gate has to assert an expected outcome for each. The first is answered above:
+the manifest can say `Unsupported(<extension>)` and no model on the shelf needs
+it yet. **The second is not**, and it is not the importer's to answer alone —
+see the entry below.
+
+### A non-ASCII asset key is refused by the key rule, not by the importer
+
+Written 2026-09-06, while finishing the corpus gate above, because the decision
+recorded in `docs/backlog.md` ("non-ASCII asset keys must load") names the
+importer and the importer is not where the refusal is.
+
+**Where it actually is.** `crcbl_store::web::is_key_byte` allows
+`[A-Za-z0-9._-]` and nothing else, and `canonical_key` applies it per component.
+`crcbl_assets::DirSource::read` calls `canonical_key` before handing the key to
+`NativeStorage`, deliberately — that is what makes an asset tree which loads
+from a directory one that can be served over HTTP. `NativeStorage::resolve`
+itself allows any byte a filesystem does; it only refuses `..` and a prefix. So
+`apps/viewer`'s `model::load`, which uses the file's own name as the key, and
+`crcbl_scene::gltf_import`'s `uri_sibling`, which uses a glTF `uri` as one, both
+hit the same rule from different directions and neither owns it.
+
+**The corpus does not reach it.** None of the nine shelf models has a non-ASCII
+file name or `uri` — checked over the fetched shelf — so
+`every_shelf_model_imports_as_this_manifest_says` cannot see this, and adding
+`Unicode❤♻Test` to the shelf would be a licence read and a panel row rather than
+a test fixture.
+
+**What the decided fix costs, so the next slice does not re-derive it.** The
+decision is to percent-encode on the way in, keeping the key ASCII while the
+file is not. That is coherent — a percent-encoded key is exactly the URL a
+server wants, and a glTF `uri` is already percent-encoded by the specification,
+so the importer's `uri_sibling` would need no change at all. It lands in three
+places:
+
+- `canonical_key` accepts `%XX`, and validates the **decoded** component: no
+  `/ \ : ? # % @`, no whitespace, no control byte, not `.` or `..`, valid UTF-8.
+  That keeps every property the rule exists for —
+  `a_buffer_uri_that_is_not_a_legal_asset_key_never_reaches_the_filesystem`'s
+  three cases all still fail, since `%20` decodes to a space and `%2e%2e` to
+  `..`.
+- `DirSource::read` percent-decodes the canonical key before `NativeStorage`
+  sees it, and the OPFS backend does the same before `getFileHandle`.
+  `FetchSource` needs nothing: the encoded key _is_ the URL path.
+- `apps/viewer`'s `model::load` percent-encodes the file name it takes off the
+  command line, and `USAGE` stops stating a rule it would no longer have.
+
+**Why it was not done here.** It is a change to the browser security boundary in
+two crates the corpus slice does not own, and it needs a percent codec —
+"encoding and escaping" is named in CLAUDE.md as a thing not to hand-roll, and
+taking a dependency for it is the owner's call. It is its own slice, and it
+wants `Unicode❤♻Test` (or a fixture with the same shape) as its gate.
 
 ### A press and the motion in the same batch cannot be ordered
 

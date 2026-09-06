@@ -318,9 +318,16 @@ validation-report assertion once, for all of them.
   `apps/viewer/assets/shelf.sha256`, a per-file manifest, while one model —
   Suzanne — is committed so the default viewer run needs no fetch at all
   (`.gitignore` whitelists that one directory and ignores the rest of the
-  shelf). So the corpus is a fetch plus a pin, not a vendored tree. The scene
-  save→load→hash roundtrip cannot exist yet either — there is no scene format to
-  save ([06-assets-scenes.md](06-assets-scenes.md)).
+  shelf). So the corpus is a fetch plus a pin, not a vendored tree. **It is
+  walked**: `apps/viewer/assets/shelf.expect` names the import outcome of every
+  model — `Ok`, or `Unsupported(<extension>)` for one drawn without something it
+  declared it required — and `every_shelf_model_imports_as_this_manifest_says`
+  opens each fetched model and asserts it, so a re-pin or an importer change has
+  to be blessed rather than absorbed. What that does not catch is a model that
+  still imports and looks worse; that wants a golden, and
+  `crates/crcbl/tests/gltf_e2e.rs` is still one synthetic textured quad. The
+  scene save→load→hash roundtrip cannot exist yet either — there is no scene
+  format to save ([06-assets-scenes.md](06-assets-scenes.md)).
 - `crcbl-ui`: draw-list snapshot tests (widget tree → draw-command list compare
   — no GPU needed); hit-test unit grid.
 - Editor: random-command/undo property test (stage 8 exit criterion) runs

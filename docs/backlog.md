@@ -4030,11 +4030,14 @@ change can read.
 **Considered and kept:** the synthesized fixture is the right shape for importer
 unit tests and should stay. The Khronos sample subset `12-testing.md`'s anchor
 list asks for — real documents with sparse accessors, extensions, odd component
-types — is now on disk after a fetch. **Nothing walks it**: the only test over
-the fetched eight checks the files exist
-(`every_shelf_file_is_on_disk_once_the_shelf_is_fetched`), so no fetched
-document is parsed by any assertion. That is the gap now, and the entry below on
-turning the measurement into a gate is where it belongs.
+types — is now on disk after a fetch. **It is walked now**:
+`every_shelf_model_imports_as_this_manifest_says` parses every fetched model and
+asserts its outcome against `apps/viewer/assets/shelf.expect`. What is still
+missing is a _picture_: the manifest sees a model that stops importing and a
+model that gains a required extension, and cannot see one that still imports and
+looks worse — a dropped normal map, a coarser LOD. That wants a golden over a
+real document, and `crates/crcbl/tests/gltf_e2e.rs` is still one synthetic
+textured quad.
 
 ### Coverage gates one workspace floor, not per-crate thresholds (2026-08-27)
 
@@ -6977,34 +6980,6 @@ left, none of them a defect anybody saw:
   counts printed alongside it are what say the loop reads real data rather than
   an empty tile.
 
-### DECIDED — how the glTF corpus becomes a gate
-
-The record behind this — the argument, the options and the measurements — is in
-`docs/notes/tooling.md` under this heading.
-
-**The decision below was taken, and taken as (b) — but only half of it was
-built, so this entry is now about the missing half.** `tools/fetch-shelf.sh`
-pulls a named subset of `KhronosGroup/glTF-Sample-Assets` at a pinned commit,
-verifies it against `apps/viewer/assets/shelf.sha256`, and CI calls it in
-`test (linux)`; one model is committed plainly so a default run needs no fetch
-at all. What did **not** get built is the gate: the only test over the fetched
-models asserts their files exist, so nothing parses one, and the importer's
-98.3% against that suite is still a hand-run shell loop from 2026-08-19 with
-nothing stopping it regressing. `crates/crcbl/tests/gltf_e2e.rs` remains one
-synthetic textured quad.
-
-The three routes are kept below because the objection to (a) is now spent — the
-tree does hold a committed model — and because whichever way the assertion is
-written it still faces the two content-policy questions at the end.
-
-**DECIDED 2026-09-06 —** finish (b): a committed manifest, `shelf.expect`, names
-each fetched model's expected outcome — `Ok`, or `Unsupported(<extension>)` —
-and a test parses every model and asserts against it, so a corpus change has to
-be blessed rather than silently absorbed. Non-ASCII asset keys must load,
-because glTF names are UTF-8, so the importer is fixed rather than the corpus
-trimmed. It schedules the manifest, the test that reads it, and the importer
-fix.
-
 ### What bloom's slice left open (2026-08-23)
 
 The chain is built, gated by a golden and a within-frame ratio, and green on
@@ -7629,6 +7604,14 @@ percent-encode on the way in so the key stays ASCII while the file does not —
 which keeps the traversal and URI-escaping properties the key rule exists for.
 It schedules the importer change and the `USAGE` text that today states the rule
 without saying it will refuse the file.
+
+**Not built, and it is not the importer's to build.** The refusal is
+`crcbl_store::web::canonical_key`, applied by `crcbl_assets::DirSource::read`;
+`crcbl_scene`'s `uri_sibling` and `apps/viewer`'s `model::load` both hit it and
+neither owns it. `docs/notes/tooling.md`'s "A non-ASCII asset key is refused by
+the key rule, not by the importer" has the three places the fix lands, why the
+existing traversal tests survive it, and why it is its own slice (a percent
+codec is a dependency decision, and no shelf model reaches the case).
 
 ### What the orbit camera left out
 

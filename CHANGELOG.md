@@ -62,6 +62,26 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **The fetched glTF shelf is a gate, not a directory of files.**
+  `apps/viewer/assets/shelf.expect` is a committed manifest — an outcome, two
+  spaces, a document key, in `shelf.sha256`'s shape — naming what each of the
+  viewer's Khronos CC0 models is expected to import as: `Ok`, or
+  `Unsupported(<extension>, …)` for a document drawn without something its
+  `extensionsRequired` named. `apps/viewer`'s
+  `every_shelf_model_imports_as_this_manifest_says` opens every fetched model
+  through the same path a file named on the command line takes and asserts the
+  outcome, so a re-pinned corpus or a changed importer has to be blessed into
+  that file rather than absorbed in silence. A model that no longer imports at
+  all, a model the manifest does not name, and a manifest line naming no shelf
+  row are each a failure that names the model; unfetched models are skipped
+  loudly by name, as the on-disk check already did, and CI's `test (linux)` job
+  is where the fetch makes it ask its real question.
+- **`GltfScene::unsupported_required_extensions`** reports every
+  `extensionsRequired` entry `crcbl-scene`'s importer does not implement. The
+  importer already warned and drew the document anyway; the list is now on the
+  imported scene, so a caller can show it beside the model and a test can assert
+  it. `apps/viewer`'s `model::Model::unsupported` carries it past the point the
+  imported scene is dropped.
 - **The sun has a disc.** `docs/plan/43-render-standards.md` §8's last piece:
   `sky.slang`'s atmosphere arm draws the sun itself beside the sky-view LUT,
   which holds the scattered air alone and could not hold a body 0.533° across at

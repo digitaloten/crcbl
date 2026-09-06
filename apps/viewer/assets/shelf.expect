@@ -1,0 +1,20 @@
+# What importing each shelf model is expected to do, in `shelf.sha256`'s shape:
+# the outcome, two spaces, the document's key relative to the shelf root.
+#
+#   Ok                        the importer honours everything the document requires
+#   Unsupported(A, B)         it imports, and is drawn without A and B, which the
+#                             document declared in `extensionsRequired`
+#
+# Blessed by hand, and read by `apps/viewer`'s
+# `every_shelf_model_imports_as_this_manifest_says`. A model whose outcome moves
+# — because the corpus was re-pinned, or because the importer changed — reds that
+# test and has to be looked at rather than absorbed.
+Ok  Suzanne/glTF/Suzanne.gltf
+Ok  Avocado/glTF/Avocado.gltf
+Ok  WaterBottle/glTF/WaterBottle.gltf
+Ok  BoomBox/glTF/BoomBox.gltf
+Ok  Corset/glTF/Corset.gltf
+Ok  Lantern/glTF/Lantern.gltf
+Ok  BarramundiFish/glTF/BarramundiFish.gltf
+Ok  SciFiHelmet/glTF/SciFiHelmet.gltf
+Ok  FlightHelmet/glTF/FlightHelmet.gltf
