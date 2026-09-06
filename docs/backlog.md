@@ -7649,43 +7649,23 @@ there. What it does not do, and why:
   silhouette fit that re-ran on every orbit step would be tighter and is not
   written.
 
-### Three sample goldens do not check that the simulation advanced
+### `SampleRun::simulation_advanced` is now `true` at every call site
 
-`apps/breakout` and `apps/flappy` set `SampleRun::simulation_advanced`, which
-asserts the run's summary reports a _simulated_ tick count of at least half its
-frame count. `apps/asteroids`, `apps/horde` and `apps/hud` do not, and never did
-— found by diffing the five copies before they were merged into
-`apps/crcbl-sample-test` on 2026-09-06. The check exists because a build whose
-`Game::tick` did nothing presents its frames, writes a byte-identical image and
-passes every pixel claim; flappy's suite was measured against exactly that by
-emptying `tick`, and its first version asserted the loop's count instead and
-passed the frozen build twice.
+Closing the "three sample goldens" gap on 2026-09-06 turned the flag on in
+`apps/{asteroids,horde,hud}`, so all five callers of `apps/crcbl-sample-test`'s
+`SampleRun` pass `true`. A field every caller sets the same way is configuration
+nothing exercises. The fixture's own docs argue the other way — a new field must
+be a compile error at all five call sites, and a sample whose summary carries no
+simulated count would need it off.
 
-The fixture kept each caller's behaviour rather than quietly adding an assertion
-to three suites. Turning it on is one field per suite. **Unverified:** whether
-each of those three samples' `--frames` summary carries an `(N simulated)`
-figure at all — `apps/hud`'s subject is a ticker rather than a game loop. So the
-work is: read each summary, set the flag where the figure exists, and say in the
-suite why not where it does not.
-
-### Three test copies of `srgb_decode` are still uncollected
-
-`crates/crcbl/tests/render_e2e.rs`,
-`crates/crcbl/tests/sprite_e2e/sprite/mod.rs` and `apps/alcove/tests/golden.rs`
-each carry the inverse of the curve that moved to `crcbl_golden::srgb` on
-2026-09-06; `apps/viewer/src/gpu.rs`'s `linear_of` and
-`apps/breakout/src/art.rs`'s `to_linear` are two more, both inside those crates'
-own `#[cfg(test)]` modules. Deliberately out of scope for that slice, which was
-decided around `srgb_encode` alone.
-
-`crcbl_render::mip`'s `srgb_to_linear`/`linear_to_srgb` are **not** in this set
-and must stay where they are: they are shipped engine code (mip generation), and
-`crcbl-golden` is a dev-dependency the engine cannot take.
-
-Adding `crcbl_golden::srgb::decode` and pinning the round trip against the 8-bit
-table is small. The reason to do it is that three transcriptions of one curve is
-how `sprite_e2e`'s `srgb_encode` came to use a fused `mul_add` while the other
-five did not — a different function by a fraction of an ulp, undetected.
+**The question is whether a future sample can lack one.** Every one of the five
+drives `crcbl::engine::Loop`, and the figure comes from the game's own
+`ticks_run` rather than from the loop, so it is one struct field and one format
+argument away in any of them — that is exactly what this slice added to three.
+If that is always going to be true, the flag should go and
+`SampleRun::screenshot` should assert unconditionally; if a non-simulating
+sample is expected to join, it should stay. Not urgent: the flag is on
+everywhere, so nothing is unchecked while it is decided.
 
 ### horde's golden spends its whole tolerance budget
 

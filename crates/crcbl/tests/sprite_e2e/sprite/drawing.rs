@@ -21,12 +21,14 @@
 //! Goldens: `tests/golden/sprite_frames.png`, `sprite_multi_sheet.png` and
 //! `sprite_alpha.png`.
 
+use crcbl_golden::srgb_decode;
+
 use crate::harness::Headless;
 use crate::sprite::{
     FRAME_A, FRAME_A_CORNERS, FRAME_B, FRAME_B_CORNERS, HALF_ALPHA, SOLID_SHEETS, SPRITE_EXTENT,
     alpha_sheet, assert_background, assert_the_camera_maps_a_world_unit_to_a_pixel,
     asymmetric_sheet, background_rgb, close, register_sheet, render_sprites, report_goldens, rgb,
-    solid_sheet, sprite_golden, srgb_byte, srgb_decode, world_to_pixel,
+    solid_sheet, sprite_golden, srgb_byte, world_to_pixel,
 };
 
 /// **The sprite pass draws.** Two sprites, two different frames of one

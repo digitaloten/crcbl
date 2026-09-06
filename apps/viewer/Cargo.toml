@@ -43,7 +43,13 @@ crcbl = { workspace = true, features = ["scene"] }
 # not apply it. `src/shelf.rs`'s tests use one as an empty shelf root, which is
 # how they check what an unfetched shelf reports without writing to the
 # environment every other test in the process reads.
+#
+# `crcbl-golden` is here for `src/gpu.rs`'s pixel tests, which read a byte back
+# off the swapchain and need `srgb_decode` to say what light it stands for. A
+# dev-dependency on that crate's own manifest terms: nothing in it reaches the
+# shipped viewer or the wasm the browser demo loads.
 [dev-dependencies]
+crcbl-golden = { workspace = true }
 tempfile = "3"
 
 [lints]

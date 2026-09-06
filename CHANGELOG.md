@@ -77,6 +77,17 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **`crcbl_golden::srgb::decode`**, re-exported at the crate root as
+  `srgb_decode` — the sRGB electro-optical transfer function, the way back from
+  a readback byte to the linear light behind it, beside the `srgb_encode` that
+  landed with the module. Five test-side transcriptions of it are gone:
+  `crcbl`'s `render_e2e` and `sprite_e2e`, `apps/alcove`'s `eotf`,
+  `apps/viewer`'s `linear_of` and `apps/breakout`'s `to_linear`. Its unit tests
+  pin the inverse against IEC 61966-2-1's own anchors — both ends, the straight
+  segment's slope, the knee, and two rows of the 8-bit table — and sweep
+  `decode(encode(x))` over the whole range, which is the claim a transcription
+  slip in either direction fails. `apps/viewer` takes `crcbl-golden` as a
+  dev-dependency for it; nothing in it reaches a shipped binary.
 - **`crcbl_golden::srgb`** — the sRGB transfer function as a host-side
   prediction of what an `*_SRGB` format writes, re-exported at the crate root as
   `srgb_encode` (the `[0, 1]` signal) and `srgb_encode_level` (the same scaled

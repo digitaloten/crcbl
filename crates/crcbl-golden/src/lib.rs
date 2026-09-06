@@ -226,7 +226,7 @@ pub use compare::{
     worst_pixels,
 };
 pub use image::{ChannelOrder, Image, ImageError, MAX_PIXELS};
-pub use srgb::{encode as srgb_encode, encode_level as srgb_encode_level};
+pub use srgb::{decode as srgb_decode, encode as srgb_encode, encode_level as srgb_encode_level};
 
 /// The environment variable that turns a comparison into a regeneration.
 pub const BLESS_ENV: &str = "CRCBL_BLESS";

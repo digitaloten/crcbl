@@ -78,7 +78,7 @@ use crcbl::backend::{BACKEND_ENV_VAR, GpuBackend};
 use crcbl::hal::{Features, Format, GeometryPath};
 use crcbl::screenshot::{ForwardScene, OffscreenSetup, Scene};
 use crcbl::shaders::tonemap::TonemapCurve;
-use crcbl_golden::{ChannelOrder, Golden, Image, srgb_encode};
+use crcbl_golden::{ChannelOrder, Golden, Image, srgb_decode, srgb_encode};
 use crcbl_render::{Antialiasing, RenderEffects};
 
 /// What this binary calls itself in the lines [`Offscreen`] prints.
@@ -4540,21 +4540,6 @@ const CLIPMAP_MIN_TRAVEL: f32 = 0.4;
 /// disagreement about a fragment's centre is worth more of a level here and
 /// there is no block average to take the 8-bit rounding out along `x`.
 const CLIPMAP_MIRROR_LEVELS: f32 = 1.5;
-
-/// The sRGB transfer function run backwards, from the frame's levels to the
-/// linear light behind them.
-///
-/// [`srgb_encode`]'s inverse, and the profile above is differenced through it
-/// because the step it measures is a *fraction of a blend*, which is a linear
-/// quantity: the encode alone turns an even ramp into a curve three times
-/// steeper at one end than at the other.
-fn srgb_decode(encoded: f32) -> f32 {
-    if encoded <= 0.040_449_935 {
-        encoded / 12.92
-    } else {
-        ((encoded + 0.055) / 1.055).powf(2.4)
-    }
-}
 
 /// **The clipmap's claim, on the device: a fragment crossing a level boundary
 /// fades rather than steps, and it fades the way the host says it does.**

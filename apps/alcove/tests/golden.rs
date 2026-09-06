@@ -30,7 +30,7 @@ use crcbl::render::{Camera, EffectOverride, EffectRequest, ForwardRenderer, Rend
 use crcbl::screenshot::{ForwardScene, OffscreenSetup};
 use crcbl::shaders::tonemap::TonemapCurve;
 use crcbl_alcove::{court, occlusion};
-use crcbl_golden::{ChannelOrder, Golden, Image, srgb_encode_level};
+use crcbl_golden::{ChannelOrder, Golden, Image, srgb_decode, srgb_encode_level};
 
 /// The extent the checked-in goldens are blessed at.
 const EXTENT: (u32, u32) = (256, 192);
@@ -424,17 +424,11 @@ fn brightness(image: &Image, centre: (u32, u32), half: (u32, u32)) -> f32 {
 /// number of codes up near a sunlit surface. Comparing the two in codes compares
 /// the transfer function.
 ///
-/// The decode is the sRGB EOTF as IEC 61966-2-1 states it, per channel and
-/// before the average — averaging codes and decoding once is a different number.
+/// The decode is [`srgb_decode`], IEC 61966-2-1's EOTF, applied per channel and
+/// *before* the average — averaging codes and decoding once is a different
+/// number.
 fn linear_brightness(image: &Image, centre: (u32, u32), half: (u32, u32)) -> f32 {
-    fn eotf(code: u8) -> f32 {
-        let c = f32::from(code) / 255.0;
-        if c <= 0.040_45 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    }
+    let eotf = |code: u8| srgb_decode(f32::from(code) / 255.0);
     let (mut total, mut count) = (0.0f32, 0u32);
     let x0 = centre.0.saturating_sub(half.0);
     let y0 = centre.1.saturating_sub(half.1);

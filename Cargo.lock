@@ -1791,6 +1791,7 @@ name = "viewer"
 version = "0.1.0"
 dependencies = [
  "crcbl",
+ "crcbl-golden",
  "tempfile",
 ]
 

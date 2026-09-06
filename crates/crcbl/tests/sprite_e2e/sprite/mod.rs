@@ -120,15 +120,6 @@ pub(crate) fn assert_the_camera_maps_a_world_unit_to_a_pixel() {
     }
 }
 
-/// sRGB decode, what the sampler and the blender apply on the way in.
-pub(crate) fn srgb_decode(encoded: f32) -> f32 {
-    if encoded <= 0.040_45 {
-        encoded / 12.92
-    } else {
-        ((encoded + 0.055) / 1.055).powf(2.4)
-    }
-}
-
 /// The 8-bit value a linear channel is stored as.
 pub(crate) fn srgb_byte(linear: f32) -> u8 {
     crcbl_golden::srgb_encode_level(linear)

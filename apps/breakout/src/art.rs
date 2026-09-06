@@ -802,15 +802,10 @@ mod tests {
             field.image.pixels[pixel + 2],
         ];
 
-        // The canonical IEC 61966-2-1 transfer, per component: sRGB 8-bit → linear.
-        let to_linear = |c: u8| {
-            let c = c as f32 / 255.0;
-            if c <= 0.04045 {
-                c / 12.92
-            } else {
-                ((c + 0.055) / 1.055).powf(2.4)
-            }
-        };
+        // The canonical IEC 61966-2-1 transfer, per component: sRGB 8-bit →
+        // linear. `crcbl_golden::srgb` is where that curve lives and where its
+        // anchors are pinned; this is the byte adapter.
+        let to_linear = |c: u8| crcbl_golden::srgb_decode(f32::from(c) / 255.0);
         let luma = |rgb: [f32; 3]| rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
         let fill_luma = luma([to_linear(fill[0]), to_linear(fill[1]), to_linear(fill[2])]);
         let surround_luma = luma([SURROUND[0], SURROUND[1], SURROUND[2]]);

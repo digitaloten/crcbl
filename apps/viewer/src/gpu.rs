@@ -1502,31 +1502,16 @@ mod tests {
 
     /// Linear light from one byte of the swapchain, undoing its sRGB encode.
     ///
-    /// IEC 61966-2-1's electro-optical transfer function, which is what an sRGB
+    /// [`crcbl_golden::srgb_decode`] over the byte's `[0, 1]` signal: IEC
+    /// 61966-2-1's electro-optical transfer function, which is what an sRGB
     /// swapchain format applies on write — so this is the only way back from a
-    /// readback byte to the value the tonemap produced. Written out here as
-    /// every other pixel test in this workspace writes it (see
-    /// `crcbl/tests/render_e2e.rs`'s `srgb_encode`), and
-    /// [`the_transfer_function_pins_its_own_endpoints`] is what says the
-    /// transcription is right.
+    /// readback byte to the value the tonemap produced. The transcription was
+    /// written out here once, as it was in every other suite that reads a byte
+    /// back; the curve and its fixed points are that crate's now, pinned there
+    /// against the specification's own anchors rather than against a run of the
+    /// code.
     fn linear_of(byte: u8) -> f32 {
-        let encoded = f32::from(byte) / 255.0;
-        if encoded <= 0.04045 {
-            encoded / 12.92
-        } else {
-            ((encoded + 0.055) / 1.055).powf(2.4)
-        }
-    }
-
-    /// The decode's fixed points, from the specification rather than from this
-    /// implementation: a check computed by the thing it checks is no check.
-    #[test]
-    fn the_transfer_function_pins_its_own_endpoints() {
-        assert!(linear_of(0).abs() < 1e-6);
-        assert!((linear_of(255) - 1.0).abs() < 1e-6);
-        // The knee: 0.04045 encoded is 0.0031308 linear, and 12.92 is the slope
-        // below it.
-        assert!((linear_of(10) - (10.0 / 255.0 / 12.92)).abs() < 1e-6);
+        crcbl_golden::srgb_decode(f32::from(byte) / 255.0)
     }
 
     /// **The exposure reaches pixels, and it scales the picture the way an
