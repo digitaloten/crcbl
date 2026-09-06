@@ -16618,7 +16618,7 @@ joint's index on a skeleton. Nothing shipping.
 
 ## The Windows lavapipe vk e2e job reds in bursts of readback timeouts (2026-09-06)
 
-**Three times now, on three unrelated commits, and every time a rerun of the one
+**Four times now, on four unrelated commits, and every time a rerun of the one
 job was green.** `vk e2e (lavapipe, windows)` fails a handful of
 `crcbl-vk::vk_e2e mesh::*` tests with `harness.rs`'s readback deadline — "the
 196608-byte readback was still Pending after 30.0s, past the 30s this polls for"
@@ -16627,7 +16627,10 @@ both local drivers. The failing job runs about half as long as a green one (five
 minutes against ten), which is the shape of a starved runner rather than a slow
 one: the tests that red are the frame-sized readbacks, and the copies simply
 never complete inside the deadline. Seen once before 2026-09-05, on `03830d0`
-(eight tests) and on `e17f0df` (four tests):
+(eight tests), on `e17f0df` (four tests), and on `56b98f0` (two tests,
+`the_gpu_descends_a_scaled_instance_at_the_size_it_draws` and
+`the_gpu_descends_the_dag_to_the_cut_the_host_rule_says`, each at 33 s, with
+`wait_idle: Ok` and a clean validation report):
 
 - `the_mesh_dispatch_extent_is_the_culled_instance_count`
 - `the_mesh_shader_path_matches_the_indirect_path_s_golden`
@@ -16652,10 +16655,12 @@ readback-timeout tests once inside the job (nextest's `retries` for that
 profile) — turns a burst into a slow green, at the cost of hiding a real hang
 behind one retry. (3) Read the runner's load in the job (`Get-Counter` processor
 time before the suite) and print it beside the summary, so the next red carries
-the evidence this entry lacks. (3) costs nothing and decides between (1) and
-(2); it is the one to do first. Until then the answer is
-`gh run rerun <id> --failed`, and a fourth burst without (3) in place is a
-fourth guess.
+the evidence this entry lacks. (3) is in place since the fourth burst:
+`vk e2e (lavapipe, windows)` has a "Read the runner's load before the suite"
+step that prints processor time over a 3 s sample, free memory and the eight
+busiest processes. Nothing has been read from it yet — the next burst is the
+first with evidence, and it is what decides between (1) and (2). Until then the
+answer is still `gh run rerun <id> --failed`.
 
 ## The debug draw layer's console switch is one bit, not a category set (2026-08-31)
 

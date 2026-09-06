@@ -2310,6 +2310,28 @@ jobs:
       # an instance that never loaded one, and
       # `a_deliberate_violation_is_caught_by_the_layer` commits a real spec
       # violation and asserts the layer noticed.
+      # **The runner's load, printed before the suite.** This job has gone red
+      # four times on four unrelated commits in the three days to 2026-09-06, each
+      # time a burst of `mesh::*` tests hitting `harness.rs`'s 30 s readback
+      # deadline, each time green on the rerun, and each time about half as
+      # long as a green run — the shape of a starved VM, not a slow frame. The
+      # logs carried no evidence either way, so this prints what the runner was
+      # doing as the suite started: processor time over a short sample, free
+      # memory, and the processes that have used the most CPU since boot. The
+      # next burst then says whether the machine was busy, which decides
+      # between raising the deadline and retrying the test.
+      - name: Read the runner's load before the suite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cpu = (Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 1 -MaxSamples 3).CounterSamples |
+              Measure-Object -Property CookedValue -Average
+          $os = Get-CimInstance Win32_OperatingSystem
+          $freeGiB = [math]::Round($os.FreePhysicalMemory / 1MB, 2)
+          $totalGiB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 2)
+          Write-Host "crcbl vk e2e (windows): load before the suite: $([math]::Round($cpu.Average, 1))% processor time over 3 s, $freeGiB GiB free of $totalGiB GiB, $env:NUMBER_OF_PROCESSORS logical processors"
+          Get-Process | Sort-Object CPU -Descending | Select-Object -First 8 Name, Id, @{ n = 'CpuSeconds'; e = { [math]::Round($_.CPU, 1) } }, @{ n = 'WorkingSetMiB'; e = { [math]::Round($_.WorkingSet64 / 1MB, 0) } } |
+              Format-Table -AutoSize | Out-String | Write-Host
       - name: Run the suite against lavapipe
         shell: pwsh
         env:
