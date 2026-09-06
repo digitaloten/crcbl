@@ -975,6 +975,13 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- **`crates/crcbl-vk/tests/run-vk-e2e.sh` pins lavapipe by default.** A bare run
+  used to let the Vulkan loader choose the driver — the discrete card on a
+  workstation — while printing that it was "what CI sees", so nobody was running
+  CI's gate. Unset `CRCBL_VK_ICD` now means lavapipe (`lvp_icd.json` or its
+  distribution's sibling spelling, resolved the way `vulkan-icd.sh` always did),
+  and `CRCBL_VK_ICD=hardware` is the explicit opt-out for a run against real
+  hardware, which the script names as not CI's run.
 - **A 3D view's tonemap operator defaults to the ACES fit.**
   `ForwardRenderer::new` starts on `crcbl_shaders::tonemap::TonemapCurve::Aces`
   where it started on `Clamp`, so a view that has asked for nothing is drawn

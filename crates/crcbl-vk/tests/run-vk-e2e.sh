@@ -47,9 +47,14 @@
 #   against. No layer, no ICD, no GPU, no packaging opinions.
 #
 # ENVIRONMENT
-#   CRCBL_VK_ICD              Pin an ICD manifest, e.g. lavapipe's `lvp_icd.json`.
-#                             CI sets this so a runner that grows a GPU does not
-#                             silently stop testing the software path.
+#   CRCBL_VK_ICD              The ICD manifest to pin. **Unset means lavapipe**
+#                             (`/usr/share/vulkan/icd.d/lvp_icd.json`, or its
+#                             sibling spelling), so a bare run is the run CI
+#                             makes; CI still sets it so a runner that grows a
+#                             GPU does not silently stop testing the software
+#                             path. `CRCBL_VK_ICD=hardware` is the opt-out: the
+#                             loader chooses, which on a workstation is the
+#                             discrete card, and the run says so.
 #   CRCBL_VK_EXPECT_ADAPTER   A substring the adapter the suite actually opened
 #                             must contain, e.g. `llvmpipe`. Unset means "do not
 #                             check", which is what a developer running against
@@ -97,6 +102,30 @@ REPO_ROOT="$(cd "${CRATE_DIR}/../.." && pwd)"
 export CRCBL_VK_VALIDATION="${CRCBL_VK_VALIDATION:-1}"
 export CRCBL_VK_SYNC_VALIDATION="${CRCBL_VK_SYNC_VALIDATION:-1}"
 
+# Lavapipe unless told otherwise. The header above claims this script is what
+# a developer runs to see what CI sees, and an unset variable used to make that
+# claim false: the loader picked whatever was installed, which on a workstation
+# is the discrete GPU and never the software rasteriser CI runs — and nobody
+# reads an adapter line looking for an absence, so nobody was running CI's
+# gate. Running against real hardware is still worth doing deliberately, and
+# `hardware` is how: the pin is dropped and the run is named as not CI's.
+case "${CRCBL_VK_ICD:-}" in
+    "")
+        CRCBL_VK_ICD=/usr/share/vulkan/icd.d/lvp_icd.json
+        export CRCBL_VK_ICD
+        echo "crcbl vk e2e: CRCBL_VK_ICD is unset, so this run pins lavapipe (${CRCBL_VK_ICD}) the way CI does;" >&2
+        echo "              CRCBL_VK_ICD=hardware lets the loader choose the driver instead" >&2
+        ;;
+    hardware)
+        unset CRCBL_VK_ICD
+        cat >&2 <<'HARDWARE'
+crcbl vk e2e: CRCBL_VK_ICD=hardware, so the loader will choose the driver.
+              CI pins lavapipe and this run does not, so a green run here is
+              NOT the run CI makes; the adapter line below names what ran.
+HARDWARE
+        ;;
+esac
+
 # shellcheck source=crates/crcbl-vk/tests/vulkan-icd.sh
 source "${CRATE_DIR}/tests/vulkan-icd.sh"
 crcbl_pin_vk_icd "crcbl vk e2e"
@@ -108,22 +137,6 @@ crcbl_pin_vk_icd "crcbl vk e2e"
 # — which `docs/backlog.md` records.
 # shellcheck source=tools/nextest-summary.sh
 source "${REPO_ROOT}/tools/nextest-summary.sh"
-
-if [ -z "${CRCBL_VK_ICD:-}" ]; then
-    # Say so. The header above claims this script is what a developer runs to
-    # see what CI sees, and with no ICD pinned that claim is false: the loader
-    # picks whatever is installed, which on a workstation is the discrete GPU
-    # and never the software rasteriser CI runs. The suite prints the adapter it
-    # got, but nobody reads an adapter line looking for an absence — this is the
-    # line that names it. Not a hard failure: running against real hardware is a
-    # thing worth doing deliberately, and this is exactly how.
-    cat >&2 <<'NOICD'
-crcbl vk e2e: CRCBL_VK_ICD is not set, so the loader will choose the driver.
-              CI pins lavapipe and this run does not, so a green run here is
-              NOT the run CI makes. To reproduce CI:
-                CRCBL_VK_ICD=/usr/share/vulkan/icd.d/lvp_icd.json $0
-NOICD
-fi
 
 # Fail early and legibly rather than letting every test panic with the same
 # message. Best-effort on both platforms: the suite's own `NoLoader` panic is the

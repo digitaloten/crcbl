@@ -11628,30 +11628,6 @@ are in docs/notes/backends.md.
   log line, or the compositor's own tree. That a fullscreen frame is _composed_
   at the new extent, rather than merely built at it, is unchecked.
 
-## `run-vk-e2e.sh` pins no ICD by default, so nobody was running CI's gate
-
-The script's header says it "is what a developer runs to see what CI sees". That
-was not true unless the developer happened to set `CRCBL_VK_ICD`: the pin block
-is wrapped in `if [ -n "${CRCBL_VK_ICD:-}" ]`, and with the variable unset the
-script exports nothing and the Vulkan loader picks whatever is installed. On a
-workstation that is the discrete GPU. Measured here: a bare
-`crates/crcbl-vk/tests/run-vk-e2e.sh` reports
-`adapter "AMD Radeon RX 7900 XTX (RADV NAVI31)"`, while CI's job sets
-`CRCBL_VK_ICD=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json` and gets llvmpipe.
-The suite printed the adapter it got all along, but an adapter line is not
-something anyone reads looking for an absence.
-
-The script now prints a warning naming the gap and the command that closes it,
-and still runs — testing against real hardware deliberately is worth doing, and
-
-**DECIDED 2026-09-06 —** the bare invocation becomes CI's invocation:
-`run-vk-e2e.sh` defaults `CRCBL_VK_ICD` to lavapipe, and `CRCBL_VK_ICD=hardware`
-is the explicit opt-out for a run against the discrete card. The script's own
-header already promises "what CI sees", and a default that quietly differs from
-CI is the thing that made nobody run the gate. Work: change the default, keep
-the warning line naming which adapter was chosen, and update the script's header
-and `docs/plan` references so the hardware run is documented as the opt-out.
-
 ## What the import-state check does not reach
 
 `ImportedImage::initial` is enforced now — `TransientPool` records what each
