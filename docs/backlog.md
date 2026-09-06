@@ -475,6 +475,34 @@ repository can is a boot that reaches for a global only the isolated origin has;
 a `SharedArrayBuffer` allocation in `web/engine/demo.js`'s boot is the shape it
 was shown going red on.
 
+## Shard's Pages leg doubled, and the demo did not (2026-09-07)
+
+`render shard in a real browser` in `pages.yml` took 1711 s on `11d0506` and
+3284 s on `ca27002`, the first run after `apps/shard`'s loot slice, and the run
+on `05c57a1` was past an hour when this was written. The cap is 90 minutes. The
+checks that grew all wait a fixed number of frames —
+`a steady-state frame gives back everything it takes` went 407 s → 803 s,
+`the canvas has a backing store` 262 s → 513 s — so the number is the software
+rasteriser's frame time.
+
+**It is not the loot slice, measured three ways on 2026-09-07:** the same
+browser gate on this machine's hardware adapter reads 1.3 s for the steady-state
+check at `11d0506` and at `89d48d5`; 200 headless frames on lavapipe take 13.2 s
+at both, paced by the fixed-step clock; and the engine's own per-pass GPU table
+at exit is the same 26 labels at 55.9 ms and 55.8 ms of p50, `forward` 17.6 ms
+in both. The runner image (`ubuntu-24.04`) and Chrome (`152.0.7977.64`) are the
+same in both CI logs. What differs between the two Pages runs is the other legs,
+in both directions: `alcove` 3020 s → 1035 s, `quarry` 2435 s → 886 s, `puppet`
+2194 s → 1556 s. Shared runners land on different hardware, and shard is the
+heaviest scene, so it is the one that shows it.
+
+**What to do if a run hits the cap:** nothing in `apps/shard`. The lever is
+`FRAMES_WATCHED`/`WINDOWS` in `web/tools/browser-e2e.mjs`'s steady-state check
+(the single largest cost, and a frame-count that was sized on a faster runner)
+or the job's `timeout-minutes`. Not done here because every run so far has
+finished; the entry exists so the first cap hit is read as runner speed and not
+as a regression to bisect.
+
 ## The comparison seam's far side carries a residue the near side does not (2026-09-04)
 
 `apps/alcove/tests/golden.rs` holds the seam to both blocks —
