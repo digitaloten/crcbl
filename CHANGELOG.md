@@ -858,6 +858,10 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Fixed
 
+- **`crcbl-sprite` documents with `load` alone.** `load.rs`'s doc comments
+  linked into the `bake` module across the feature seam, so a dependent that
+  turned on `load` without `bake` got a rustdoc error instead of a page; the
+  links are plain code text now, and every feature configuration documents.
 - **The browser gate's heartbeat calibration no longer times out on a slow
   runner.** `web/tools/browser-e2e.mjs` waited a flat `--timeout` for each of
   the two HUD lines it measures the machine's pace from, and the Pages pool now

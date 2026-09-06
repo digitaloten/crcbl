@@ -1,6 +1,6 @@
 //! Reading a baked sheet back: the PNG, and the Aseprite-schema sidecar.
 //!
-//! [`crate::bake`] writes the two files §7 of `docs/specs/crcbl/pix.md`
+//! `bake` writes the two files §7 of `docs/specs/crcbl/pix.md`
 //! describes; nothing read them. This is the other direction, and the one a
 //! game actually calls — [`load`] takes the PNG bytes and an optional sidecar
 //! and hands back a [`Sheet`] plus the pixels in the exact shape
@@ -8,7 +8,7 @@
 //!
 //! # Why the JSON parser is hand-written
 //!
-//! For the reason [`crate::bake`]'s writer is. The schema is a dozen fixed
+//! For the reason `bake`'s writer is. The schema is a dozen fixed
 //! fields, this crate's default build has no dependencies at all, and that is a
 //! stated design property rather than an accident — a build-side crate is not
 //! the place to acquire a derive macro and a general-purpose deserialiser to
@@ -21,7 +21,7 @@
 //! * **Frames, clips and the nine-slice do.** Names, rects, holds, tag ranges,
 //!   directions, looping, and `center` back into insets.
 //! * **[`SampleMode`] does not.** Aseprite's schema has nowhere to put it, so
-//!   [`crate::bake`] does not write it and this reads back
+//!   `bake` does not write it and this reads back
 //!   [`SampleMode::default`]. A `.crpix` that says `sample: smooth` bakes to a
 //!   sidecar that cannot say so; a caller that needs it must set it itself.
 //!   `tests/round_trip.rs` has the test that says so out loud, and it uses a
@@ -286,7 +286,7 @@ pub fn decode_png(bytes: &[u8]) -> Result<Rgba8, LoadError> {
 }
 
 /// Aseprite's milliseconds as a hold in **ticks** — the inverse of
-/// [`crate::bake::duration_ms`].
+/// `bake::duration_ms`.
 ///
 /// `duration_ms` is `ceil(hold * 1000 / tick_hz)`, so a written `ms` lies in
 /// `[hold * 1000 / tick_hz, hold * 1000 / tick_hz + 1)` and therefore
@@ -312,7 +312,7 @@ pub fn hold_ticks(ms: u32, tick_hz: u32) -> u32 {
 
 /// Reads an Aseprite-schema sidecar back into a [`Sheet`].
 ///
-/// The inverse of [`crate::bake::aseprite_json`], and of an
+/// The inverse of `bake::aseprite_json`, and of an
 /// `--format json-array` export from Aseprite itself: `frames[]` become
 /// [`Frame`]s, `meta.frameTags` become [`Clip`]s, `meta.slices[0].keys[0]
 /// .center` becomes the [`NineSlice`], and `meta.size` is the sheet's size.

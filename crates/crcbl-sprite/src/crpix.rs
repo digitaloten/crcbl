@@ -1,6 +1,6 @@
 //! `.crpix` — pixel art as text, with XPM's design and frames of its own.
 //!
-//! A build input. [`bake`](crate::bake) turns one of these into a PNG and,
+//! A build input. `bake` turns one of these into a PNG and,
 //! when there is anything to say beyond a single still image, an
 //! Aseprite-schema JSON sidecar. The engine loads only those two, so nothing
 //! downstream knows this format exists and art exported from Aseprite is

@@ -16448,38 +16448,6 @@ leaves:
   human running `cargo run -p options` twice is currently the only check that
   the native path writes where it reads.
 
-## `cargo doc` without features is red, and nothing runs it (2026-08-28)
-
-CI documents the workspace with `--all-features`, and it is green. Run the same
-command with the **default** feature set and `crcbl-sprite` does not document:
-
-```
-error: unresolved link to `crate::bake::aseprite_json`
-   --> crates/crcbl-sprite/src/load.rs:315
-```
-
-`crates/crcbl-sprite/src/lib.rs` gates `pub mod bake` behind the `bake` feature
-and `pub mod load` behind `load`, and `load.rs`'s doc comment links across that
-seam — so the link resolves only when both are on, which is exactly the
-configuration CI picks and no other. Anyone reading these docs from a dependent
-crate that turns on `load` alone gets a rustdoc error rather than a page.
-
-Found while running the workspace gates for the options web demo; nothing in
-that change touches `crcbl-sprite`, so this predates it. The fix is a link that
-survives the gate being off — an intra-doc link inside a `#[cfg(feature)]`
-block, or plain code text — rather than turning the features on by default,
-which is what `png` being optional exists to avoid. Whether the no-features
-configuration should also be a CI job is the open question: it is a second
-rustdoc run over the whole workspace, and this is the first defect it would have
-
-**DECIDED 2026-09-06 —** Fix the link and add **no** second CI job. The link is
-the defect: an intra-doc link inside a `#[cfg(feature)]` block, or plain code
-text, so `crcbl-sprite` documents under any feature set. A no-features rustdoc
-run over the whole workspace is a second full gate for the first defect it would
-have caught in a month, which is not the ratio a gate earns — the rule the fix
-establishes (a doc link must not cross a feature seam) is what stops the next
-one.
-
 ## sandbox is not in the windowed gate (2026-08-24)
 
 `tools/run-samples-windowed.sh` is the only check that a sample brings up a real
