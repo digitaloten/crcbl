@@ -608,22 +608,99 @@ measured and neither fixes it — drawing the partner uniformly from the toleran
 band rather than taking the nearest changed nothing (2673 at 30k), and sending
 2%/5%/15% of matches out wide as calibration got 30k error only to 277/232/164.
 
-**The decision.** Two ways forward, and they are not the same amount of work:
-
-- **Keep Elo and state the window.** What is committed: convergence is claimed
-  and tested at 2 000 ticks, and `queue.rs` says in its own header that it does
-  not hold indefinitely. Cheap and honest, but the sample's exit criterion wants
-  a rating system that converges, and "for a while" is a weaker claim than that.
-- **Move to an uncertainty-aware rating (Glicko-2, or TrueSkill).** This is what
-  the industry actually does and the reason it does it: Glicko's `g(RD)` factor
-  attenuates the expected score by how uncertain the opponent's rating is, which
-  is exactly the correction this selection effect needs. Bigger, and it is a
-  published algorithm with constants that must be checked against Glickman's
-  paper rather than recalled — the whole point of a rating system nobody can
-  falsify is that a transcription slip in it would never show up.
+**The decision** was to move to Glicko-2, and it shipped on 2026-09-06 — see the
+next section, which also records that the reason given for it here was the wrong
+one.
 
 Worth noting the drift is arguably _content_ for this sample rather than only a
 defect: making a matchmaking property visible instead of asserted is what the
 plan says the demo is for, and "your rating is only as good as the variety of
 people you play" is a real thing to show. That does not settle which rating
 system ships.
+
+## Glicko-2 lands in bracket, and the lever is the step size (2026-09-06)
+
+Record of the change that closed the section above. `apps/bracket/src/rating.rs`
+is Glicko-2; the Elo K-factor schedule and `Rating::games` are gone.
+
+**Where every constant came from.** All of them are Mark E. Glickman, _Example
+of the Glicko-2 system_, Boston University, 22 March 2022
+(`http://www.glicko.net/glicko/glicko2.pdf`), transcribed with the paper open
+rather than recalled, except the last row.
+
+| Constant                | Value                  | Paper                                      |
+| ----------------------- | ---------------------- | ------------------------------------------ |
+| `GLICKO2_SCALE`         | 173.7178               | steps 2 and 8                              |
+| `Rating::START`         | 1500                   | step 1(a)                                  |
+| `START_DEVIATION`       | 350                    | step 1(a)                                  |
+| `TAU`                   | 0.5                    | step 1, recommended range 0.3–1.2          |
+| `CONVERGENCE_TOLERANCE` | 0.000001               | step 5.1                                   |
+| `START_VOLATILITY`      | 0.017320508 = 0.06/√12 | step 1(a)'s 0.06, rescaled — see below     |
+| `PROVISIONAL_DEVIATION` | 110                    | **not the paper's**; a display convention  |
+| `SKILL_SCALE`           | 400                    | not Glicko at all — the match stub's model |
+
+**τ = 0.5 because the worked example is worked at it.** Any value in 0.3–1.2 is
+allowed and the paper says to test for predictive accuracy; 0.5 is the middle of
+that range _and_ the value its example prints numbers for, and those numbers are
+the only thing in this codebase that can catch a transcription slip. Choosing
+differently would have traded the one real falsifier for a tuning preference
+nothing here can evaluate.
+
+**One rating period per match**, which is the simplest mapping and the one a
+live matchmaker wants — a result is rated when it is reported. The paper prefers
+10–15 games per period, and that preference is not free; see the volatility
+below. A player not in a match is not in a period either, so a deviation never
+widens from sitting out: `Rating::idled` is the paper's rule for that case and
+only `rate` with an empty period reaches it.
+
+**Provisional is `deviation > 110`.** The paper names no threshold. 110 is built
+on the one summary of RD it does give — 95% confident inside ±2 RD — so a
+settled rating's interval reaches a fifth of the way across the 1000-point skill
+range these populations span. It reads a rating and changes nothing about the
+update.
+
+**The measurement, 64 players, `mean_rating_error` and `rating_spread` against a
+true skill range of 1000.** Elo is five seeds at HEAD `d6c4446`; both Glicko-2
+rows are ten seeds.
+
+| ticks   | Elo (K 40/20)          | Glicko-2, σ 0.06    | Glicko-2, σ 0.06/√12 |
+| ------- | ---------------------- | ------------------- | -------------------- |
+| 2 000   | error 54–58 / 978–1054 | 60–67 / 1400–1569   | 26–35 / 1127–1331    |
+| 10 000  | 132–139 / 1750–1963    | 181–192 / 2046–2183 | 26–35 / 1150–1255    |
+| 30 000  | 325–335 / 2683–2756    | 364–375 / 2786–2947 | 50–65 / 1263–1340    |
+| 100 000 | not measured           | not measured        | 115–123 / 1466–1547  |
+
+**The reason given for the move was wrong, and the middle column is the
+evidence.** `g(RD)` was expected to be the correction: it attenuates the
+expected score by how uncertain the _opponent's_ rating is. But it only bites
+while a rating is uncertain, and a population that has played is not — the
+deviation settles at 60.5 points at the paper's σ, where `g` is 0.982. Run that
+way Glicko-2 drifts slightly _worse_ than the Elo it replaced, because at that
+deviation the step it takes, 173.7·φ'², is 20.7 points against the
+K-factor's 20.
+
+What governs the drift is the size of that step, and Glicko-2's virtue is that
+it derives it rather than being told it. The deviation settles where the
+volatility's growth balances a period's worth of information, φ² ≈ σ·sqrt(v), so
+the volatility is the knob — and it is the one constant step 1(a) explicitly
+hands to the application ("this value depends on the particular application").
+0.06 goes with the 10–15-game period the paper recommends; a period here is one
+game, and the same per-period budget spread over one game instead of twelve is
+0.06/√12 = 0.0173. That settles the deviation at 32.5 and is the third column.
+
+**It is a six-fold reduction, not a cure.** The spread still climbs — 1127–1331
+at 2 000 ticks to 1466–1547 at 100 000 — because the bias in each result is
+still there and only its size changed. Two things would attack the bias itself
+rather than its amplitude, and neither is scheduled: real 10–15-game rating
+periods (which would also lower the equilibrium deviation to about the same 33
+by a route the paper actually endorses, at the cost of a ladder that only moves
+at period boundaries), and pairing that deliberately spends some matches wide,
+which was measured on the Elo build and reported in the section above.
+
+**Determinism.** `exp`, `ln`, `sqrt` and `powf` are the host's `libm`, so this
+sample is reproducible from its seed on one host and not bit-identical across
+hosts. That is not a regression — the Elo build ran `powf` for the same reason —
+and nothing compares bracket's output across platforms: every assertion in the
+crate is a bound, and the browser gate reads that `error:` is a number and that
+matches are being played. bracket is not one of the crates named by
+"Cross-target determinism: the CPU side takes `libm`".

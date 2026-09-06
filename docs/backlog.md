@@ -5361,13 +5361,46 @@ that seam.
 
 ## bracket (`docs/plan/sample/16-bracket.md`)
 
+### bracket's ladder still stretches, six times slower (2026-09-06)
+
+**Not a defect and not fixed.** Moving to Glicko-2 cut the drift roughly
+six-fold — spread 1263–1340 at 30 000 ticks against Elo's 2683–2756, over a true
+skill range of 1000 — but it did not remove the bias, only its amplitude: by 100
+000 ticks the spread is 1466–1547 and still climbing. Two routes were identified
+and neither is scheduled. Real 10–15-game rating periods, which is what
+Glickman's paper actually recommends and which would reach the same equilibrium
+deviation by a route the paper endorses, at the cost of restructuring
+`Sim::step` to buffer results and a demo whose ladder only moves at period
+boundaries (`Report::delta_a` has no meaning at match time under that shape).
+And matchmaking that deliberately spends a fraction of matches wide, measured on
+the Elo build and recorded in `docs/notes/simulation.md`.
+
+**`rating::START_VOLATILITY` is the one constant that is not Glickman's**, and
+it is where anyone revisiting this should look first: 0.06/√12 rather than the
+paper's 0.06, derived from its recommended period length and this sample's
+one-game period. The derivation is the module's own and the measurement backs it
+(deviation settles at 32.5 rather than 60.5). Setting it back to 0.06 is a
+one-line change and reds
+`sim::tests::the_ladder_keeps_its_scale_over_a_long_run`, which is how it was
+verified. **`rating::TAU` is not pinned by any test either**: the paper's worked
+example is printed to four figures and does not separate τ = 0.5 from 0.6 —
+every `rating::` test passes at 0.6, measured 2026-09-06 — so the constant is a
+choice the suite cannot see, and the long-run spread table is the only reading
+that would.
+
+**Coverage gap: the uncertainty is invisible to a visitor.** `Rating` now
+carries a deviation and a volatility, and `apps/bracket/src/page.rs` still draws
+only the rating bar and the true-skill mark. `is_provisional` has no caller
+outside `rating.rs`'s tests. A whisker for ±2 RD on the ladder would make the
+new state the demo's subject rather than its implementation; not built, not
+asked for.
+
 ### bracket's transport milestone is blocked on a command path, not on UDP (2026-08-27)
 
 **Partly built.** Milestone 1's model, milestone 4's driver and milestone 5's
-web demo ship: the widening-tolerance queue, Elo ratings with a K-factor
-schedule, the match stub, a UI-only client, and
-`bracket sim [--seed N] [--players N] [--ticks N]` for the headless soak.
-`web/demos/bracket/` is the page.
+web demo ship: the widening-tolerance queue, Glicko-2 ratings, the match stub, a
+UI-only client, and `bracket sim [--seed N] [--players N] [--ticks N]` for the
+headless soak. `web/demos/bracket/` is the page.
 
 **The blocker is narrower than "there is no UDP".** There is no UDP transport
 and no LAN discovery, but the demo runs its `Sim` **directly** rather than over
@@ -16547,21 +16580,6 @@ Also still absent, and deliberately: the multi-client half. `Server` holds one
 `transport: T` and one `SessionManager`, so "many connections, low bandwidth"
 has no implementation. A browser demo cannot show it either way — both ends live
 in one wasm module — so it belongs with the native milestone, not this one.
-
-## Narrow matchmaking stretches an Elo ladder (2026-08-24)
-
-**DECIDED 2026-09-06 — move `apps/bracket` to Glicko-2.** Glickman's is the
-standard open rating with uncertainty, and its `g(RD)` factor attenuates the
-expected score by how uncertain the opponent's rating is, which is exactly the
-correction this selection effect needs; Lichess and chess.com's variants are the
-precedent, and TrueSkill is patented. What it schedules: implement it with every
-constant checked against Glickman's paper rather than recalled — a transcription
-slip in a rating system nobody can falsify would never show up — and re-measure
-convergence with the same mean-error-and-spread table `bracket` already
-produces, since that table is the only thing that can see the drift.
-
-The measured drift, the diagnosis and the two mitigations that did not fix it
-are in `docs/notes/simulation.md` under this heading.
 
 ## World-anchored debug text is not built (2026-08-31)
 

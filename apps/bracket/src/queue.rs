@@ -26,21 +26,21 @@
 //!
 //! # What pairing this tightly costs the ratings
 //!
-//! Matching people to their nearest equal is what a queue is for, and it puts a
-//! ceiling on how good the *ratings* can get. Conditioning on a small observed
-//! rating gap preferentially selects pairs whose true skill gap is larger,
-//! because a rating is a noisy estimate of skill — so the favourite wins more
-//! often than the gap predicted and the ladder's spread inflates. Measured over
-//! 64 players: converged by 2000 ticks, at a spread of 978 points against a
-//! true skill range of 1000, then stretched to 2689 by 30000.
+//! Matching people to their nearest equal biases every result. Conditioning on
+//! a small *observed* rating gap preferentially selects pairs whose true skill
+//! gap is larger, because a rating is a noisy estimate of a skill — so the
+//! favourite wins more often than the gap predicted, gains on average, and the
+//! ladder's *scale* inflates while its order stays right. Pairing at random
+//! removes it entirely and pairing wider reduces it, which is the same
+//! statement from the other side: the drift is what match quality costs.
 //!
-//! Pairing at random instead removes the drift entirely and pairing wider
-//! reduces it, which is the same statement from the other side: the drift is
-//! what the match quality costs. It is not fixable here — the correction
-//! belongs in the rating update, which has to know how uncertain the two
-//! ratings are. See `docs/notes/simulation.md`, "narrow matchmaking stretches
-//! an Elo ladder", for the measurements, and `docs/backlog.md` under the same
-//! heading for the rating that replaces it.
+//! The correction belongs in the rating update rather than here, and it is not
+//! the `g(φ)` term it was expected to be: what governs the drift is the size of
+//! the step a *settled* rating takes, which under Glicko-2 is its deviation
+//! squared and under Elo was a fixed K. `sim`'s
+//! `the_ladder_keeps_its_scale_over_a_long_run` is where the ladder's scale is
+//! now held, and `docs/notes/simulation.md` has the measurements on both
+//! systems.
 
 use crate::rating::Rating;
 
@@ -219,26 +219,23 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rating::{Outcome, settle};
     use crcbl::core::rand::hash_unit;
 
-    /// A rating near `points`, reached by playing the result that gets there.
+    /// How unsure the system is of the ratings these tests queue.
     ///
-    /// The rating type has no constructor taking arbitrary points — see
-    /// `rating.rs` — so a queue test that wants a spread has to earn one. Two
-    /// hundred settled wins or losses against the starting rating is plenty to
-    /// cover the range these tests use.
+    /// A plausible settled deviation, and nothing here reads it: the queue
+    /// pairs on `points` alone. It is a constant so a test that wants a spread
+    /// varies one thing.
+    const SETTLED: f64 = 60.0;
+
+    /// A settled rating at `points`.
+    ///
+    /// The rating type has no constructor taking arbitrary points outside
+    /// tests — see `rating.rs` — and `rating::at` is the one it has inside
+    /// them. The volatility is whatever a fresh rating carries, since the queue
+    /// reads neither it nor the deviation.
     fn near(points: f64) -> Rating {
-        let mut rating = Rating::provisional();
-        for _ in 0..200 {
-            let outcome = if rating.points() < points {
-                Outcome::Win
-            } else {
-                Outcome::Loss
-            };
-            (rating, _) = settle(rating, Rating::provisional(), outcome);
-        }
-        rating
+        crate::rating::at(points, SETTLED, Rating::provisional().volatility())
     }
 
     #[test]

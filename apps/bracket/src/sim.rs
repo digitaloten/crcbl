@@ -7,9 +7,20 @@
 //! # Determinism
 //!
 //! Every decision — who queues this tick, who wins — comes from
-//! [`crcbl::core::rand::hash_unit`] over the seed and a counter, so a
-//! run is reproducible from its seed on any platform. There is no clock and no
-//! thread-local state; ticking the same seed twice gives the same ladder.
+//! [`crcbl::core::rand::hash_unit`] over the seed and a counter. There is no
+//! clock and no thread-local state, so ticking the same seed twice on one host
+//! gives the same ladder.
+//!
+//! **Across hosts it is reproducible rather than bit-identical.** The rating
+//! update runs `exp`, `ln`, `sqrt` and `powf`, which are the host's `libm` and
+//! differ in the last bits between glibc, Apple, MSVC and wasm — so two
+//! platforms agree on the ladder and on every figure this reports to the
+//! precision anything here prints, and are not promised the same bytes.
+//! Nothing compares this sample's output across platforms: the browser gate
+//! reads that `error:` is a number and that matches are being played, and every
+//! assertion in this crate is a bound rather than a value. `docs/backlog.md`
+//! carries the workspace decision under "Cross-target determinism: the CPU side
+//! takes `libm`"; bracket is not one of the crates it names.
 
 use crcbl::core::rand::{hash_unit, salt};
 
@@ -185,6 +196,28 @@ impl Sim {
             .map(|player| (player.rating.points() - player.skill).abs())
             .sum();
         total / self.players.len() as f64
+    }
+
+    /// How far the ladder runs from top to bottom, in points.
+    ///
+    /// The reading the ladder's *scale* shows up in, as against its order. The
+    /// true skills span `SKILL_CEILING` minus `SKILL_FLOOR`, so a spread
+    /// that keeps growing past that is a ladder inflating its own units rather
+    /// than measuring anybody — which is what pairing tightly on rating does to
+    /// a rating system with no notion of how sure it is. See this crate's
+    /// `queue` module.
+    #[must_use]
+    pub fn rating_spread(&self) -> f64 {
+        if self.players.is_empty() {
+            return 0.0;
+        }
+        let mut lowest = f64::INFINITY;
+        let mut highest = f64::NEG_INFINITY;
+        for player in &self.players {
+            lowest = lowest.min(player.rating.points());
+            highest = highest.max(player.rating.points());
+        }
+        highest - lowest
     }
 
     /// How far the ratings have been from the true skills over time, oldest
@@ -378,10 +411,11 @@ mod tests {
 
     /// How many ticks a population is given to find its true skills.
     ///
-    /// Measured across five seeds at 64 players: mean error 54.4..57.7 points
-    /// against a starting error of 254, so this window is where convergence is
-    /// claimed and checked. It does **not** hold indefinitely — see
-    /// `docs/notes/simulation.md`, "narrow matchmaking stretches an Elo ladder".
+    /// Long enough that a population of 64 has played well over ten thousand
+    /// matches, which is what the first assertion below checks rather than
+    /// assumes. Unlike the Elo schedule this replaced, the window is not the
+    /// claim: `the_ladder_keeps_its_scale_over_a_long_run` runs far past it and
+    /// holds.
     const CONVERGENCE_TICKS: u64 = 2_000;
 
     #[test]
@@ -408,6 +442,49 @@ mod tests {
             assert!(
                 error < start_error / 2.0,
                 "seed {seed}: error {error:.1} barely improved on {start_error:.1}"
+            );
+        }
+    }
+
+    /// How long the ladder's scale is checked to hold for.
+    ///
+    /// Far past [`CONVERGENCE_TICKS`], because the defect this guards against is
+    /// slow: an Elo ladder over the same population read 978 points of spread at
+    /// 2000 ticks and 2689 at 30000, growing the whole way. See
+    /// `docs/notes/simulation.md`.
+    const LONG_RUN_TICKS: u64 = 30_000;
+
+    #[test]
+    fn the_ladder_keeps_its_scale_over_a_long_run() {
+        // **The claim the rating system was changed for.** Pairing tightly on
+        // rating biases every result towards the favourite, so a ladder can
+        // keep its *order* while its *scale* inflates without limit — and the
+        // mean error above cannot see that, because it is an average over
+        // players whose ratings are all drifting outwards together.
+        let truth = SKILL_CEILING - SKILL_FLOOR;
+
+        // Measured over ten seeds at 64 players: spread 1263..1340 and error
+        // 50..65 at this tick count. The bounds sit above that range and far
+        // below what the Elo schedule reached on the same run — 2683..2756 and
+        // 325..335 — so this reds on a return to that drift without flaking on
+        // the seed.
+        for seed in [0xB2ACu64, 1, 12_345] {
+            let sim = run(seed, 64, LONG_RUN_TICKS);
+            let spread = sim.rating_spread();
+            assert!(
+                spread < truth * 1.6,
+                "seed {seed}: the ladder stretched to {spread:.0} points against \
+                 a true range of {truth:.0}"
+            );
+            assert!(
+                spread > truth * 0.5,
+                "seed {seed}: the ladder collapsed to {spread:.0} points, so the \
+                 bound above would pass on a ladder that measures nothing"
+            );
+            let error = sim.mean_rating_error();
+            assert!(
+                error < 100.0,
+                "seed {seed}: ratings sat {error:.1} points from the true skills"
             );
         }
     }

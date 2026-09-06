@@ -37,10 +37,12 @@ interpolation, no tick — which the protocol has never been driven by.
 - **Matchmaking as a service**: queue entry and exit, party formation, pairing
   by rating with a tolerance that widens as wait time grows, and the trade-off
   between wait time and match quality made visible rather than asserted.
-- **A rating system that converges.** Elo-family, deterministic, and checkable:
+- **A rating system that converges.** Glicko-2, deterministic, and checkable:
   feed a synthetic population with known true skill and assert ratings converge
   within a stated tolerance over a stated number of matches. A rating system
-  nobody can falsify is a number generator.
+  nobody can falsify is a number generator, which is also why the algorithm is
+  transcribed step by step from Glickman's paper and checked against the worked
+  example printed in it.
 - **Identity and signed results** (topic 27): who a player is, and a result the
   host signs so it cannot be forged by a client — the chain breach gave up when
   it went LAN, at the tier a local host can actually back. Signature
@@ -112,22 +114,25 @@ record. The networked milestones are what remain.
 ## Where this stands
 
 **Milestone 1's model, milestone 4's driver and milestone 5's web demo are
-built.** `apps/bracket` has the queue with its widening tolerance, the Elo
+built.** `apps/bracket` has the queue with its widening tolerance, the Glicko-2
 ratings and the match stub, a UI-only client built on the draw list's
 primitives, and `bracket sim` for the headless population soak;
 `web/demos/bracket/` is the page and `bracket` is a row in `web/build.sh`'s
 `DEMOS` array. Like `apps/sparks`, the demo takes **no input at all** — what a
 visitor sees is a ladder sorting itself out and nothing they did — and every
 decision, who queues this tick and who wins, comes from a hash over the seed and
-a counter, so a run is reproducible from its seed on any platform.
+a counter, so a run is reproducible from its seed. The rating update runs `exp`,
+`ln` and `powf`, which are the host's `libm`, so two platforms agree to the
+precision anything here reports rather than byte for byte; nothing compares this
+sample's output across platforms.
 
 **Two design points worth not re-deriving.** Pairing adjacent players on a
 rating-sorted queue is the cheap form of the assignment problem and not an
 approximation of it: the total gap over pairs drawn from a line is minimised by
 pairing adjacent points, so no amount of searching finds a materially better
 set, and it is `O(n log n)` for the sort — which is what lets thousands run in
-CI. And `Rating` has **no constructor taking arbitrary points**: one starts
-provisional and moves only through a step bounded by the K-factor, so a
+CI. And `Rating` has **no constructor taking arbitrary points** outside the
+crate's own tests: one starts provisional and moves only through `settle`, so a
 non-finite rating has nowhere to enter from. That is the contract enforced
 rather than documented; an `f64` parameter would have let a NaN in and it would
 have spread through every later match.
@@ -136,6 +141,22 @@ have spread through every later match.
 a rating system nobody can falsify is a number generator, so the distance
 between what the ladder believes and what the players are really worth is drawn,
 falling, on screen.
+
+**The ladder's _scale_ is the second reading, and it is why the rating system is
+Glicko-2 rather than Elo.** Pairing tightly on rating biases every result
+towards the favourite, so a ladder can keep its order perfectly while its scale
+inflates without limit — and a mean error cannot see that, because every rating
+drifts outwards together. Over 64 players: Elo held 978–1054 points of spread at
+2000 ticks against a true skill range of 1000 and stretched to 2683–2756 by
+30000, at mean errors of 54–58 and 325–335 (five seeds); Glicko-2 reads
+1127–1331 and 1263–1340 at mean errors of 26–35 and 50–65 (ten seeds). What does
+the work is not the `g(RD)` term the move was expected to turn on — once a
+population has played, every deviation is small and `g` is within a couple of
+percent of 1 — but the step size, which Glicko-2 derives from a player's own
+uncertainty instead of being told. `sim`'s
+`the_ladder_keeps_its_scale_over_a_long_run` is the assertion and
+`docs/notes/simulation.md` is the record. It is a six-fold reduction and not a
+cure: at 100000 ticks the spread is 1466–1547 and still climbing.
 
 **Milestone 2 is blocked, and the blocker is narrower than "there is no UDP".**
 There is no UDP transport and no LAN discovery — `crcbl-net` ships

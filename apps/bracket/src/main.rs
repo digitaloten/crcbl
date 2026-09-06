@@ -161,6 +161,10 @@ fn report(sim: &Sim, started: f64, seed: u64, ticks: u64) -> String {
         sim.mean_rating_error()
     ));
     out.push_str(&format!(
+        "ladder spread  {:.0} points top to bottom\n",
+        sim.rating_spread()
+    ));
+    out.push_str(&format!(
         "match quality  {:.1} points apart on average\n",
         sim.mean_gap()
     ));
@@ -211,6 +215,7 @@ mod tests {
         assert!(report.contains("8 players"), "{report}");
         assert!(report.contains("50 ticks"), "{report}");
         assert!(report.contains("rating error"), "{report}");
+        assert!(report.contains("ladder spread"), "{report}");
     }
 
     #[test]

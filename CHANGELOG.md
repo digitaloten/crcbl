@@ -979,6 +979,22 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- **`apps/bracket` rates with Glicko-2 instead of Elo.** `rating::Rating` now
+  carries a deviation and a volatility beside its points, and `settle` runs
+  Glickman's steps 2–8 (_Example of the Glicko-2 system_, 22 March 2022) as a
+  one-match rating period; the K-factor schedule and `Rating::games` are gone,
+  replaced by `deviation()`, `volatility()` and `idled()`, and provisional now
+  means a deviation above 110 rather than a game count. Every constant is the
+  paper's and cited against the step it comes from — scale 173.7178, start
+  1500/350, τ 0.5, ε 0.000001 — and the paper's worked example is a test that
+  asserts its printed 1464.06 / 151.52 / 0.05999. The one exception is the
+  starting volatility, which step 1(a) leaves to the application: it is
+  0.06/√12, the paper's default rescaled from its recommended 10–15-game period
+  to this sample's one-game period, because that is what sets the step a settled
+  rating takes. Measured over 64 players, the ladder's spread against a true
+  skill range of 1000 now reads 1127–1331 at 2000 ticks and 1263–1340 at 30000,
+  where Elo read 978–1054 and 2683–2756. `bracket sim` reports the spread as its
+  own line, and `Sim::rating_spread` is the accessor behind it.
 - **`apps/sundial` draws under the atmosphere.** The shadow fixture's background
   was the scene target's clear colour and its plaza was lit by a flat ambient
   alone — the sample never called `ForwardRenderer::set_sky`, so it had no sky
