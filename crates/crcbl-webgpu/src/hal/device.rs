@@ -43,11 +43,11 @@ use crcbl_hal::{
     ComputePipelineDesc, ComputePipelineHandle, Device, DeviceCaps, DeviceRequestState,
     DisplayTiming, Features, GraphicsPipelineDesc, GraphicsPipelineHandle, HalError, ImageDesc,
     ImageHandle, ImageType, ImageViewDesc, ImageViewHandle, MemoryLocation, MeshPipelineDesc,
-    PendingDevice, PipelineLayoutDesc, PipelineLayoutHandle, PresentInfo, QueryKind, QuerySetDesc,
-    QuerySetHandle, QueueHandle, QueueKind, ReadbackDesc, ReadbackHandle, ReadbackState,
-    SamplerDesc, SamplerHandle, SemaphoreDesc, SemaphoreHandle, SemaphoreKind, SemaphoreWait,
-    ShaderModuleDesc, ShaderModuleHandle, ShaderSources, SubmitInfo, Support, SurfaceError,
-    SwapchainDesc, SwapchainHandle,
+    NO_OCCLUSION_QUERY_VERB, PendingDevice, PipelineLayoutDesc, PipelineLayoutHandle, PresentInfo,
+    QueryKind, QuerySetDesc, QuerySetHandle, QueueHandle, QueueKind, ReadbackDesc, ReadbackHandle,
+    ReadbackState, SamplerDesc, SamplerHandle, SemaphoreDesc, SemaphoreHandle, SemaphoreKind,
+    SemaphoreWait, ShaderModuleDesc, ShaderModuleHandle, ShaderSources, SubmitInfo, Support,
+    SurfaceError, SwapchainDesc, SwapchainHandle,
 };
 
 use crate::device::DeviceProbe;
@@ -815,20 +815,18 @@ impl Device for WebGpuDevice {
                 "this device reports no TIMESTAMP_QUERY, so the browser has no 'timestamp-query' \
                  feature and no GPUQuerySet of that type could be created",
             ),
-            // **And this claims exactly what the capability defines and no
-            // more.** `Capability::OcclusionQuery` is "a QueryKind::Occlusion
-            // query set" — `crcbl_hal::CommandEncoder` has no begin/end query
-            // verb, so nothing a caller records through this seam can ever write
-            // one, and the same is true of the Vulkan backend's `Yes`. What is
-            // claimed here is that `create_query_set` builds a real
-            // `GPUQuerySet` of the size asked for, that the seam's three query
-            // verbs reach the browser against it, and that `query_results` reads
-            // it back. `'occlusion'` needs no `GPUFeatureName`, so this is a
-            // constant rather than a device question: every device this backend
-            // opens serves it. Probe group AE is what holds the claim to a
-            // value — the native seam suite is a native binary and cannot open
-            // this backend.
-            Capability::OcclusionQuery => Support::Yes,
+            // **The comment that used to sit here made the case for refusing
+            // it, and now it is refused.** `'occlusion'` needs no
+            // `GPUFeatureName` and every device this backend opens would serve
+            // one — but `crcbl_hal::CommandEncoder` has no begin/end query verb,
+            // so nothing a caller records through this seam could ever write
+            // into the set, and every other backend answers this the same way
+            // for the same reason. `create_query_set` refuses it with this
+            // sentence. Probe group AE still runs: what it now witnesses is that
+            // the browser and the replayer serve the whole spine, so the verb is
+            // the only missing piece — which is why the divergence row is
+            // `Unwritten` rather than an `ApiAbsence`.
+            Capability::OcclusionQuery => Support::No(NO_OCCLUSION_QUERY_VERB),
             Capability::PipelineStatisticsQuery => Support::No(NO_STATISTICS_SET),
             // WebGPU has no semaphore of any kind. It orders submissions
             // implicitly — one queue, executed in order, hazards tracked by the
@@ -1330,16 +1328,19 @@ impl Device for WebGpuDevice {
 
     // --- queries ---
 
-    /// Creates an **occlusion** or **timestamp** query set, and refuses the
-    /// statistics kind by name.
+    /// Creates a **timestamp** query set, and refuses the other two kinds by
+    /// name.
     ///
-    /// `GPUQueryType` is exactly `'occlusion'` and `'timestamp'`. The first
-    /// needs no `GPUFeatureName`, so every device this backend can open serves
-    /// it; the second needs `'timestamp-query'`, which is why it is gated on the
-    /// flag this device actually opened with. Both refusals carry the same
-    /// sentences [`supports`](Device::supports) declares —
-    /// `NO_TIMESTAMP_FEATURE` and `NO_STATISTICS_SET` — so a refusal and a
-    /// declaration cannot drift.
+    /// `GPUQueryType` is exactly `'occlusion'` and `'timestamp'`, so the
+    /// statistics kind has nothing to become. The timestamp kind needs
+    /// `'timestamp-query'`, which is why it is gated on the flag this device
+    /// actually opened with. The occlusion kind is the one WebGPU would serve
+    /// and this seam will not ask for: see
+    /// [`NO_OCCLUSION_QUERY_VERB`], and
+    /// [`supports`](Device::supports) for why the refusal is the seam's rather
+    /// than the browser's. All three refusals carry the same sentences
+    /// `supports` declares — `NO_OCCLUSION_QUERY_VERB`, `NO_TIMESTAMP_FEATURE`
+    /// and `NO_STATISTICS_SET` — so a refusal and a declaration cannot drift.
     ///
     /// **The gate is what keeps a frame recordable.** `crcbl-render`'s
     /// `PassTimers` builds itself on [`Features::TIMESTAMP_QUERY`] alone, so a
@@ -1348,12 +1349,17 @@ impl Device for WebGpuDevice {
     ///
     /// # Errors
     ///
-    /// [`HalError::Unsupported`] for [`QueryKind::PipelineStatistics`] and for
-    /// [`QueryKind::Timestamp`] without the feature, and
-    /// [`HalError::InvalidDescriptor`] for a set of no queries — WebGPU's
-    /// `GPUQuerySetDescriptor.count` has a minimum of one, and a zero-length set
-    /// accepted here would be a handle whose every read is out of range.
+    /// [`HalError::Unsupported`] for [`QueryKind::Occlusion`], for
+    /// [`QueryKind::PipelineStatistics`] and for [`QueryKind::Timestamp`]
+    /// without the feature, and [`HalError::InvalidDescriptor`] for a set of no
+    /// queries — WebGPU's `GPUQuerySetDescriptor.count` has a minimum of one,
+    /// and a zero-length set accepted here would be a handle whose every read is
+    /// out of range.
     fn create_query_set(&self, desc: &QuerySetDesc<'_>) -> Result<QuerySetHandle, HalError> {
+        // First, and before anything reaches the stream: the refusal is the
+        // seam's rather than the browser's, and it is the same one every other
+        // backend makes.
+        desc.kind.check_supported(BackendKind::WebGpu)?;
         match desc.kind {
             QueryKind::Timestamp => {
                 if !self.caps.features.contains(Features::TIMESTAMP_QUERY) {
@@ -1369,6 +1375,8 @@ impl Device for WebGpuDevice {
                     what: NO_STATISTICS_SET,
                 });
             }
+            // Unreachable past `check_supported` above, and left standing
+            // because `'occlusion'` is what a begin/end verb would name.
             QueryKind::Occlusion => {}
         }
         if desc.count == 0 {

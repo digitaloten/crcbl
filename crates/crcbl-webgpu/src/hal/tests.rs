@@ -121,6 +121,25 @@ fn device_on_fresh_channel() -> (SharedChannel, WebGpuDevice) {
     (channel, device)
 }
 
+/// The same, on a device that opened with `'timestamp-query'`.
+///
+/// The query-spine tests below need a set they can actually get: the occlusion
+/// kind is refused on every backend (`crcbl_hal::NO_OCCLUSION_QUERY_VERB`) and
+/// the statistics kind has no `GPUQueryType`, so `QueryKind::Timestamp` on a
+/// device carrying the feature is the one set this backend hands out.
+fn timestamp_device_on_fresh_channel() -> (SharedChannel, WebGpuDevice) {
+    let channel = SharedChannel::new();
+    let device = WebGpuDevice::new(
+        channel.clone(),
+        DeviceCaps {
+            features: Features::COMPUTE | Features::TIMESTAMP_QUERY,
+            limits: Limits::minimum(),
+        },
+        HandlePool::new(),
+    );
+    (channel, device)
+}
+
 // ── (a) instance open ──────────────────────────────────────────────────────
 
 #[test]
@@ -2299,6 +2318,21 @@ fn a_timestamp_set_follows_the_feature_the_device_opened_with() {
             ),
             "GPUQueryType has no statistics member"
         );
+        // And the occlusion kind on both devices, which is the half that does
+        // *not* follow a feature: WebGPU serves `'occlusion'` on every device,
+        // and the seam declines it because nothing could write into the set.
+        assert!(
+            matches!(
+                device.create_query_set(&QuerySetDesc {
+                    label: None,
+                    kind: QueryKind::Occlusion,
+                    count: 2,
+                }),
+                Err(HalError::Unsupported { what, .. })
+                    if what == crcbl_hal::NO_OCCLUSION_QUERY_VERB
+            ),
+            "the occlusion refusal is the seam's, so it does not move with the device"
+        );
 
         // Nothing reached the stream for the refusals: a command encoded for a
         // set the caller never got back would create a pool nothing releases.
@@ -2315,17 +2349,6 @@ fn a_timestamp_set_follows_the_feature_the_device_opened_with() {
     }
 }
 
-/// **An occlusion set is created, recorded against, read and released — the
-/// whole spine, in the order a caller drives it.**
-///
-/// The declaration this holds is `Capability::OcclusionQuery`, and what it
-/// claims is exactly what the capability defines: a set of the size asked for
-/// exists, and the seam's verbs reach the stream naming it. The browser gate's
-/// group AE is what holds the *values* to it.
-///
-/// **What turns it red.** A verb going back to `record_unsupported`, which
-/// `finish` would then refuse over; a command encoding under the wrong tag; or
-/// the range arriving with its halves swapped.
 /// **Every capability this backend declares unsupported is refused by the call
 /// that names it** — the half of the parity contract the native seam suite
 /// cannot reach here.
@@ -2370,6 +2393,7 @@ fn a_capability_declared_unsupported_is_refused_by_its_own_call() {
         Capability::CpuTimelineSignal,
         Capability::TimelineWaitBeforeSignal,
         Capability::PipelineStatisticsQuery,
+        Capability::OcclusionQuery,
     ] {
         assert!(
             matches!(device.supports(capability), Support::No(_)),
@@ -2417,22 +2441,37 @@ fn a_capability_declared_unsupported_is_refused_by_its_own_call() {
         "UpdateBindGroup is no longer declared unsupported"
     );
 
+    // **The occlusion set, which is the seam refusing rather than the browser.**
+    // WebGPU would serve one — `'occlusion'` needs no `GPUFeatureName` — and
+    // `crcbl_hal::CommandEncoder` has no verb that would write it, so this
+    // backend declines the kind exactly as the other four do. The sentence is
+    // asserted rather than only the variant, because a refusal carrying some
+    // other reason would be a different decision wearing this one's shape.
+    let occlusion = device.create_query_set(&QuerySetDesc {
+        label: Some("refused occlusion"),
+        kind: QueryKind::Occlusion,
+        count: 1,
+    });
+    assert!(
+        matches!(
+            occlusion,
+            Err(HalError::Unsupported { backend, what })
+                if backend == BackendKind::WebGpu && what == crcbl_hal::NO_OCCLUSION_QUERY_VERB
+        ),
+        "an occlusion set is refused at the seam: {occlusion:?}"
+    );
+
     // **The accepting side, so this is not a test that passes by refusing
-    // everything.** A binary semaphore and an occlusion set are both declared
-    // supported, and both must still be served.
+    // everything.** A binary semaphore is declared supported and must still be
+    // served; the query spine's own accepting half is
+    // `the_query_spine_reaches_the_stream`, which needs a device carrying
+    // `'timestamp-query'` and so cannot be driven from this one.
     device
         .create_semaphore(&SemaphoreDesc {
             label: Some("served binary"),
             kind: SemaphoreKind::Binary,
         })
         .expect("a binary semaphore is declared supported");
-    device
-        .create_query_set(&QuerySetDesc {
-            label: Some("served occlusion"),
-            kind: QueryKind::Occlusion,
-            count: 1,
-        })
-        .expect("an occlusion set is declared supported");
 }
 
 /// **The encoder's refusals too**, for the three capabilities whose call is
@@ -2514,21 +2553,39 @@ fn an_encoder_verb_declared_unsupported_is_refused_at_finish() {
     );
 }
 
+/// **A query set is created, recorded against, resolved and released — the whole
+/// spine, in the order a caller drives it.**
+///
+/// The declaration this holds is `Capability::TimestampQuery`: a set of the size
+/// asked for exists, and the seam's verbs reach the stream naming it. It drove
+/// the occlusion kind until 2026-09-06, that being the kind needing no
+/// `GPUFeatureName` — the seam now refuses that kind on every backend
+/// (`crcbl_hal::NO_OCCLUSION_QUERY_VERB`), so the device here is the one
+/// carrying `'timestamp-query'` instead. The browser gate's group AE is what
+/// holds a resolve to a *value*.
+///
+/// **What turns it red.** A verb going back to `record_unsupported`, which
+/// `finish` would then refuse over; a command encoding under the wrong tag; or
+/// the range arriving with its halves swapped.
+///
+/// (This doc comment had drifted onto the head of
+/// [`a_capability_declared_unsupported_is_refused_by_its_own_call`]'s, where it
+/// described a test two hundred lines away.)
 #[test]
-fn the_occlusion_query_spine_reaches_the_stream() {
+fn the_query_spine_reaches_the_stream() {
     use crcbl_hal::{BufferHandle, QueryKind, QuerySetDesc};
 
-    let (channel, device) = device_on_fresh_channel();
+    let (channel, device) = timestamp_device_on_fresh_channel();
     let queue = device
         .queue(QueueKind::Graphics)
         .expect("the graphics queue");
     let set = device
         .create_query_set(&QuerySetDesc {
-            label: Some("visibility"),
-            kind: QueryKind::Occlusion,
+            label: Some("pass timers"),
+            kind: QueryKind::Timestamp,
             count: 8,
         })
-        .expect("an occlusion set is core WebGPU");
+        .expect("this device opened with timestamp-query");
     let dst: BufferHandle = Handle::from_bits((3 << 32) | 4).expect("a real handle");
 
     let mut encoder = device.create_command_encoder(&CommandEncoderDesc { label: None, queue });
@@ -2558,7 +2615,7 @@ fn the_occlusion_query_spine_reaches_the_stream() {
     let Some(crate::Command::CreateQuerySet { kind, count, .. }) = commands.first() else {
         panic!("the first command creates the set: {commands:?}");
     };
-    assert_eq!(*kind, QueryKind::Occlusion);
+    assert_eq!(*kind, QueryKind::Timestamp);
     assert_eq!(*count, 8);
     let Some(crate::Command::ResolveQuerySet {
         first_query,
@@ -2595,14 +2652,14 @@ fn the_occlusion_query_spine_reaches_the_stream() {
 fn a_read_past_the_end_of_a_query_set_is_refused_without_asking_the_browser() {
     use crcbl_hal::{QueryKind, QuerySetDesc};
 
-    let (channel, device) = device_on_fresh_channel();
+    let (channel, device) = timestamp_device_on_fresh_channel();
     let set = device
         .create_query_set(&QuerySetDesc {
             label: None,
-            kind: QueryKind::Occlusion,
+            kind: QueryKind::Timestamp,
             count: 4,
         })
-        .expect("an occlusion set is core WebGPU");
+        .expect("this device opened with timestamp-query");
 
     let mut past_the_end = [0u64; 5];
     assert!(
@@ -2646,14 +2703,14 @@ fn a_read_past_the_end_of_a_query_set_is_refused_without_asking_the_browser() {
 fn an_answered_query_read_hands_back_the_browsers_own_values() {
     use crcbl_hal::{QueryKind, QuerySetDesc};
 
-    let (channel, device) = device_on_fresh_channel();
+    let (channel, device) = timestamp_device_on_fresh_channel();
     let set = device
         .create_query_set(&QuerySetDesc {
             label: None,
-            kind: QueryKind::Occlusion,
+            kind: QueryKind::Timestamp,
             count: 4,
         })
-        .expect("an occlusion set is core WebGPU");
+        .expect("this device opened with timestamp-query");
 
     let mut out = [0u64; 2];
     assert!(

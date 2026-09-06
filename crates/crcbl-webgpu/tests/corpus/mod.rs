@@ -907,8 +907,9 @@ pub fn every_command() -> Vec<Command> {
             pipeline: handle(133, 134),
         },
         // The query set, in the creation family for `RequestReadback`'s reason.
-        // `Occlusion` is the only kind the replayer serves, so this is the kind
-        // the browser gate drives — and the `count` is neither a power of two nor
+        // `Occlusion` is the kind the browser gate drives — the replayer serves
+        // it and `create_query_set` refuses it at the seam, so group AE writes it
+        // to the stream directly — and the `count` is neither a power of two nor
         // byte-sized, so a decoder reading the wrong width shows.
         Command::CreateQuerySet {
             set: handle(210, 211),
@@ -916,10 +917,11 @@ pub fn every_command() -> Vec<Command> {
             kind: QueryKind::Occlusion,
             count: 0x0001_0203,
         },
-        // The unlabelled twin, and the kind `create_query_set` refuses at the
-        // seam. It is on the wire all the same — the writer carries what the
-        // caller gives — so a fold between the three kind codes decodes to a
-        // different command rather than the same one.
+        // The unlabelled twin, and the one kind a caller can still be handed —
+        // on a device carrying `'timestamp-query'`. It is on the wire whatever
+        // the device reports, the writer carrying what the caller gives, so a
+        // fold between the three kind codes decodes to a different command
+        // rather than the same one.
         Command::CreateQuerySet {
             set: handle(212, 213),
             label: None,

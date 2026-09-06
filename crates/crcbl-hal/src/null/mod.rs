@@ -899,10 +899,12 @@ impl Device for NullDevice {
                 Features::TIMESTAMP_QUERY,
                 "this preset did not grant TIMESTAMP_QUERY",
             ),
-            Capability::OcclusionQuery => gated(
-                Features::OCCLUSION_QUERY,
-                "this preset did not grant OCCLUSION_QUERY",
-            ),
+            // Not a preset question, unlike every gate around it: this
+            // recorder refuses the kind whatever it was granted, because what
+            // is missing is a verb on `CommandEncoder` rather than a feature on
+            // a device. See `crate::NO_OCCLUSION_QUERY_VERB`, and
+            // `create_query_set` below, which refuses the same set.
+            Capability::OcclusionQuery => Support::No(crate::NO_OCCLUSION_QUERY_VERB),
             Capability::PipelineStatisticsQuery => gated(
                 Features::PIPELINE_STATISTICS_QUERY,
                 "this preset did not grant PIPELINE_STATISTICS_QUERY",
@@ -1489,6 +1491,7 @@ impl Device for NullDevice {
     // --- queries ---
 
     fn create_query_set(&self, desc: &QuerySetDesc<'_>) -> Result<QuerySetHandle, HalError> {
+        desc.kind.check_supported(BackendKind::Null)?;
         let required = match desc.kind {
             QueryKind::Timestamp => Features::TIMESTAMP_QUERY,
             QueryKind::Occlusion => Features::OCCLUSION_QUERY,

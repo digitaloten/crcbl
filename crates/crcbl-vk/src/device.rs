@@ -1734,10 +1734,14 @@ impl Device for VkDevice {
                 Features::TIMESTAMP_QUERY,
                 "this device reports no TIMESTAMP_QUERY",
             ),
-            Capability::OcclusionQuery => gated(
-                Features::OCCLUSION_QUERY,
-                "this device reports no OCCLUSION_QUERY",
-            ),
+            // **Not a device question, unlike the two query arms around it.**
+            // Occlusion queries are core Vulkan and `crate::adapter` reports the
+            // flag for every device this backend opens, so a gate here would
+            // never fire and would be reporting the wrong thing if it did: what
+            // is missing is a verb on `crcbl_hal::CommandEncoder`, and no
+            // adapter supplies one. `create_query_set` refuses the same set with
+            // the same sentence.
+            Capability::OcclusionQuery => Support::No(crcbl_hal::NO_OCCLUSION_QUERY_VERB),
             Capability::PipelineStatisticsQuery => gated(
                 Features::PIPELINE_STATISTICS_QUERY,
                 "this device reports no PIPELINE_STATISTICS_QUERY",
@@ -2340,6 +2344,12 @@ impl Device for VkDevice {
     // --- queries ---
 
     fn create_query_set(&self, desc: &QuerySetDesc<'_>) -> Result<QuerySetHandle, HalError> {
+        // Before the pool is described, because the refusal is the seam's rather
+        // than this device's: see `crcbl_hal::NO_OCCLUSION_QUERY_VERB`. The
+        // `Occlusion` arm below is left standing — `VK_QUERY_TYPE_OCCLUSION` is
+        // what a begin/end verb would create, and the arm is what it would
+        // reach.
+        desc.kind.check_supported(BackendKind::Vulkan)?;
         let (kind, statistics) = match desc.kind {
             QueryKind::Timestamp => {
                 if !self.inner.caps.features.contains(Features::TIMESTAMP_QUERY) {

@@ -16,6 +16,21 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Breaking
 
+- **The seam refuses an occlusion query set rather than hand out one nothing can
+  write.** `Device::create_query_set` now answers `HalError::Unsupported` for
+  `QueryKind::Occlusion` on every backend — `crcbl-vk`, `crcbl-dx12`,
+  `crcbl-mtl`, `crcbl-webgpu` and `null` — and `Capability::OcclusionQuery`
+  answers `Support::No` everywhere with it. The variant stays; what is missing
+  is a verb. `crcbl_hal::CommandEncoder` has no begin/end query pair to scope a
+  count with, so a caller who created such a set, reset it, resolved it and read
+  it got zeros — measured on radv — which for this query means "nothing was
+  visible", the one value that silently says the opposite of the truth. A caller
+  that built one now gets a loud refusal carrying
+  `crcbl_hal::NO_OCCLUSION_QUERY_VERB`, the sentence the refusal, each
+  `Device::supports` and the four new `DIVERGENCES` rows all share.
+  `QueryKind::check_supported(backend)` is the public rule each backend calls.
+  `Features::OCCLUSION_QUERY` is unaffected and still reported: the device can
+  count samples, and it is the seam that will not ask.
 - **A mixer holds its cue grammar, beside its listener.**
   `Mixer::cue(&self, emitter: [f32; 3], grammar: &CueGrammar) -> SpatialCue` is
   now `Mixer::cue(&self, emitter: [f32; 3]) -> SpatialCue`, reading the grammar

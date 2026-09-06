@@ -418,18 +418,28 @@ reads as though the work is done:
 > and `refused` for Metal timestamp query, all of which had landed. The
 > paragraph under it already contradicted the timestamp cell in so many words.
 
-| Feature               | Vulkan     | Metal             | D3D12      | WebGPU   |
-| --------------------- | ---------- | ----------------- | ---------- | -------- |
-| Compute               | yes / yes  | yes / yes         | yes / yes  | yes      |
-| Descriptor indexing   | yes / yes  | yes / withdrawn   | yes / yes  | **no**   |
-| Buffer device address | yes / yes  | yes / —           | yes / yes  | **no**   |
-| Multi-draw-indirect   | yes / yes  | yes / yes         | yes / yes  | **no**   |
-| Draw-indirect-count   | yes / yes  | yes / yes         | yes / yes  | **no**   |
-| Mesh shaders          | yes / yes  | yes / owed        | yes / owed | **no**   |
-| Ray query / RT        | yes / owed | yes / **blocked** | yes / owed | **no**   |
-| Timestamp query       | yes / yes  | yes / yes         | yes / yes  | yes      |
-| Push constants        | yes / yes  | yes / yes         | yes / yes  | proposed |
-| Persistent mapping    | yes / yes  | yes / yes         | yes / yes  | **no**   |
+| Feature               | Vulkan            | Metal             | D3D12             | WebGPU            |
+| --------------------- | ----------------- | ----------------- | ----------------- | ----------------- |
+| Compute               | yes / yes         | yes / yes         | yes / yes         | yes               |
+| Descriptor indexing   | yes / yes         | yes / withdrawn   | yes / yes         | **no**            |
+| Buffer device address | yes / yes         | yes / —           | yes / yes         | **no**            |
+| Multi-draw-indirect   | yes / yes         | yes / yes         | yes / yes         | **no**            |
+| Draw-indirect-count   | yes / yes         | yes / yes         | yes / yes         | **no**            |
+| Mesh shaders          | yes / yes         | yes / owed        | yes / owed        | **no**            |
+| Ray query / RT        | yes / owed        | yes / **blocked** | yes / owed        | **no**            |
+| Timestamp query       | yes / yes         | yes / yes         | yes / yes         | yes               |
+| Occlusion query       | yes / **refused** | yes / **refused** | yes / **refused** | yes / **refused** |
+| Push constants        | yes / yes         | yes / yes         | yes / yes         | proposed          |
+| Persistent mapping    | yes / yes         | yes / yes         | yes / yes         | **no**            |
+
+**The occlusion row is the one where all four APIs say yes and crcbl says no**,
+and the refusal is the seam's rather than any backend's:
+`crcbl_hal::CommandEncoder` has no verb that scopes a count around a draw, so
+`create_query_set` declines `QueryKind::Occlusion` everywhere rather than hand
+out a set that can only resolve to zeros. Decided 2026-09-06;
+`docs/notes/backends.md` holds the argument,
+`crcbl_hal::NO_OCCLUSION_QUERY_VERB` the sentence, and each backend carries an
+`Unwritten` divergence row for it.
 
 The D3D12 column moved because `crcbl-dx12`'s `adapter.rs` now reports those
 flags — descriptor indexing on binding tier 3, and the rest unconditionally,

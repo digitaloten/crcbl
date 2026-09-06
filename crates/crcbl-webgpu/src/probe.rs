@@ -4846,18 +4846,25 @@ pub const fn probe_msaa_copy() -> BufferImageCopy {
 // queue, the command buffer and the readback are each the only one of their kind
 // at this generation.
 //
-// It is here because `Capability::OcclusionQuery` is declared supported on this
-// backend and no native test can witness that: the seam suite
+// **IT IS NOW EVIDENCE FOR A DIVERGENCE ROW RATHER THAN FOR A CAPABILITY.**
+// `Capability::OcclusionQuery` is declared *unsupported* on every backend as of
+// 2026-09-06 — `crcbl_hal::CommandEncoder` has no begin/end query verb, so
+// nothing a caller records could ever write an occlusion query, and
+// `crcbl_hal::NO_OCCLUSION_QUERY_VERB` is the sentence each `create_query_set`
+// refuses with. This gate is what makes that row `Unwritten` rather than an
+// `ApiAbsence` on this backend: the browser really does build the set, the
+// replayer really does serve every verb naming it, and a resolve really does
+// land where it was told to. What is missing is only the verb, and this is the
+// measurement that says so instead of the claim resting on a reading of the
+// WebIDL.
+//
+// So the probe records the stream directly — `create_query_set` on
+// `StreamWriter`, not on `WebGpuDevice`, which would refuse — and the observable
+// is not a count: it is that the set exists, that the seam's verbs reach the
+// browser naming it, and that a resolve of it lands where it was told to. Nor
+// could a native test witness it: the seam suite
 // (`exercise_query_set_creation` in `crates/crcbl/tests/hal_seam_e2e.rs`) is a
 // native binary and this backend runs in a browser.
-//
-// **WHAT THE CAPABILITY CLAIMS IS A SET, AND NOTHING MORE.**
-// `crcbl_hal::CommandEncoder` has no begin/end query verb — its whole query
-// vocabulary is the reset, the timestamp write and the resolve — so nothing a
-// caller records through this seam can ever *write* an occlusion query, on this
-// backend or on the Vulkan one. So the observable is not a count: it is that the
-// set exists, that the seam's verbs reach the browser naming it, and that a
-// resolve of it lands where it was told to.
 //
 // **THE SENTINEL IS WHAT MAKES THE ZERO MEAN SOMETHING.** An unwritten query
 // resolves to zero on the implementation this gate runs against, and zero is
@@ -4913,8 +4920,10 @@ pub const PROBE_OCCLUSION_SET: QuerySetHandle = match QuerySetHandle::from_bits(
     None => panic!("generation 11 is not zero"),
 };
 
-/// The set's descriptor: [`QueryKind::Occlusion`], which is the one kind this
-/// backend serves, at [`PROBE_OCCLUSION_QUERIES`] queries.
+/// The set's descriptor: [`QueryKind::Occlusion`] at
+/// [`PROBE_OCCLUSION_QUERIES`] queries — the kind the *browser* serves without a
+/// `GPUFeatureName`, and the one `WebGpuDevice::create_query_set` refuses, which
+/// is why this reaches the stream writer directly.
 #[must_use]
 pub const fn probe_occlusion_set_desc() -> QuerySetDesc<'static> {
     QuerySetDesc {

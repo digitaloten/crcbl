@@ -403,6 +403,11 @@ capabilities! {
     TimestampQuery,
 
     /// A [`QueryKind::Occlusion`](crate::QueryKind::Occlusion) query set.
+    ///
+    /// **No backend has it**, and the reason is the seam's rather than any
+    /// API's: [`NO_OCCLUSION_QUERY_VERB`]. Every GPU backend carries a
+    /// [`DivergenceKind::Unwritten`] row here, which is what it costs to say so
+    /// honestly.
     OcclusionQuery,
 
     /// A [`QueryKind::PipelineStatistics`](crate::QueryKind::PipelineStatistics)
@@ -767,6 +772,35 @@ pub const WEBGPU_BIND_GROUPS_ARE_IMMUTABLE: &str = "WebGPU bind groups are immut
      — GPUBindGroup exposes a label and nothing else — so the stream has no update_bind_group \
      command and could not carry one that worked";
 
+/// Every backend's answer for [`Capability::OcclusionQuery`], in the parity
+/// record, in each `Device::supports`, and in the
+/// [`HalError::Unsupported`](crate::HalError::Unsupported) that
+/// [`QueryKind::check_supported`](crate::QueryKind::check_supported) refuses a
+/// set with.
+///
+/// **One sentence in three places**, the treatment
+/// [`METAL_NO_DRAW_INDIRECT_COUNT`] and [`WEBGPU_BIND_GROUPS_ARE_IMMUTABLE`]
+/// already get, and here it is one sentence for *five* backends because the
+/// thing that is missing is not any of theirs.
+///
+/// **The seam used to hand the set out**, and that is what this replaced. A
+/// caller could create a [`QueryKind::Occlusion`](crate::QueryKind::Occlusion)
+/// set, reset it, resolve it and read it, and what came back — measured through
+/// the seam suite on radv — was zeros. Zero is not a neutral answer to "how many
+/// samples were visible": it is "none of them", so occlusion culling wired to
+/// this seam would have culled the scene with every return value reporting
+/// success. A loud refusal is what this repository does everywhere else with a
+/// promise it cannot keep.
+pub const NO_OCCLUSION_QUERY_VERB: &str = "a QueryKind::Occlusion set. Every API scopes an \
+     occlusion count with a begin/end pair around a draw — vkCmdBeginQuery, D3D12 BeginQuery, \
+     Metal setVisibilityResultMode:offset:, WebGPU beginOcclusionQuery — and crcbl_hal's \
+     CommandEncoder has no such verb: its whole query vocabulary is reset_query_set, \
+     resolve_query_set and the pass descriptor's timestamp_writes. So no work a caller records \
+     could ever count into the pool, and reading one back gives zeros, which says nothing was \
+     visible rather than nothing was asked. Every backend here can do the query and the verb is \
+     what is unwritten, so create_query_set refuses the kind on all of them rather than hand out \
+     a set whose only honest use is impossible";
+
 /// Every capability a backend is knowingly without, **on every device it can
 /// open**.
 ///
@@ -938,6 +972,43 @@ pub const DIVERGENCES: &[Divergence] = &[
               from a given device",
     },
     // --- queries ---
+    //
+    // **The occlusion four are one decision, taken on 2026-09-06**, and they are
+    // the only rows in this list where every backend diverges for the same
+    // reason and that reason is not any backend's: `crcbl_hal::CommandEncoder`
+    // has no verb that scopes a count, so `QueryKind::Occlusion` is refused
+    // everywhere by `QueryKind::check_supported`. See `NO_OCCLUSION_QUERY_VERB`,
+    // which is the sentence all four carry and every `Device::supports`
+    // declares. `Unwritten` rather than `ApiAbsence` on purpose: all four APIs
+    // express occlusion queries, and the missing piece is a seam verb somebody
+    // here would write — the alternative was deleting the capability, and
+    // deleting it would have recorded a decision against occlusion queries that
+    // nobody took. `docs/notes/backends.md` holds the argument and the
+    // measurement the refusal replaced.
+    Divergence {
+        capability: Capability::OcclusionQuery,
+        backend: BackendKind::Vulkan,
+        kind: DivergenceKind::Unwritten,
+        why: NO_OCCLUSION_QUERY_VERB,
+    },
+    Divergence {
+        capability: Capability::OcclusionQuery,
+        backend: BackendKind::WebGpu,
+        kind: DivergenceKind::Unwritten,
+        why: NO_OCCLUSION_QUERY_VERB,
+    },
+    Divergence {
+        capability: Capability::OcclusionQuery,
+        backend: BackendKind::Metal,
+        kind: DivergenceKind::Unwritten,
+        why: NO_OCCLUSION_QUERY_VERB,
+    },
+    Divergence {
+        capability: Capability::OcclusionQuery,
+        backend: BackendKind::Dx12,
+        kind: DivergenceKind::Unwritten,
+        why: NO_OCCLUSION_QUERY_VERB,
+    },
     Divergence {
         capability: Capability::TimestampQuery,
         backend: BackendKind::Metal,
@@ -980,8 +1051,11 @@ pub const DIVERGENCES: &[Divergence] = &[
     // `create_query_set` refused a timestamp set rather than hand out a handle a
     // profiler would fill with zeros. `PassTimestampWrites` is
     // `GPURenderPassDescriptor.timestampWrites`' own shape, so the browser
-    // backend passes it straight through and answers `Support::Yes`. `crcbl-webgpu`
-    // now diverges from nothing.
+    // backend passes it straight through and answers `Support::Yes`. Worth
+    // reading beside the occlusion rows above, which are the same shape and went
+    // the other way: a gap in the seam's own vocabulary, refused by
+    // `create_query_set` rather than papered over — and there, unlike here, the
+    // verb has not arrived yet.
     Divergence {
         capability: Capability::PipelineStatisticsQuery,
         backend: BackendKind::Metal,
@@ -1403,8 +1477,18 @@ mod tests {
         }
     }
 
-    /// A capability every GPU backend lacks is not a *divergence* — it is a seam
-    /// behaviour nothing implements, and filing it as parity noise hides that.
+    /// A capability every GPU backend lacks is a seam behaviour nothing
+    /// implements, not a *divergence* — so it may only be listed once somebody
+    /// has decided to leave it that way.
+    ///
+    /// **The exception is [`DEFERRED_CAPABILITIES`], and it is a hand-edited
+    /// list for the same reason [`REVIEWED_BLOCKERS`] is.** A capability the
+    /// whole seam refuses still belongs in [`DIVERGENCES`] when the refusal was
+    /// weighed and taken — [`Capability::OcclusionQuery`] is one, and the rows
+    /// are what makes its cost visible instead of the gap being absorbed into
+    /// prose. What this catches is the other case: a capability quietly refused
+    /// everywhere because nobody wrote it, filed as four parity exceptions and
+    /// read as four separate backend gaps.
     ///
     /// The other half too: [`divergence`] must find every entry the list holds,
     /// and must not invent one.
@@ -1416,10 +1500,11 @@ mod tests {
                 .filter(|backend| divergence(*capability, **backend).is_some())
                 .count();
             assert!(
-                lacking < GPU_BACKENDS.len(),
-                "{capability} is listed as absent on every GPU backend, so it is not a divergence \
-                 — it is a seam behaviour nothing implements, and that belongs in the seam's own \
-                 docs rather than in a parity exception list"
+                lacking < GPU_BACKENDS.len() || DEFERRED_CAPABILITIES.contains(capability),
+                "{capability} is listed as absent on every GPU backend and nothing parked it, so \
+                 it is not a divergence — it is a seam behaviour nothing implements, and that \
+                 belongs in the seam's own docs rather than in a parity exception list. If it is \
+                 refused everywhere on purpose, say so in DEFERRED_CAPABILITIES"
             );
         }
 
@@ -1598,16 +1683,19 @@ mod tests {
                 // The counterfactual — that same refusal with no row behind it.
                 // `divergence` is the only thing the rule reads for a
                 // `Support::No`, so an unlisted pair *is* what a deleted row
-                // leaves. Vulkan stands in for one because the list names it
-                // nowhere, which is checked here rather than remembered.
+                // leaves. `Null` stands in for one because the list can never
+                // name it — `divergences_name_only_gpu_backends` is what holds
+                // that — which is why it replaced Vulkan here on 2026-09-06,
+                // when the occlusion rows gave Vulkan an entry and the
+                // counterfactual a pair that was no longer unlisted.
                 assert_eq!(
-                    divergence(entry.capability, BackendKind::Vulkan),
+                    divergence(entry.capability, BackendKind::Null),
                     None,
-                    "the list has grown a Vulkan row, so it is no longer the unlisted backend this \
-                     counterfactual needs"
+                    "the list has grown a Null row, which divergences_name_only_gpu_backends \
+                     forbids and this counterfactual depends on"
                 );
                 assert_eq!(
-                    parity_verdict(entry.capability, BackendKind::Vulkan, refused, features),
+                    parity_verdict(entry.capability, BackendKind::Null, refused, features),
                     ParityVerdict::Unreviewed,
                     "{}: an unlisted backend refusal must be a gap on every device, or deleting \
                      the row above would cost nothing",
@@ -1627,7 +1715,35 @@ mod tests {
     /// merely counted the rows — or checked that each had *some* kind — would
     /// pass whether the classification were right or wrong.
     const REVIEWED_BLOCKERS: &[(Capability, BackendKind, DivergenceKind)] = &[
-        // `crcbl-dx12` is the whole of its own list: D3D12 expresses every
+        // **`OcclusionQuery` is the one row every backend has**, and the only
+        // one here that is nobody's backend work: `crcbl_hal::CommandEncoder`
+        // has no verb that scopes a count, so every `create_query_set` refuses
+        // the kind — see `NO_OCCLUSION_QUERY_VERB` and the four `DIVERGENCES`
+        // rows it is the reason for. Decided 2026-09-06 to refuse rather than
+        // finish or delete; `docs/notes/backends.md` argues it. These four are
+        // parked by that decision rather than by a backend's deferral, which is
+        // what `DEFERRED_CAPABILITIES` says.
+        (
+            Capability::OcclusionQuery,
+            BackendKind::Vulkan,
+            DivergenceKind::Unwritten,
+        ),
+        (
+            Capability::OcclusionQuery,
+            BackendKind::WebGpu,
+            DivergenceKind::Unwritten,
+        ),
+        (
+            Capability::OcclusionQuery,
+            BackendKind::Metal,
+            DivergenceKind::Unwritten,
+        ),
+        (
+            Capability::OcclusionQuery,
+            BackendKind::Dx12,
+            DivergenceKind::Unwritten,
+        ),
+        // `crcbl-dx12`'s own rows are the two below: D3D12 expresses every
         // capability here, so every row of its below is `Unwritten` rather than
         // an `ApiAbsence` — mesh shading and the task stage are shader-model
         // features nobody has written against, not ones the API lacks.
@@ -1643,9 +1759,10 @@ mod tests {
             BackendKind::Dx12,
             DivergenceKind::Unwritten,
         ),
-        // Metal: the byte-wide fill is the API and is not here, and neither is
-        // the occlusion query — that pool is a plain MTLBuffer and `crcbl-mtl`
-        // builds it. `DrawIndirectCount` is not here either, and that one left
+        // Metal: the byte-wide fill is the API and is not here. The occlusion
+        // query is, and it arrived from the seam rather than from this backend —
+        // `crcbl-mtl` builds the visibility buffer and nothing can count into
+        // it. `DrawIndirectCount` is not here either, and that one left
         // the way a row is meant to: `crcbl_mtl::indirect_count` packs the
         // argument structures with a compute kernel and draws
         // `max_draw_count` times, so the count is honoured with no indirect
@@ -1680,10 +1797,12 @@ mod tests {
             BackendKind::Metal,
             DivergenceKind::Unrun,
         ),
-        // `crcbl-webgpu` is not on this list at all, and that is the point:
-        // everything WebGPU refuses is WebGPU itself refusing, which is an
-        // `ApiAbsence` and not a blocker. The browser backend had two rows and
-        // both left the way a row is supposed to — the work landed.
+        // `crcbl-webgpu`'s only row is the occlusion one at the top, and that
+        // is worth reading twice: everything *WebGPU* refuses is WebGPU itself
+        // refusing, which is an `ApiAbsence` and not a blocker, so the one row
+        // the browser backend carries is one this seam owes rather than one the
+        // platform lacks. It had two rows of its own before and both left the
+        // way a row is supposed to — the work landed.
         // `StorageImageBinding` went when `BindingKind::StorageImage` grew its
         // `view_type` and `format`; `TimestampQuery` went when the seam's
         // free-standing `write_timestamp` became `PassTimestampWrites` on the
@@ -1699,25 +1818,39 @@ mod tests {
     /// them.
     const DEFERRED_BACKENDS: &[BackendKind] = &[BackendKind::Metal, BackendKind::Dx12];
 
-    /// **`parity_blockers` cannot reach empty while the deferral holds, and
+    /// The capabilities whose remaining work is parked on every backend at once.
+    ///
+    /// A second axis, because [`Capability::OcclusionQuery`] is parked for a
+    /// reason no backend's deferral covers: the work is a verb on
+    /// [`crate::CommandEncoder`] plus its five implementations, and it was
+    /// decided on 2026-09-06 that the verb waits until something wants the
+    /// counts — `docs/notes/backends.md` and `docs/backlog.md` hold the
+    /// decision. Folding these rows into [`DEFERRED_BACKENDS`] would have meant
+    /// calling `crcbl-vk` and `crcbl-webgpu` deferred, which they are not.
+    const DEFERRED_CAPABILITIES: &[Capability] = &[Capability::OcclusionQuery];
+    /// **`parity_blockers` cannot reach empty while the deferrals hold, and
     /// this is what says so instead of the count quietly redefining done.**
     ///
-    /// Every row [`parity_blockers`] yields is on a
-    /// [deferred backend](DEFERRED_BACKENDS), so the honest reading of a
+    /// Every row [`parity_blockers`] yields is either on a
+    /// [deferred backend](DEFERRED_BACKENDS) or is a
+    /// [deferred capability](DEFERRED_CAPABILITIES), so the honest reading of a
     /// non-zero blocker count today is "parked", not "outstanding". Nothing
     /// about that is expressed by the number itself, and a reader who saw only
     /// the number would conclude there was work to pick up.
     ///
     /// **A failure here is the useful case.** A blocker on `crcbl-vk` or
-    /// `crcbl-webgpu` is work somebody is meant to do, and it would otherwise
-    /// join the parked rows and read as more of the same. The second assertion
-    /// is what stops the first going vacuous: with no blockers at all, "none of
-    /// them is live" is true and says nothing, and the deferral note above has
-    /// become the thing to delete.
+    /// `crcbl-webgpu` that nothing parked is work somebody is meant to do, and
+    /// it would otherwise join the parked rows and read as more of the same. The
+    /// second assertion is what stops the first going vacuous: with no blockers
+    /// at all, "none of them is live" is true and says nothing, and the deferral
+    /// notes above have become the thing to delete.
     #[test]
-    fn every_parity_blocker_is_on_a_deferred_backend() {
+    fn every_parity_blocker_is_deferred_by_its_backend_or_by_its_capability() {
         let live: Vec<String> = parity_blockers()
-            .filter(|entry| !DEFERRED_BACKENDS.contains(&entry.backend))
+            .filter(|entry| {
+                !DEFERRED_BACKENDS.contains(&entry.backend)
+                    && !DEFERRED_CAPABILITIES.contains(&entry.capability)
+            })
             .map(|entry| format!("{} on {}", entry.capability, entry.backend))
             .collect();
         assert!(

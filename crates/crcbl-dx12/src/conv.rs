@@ -774,6 +774,15 @@ pub(crate) const fn shader_visibility(stages: ShaderStages) -> D3D12_SHADER_VISI
 /// it to both would create an occlusion heap and resolve it as statistics, with
 /// no error anywhere.
 ///
+/// # The occlusion arm is what a begin/end verb would reach
+///
+/// [`Device::create_query_set`](crcbl_hal::Device::create_query_set) refuses
+/// [`QueryKind::Occlusion`] on every backend — `crcbl_hal::CommandEncoder` has
+/// no verb that would scope a count, so the arm below is unreachable today. It
+/// is kept rather than folded away because it is the mapping that verb would
+/// need, and the paragraph under this is the part of it that took reading the
+/// enumeration to get right.
+///
 /// # Occlusion counts samples, and `BINARY_OCCLUSION` does not
 ///
 /// [`QueryKind::Occlusion`] is "samples that passed the depth test", so it maps

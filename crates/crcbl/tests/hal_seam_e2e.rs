@@ -7750,6 +7750,32 @@ fn exercise_timestamp_query(headless: &Headless) -> Exercise {
                     refusal.map(|_| "recorded successfully")
                 );
 
+                // **The read's own bounds, on the one kind with a live pool.**
+                // A read of `0..count` has already succeeded above, and `Ok`
+                // alone is what a backend doing nothing answers to everything —
+                // it is the refusal beside it that makes the success mean
+                // something. This pair used to sit in
+                // `exercise_query_set_creation`, on an occlusion set; the seam
+                // refuses that kind on every backend now, so a timestamp set is
+                // the only pool left to ask it of.
+                let mut past_the_end = [0u64; TIMESTAMP_QUERIES as usize + 1];
+                match device.query_results(set, 0, &mut past_the_end) {
+                    Err(HalError::InvalidDescriptor(_)) => {}
+                    Ok(()) => panic!(
+                        "reading {} queries out of a {TIMESTAMP_QUERIES}-query set succeeded. \
+                         Every value past the end is whatever the read ran into, and a caller \
+                         has no way to know it.",
+                        past_the_end.len()
+                    ),
+                    Err(error) => panic!(
+                        "reading {} queries out of a {TIMESTAMP_QUERIES}-query set was refused \
+                         with {error}, and the seam documents InvalidDescriptor for a range that \
+                         exceeds the set. A caller cannot tell an over-long read from a dead \
+                         handle if both answer the same way.",
+                        past_the_end.len()
+                    ),
+                }
+
                 exercise_timestamp_resolve(headless, set, nanos)
             }
         }
@@ -7961,26 +7987,25 @@ fn exercise_timestamp_resolve(
 /// # What it does assert
 ///
 /// The refusal, in full: a backend declaring these unsupported must fail
-/// `create_query_set` with [`HalError::Unsupported`], which is the direction
-/// four of the five backends are in and the direction that was previously
-/// unchecked.
+/// `create_query_set` with [`HalError::Unsupported`], and for
+/// [`QueryKind::Occlusion`] that is now **every** backend — see
+/// [`crcbl::hal::NO_OCCLUSION_QUERY_VERB`], which is the sentence each of them
+/// refuses with and the row `crcbl_hal::DIVERGENCES` carries four of.
 ///
-/// And, for a backend declaring support, that the handle reaches the command
-/// stream: the set is reset through a submitted command buffer, so a backend
-/// handing out a handle its own encoder does not recognise fails at `finish`.
-/// Vulkan needs that reset before any read besides, since a pool that was never
-/// reset may not be read at all.
+/// And, for a backend declaring support — which today only
+/// [`QueryKind::PipelineStatistics`] can be — that the handle reaches the
+/// command stream: the set is reset through a submitted command buffer, so a
+/// backend handing out a handle its own encoder does not recognise fails at
+/// `finish`. Vulkan needs that reset before any read besides, since a pool that
+/// was never reset may not be read at all.
 ///
-/// [`QueryKind::Occlusion`] then gets a read on top, which shows the handle
-/// names a pool of the size that was asked for rather than a stub:
-/// [`Device::query_results`] over `0..count` must succeed *and* a read one query
-/// past the end must be refused with [`HalError::InvalidDescriptor`]. The
-/// **pair** is the check — `Ok` alone is what an implementation doing nothing
-/// answers to everything, and it is the refusal beside it that makes the
-/// success mean something.
+/// **No read here any more.** The `0..count` read and the refused read one query
+/// past it used to be driven on an occlusion set, which was the only pool this
+/// function could both create and read; that kind is refused now, so the pair
+/// moved to [`exercise_timestamp_query`], where the queries were really written.
 ///
-/// [`QueryKind::PipelineStatistics`] gets no read, and the reason is a seam
-/// defect rather than a shortcut. Both of the seam's read paths assume one
+/// [`QueryKind::PipelineStatistics`] never had that read, and the reason is a
+/// seam defect rather than a shortcut. Both of the seam's read paths assume one
 /// `u64` per query — [`Device::query_results`] takes `out.len()` results
 /// starting at `first_query`, and `crcbl-vk` resolves with a `size_of::<u64>()`
 /// stride — while a Vulkan statistics pool holds one `u64` per *enabled
@@ -8059,36 +8084,12 @@ fn exercise_query_set_creation(headless: &Headless, kind: QueryKind) -> Exercise
             device.wait_idle().expect("idle");
             device.destroy_command_buffer(commands);
 
-            if kind == QueryKind::PipelineStatistics {
-                // One `u64` per query is not this pool's layout; see the note
-                // above on `VUID-vkGetQueryPoolResults-dataSize-00817`.
-                Exercise::Worked
-            } else {
-                let mut inside = [0u64; CREATED_QUERIES as usize];
-                device
-                    .query_results(set, 0, &mut inside)
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "{kind:?}: this backend created a {CREATED_QUERIES}-query set and then \
-                             refused to read queries 0..{CREATED_QUERIES} of it — {error}. Either \
-                             the handle names no pool or this exercise is broken; it is not a \
-                             capability refusal, which create_query_set is where it belongs."
-                        )
-                    });
-
-                let mut past_the_end = [0u64; CREATED_QUERIES as usize + 1];
-                match device.query_results(set, 0, &mut past_the_end) {
-                    Err(HalError::InvalidDescriptor(_)) => Exercise::Worked,
-                    Ok(()) => Exercise::SilentlyIgnored,
-                    Err(error) => panic!(
-                        "{kind:?}: reading {} queries out of a {CREATED_QUERIES}-query set was \
-                         refused with {error}, and the seam documents InvalidDescriptor for a \
-                         range that exceeds the set. A caller cannot tell an over-long read from a \
-                         dead handle if both answer the same way.",
-                        past_the_end.len()
-                    ),
-                }
-            }
+            // No read: one `u64` per query is not a statistics pool's layout
+            // — see the note above on
+            // `VUID-vkGetQueryPoolResults-dataSize-00817` — and the occlusion
+            // kind never reaches here, being refused at `create_query_set` on
+            // every backend.
+            Exercise::Worked
         }
     };
 
@@ -8851,9 +8852,12 @@ fn exercise(headless: &Headless, capability: crcbl::hal::Capability) -> Exercise
         // it is a shader gap rather than a pipeline one.
         C::SamplerAnisotropy => exercise_sampler_anisotropy(headless),
         C::TimestampQuery => exercise_timestamp_query(headless),
-        // Creation and refusal only, and `exercise_query_set_creation` says at
-        // length why there is no count to assert: the seam has no begin/end
-        // verb, so nothing this suite records ever reaches either pool.
+        // The refusal, and only the refusal: every backend declines this kind
+        // at `create_query_set`, for the reason
+        // `crcbl::hal::NO_OCCLUSION_QUERY_VERB` gives. So the pair this driver
+        // scores is `(Support::No, Exercise::Refused)` on every device, and what
+        // it holds a backend to is that the refusal is `HalError::Unsupported`
+        // and that a zero-count set is refused too.
         C::OcclusionQuery => exercise_query_set_creation(headless, QueryKind::Occlusion),
         C::PipelineStatisticsQuery => {
             exercise_query_set_creation(headless, QueryKind::PipelineStatistics)

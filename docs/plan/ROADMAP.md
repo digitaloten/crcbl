@@ -41,15 +41,17 @@ that ran nowhere cannot read as a row that passed. Real divergence goes on
 `REVIEWED_BLOCKERS`, and a snapshot test refuses to let that list drift without
 a human editing it.
 
-Because two backends are deferred, **`parity_blockers()` cannot reach empty**,
-and `every_parity_blocker_is_on_a_deferred_backend` in
+Because two backends are deferred and one capability is parked across all four,
+**`parity_blockers()` cannot reach empty**, and
+`every_parity_blocker_is_deferred_by_its_backend_or_by_its_capability` in
 `crcbl-hal/src/capability.rs` is what stops a non-zero count reading as work
 somebody is about to pick up. Read that test for what it actually asserts,
 because it is stronger than "the count is not zero": **every remaining blocker
-is on a deferred backend, so neither `crcbl-vk` nor `crcbl-webgpu` has one.** It
-also carries a vacuity guard — it fails if the blocker set empties, because at
-that point its first assertion would be true and meaningless and this paragraph
-would be the thing to delete.
+is either on a deferred backend or on a deferred capability**, the second being
+`OcclusionQuery`, which every backend refuses because the seam has no begin/end
+query verb — see `docs/notes/backends.md`. It also carries a vacuity guard — it
+fails if the blocker set empties, because at that point its first assertion
+would be true and meaningless and this paragraph would be the thing to delete.
 `the_parity_blockers_are_exactly_the_reviewed_list` is the other half: the set
 cannot change without somebody editing `REVIEWED_BLOCKERS` by hand, which stops
 a row leaving because a kind was widened rather than because the work landed.

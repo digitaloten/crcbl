@@ -2255,10 +2255,14 @@ impl Device for Dx12Device {
                 Features::TIMESTAMP_QUERY,
                 "this device reports no TIMESTAMP_QUERY",
             ),
-            Capability::OcclusionQuery => gated(
-                Features::OCCLUSION_QUERY,
-                "this device reports no OCCLUSION_QUERY",
-            ),
+            // **Not a device question, unlike the two query arms around it.**
+            // `CreateQueryHeap` takes `D3D12_QUERY_HEAP_TYPE_OCCLUSION` on every
+            // D3D12 device and `features_of` reports the flag unconditionally,
+            // so a gate here would never fire; what is missing is a verb on
+            // `crcbl_hal::CommandEncoder` that would put a `BeginQuery` and an
+            // `EndQuery` around a draw, and no device supplies one.
+            // `create_query_set` refuses the same set with the same sentence.
+            Capability::OcclusionQuery => Support::No(crcbl_hal::NO_OCCLUSION_QUERY_VERB),
             Capability::PipelineStatisticsQuery => gated(
                 Features::PIPELINE_STATISTICS_QUERY,
                 "this device reports no PIPELINE_STATISTICS_QUERY",
@@ -3542,6 +3546,12 @@ impl Device for Dx12Device {
     /// [`HalError::Backend`] / [`HalError::OutOfDeviceMemory`] from
     /// `CreateQueryHeap` or the resolve buffer's creation.
     fn create_query_set(&self, desc: &QuerySetDesc<'_>) -> Result<QuerySetHandle, HalError> {
+        // Before the heap is sized, because the refusal is the seam's rather
+        // than this device's: see `crcbl_hal::NO_OCCLUSION_QUERY_VERB`. The
+        // occlusion arms of `conv::query_types` and `query::result_bytes` are
+        // left standing — `D3D12_QUERY_TYPE_OCCLUSION` is what a begin/end verb
+        // would resolve, and those arms are what it would reach.
+        desc.kind.check_supported(BackendKind::Dx12)?;
         let bytes = query::resolve_buffer_bytes(desc.kind, desc.count)?;
         let (heap_type, query_type) = conv::query_types(desc.kind);
         let heap_desc = D3D12_QUERY_HEAP_DESC {
@@ -11769,13 +11779,14 @@ pub(crate) mod tests {
         device.destroy_query_set(set);
     }
 
-    /// **Every kind of query set is creatable, and the reads the seam's shape
-    /// cannot express are refused rather than half-answered.**
+    /// **The occlusion kind is refused outright, the statistics heap is
+    /// creatable, and the reads the seam's shape cannot express are refused
+    /// rather than half-answered.**
     ///
-    /// Occlusion and statistics heaps are created and reset through a submitted
-    /// command buffer, which is what shows the handle reaches this crate's own
-    /// encoder — `reset_query_set` records no D3D12 command at all, so a set
-    /// this device never issued has nothing but the handle check to fail on.
+    /// The statistics heap is created and reset through a submitted command
+    /// buffer, which is what shows the handle reaches this crate's own encoder —
+    /// `reset_query_set` records no D3D12 command at all, so a set this device
+    /// never issued has nothing but the handle check to fail on.
     ///
     /// A read of a *statistics* set is [`HalError::Unsupported`]: `out` is one
     /// `u64` per query while D3D12 resolves a whole
@@ -11786,20 +11797,17 @@ pub(crate) mod tests {
     /// becoming a buffer overrun on the resolve path, and the encoder half of
     /// that is asserted below.
     ///
-    /// # No occlusion set is *read* here, and that is deliberate
+    /// # No occlusion set exists to read, and the refusal is the seam's
     ///
-    /// The seam has no begin/end verb, so no work this crate can record ever
-    /// reaches an occlusion pool — which makes every occlusion read a
-    /// `ResolveQueryData` over queries that were never ended, and D3D12 has a
-    /// debug-layer message for exactly that
-    /// (`D3D12_MESSAGE_ID_RESOLVE_QUERY_INVALID_QUERY_STATE`). Whether it fires
-    /// for a query that was never *begun* is not something this workspace can
-    /// settle, and `open_device` fails a test on any warning — so the successful
-    /// read that makes the refusal below mean something is asserted on a
-    /// **timestamp** set instead, in
+    /// The seam has no begin/end verb, so no work this crate can record could
+    /// ever reach an occlusion pool — and rather than hand out a heap whose
+    /// every read is a `ResolveQueryData` over queries that were never ended,
+    /// `create_query_set` refuses the kind on every backend. See
+    /// `crcbl_hal::NO_OCCLUSION_QUERY_VERB`. The successful read that makes the
+    /// statistics refusal below mean something is asserted on a **timestamp**
+    /// set instead, in
     /// [`d3d12_timestamps_advance_and_both_read_paths_report_the_same_ticks`],
-    /// whose queries really were written. The seam suite drives the occlusion
-    /// read itself on WARP.
+    /// whose queries really were written.
     #[test]
     #[ignore = "needs a real D3D12 device; run tests/run-dx12-e2e.sh"]
     fn d3d12_query_sets_of_every_kind_create_and_refuse_the_reads_the_seam_cannot_shape() {
@@ -11809,7 +11817,25 @@ pub(crate) mod tests {
             .expect("the graphics queue exists");
         const COUNT: u32 = 2;
 
-        for kind in [QueryKind::Occlusion, QueryKind::PipelineStatistics] {
+        // The refusal reaches a real device: `CreateQueryHeap` would have taken
+        // `D3D12_QUERY_HEAP_TYPE_OCCLUSION` here, so this is the seam declining
+        // rather than D3D12 being unable.
+        let refused = device.create_query_set(&QuerySetDesc {
+            label: Some("crcbl-dx12 occlusion"),
+            kind: QueryKind::Occlusion,
+            count: COUNT,
+        });
+        assert!(
+            matches!(
+                refused,
+                Err(HalError::Unsupported { backend, what })
+                    if backend == BackendKind::Dx12 && what == crcbl_hal::NO_OCCLUSION_QUERY_VERB
+            ),
+            "an occlusion set is refused at the seam: {refused:?}"
+        );
+
+        {
+            let kind = QueryKind::PipelineStatistics;
             let set = device
                 .create_query_set(&QuerySetDesc {
                     label: Some("crcbl-dx12 query set"),
@@ -11832,16 +11858,14 @@ pub(crate) mod tests {
                 "{kind:?}: {error:?}"
             );
 
-            if matches!(kind, QueryKind::PipelineStatistics) {
-                let mut inside = [0u64; COUNT as usize];
-                let error = device
-                    .query_results(set, 0, &mut inside)
-                    .expect_err("one u64 per query is not this pool's layout");
-                assert!(
-                    matches!(error, HalError::Unsupported { backend, .. } if backend == BackendKind::Dx12),
-                    "{error:?}"
-                );
-            }
+            let mut inside = [0u64; COUNT as usize];
+            let error = device
+                .query_results(set, 0, &mut inside)
+                .expect_err("one u64 per query is not this pool's layout");
+            assert!(
+                matches!(error, HalError::Unsupported { backend, .. } if backend == BackendKind::Dx12),
+                "{error:?}"
+            );
             device.destroy_query_set(set);
         }
 

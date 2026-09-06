@@ -8181,12 +8181,11 @@ very differently per backend.
 **Two smaller things, recorded so they are not rediscovered.**
 `crcbl-hal/src/query.rs`'s "a backend without the feature returns zeros from
 `query_results`" is unreachable — `create_query_set` refuses, so no caller can
-hold a handle to ask with. And `Capability::OcclusionQuery` is unfalsifiable
-everywhere: `CommandEncoder` has no begin/end-query verb, so nothing recorded
-through this seam can write an occlusion result on any backend. **That second
-one turned out to be worse than unfalsifiable and now has an entry of its own**
-— the read returns `[0, 0]`, which for this query means "nothing was visible".
-See "DECIDED — occlusion queries" below.
+hold a handle to ask with. And `Capability::OcclusionQuery` was unfalsifiable
+everywhere, which turned out to be worse than unfalsifiable — the read returned
+`[0, 0]`, which for this query means "nothing was visible". Closed 2026-09-06:
+`create_query_set` refuses the kind on every backend. See
+`docs/notes/backends.md`, "SHIPPED — occlusion queries are refused at the seam".
 
 **Checked and genuinely uniform**, so not concerns: `MemoryLocation`, the
 stencil read/write masks, push-constant alignment, `present_id`
@@ -8855,21 +8854,6 @@ contract's two directions:
 Whether either could be made to hold under both asks is unexamined. The CI step
 runs `-E 'test(every_declared_capability_behaves_the_way_it_was_declared)'`.
 
-### DECIDED — occlusion queries: finish them, refuse them, or delete them
-
-The record behind this — the argument, the options and the measurements — is in
-`docs/notes/backends.md` under this heading.
-
-**DECIDED 2026-09-06 —** option (2), refuse now: `create_query_set` returns
-`HalError::Unsupported` for `QueryKind::Occlusion`, and
-`Capability::OcclusionQuery` becomes an `Unwritten` divergence on every backend.
-Occlusion culling in this engine is the Hi-Z two-phase compute path of plan 03 —
-the Nanite and Frostbite shape — so the queries will never get a consumer, and a
-loud refusal is what this repository does everywhere else with a promise it
-cannot keep. Option (1) becomes worth the five-backend work only if a debug tool
-wants the counts. It schedules the refusal arm in each backend, the divergence
-rows, and the parity blockers they honestly cost.
-
 ### `DivergenceKind::Unclassified` is gone, and can come back
 
 The record behind this — the argument, the options and the measurements — is in
@@ -9010,10 +8994,12 @@ as a lower number there than elsewhere: both indirect exercises turn on which of
 two argument structures a draw read, and CI's Metal device reports no
 `max_draw_indirect_count` above one, so a single call can only reach the first.
 
-**A ceiling worth not mistaking for a to-do:** `OcclusionQuery` and
-`PipelineStatisticsQuery` can never be driven further than set creation by
-anything a caller records, because `CommandEncoder` has no begin/end query verb.
-Their `Yes` means a set can be made and read, which is what Vulkan's means too.
+**A ceiling, and one half of it is now a refusal:** neither `OcclusionQuery` nor
+`PipelineStatisticsQuery` can be driven further than set creation by anything a
+caller records, because `CommandEncoder` has no begin/end query verb.
+`OcclusionQuery` stopped claiming otherwise on 2026-09-06 and answers
+`Support::No` on every backend; `PipelineStatisticsQuery`'s `Yes` still means a
+set can be made, which is what Vulkan's means too.
 
 ### The seam cannot use occlusion or pipeline-statistics queries at all
 
@@ -9026,8 +9012,9 @@ works — but nothing a caller records can ever write to those pools.
   descriptor's `timestamp_writes`. Every API scopes occlusion and statistics
   with a begin/end pair around a draw — `vkCmdBeginQuery`, D3D12 `BeginQuery`,
   Metal `setVisibilityResultMode:`, WebGPU `beginOcclusionQuery` — and the seam
-  exposes none of them. So an `OcclusionQuery: Yes` means "a set can be
-  created", and nothing more.
+  exposes none of them. That was what an `OcclusionQuery: Yes` meant, and since
+  2026-09-06 the answer is `Support::No` on every backend instead — the
+  statistics kind still answers `Yes` on the two backends that build a pool.
 - **`query_results` and `resolve_query_set` assume one `u64` per query, which is
   wrong for pipeline statistics.** `crcbl-vk` enables three counters
   (`VERTEX_SHADER_INVOCATIONS | FRAGMENT_SHADER_INVOCATIONS | CLIPPING_PRIMITIVES`),
@@ -9450,10 +9437,11 @@ specific to that crate:
 
 **Neither was reproducible here** — the adapters on this machine have the
 features — which is why the shape is worth recording rather than the instance.
-`crcbl-webgpu` answers `Capability::OcclusionQuery` `Support::Yes`
-unconditionally (measured in the occlusion-query entry above), which is the same
-second half; whether any surviving backend's refusals arrive as something other
-than `Unsupported` on a device that lacks a feature has not been checked.
+`crcbl-webgpu` used to answer `Capability::OcclusionQuery` `Support::Yes`
+unconditionally, which was the same second half; it now answers `Support::No` on
+every device, so the shape survives only as a record; whether any surviving
+backend's refusals arrive as something other than `Unsupported` on a device that
+lacks a feature has not been checked.
 
 ### MEASURED — CI's Metal device can serve neither query, and no mesh
 

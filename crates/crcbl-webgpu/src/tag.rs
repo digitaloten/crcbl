@@ -998,13 +998,17 @@ pub const fn memory_location_from_code(code: u8) -> Option<MemoryLocation> {
 // ── QueryKind ─────────────────────────────────────────────────────────────────
 //
 // Carried by [`Command::CreateQuerySet`](crate::Command::CreateQuerySet). All
-// three codes exist on the wire although the replayer serves only one of them:
+// three codes exist on the wire although a caller can reach only one of them:
 // `GPUQueryType` is exactly `'occlusion'` and `'timestamp'`, so a statistics set
-// has nothing to become, and a timestamp set is refused before it is encoded —
-// see `crate::hal::WebGpuDevice::create_query_set`. Writing all three means a
-// kind this backend gains later is a replayer arm rather than a wire change, and
-// means a fold between two of them is a decode failure rather than the wrong
-// pool being created.
+// has nothing to become; the occlusion kind is refused by the seam on every
+// backend (`crcbl_hal::NO_OCCLUSION_QUERY_VERB`), which leaves the timestamp
+// kind, itself refused on a device without the feature — see
+// `crate::hal::WebGpuDevice::create_query_set`. The occlusion code is on the
+// wire all the same, because `crate::probe`'s group AE writes it directly to
+// show the replayer serves it. Writing all three means a kind this backend
+// gains later is a replayer arm rather than a wire change, and means a fold
+// between two of them is a decode failure rather than the wrong pool being
+// created.
 
 /// [`QueryKind::Timestamp`].
 pub const QUERY_KIND_TIMESTAMP: u8 = 0x00;

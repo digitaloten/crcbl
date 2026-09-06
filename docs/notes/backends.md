@@ -994,9 +994,32 @@ So of the backends the pattern was checked on: three had it (`crcbl-vk`,
 had a different defect in the same family and was deleted before it was fixed —
 see "A capability refusal must be `Unsupported`" below.
 
-### DECIDED — occlusion queries: finish them, refuse them, or delete them
+### SHIPPED — occlusion queries are refused at the seam
 
-Decision record; the decision is in `docs/backlog.md`.
+Record of the decision and of what landed. Option (2) was taken on 2026-09-06
+and built the same day.
+
+**What is in the tree now.** `crcbl_hal::QueryKind::check_supported` refuses
+`QueryKind::Occlusion` with `HalError::Unsupported`, and every backend's
+`create_query_set` — `crcbl-vk`, `crcbl-dx12`, `crcbl-mtl`, `crcbl-webgpu` and
+`crcbl-hal`'s `Null` — calls it before it builds anything.
+`Capability::OcclusionQuery` answers `Support::No` on all of them, carrying
+`crcbl_hal::NO_OCCLUSION_QUERY_VERB`, which is the one sentence the refusal, the
+declaration and the `DIVERGENCES` rows all read from. The four GPU backends each
+gained an `Unwritten` divergence row, which is four parity blockers the report
+honestly grew; `DEFERRED_CAPABILITIES` in `crcbl-hal/src/capability.rs` is what
+records that those four are parked by this decision rather than by either
+backend deferral, and it is what
+`a_divergence_is_something_some_backend_actually_has` now consults before
+allowing a capability to be absent everywhere.
+
+The backends' own occlusion plumbing was **kept**, unreachable behind the
+refusal: `crcbl-mtl`'s `new_visibility_buffer` and `QuerySetRaw::Visibility`,
+`crcbl-dx12`'s `D3D12_QUERY_HEAP_TYPE_OCCLUSION` mapping, `crcbl-vk`'s
+`VK_QUERY_TYPE_OCCLUSION` arm. Each is what option (1) would reach, and each is
+still constructed syntactically, so nothing is dead code.
+
+The argument that produced the decision follows.
 
 The seam audit recorded in one line that `Capability::OcclusionQuery` "is
 unfalsifiable everywhere". Re-derived and **measured** on 2026-08-20, it is
@@ -1052,8 +1075,8 @@ plumbing and tests constructs one.
    for `QueryKind::Occlusion`, and `Capability::OcclusionQuery` becomes an
    `Unwritten` divergence on every backend. Small, and it turns a silent wrong
    answer into a loud refusal, which is what this repository does everywhere
-   else. Costs two parity blockers per backend on the report — honestly, since
-   the work genuinely is unwritten.
+   else. Costs a parity blocker per backend on the report — honestly, since the
+   work genuinely is unwritten. **This is the one that was taken.**
 3. **Delete it.** `QueryKind::Occlusion` and `Capability::OcclusionQuery` leave
    the seam, exactly as the valued `fill_buffer` forms did: a promise three
    backends could not keep was removed rather than implemented, and the
@@ -1066,9 +1089,18 @@ _could not_ be honoured by the API on three backends, whereas every backend here
 can do occlusion queries and this seam simply never grew the verb. Deleting
 would record "we decided against it" for something nobody has decided against.
 
-What makes it urgent enough to write down rather than leave in a one-line note:
-until one of the three happens, the seam has a resource that returns "everything
-is hidden" and reports success doing it.
+What made it urgent enough to write down rather than leave in a one-line note:
+until one of the three happened, the seam had a resource that returned
+"everything is hidden" and reported success doing it.
+
+**What the browser gate now witnesses.** Probe group AE (`crcbl-webgpu`'s
+`probe.rs`, `PROBE_OCCLUSION_*`) still builds a 32-query occlusion set, resolves
+it over a sentinel and reads it back — writing to the `StreamWriter` directly,
+since `WebGpuDevice::create_query_set` would refuse it. It is no longer evidence
+for a capability; it is evidence for the divergence row's _kind_. The browser
+and the replayer serve the whole spine, so the only missing piece really is the
+seam verb, which is what makes WebGPU's row `Unwritten` rather than an
+`ApiAbsence` and is a measurement rather than a reading of the WebIDL.
 
 ### `DivergenceKind::Unclassified` is gone, and can come back
 
@@ -1583,24 +1615,31 @@ that still hold:**
 
 ## What each remaining blocker row would take
 
-**All six rows are now deferred (2026-08-21).** Every one belongs to
-`crcbl-dx12` or `crcbl-mtl`, and work on both stopped — see
-`docs/plan/09-backends-metal-dx12.md`. So `parity_blockers()` will not reach
-empty, and that is a scope decision rather than work outstanding. The mechanism
-is unaffected and stays enforced: the `Capability` enum is still exhaustive,
-every backend still answers every row through a `match`, and a capability added
-to `crcbl-vk` or `crcbl-webgpu` still fails to compile until the deferred
-backends answer for it too. What changed is only which rows anybody is working.
+**Every row is parked, and by one of two different decisions.** Six belong to
+`crcbl-dx12` or `crcbl-mtl`, where work stopped on 2026-08-21 — see
+`docs/plan/09-backends-metal-dx12.md`. The other four are `OcclusionQuery`, one
+per GPU backend, parked on 2026-09-06 by the decision recorded above: the work
+is a begin/end verb on `crcbl_hal::CommandEncoder` plus five implementations,
+and it waits until something wants the counts. So `parity_blockers()` will not
+reach empty, and that is a scope decision rather than work outstanding. The
+mechanism is unaffected and stays enforced: the `Capability` enum is still
+exhaustive, every backend still answers every row through a `match`, and a
+capability added to `crcbl-vk` or `crcbl-webgpu` still fails to compile until
+the deferred backends answer for it too. What changed is only which rows anybody
+is working.
 
 `REVIEWED_BLOCKERS` in `crates/crcbl-hal/src/capability.rs` is the answer at any
-moment; this says what stands between each row and zero. Every row belongs to
-dx12 or Metal.
+moment; this says what stands between each row and zero. `DEFERRED_BACKENDS` and
+`DEFERRED_CAPABILITIES` beside it are the two ways a row comes to be parked, and
+`every_parity_blocker_is_deferred_by_its_backend_or_by_its_capability` is what
+stops a third kind of row joining them quietly.
 
-| rows                                              | kind        | what closes them                                                                  |
-| ------------------------------------------------- | ----------- | --------------------------------------------------------------------------------- |
-| dx12 `MeshShading`, `TaskShaderStage`             | `Unwritten` | the WARP device removal — `features_of` still never asks for `MeshShaderTier`     |
-| Metal `MeshShading`, `TaskShaderStage`            | `Unrun`     | **hardware.** The runner answers `Metal3 = false`, so nothing here can execute it |
-| Metal `TimestampQuery`, `PipelineStatisticsQuery` | `Unrun`     | **hardware.** Written and compiled; the runner advertises no `counterSets`        |
+| rows                                              | kind        | what closes them                                                                     |
+| ------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------ |
+| dx12 `MeshShading`, `TaskShaderStage`             | `Unwritten` | the WARP device removal — `features_of` still never asks for `MeshShaderTier`        |
+| Metal `MeshShading`, `TaskShaderStage`            | `Unrun`     | **hardware.** The runner answers `Metal3 = false`, so nothing here can execute it    |
+| Metal `TimestampQuery`, `PipelineStatisticsQuery` | `Unrun`     | **hardware.** Written and compiled; the runner advertises no `counterSets`           |
+| `OcclusionQuery` on all four                      | `Unwritten` | **a seam verb.** A begin/end pair on `CommandEncoder`, then five backends serving it |
 
 **The two kinds are not the same distance from done, which is why `Unrun`
 exists.** Metal's four rows are written — `crcbl-mtl`'s `query.rs` builds the
@@ -1610,10 +1649,14 @@ device that will run them. dx12's two are not written at all: the adapter does
 not report `Features::MESH_SHADER`, because reporting it on a device that
 removes itself would be worse than not reporting it.
 
-**So dx12's pair is the only one anybody can move without new hardware**, and it
-is the subject of "DEFERRED — dx12 mesh shading: WARP claims it and dies,
-hardware works". The four Metal rows are unprovable here whatever anyone writes;
-the honest reachable state on this machine is four rows, not zero.
+**Two of the ten can be moved without new hardware**, and they are different in
+kind from each other. dx12's pair is the subject of "DEFERRED — dx12 mesh
+shading: WARP claims it and dies, hardware works". The occlusion four are one
+piece of work, not four: the verb, then the five backends, and all of it
+runnable here — they are parked because nothing wants the counts, not because
+this machine cannot reach them. The four Metal rows are unprovable here whatever
+anyone writes; the honest reachable state on this machine is four rows, not
+zero.
 
 ### Cross-format image views were declined, and the seam now says a view keeps its image's format
 

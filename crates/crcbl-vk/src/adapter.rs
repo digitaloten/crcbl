@@ -361,8 +361,15 @@ pub(crate) fn features_of(
     // `Capability::OcclusionQuery` is "a `QueryKind::Occlusion` query set" and
     // nothing in `Features` or `Capability` names precision, so the bit is not
     // read here rather than being folded into an answer it does not belong in.
-    // `docs/backlog.md`'s occlusion-query entry is where a vocabulary for it
-    // would come from.
+    // `docs/notes/backends.md`'s occlusion-query entry is where a vocabulary for
+    // it would come from.
+    //
+    // **The flag is a device fact and stays reported**, although the seam now
+    // refuses `QueryKind::Occlusion` on every backend: what this line answers is
+    // "this device can count samples", which is true, and
+    // `crcbl_hal::NO_OCCLUSION_QUERY_VERB` is about a verb no device supplies.
+    // Folding the seam's refusal in here would report the device as lacking
+    // something it has, which is the same mistake `occlusionQueryPrecise` was.
     features |= Features::OCCLUSION_QUERY;
     if core.depth_clamp == vk::TRUE {
         features |= Features::DEPTH_CLAMP;

@@ -1659,22 +1659,16 @@ impl Device for MetalDevice {
                 Features::SAMPLER_ANISOTROPY,
                 "this device reports no SAMPLER_ANISOTROPY",
             ),
-            // **This claims what the capability defines and no more.**
-            // `Capability::OcclusionQuery` is "a QueryKind::Occlusion query set"
-            // — `crcbl_hal::CommandEncoder` has no begin/end query verb, so
-            // nothing a caller records through this seam can ever write one, and
-            // the same is true of the Vulkan and WebGPU backends' `Yes`. What is
-            // claimed is that `create_query_set` builds a visibility-result
-            // buffer of the size asked for, that `reset_query_set` and
-            // `resolve_query_set` reach it, and that `query_results` reads it
-            // back. `visibilityResultBuffer` is a property of every
-            // `MTLRenderPassDescriptor`, so `crate::adapter` reports the flag
-            // unconditionally and the gate below never fires — it is the flag's
-            // own arm, not a device question, exactly as `PushConstants` above.
-            Capability::OcclusionQuery => gated(
-                Features::OCCLUSION_QUERY,
-                "this device reports no OCCLUSION_QUERY",
-            ),
+            // **Not a device question, unlike the two query arms below.**
+            // `visibilityResultBuffer` is a property of every
+            // `MTLRenderPassDescriptor` and `crate::adapter` reports
+            // `Features::OCCLUSION_QUERY` unconditionally, so a gate here would
+            // never fire; what is missing is a verb on
+            // `crcbl_hal::CommandEncoder` that would put a
+            // `setVisibilityResultMode:offset:` around a draw, and no device
+            // supplies one. `create_query_set` refuses the same set with the
+            // same sentence, and every other backend answers this identically.
+            Capability::OcclusionQuery => Support::No(crcbl_hal::NO_OCCLUSION_QUERY_VERB),
             // **The one query capability with a whole path behind it.**
             // `Capability::TimestampQuery` is "a QueryKind::Timestamp query set,
             // the PassTimestampWrites that fill it and the query_results that
@@ -2530,7 +2524,8 @@ impl Device for MetalDevice {
 
     // --- queries ---
 
-    /// Creates a query set of any of the three kinds, on a device that has one.
+    /// Creates a counter-sampled query set on a device that has one, and
+    /// refuses the occlusion kind.
     ///
     /// **Two Metal objects behind one seam handle**, which is what `crate::query`
     /// spends its module docs on. An occlusion pool is a plain `MTLBuffer` — the
@@ -2543,13 +2538,15 @@ impl Device for MetalDevice {
     ///
     /// # What each kind can and cannot then do
     ///
-    /// **Occlusion: the pool exists and nothing can write it.**
-    /// [`Capability::OcclusionQuery`] is defined as "a
-    /// [`QueryKind::Occlusion`](crcbl_hal::QueryKind::Occlusion) query set" and
-    /// nothing more, because [`crcbl_hal::CommandEncoder`] has no begin/end query
-    /// verb: `setVisibilityResultMode:offset:` has no seam call to be reached
-    /// from, so no work a caller records can ever count into this buffer. That is
-    /// what `crcbl-vk`'s and `crcbl-webgpu`'s `Support::Yes` mean too.
+    /// **Occlusion: refused, and not by Metal.**
+    /// [`crcbl_hal::CommandEncoder`] has no begin/end query verb, so
+    /// `setVisibilityResultMode:offset:` has no seam call to be reached from and
+    /// no work a caller records could ever count into the buffer.
+    /// [`QueryKind::check_supported`](crcbl_hal::QueryKind::check_supported)
+    /// therefore refuses the kind here and on every other backend — see
+    /// [`crcbl_hal::NO_OCCLUSION_QUERY_VERB`]. The visibility arm below is left
+    /// standing: `new_visibility_buffer` builds the pool that verb would count
+    /// into, and this is where it would be reached from.
     ///
     /// **Timestamp: the pool exists and a pass writes it.**
     /// [`PassTimestampWrites`](crcbl_hal::PassTimestampWrites) on a render or
@@ -2578,11 +2575,13 @@ impl Device for MetalDevice {
     ///
     /// # Errors
     ///
-    /// [`HalError::InvalidDescriptor`] for a set of no queries,
-    /// [`HalError::Unsupported`] for a counter-sampled kind this device does not
-    /// report the feature for, and [`HalError::OutOfDeviceMemory`] if the
-    /// allocation fails.
+    /// [`HalError::Unsupported`] for
+    /// [`QueryKind::Occlusion`](crcbl_hal::QueryKind::Occlusion) and for a
+    /// counter-sampled kind this device does not report the feature for,
+    /// [`HalError::InvalidDescriptor`] for a set of no queries, and
+    /// [`HalError::OutOfDeviceMemory`] if the allocation fails.
     fn create_query_set(&self, desc: &QuerySetDesc<'_>) -> Result<QuerySetHandle, HalError> {
+        desc.kind.check_supported(BackendKind::Metal)?;
         crate::query::check_count(desc.count)?;
         let raw = match desc.kind {
             QueryKind::Occlusion => QuerySetRaw::Visibility(self.new_visibility_buffer(desc)?),

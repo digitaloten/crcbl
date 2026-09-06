@@ -340,12 +340,14 @@ fn gpu_address_is_available() -> bool {
 ///   every `MTLRenderPassDescriptor` and `setVisibilityResultMode:offset:` a
 ///   selector on every `MTLRenderCommandEncoder`, neither behind a query nor a
 ///   version gate, and the pool they name is a plain `MTLBuffer` rather than
-///   anything built from `counterSets`. It is reported because
-///   `Device::create_query_set` now builds that pool, `reset_query_set` and
-///   `resolve_query_set` reach it and `Device::query_results` reads it — the
-///   same standard the four above were held to. What the flag does *not* promise
-///   is a way to count into one: the seam has no begin/end query verb on any
-///   backend, which `crcbl_mtl::query` and `Device::create_query_set` both say.
+///   anything built from `counterSets`. So the flag answers "this device can
+///   count samples", which is true of every device this backend opens, and it is
+///   the one flag here whose seam call is nevertheless refused: the seam has no
+///   begin/end query verb on any backend, so `Device::create_query_set` declines
+///   [`QueryKind::Occlusion`] everywhere — see
+///   [`crcbl_hal::NO_OCCLUSION_QUERY_VERB`]. Reporting the flag clear instead
+///   would say this device lacks something it has, which is a different lie from
+///   the one the refusal is fixing.
 ///
 /// * [`Features::DESCRIPTOR_INDEXING`] — **withdrawn by the binding slice and
 ///   restored by the argument-buffer one, which is the entry worth reading

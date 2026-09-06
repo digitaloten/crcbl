@@ -3032,6 +3032,55 @@ fn the_portable_preset_refuses_query_kinds_it_lacks() {
     assert!(matches!(error, HalError::Unsupported { .. }), "{error:?}");
 }
 
+/// **The occlusion kind is refused on a preset that granted the feature**, which
+/// is the difference between this refusal and every other one in this backend.
+///
+/// `Features::OCCLUSION_QUERY` is in `NullInstance::gpu_driven`'s bundle and the
+/// device opened with it, so a gate on the flag would hand a set back. What
+/// refuses is `QueryKind::check_supported`: the seam has no verb that would ever
+/// write into the pool, so there is nothing for a preset to grant. The
+/// declaration is checked beside the call because the two are one answer — a
+/// `Support::Yes` here with a refusing `create_query_set` is exactly the
+/// mismatch the parity report exists to catch.
+///
+/// **What turns it red.** The refusal going back to a feature gate, which on
+/// this preset means a handle comes back; or `supports` answering anything but
+/// `Support::No`, since a `NotOnThisDevice` would blame a device that granted
+/// the flag.
+#[test]
+fn the_occlusion_kind_is_refused_even_where_the_preset_granted_it() {
+    let (_recorder, instance) = boxed(NullInstance::gpu_driven());
+    let device = open(instance.as_ref());
+    assert!(
+        device.caps().features.contains(Features::OCCLUSION_QUERY),
+        "this preset is the one that grants the flag, so the refusal below is not the flag"
+    );
+    let error = device
+        .create_query_set(&QuerySetDesc {
+            label: Some("visibility"),
+            kind: QueryKind::Occlusion,
+            count: 4,
+        })
+        .expect_err("no seam verb writes an occlusion query");
+    assert!(
+        matches!(
+            error,
+            HalError::Unsupported {
+                backend: BackendKind::Null,
+                what
+            } if what == crate::NO_OCCLUSION_QUERY_VERB
+        ),
+        "{error:?}"
+    );
+    assert!(
+        matches!(
+            device.supports(Capability::OcclusionQuery),
+            Support::No(why) if why == crate::NO_OCCLUSION_QUERY_VERB
+        ),
+        "the declaration and the refusal are one answer"
+    );
+}
+
 #[test]
 fn wait_idle_and_semaphore_waits_are_recorded_and_satisfied() {
     let (recorder, instance) = boxed(NullInstance::gpu_driven());

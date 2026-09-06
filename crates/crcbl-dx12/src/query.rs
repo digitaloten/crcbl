@@ -249,6 +249,12 @@ mod tests {
     }
 
     /// A set of no queries is refused, and a set of some sizes to its stride.
+    ///
+    /// The occlusion kind is what the zero-count half asks about deliberately:
+    /// `Device::create_query_set` refuses that kind before it reaches here (see
+    /// `crcbl_hal::NO_OCCLUSION_QUERY_VERB`), so this is the one place the
+    /// count rule is still asked of it, and the answer must not depend on which
+    /// kind was named.
     #[test]
     fn a_query_set_of_zero_queries_has_no_resolve_buffer() {
         assert_eq!(
