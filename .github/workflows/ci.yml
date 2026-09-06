@@ -2379,8 +2379,17 @@ jobs:
   mtl-e2e:
     name: mtl e2e (macos-latest)
     runs-on: macos-latest
-    # macOS runners are roughly 2x slower than Linux; see `build + test`.
-    timeout-minutes: 45
+    # macOS runners are roughly 2x slower than Linux; see `build + test` — but
+    # this job's clock is the debug layer's, not the runner's. With
+    # `MTL_DEBUG_LAYER_WARNING_MODE=nslog` every redundant bind and every unused
+    # binding prints a descriptor dump, about a million log lines a minute, and
+    # the mesh step alone took 22, 25, 29 and 37 minutes over four consecutive
+    # `main` runs on 2026-09-06 against two minutes on lavapipe; the fourth
+    # pushed the whole job past a 45-minute cap with every step green. The cap
+    # is twice the longest job measured (46 minutes) until the warnings are
+    # fixed at their source — `docs/backlog.md`, "Metal's debug layer warns on
+    # every bind, and the mesh suite pays for it".
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       # **The MSL half of `docs/plan/02-vulkan-backend.md`'s fourth shader

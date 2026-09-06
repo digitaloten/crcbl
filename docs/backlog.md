@@ -13926,6 +13926,63 @@ follow-up. Until then the enforced half on Metal is what the backend can observe
 in-process — that the layer interposed, and that no command buffer ended in
 error — which is already recorded as weaker than Vulkan's and D3D12's.
 
+### Metal's debug layer warns on every bind, and the mesh suite pays for it
+
+Found on 2026-09-06 when `mtl e2e (macos-latest)` on `c335f2e` was cancelled by
+its own 45-minute cap with every step green: "Draw the lit mesh on Metal" ran 37
+minutes, after 22, 25 and 29 on the three `main` runs before it, where the same
+`run-mesh-e2e.sh` finishes in two minutes on lavapipe. The cap is 90 minutes for
+now (`.github/workflows/ci.yml`, `mtl-e2e`), and this is what the log says the
+time is going to.
+
+**Two warning classes, at about a million log lines a minute.** With both mode
+variables on `nslog` the layer prints each finding and then a full descriptor
+dump of the texture, buffer or sampler it concerns. Counted in the job's log:
+the render step (57 tests, 3.7 minutes) carried 57,860 "Set Vertex Texture
+Validation", 45,373 "Set Fragment Buffers Validation", 23,144 "Set Vertex Buffer
+Validation", 22,640 "Set Fragment Bytes Validation", 11,572 "Set Vertex Sampler
+State Validation" and 8,921 "Set Fragment Sampler State Validation" findings —
+6.9 million lines for one step — and the first twenty minutes of the mesh step,
+eighteen of its 93 tests, 161,289 / 105,089 / 64,516 / 52,545 / 32,258 / 21,018
+of the same six. The two texts under them are
+
+```
+Set Vertex Texture Validation
+unused binding in encoder at Texture index 7.
+redundant setting of <AppleParavirtTexture: 0x8291b0f00>
+    label = probe visibility placeholder
+```
+
+So `crcbl-mtl` re-sets a texture, buffer or sampler that is already bound on the
+encoder, and binds slots the pipeline's shader never reads (the placeholder
+pages), on every draw. Both are the backend's own work, not the device's:
+`setVertexTexture:atIndex:` is called with what was already there.
+
+**What the time is, and what is verified.** Verified: the counts above, the step
+durations, and that the slow tests are the frame-counting ones —
+`area_light::the_price_of_a_froxel_full_of_area_lights` took 80 s,
+`debug_draw::the_price_of_the_debug_draw_layer` 39 s and
+`depth_only::the_price_of_the_depth_only_passes` passed nextest's 60 s slow
+mark, each of which draws many frames and therefore pays the per-bind print many
+times. Not verified: that the printing is the whole of the slowdown rather than
+the paravirtual device itself; the way to know is one run of the mesh step with
+`MTL_DEBUG_LAYER_WARNING_MODE=ignore`, which nobody has taken because the
+warnings are the point of the step.
+
+**The fix is at the source, in two halves, and then the mode moves.** (1)
+`crcbl-mtl`'s encoder tracks what is bound per stage and slot and skips a `set*`
+whose argument is already there — the state cache every Metal backend carries
+(wgpu-hal's `CommandState`, MoltenVK's `MVKResourcesCommandEncoderState`) —
+which removes the "redundant setting" class. (2) The "unused binding" class is a
+bind-layout question: the renderer binds every slot of a fixed layout and a
+pipeline that reads a subset gets a warning per slot it ignores; either the
+placeholder binds are skipped for pipelines whose reflection says the slot is
+unread, or the warning is accepted and said so in the record. Once the log is
+clean, `MTL_DEBUG_LAYER_WARNING_MODE` goes to `assert` per "Metal's debug layer
+is on `nslog`, and `assert` is the follow-up" above, the cap comes back down to
+the measured envelope, and the "price" tests on Metal become a number worth
+reading.
+
 ### `a_copy_d3d12_cannot_place_is_refused_by_name` provokes a real layer error
 
 Recorded because it is the one D3D12 test whose validation report is dirty on
