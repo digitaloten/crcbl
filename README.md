@@ -233,6 +233,7 @@ built it.
 | `sundial`        | the shadow acceptance fixture: one plaza, a scripted sun, every filter | ✓              |
 | `quarry`         | the geometry acceptance fixture: one dense scene on every path         | ✓              |
 | `viewer`         | a glTF model viewer, and the asset pipeline's acceptance test          | ✓              |
+| `towers`         | the flagship: co-op tower defense, played solo over the loopback       | ✓              |
 | `bare`           | the engine as a plain library, with a hand-written loop                |                |
 | `render-harness` | drives the golden scenes through a browser GPU for the parity gate     |                |
 

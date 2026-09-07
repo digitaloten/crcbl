@@ -5228,9 +5228,10 @@ map: `map::PATH`'s polyline, one creep archetype, one single-target tower, three
 scripted waves, shared gold and lives, and `PlaceTower`/`StartWave`/ `Restart`
 validated server-side over `InMemoryTransport`. The slice table in
 `docs/plan/sample/07-towers.md` is the record of what the rest of milestone 1
-costs; slice 2 is the browser demo and slice 3 is the content (splash and slow
-towers, upgrade tiers, the other creep types, all ten waves, `.crpix` art,
-spatial audio, world-space health bars).
+costs. **Slice 2 shipped the same day:** `/demos/towers/` is on the site, gated
+by `web/tools/browser-e2e.mjs`'s `towers` row. Slice 3 is the content (splash
+and slow towers, upgrade tiers, the other creep types, all ten waves, `.crpix`
+art, spatial audio, world-space health bars).
 
 **The one engine gap the slice found is a spline type.** Nothing in `crcbl-phys`
 or `crcbl-scene` offers a curve a body can be put on — the only splines in the

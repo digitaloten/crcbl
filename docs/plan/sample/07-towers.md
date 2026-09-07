@@ -74,8 +74,8 @@ above is a requirement rather than an aspiration.
 ## Milestones
 
 1. Solo loop on hardcoded map: creeps walk spline, towers shoot, gold, waves
-   (buildable from stage 7; genuinely fun checkpoint). **First slice built
-   2026-09-07** — see "Where this stands" for what it holds and what it owes.
+   (buildable from stage 7; genuinely fun checkpoint). **First two slices built
+   2026-09-07** — see "Where this stands" for what they hold and what they owe.
 2. Map from editor: author the real map in stage 8 editor — this milestone _is_
    stage 8 dogfood.
 3. Co-op over real transport + browser client (stage 10 exit demo: wasm client
@@ -84,23 +84,27 @@ above is a requirement rather than an aspiration.
 
 ## Where this stands
 
-**Milestone 1's first slice is built.** `apps/towers` is the solo loop on a
-hardcoded map, running natively: creeps walk a path as kinematic bodies, one
-tower type acquires and shoots them, a kill pays gold, a scripted table of three
-waves runs out, and the run is won at the end of the table or lost at zero lives
-and then plays itself again. `PlaceTower` and `StartWave` are commands the
-client seals into bytes and the server validates over `InMemoryTransport`, so
-solo is already the same game the co-op build will be.
+**Milestone 1's first two slices are built.** `apps/towers` is the solo loop on
+a hardcoded map: creeps walk a path as kinematic bodies, one tower type acquires
+and shoots them, a kill pays gold, a scripted table of three waves runs out, and
+the run is won at the end of the table or lost at zero lives and then plays
+itself again. `PlaceTower` and `StartWave` are commands the client seals into
+bytes and the server validates over `InMemoryTransport`, so solo is already the
+same game the co-op build will be.
 
-**It is not on the demo site.** There is no `towers` row in `web/build.sh`'s
-`DEMOS` array and no directory of its own under `web/demos/`, so rule 7 is
-unmet; the library builds for `wasm32` and the browser front end is the next
-slice.
+**It is on the demo site**, at `/demos/towers/`, from the same build that runs
+natively — rule 7 is met and the exit criterion below that asks for a web build
+that "ships and is single player" is the one thing on that list this sample can
+already claim. `web/tools/browser-e2e.mjs`'s `towers` row is what holds it: that
+gate builds a tower in a real browser and reads the purse pay for it, asks for
+the same plot again and reads the server refuse it, sends a wave with the key
+and measures it against the tick the table had it due on, and watches a kill pay
+its bounty back.
 
 | Slice | What it is                                                                                                                                                                                                                   | Status               |
 | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
 | 1     | Solo loop on the hardcoded map: the polyline path, one creep archetype, one single-target tower, three scripted waves, shared gold and lives, the three commands over the loopback, a fixed overhead camera, the debug panel | **Built 2026-09-07** |
-| 2     | The browser demo: `src/web.rs`, a `towers` directory under `web/demos/`, the `DEMOS` row, the Pages steps, the feature card and the browser gate                                                                             | Next                 |
+| 2     | The browser demo: `src/web.rs`, a `towers` directory under `web/demos/`, the `DEMOS` row, the Pages steps, the feature card and the browser gate                                                                             | **Built 2026-09-07** |
 | 3     | The rest of milestone 1's content: splash and slow towers, one upgrade tier each, the tanky and swarm creeps, all ten waves, `.crpix` art and the build menu it makes possible, spatial audio, world-space health bars       | Owed                 |
 | 4     | The dev fly/walk camera — `CharacterController` on this map, which is the controller's first real terrain                                                                                                                    | Owed                 |
 | 5     | Save and resume between waves (topic 14)                                                                                                                                                                                     | Owed                 |
@@ -142,19 +146,23 @@ and the built-in font. Rule 8 is **owed, not exempted**: the sample ships
 silent, and the "audio grammar in anger" bullet above has nothing behind it yet.
 Rule 12 is half met — the three selectors are on the debug panel, the `[HUD]`
 line and the summary, but there is no flag to hold a path below what the device
-offers. There is no pointer or touch input, which the browser slice needs. And
-the debug panel's network module has nothing to report on, which is milestone
-3's problem rather than this slice's.
+offers. **There is no pointer or touch input, in the window or on the page**,
+and slice 2 shipped without adding any: what a tap wants to land on is the build
+menu slice 3 brings with the `.crpix` art, so a hit test against the untextured
+list `page` draws today would be written to be thrown away. A phone therefore
+gets a field that plays itself and nothing it can spend the purse on. And the
+debug panel's network module has nothing to report on, which is milestone 3's
+problem rather than these slices'.
 
 **What it is waiting on, and it is not one thing.**
 
-- **Milestone 1 is under way rather than waiting.** Slice 1 is built; the table
-  above is what the rest of it costs. The four ingredients this section used to
-  list as present are present and three of them are now exercised by code: the
-  per-collider trigger flag, `sweep_sphere` and `overlap_sphere` are what the
-  sample runs on, and `CharacterController` is the one still untouched here — it
-  is slice 4's, and `apps/puppet`, `apps/breach` and `apps/shard` drive it from
-  three different cameras in the meantime.
+- **Milestone 1 is under way rather than waiting.** Slices 1 and 2 are built;
+  the table above is what the rest of it costs. The four ingredients this
+  section used to list as present are present and three of them are now
+  exercised by code: the per-collider trigger flag, `sweep_sphere` and
+  `overlap_sphere` are what the sample runs on, and `CharacterController` is the
+  one still untouched here — it is slice 4's, and `apps/puppet`, `apps/breach`
+  and `apps/shard` drive it from three different cameras in the meantime.
 - **Milestone 2 waits on the editor, which does not exist. The scene directory
   no longer holds it up.** `crcbl_scene::scn`
   ([06-assets-scenes.md](../06-assets-scenes.md)'s task 4) landed 2026-09-07 and

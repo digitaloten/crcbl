@@ -77,6 +77,16 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **The flagship sample is on the demo site.** `apps/towers` publishes its
+  browser front end — `src/web.rs`'s ten `__crcbl_towers_*` exports — and
+  `/demos/towers/` runs the solo loop from the same build that runs natively:
+  the client and the server both live in the one wasm module, over `crcbl-net`'s
+  loopback. Its `[HUD]` line gains `next`, the seconds until the table sends the
+  next wave by itself. `web/tools/browser-e2e.mjs`'s `towers` row is what gates
+  it in a real browser: a build takes the tower's cost out of the purse, the
+  same plot asked for twice is refused rather than built again, the wave key
+  sends a wave sooner than the tick the table had it due on, and a kill pays its
+  bounty back.
 - **Puppet reads its map from a `.scn/` directory**, the second sample to load
   one. `apps/puppet/assets/scenes/blockout.scn/` is `scene.ron`, `env.ron` and
   three chunk files — `sys/surfaces.ron`, `sys/spawn.ron` and `sys/sun.ron` —

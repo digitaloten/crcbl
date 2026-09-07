@@ -1123,6 +1123,45 @@ case "$DEMO" in
         ;;
 esac
 
+# And the same argument for the one demo on this site that is a client and a
+# server at once. towers seals `PlaceTower` and `StartWave` into bytes and hands
+# them to a server over `crcbl-net`'s loopback; every other check in the driver
+# passes against a page whose commands never left the client, because a tower
+# that a client placed itself draws exactly like one a server built. `towers`
+# alone, because it is the only sample with a server to disagree with.
+#
+# Two names are matched rather than five, because the five are one block in the
+# driver and the two named here are its *controls* — the halves worth deleting
+# when a slow machine makes them flake:
+#
+#  - 'a second build on the same plot is refused' is what says the server is
+#    deciding. Without it, "a tower goes up" passes for a client that places
+#    towers itself and never asks anybody.
+#  - 'sooner than the table had it due' is what says the wave key did anything.
+#    Waves arrive on their own, so without the due tick the check beside it
+#    passes with the keyboard unplugged.
+#
+# Renaming either check in the driver is meant to fail here and be renamed here
+# too.
+case "$DEMO" in
+    towers)
+        REFUSED="$(grep -F 'and a second build on the same plot is refused rather than served' "${OUTPUT}.plain" || true)"
+        if [ -z "$REFUSED" ]; then
+            echo "crcbl web e2e: the driver never asked whether $DEMO's server refuses a" >&2
+            echo "               plot it has already built on; 'a tower goes up' has no" >&2
+            echo "               control, and it passes for a client that never asked" >&2
+            exit 1
+        fi
+        SOONER="$(grep -F 'the wave key sends the next wave sooner than the table had it due' "${OUTPUT}.plain" || true)"
+        if [ -z "$SOONER" ]; then
+            echo "crcbl web e2e: the driver never measured $DEMO's wave against the tick it" >&2
+            echo "               was due on; waves arrive on their own, so a wave starting" >&2
+            echo "               says nothing about the key that was pressed" >&2
+            exit 1
+        fi
+        ;;
+esac
+
 # And the same argument for the `autoexec.cfg` the driver seeds into quarry's
 # OPFS, which is the only thing anywhere that asks whether a console variable can
 # be set *before the first frame* in a browser. `Loop::new` runs that file after

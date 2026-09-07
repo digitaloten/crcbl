@@ -32,10 +32,14 @@
 //!
 //! No [`pointer_event`](HostedGame::pointer_event) and no
 //! [`touch_event`](HostedGame::touch_event) override: the build list is picked
-//! through with two keys rather than clicked on. A tower defense wants a
-//! pointer and a phone wants a finger, and the next slice — the one that
-//! publishes the browser demo — is where both belong;
-//! `docs/plan/sample/07-towers.md` records them as owed.
+//! through with two keys rather than clicked on. **The browser demo does not
+//! change that**, which is a decision rather than an omission: what a tap wants
+//! to land on is the build menu `docs/plan/sample/07-towers.md`'s slice 3
+//! brings with the `.crpix` art, and a hit test written against the untextured
+//! list this slice draws would be thrown away with it. So a phone gets the same
+//! self-playing field `apps/breach` and `apps/shard` give it — the waves arrive
+//! on their own and a finished run plays itself again — and that document
+//! records the pointer and the finger as still owed.
 //!
 //! # `[HUD]` is logged here rather than in `crate::game`
 //!
@@ -184,7 +188,15 @@ impl Towers {
     /// the server turning a command down. `gold`, `lives` and `towers` are what
     /// a player changes. Together they are enough for a page gate to tell a
     /// demo that is playing itself from one whose loop has stopped, which is
-    /// what the next slice will read them for.
+    /// what `web/tools/browser-e2e.mjs`'s `towers` row reads them for.
+    ///
+    /// **`next` is on the line for that gate specifically.** It is the seconds
+    /// until the table sends the next wave by itself, and `--` while one is
+    /// releasing or the table is spent — which is the only thing on the line
+    /// that says whether [`crate::wave::Waves::start_now`] would be accepted
+    /// right now. A gate pressing the wave key without it cannot tell a wave it
+    /// brought forward from one that was arriving anyway, and cannot tell a
+    /// refusal from bad timing of its own.
     ///
     /// It also names the three selectors — see the module docs.
     fn log_heartbeat(&self) {
@@ -197,14 +209,19 @@ impl Towers {
             return;
         }
         let stats = &self.stats;
+        let next = match stats.next_wave_in {
+            Some(seconds) => format!("{seconds:.2}"),
+            None => "--".to_string(),
+        };
         crcbl::log::info!(
-            "[HUD] tick: {}  gold: {}  lives: {}  wave: {}  creeps: {}  towers: {}  bolts: {}  \
-             kills: {}  leaks: {}  shots: {}  built: {}  refused: {}  outcome: {}  runs: {}  \
-             plot: {}  geometry: {:?}  binding: {:?}  lighting: {:?}",
+            "[HUD] tick: {}  gold: {}  lives: {}  wave: {}  next: {}  creeps: {}  towers: {}  \
+             bolts: {}  kills: {}  leaks: {}  shots: {}  built: {}  refused: {}  outcome: {}  \
+             runs: {}  plot: {}  geometry: {:?}  binding: {:?}  lighting: {:?}",
             stats.ticks,
             stats.gold,
             stats.lives,
             stats.wave,
+            next,
             stats.creeps,
             stats.towers,
             stats.bolts,
@@ -266,6 +283,11 @@ pub fn start(options: &Options) -> Result<Loop, TowersError> {
 }
 
 /// Builds the loop on an already-open shell, blocking on both waits.
+///
+/// The browser cannot use this — a main thread may not sit in
+/// [`wait_for_configure`] — and takes [`PendingLoop`] instead. What the two
+/// share is everything after the waiting, which is `assemble` — private,
+/// because a caller has no `Booted` to hand it.
 ///
 /// # Errors
 ///
@@ -513,6 +535,68 @@ impl HostedGame for Towers {
             summary.paths.lighting,
             summary.run.exit,
         );
+    }
+}
+
+// ---- polled start-up ---------------------------------------------------------
+
+/// A [`Loop`] being started one poll at a time, for a caller that may not block
+/// — which on a browser main thread is every caller.
+///
+/// The state machine, the pump and the resize-during-start-up race are
+/// [`crcbl::engine::PolledBoot`]'s; all that is left here is this sample's
+/// `Options` and the `assemble` call the engine deliberately stops short of.
+#[derive(Debug)]
+pub struct PendingLoop<S: Shell + ?Sized = dyn Shell> {
+    boot: crcbl::engine::PolledBoot<S, Gpu>,
+    options: Options,
+}
+
+impl<S: Shell + ?Sized> PendingLoop<S> {
+    /// Creates the window and starts the wait, without blocking on either half.
+    ///
+    /// `clock_source` is the caller's because the browser's cannot be
+    /// [`Clock::new`]'s: `std::time::Instant::now` panics on
+    /// `wasm32-unknown-unknown`, so a page drives the loop from
+    /// `performance.now()` instead.
+    ///
+    /// # Errors
+    ///
+    /// [`TowersError`] if the shell refused the window.
+    pub fn request(
+        mut shell: Box<S>,
+        options: &Options,
+        clock_source: Clock,
+    ) -> Result<Self, TowersError> {
+        let window = open_the_window(
+            shell.as_mut(),
+            &clock_source,
+            options.common.display_mode(),
+            options.common.size,
+        )?;
+        Ok(Self {
+            boot: crcbl::engine::PolledBoot::request(
+                shell,
+                window,
+                clock_source,
+                options.common.gpu(),
+                (),
+            ),
+            options: options.clone(),
+        })
+    }
+
+    /// Advances start-up. `Ok(None)` means "not yet, poll again next frame".
+    ///
+    /// # Errors
+    ///
+    /// [`TowersError`] if the window went away before it had a size, if the
+    /// device request failed, or if the simulation could not be built.
+    pub fn poll(&mut self) -> Result<Option<Loop<S>>, TowersError> {
+        let Some(booted) = self.boot.poll::<TowersError>()? else {
+            return Ok(None);
+        };
+        assemble(booted, &self.options).map(Some)
     }
 }
 

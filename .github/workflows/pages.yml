@@ -468,6 +468,14 @@ jobs:
           # since died at a demo ahead of it. This job is what gives it a clock
           # of its own.
           - shard
+          # towers is the flagship sample and the newest demo here. It is a 3D
+          # greybox field on a fixed overhead camera — a slab, a lane, five
+          # build pads and a box per creep — so what it costs is closer to
+          # alcove than to shard. Its gate presses keys: the `loop` block in
+          # `web/tools/browser-e2e.mjs` builds a tower, watches the purse pay
+          # for it, and then asks the server for a plot that is already taken,
+          # which is the refusal this sample exists to make a number.
+          - towers
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -703,6 +711,10 @@ jobs:
       - name: Render options in a real browser
         timeout-minutes: 12
         run: CRCBL_WEB_E2E_DEMO=options ./web/run-browser-e2e.sh --headless
+
+      - name: Render towers in a real browser
+        timeout-minutes: 12
+        run: CRCBL_WEB_E2E_DEMO=towers ./web/run-browser-e2e.sh --headless
 
   probe-windows:
     name: probe the seam on Windows

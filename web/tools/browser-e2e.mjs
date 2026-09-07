@@ -2129,6 +2129,114 @@ const EXPECTATIONS = {
       recordMagic: 'CRWB',
     },
   },
+  // **The demo whose subject is a server saying no.** towers is the ladder's
+  // flagship — `docs/plan/sample/07-towers.md` — and the one sample here that
+  // is a client and a server in one wasm module: `PlaceTower` and `StartWave`
+  // are sealed into bytes, handed to a server over `crcbl-net`'s loopback, and
+  // validated there. Every other demo's input path ends at its own simulation,
+  // so nothing else on this site can go wrong the way this one can, and nothing
+  // else on this site can prove that a browser has not quietly grown a
+  // client-side shortcut.
+  //
+  // The `loop` block after the row is where that is asked. Its shape is a claim
+  // and a control four times over: a build the server *takes* against the same
+  // build *refused*, and a wave the key brought forward against the tick it was
+  // due on anyway.
+  towers: {
+    // The seventh demo that draws mesh instances, so the seventh whose cull
+    // pass has something to count: the ground slab, the lane, five build pads,
+    // a box per creep and a tower per plot are all `crcbl::greybox` primitives.
+    // See lantern's row and group D.
+    culls: true,
+    // **No start key.** The build phase is already running when the page opens
+    // and the first wave arrives on the table's own clock two and a half
+    // simulated seconds later, so there is no waiting state for a `Space` to
+    // leave — see `apps/towers/src/wave.rs`, which also says why a run that is
+    // won or lost plays itself again rather than stopping on a screen.
+    key: null,
+    // Read off the *first* line, at `game::HEARTBEAT_TICKS`. It asks that the
+    // opening state is the untouched one — the whole purse, nothing built and
+    // nothing refused — which is the control for every reading the `loop` block
+    // takes afterwards: a page that had already spent gold, or a client that
+    // built a tower without asking, reports it here.
+    //
+    // And the three selectors are rule 12, the same claim breach and shard
+    // make: a browser has no mesh stage, no bindless and no ray query, so these
+    // are the arms the capability model resolves to *by construction*, and this
+    // line is the only place anything checks that they are the ones the frame
+    // took. `Towers::log_heartbeat` prints their own `Debug`, which is a
+    // deliberate coupling to `crates/crcbl-hal/src/caps.rs`: a renamed variant
+    // fails here loudly.
+    waiting: (line) =>
+      line.includes('[HUD] tick: 60') &&
+      line.includes('gold: 120') &&
+      line.includes('towers: 0') &&
+      line.includes('built: 0') &&
+      line.includes('refused: 0') &&
+      line.includes('geometry: IndirectPerBatch') &&
+      line.includes('binding: ArrayPages') &&
+      line.includes('lighting: Rasterised'),
+    // How many creeps are on the field, which is the wave table's own product:
+    // it climbs as a wave releases and falls as they are killed or reach the
+    // exit, and **nothing a player does can start it** — the first wave arrives
+    // whether the page is touched or not. A demo presenting frames without
+    // ticking leaves it at zero for ever.
+    moving: /\bcreeps: (\d+)/,
+    movingLabel: 'the wave table releases creeps under its own steam',
+    // **The loop, played through the browser's own input pipeline** — the block
+    // below. Every pattern here is a field of the `[HUD]` line
+    // `apps/towers/src/app.rs` logs, and that file argues why each is on it.
+    loop: {
+      // `code` is what the engine binds to; `key`, `text` and the virtual key
+      // code are what a real keyboard sends.
+      //
+      // `ArrowLeft` walks the build cursor *backwards* from the plot the page
+      // opens on, which wraps it to the last one — `map::PLOTS`' `gate`, at the
+      // far end of the lane. That is the plot this block wants and not an
+      // arbitrary one: a tower there reaches only the creeps' last leg, so the
+      // several simulated seconds it takes them to walk to it are what make the
+      // purse arithmetic below unambiguous. Built at the entry instead, a kill
+      // could pay a bounty into the same window the build was spent from.
+      prev: { code: 'ArrowLeft', key: 'ArrowLeft', virtualKeyCode: 37 },
+      build: { code: 'KeyB', key: 'b', text: 'b', virtualKeyCode: 66 },
+      send: { code: 'KeyN', key: 'n', text: 'n', virtualKeyCode: 78 },
+      // Which plot the cursor is on, by `map::Plot::label`. The client's own
+      // state and the only field here that never crosses the wire — which is
+      // exactly why the block reads it: it is what says the arrow keys reached
+      // the game before anything asks what a build did.
+      plot: /\bplot: ([a-z]+)/,
+      lastPlot: 'gate',
+      // The purse, and the two counters that say what the server did with a
+      // command: how many towers it has built and how many commands it has
+      // turned down.
+      gold: /\bgold: (\d+)/,
+      towers: /\btowers: (\d+)/,
+      built: /\bbuilt: (\d+)/,
+      refused: /\brefused: (\d+)/,
+      // What the towers have killed, and how many waves have been started.
+      kills: /\bkills: (\d+)/,
+      wave: /\bwave: (\d+)/,
+      // How long until the table sends the next wave by itself, in simulated
+      // seconds — `--` while one is releasing or the table is spent. **The
+      // field the wave check is built on**: it is what says a `StartWave` would
+      // be accepted right now, and it is what the check measures "sooner than
+      // it was due" against.
+      next: /\bnext: ([\d.]+)/,
+      // Which run this is. A run that is lost or won plays itself again, and a
+      // restart puts every counter above back to its opening value — so every
+      // claim below is scoped to one run and says so when it is not.
+      runs: /\bruns: (\d+)/,
+      // The tick the line was logged on, and how many of them a simulated
+      // second is: `game::DEFAULT_TICK_HZ`. Together they turn `next` into a
+      // tick the wave was due on, which is the control for the wave key.
+      tick: /\[HUD\] tick: (\d+)/,
+      tickHz: 60,
+      // `tower::COST`, in gold. The one number this block asserts an exact
+      // equality on, because a purse is the only place a build that was
+      // *applied* differs from a build that was merely *drawn*.
+      cost: 40,
+    },
+  },
 };
 
 const EXPECTED = EXPECTATIONS[SLUG];
@@ -2575,6 +2683,24 @@ const TORCH_DARKER_RATIO = 0.95;
  * state.
  */
 const PUFF_RUNNING_MIN = 20;
+
+/**
+ * How far ahead the next wave must be due before towers' gate presses the key
+ * that brings it forward, in simulated seconds.
+ *
+ * **The whole of what makes that check a check.** Waves arrive on their own —
+ * `apps/towers/src/wave.rs`'s `GAP_S` — so a run that pressed nothing would
+ * still report a wave starting, and the only way to tell the key's wave from
+ * the table's is that it came *early*. Pressing against a reading with less
+ * than this left cannot say which happened.
+ *
+ * A value the demo guarantees rather than a hopeful one: the gap is 2.5
+ * simulated seconds and the heartbeat is logged once a simulated second, so the
+ * first heartbeat inside any gap has at least this long left on it. Ninety
+ * ticks, against the sixty a heartbeat is worth, is what leaves the early wave
+ * a whole beat clear of the due one.
+ */
+const WAVE_KEY_MARGIN_S = 1.5;
 
 /**
  * How many consecutive `[POSE]` lines must report the same pose before the
@@ -7546,6 +7672,278 @@ try {
         ? `the refusal counter went ${first.refused} → ${last.refused} over ` +
             `${budgeted.length} heartbeat(s)`
         : 'no heartbeat carried a refusal counter at all'
+    );
+  }
+
+  // **AND THE SERVER, WHICH NOTHING ABOVE CAN SEE AT ALL.**
+  // Only towers has one. Every other demo on this site simulates in the same
+  // place it reads the keyboard, so "the input path works" and "the simulation
+  // agreed" are one claim there; this one seals `PlaceTower` and `StartWave`
+  // into bytes and hands them to a server over `crcbl-net`'s loopback, which
+  // validates them and may say no. `moving` above would go on passing for a
+  // page whose commands never left the client, and for one whose server took
+  // every command it was given.
+  //
+  // So this block reads four claims off the demo's own heartbeat, in two pairs:
+  //
+  // * a build **puts a tower up and takes its cost out of the purse**, and the
+  //   *same plot asked for a second time* is **refused** — nothing built and
+  //   nothing spent. The second is the control for the first: without it, "a
+  //   tower appeared" passes for a client that places towers itself and never
+  //   asks anybody, which is exactly the shortcut a browser port invites.
+  // * the wave key **brings the next wave forward**, sooner than the tick the
+  //   table had it due on. The due tick is the control, and it is read off the
+  //   line rather than assumed: waves arrive on their own, so a check that only
+  //   asked whether a wave started would pass with the key unplugged.
+  //
+  // Then the loop closes: a kill **pays its bounty**, which is the one thing
+  // that puts gold back and the reason a first tower is affordable at all.
+  //
+  // Every failure message carries the readings, so a red run says which claim
+  // went wrong and at what value.
+  if (EXPECTED.loop) {
+    const loop = EXPECTED.loop;
+
+    /** Every HUD line, as the fields this block cares about. */
+    const readings = () =>
+      hud()
+        .map((line) => {
+          const number = (/** @type {RegExp} */ pattern) => {
+            const found = line.match(pattern);
+            return found ? Number(found[1]) : null;
+          };
+          const reading = {
+            line,
+            plot: line.match(loop.plot)?.[1] ?? null,
+            gold: number(loop.gold),
+            towers: number(loop.towers),
+            built: number(loop.built),
+            refused: number(loop.refused),
+            kills: number(loop.kills),
+            wave: number(loop.wave),
+            runs: number(loop.runs),
+            tick: number(loop.tick),
+            // `--` while a wave is releasing or the table is spent, and the
+            // pattern matches only the numeric form — so `null` here reads as
+            // "no wave is due", which is the state the wave check waits out.
+            next: number(loop.next),
+          };
+          return reading.tick === null || reading.gold === null
+            ? null
+            : reading;
+        })
+        .filter((reading) => reading !== null);
+
+    /** The newest heartbeat, or `null` before the first one has arrived. */
+    const latest = () => readings().at(-1) ?? null;
+
+    /**
+     * Presses and releases one of this demo's keys, through the browser's own
+     * input pipeline.
+     *
+     * **The release waits for the loop**, which is not politeness: every
+     * control in this sample is a press *edge* — `apps/towers/src/app.rs` says
+     * why a held key must not spend the purse sixty times a second — and the
+     * engine turns queued events into edges once per tick. A release dispatched
+     * in the same breath as its press can land in the same tick as the press
+     * and take the edge with it.
+     */
+    const press = async (
+      /** @type {{code: string, key: string, text?: string, virtualKeyCode: number}} */ key
+    ) => {
+      for (const type of ['keyDown', 'keyUp']) {
+        await page.send('Input.dispatchKeyEvent', {
+          type,
+          code: key.code,
+          key: key.key,
+          windowsVirtualKeyCode: key.virtualKeyCode,
+          nativeVirtualKeyCode: key.virtualKeyCode,
+          ...(type === 'keyDown' && key.text ? { text: key.text } : {}),
+        });
+        await loopFrames(page);
+      }
+    };
+
+    // ---- the cursor, which is the client's alone -------------------------
+    // Read first because everything below is about a *plot*, and a build
+    // command names the plot the cursor is on. It is also the one reading here
+    // that never crosses the wire, so a page whose keys reach the game but
+    // whose commands do not gets past this check and fails the next.
+    const opened = latest();
+    await press(loop.prev);
+    const moved = await until(async () =>
+      readings().find((reading) => reading.plot === loop.lastPlot)
+    );
+    check(
+      'C',
+      'an arrow key walks the build cursor round to the far plot',
+      Boolean(moved),
+      moved
+        ? `the cursor reads ${moved.plot}, from ${opened?.plot ?? 'no plot'}`
+        : `it stayed on ${latest()?.plot ?? 'no plot at all'} over ` +
+            `${readings().length} heartbeat(s)`
+    );
+
+    // ---- the build the server takes --------------------------------------
+    const beforeBuild = latest();
+    await press(loop.build);
+    const placed = beforeBuild
+      ? await until(async () =>
+          readings().find(
+            (reading) =>
+              reading.runs === beforeBuild.runs &&
+              reading.towers > beforeBuild.towers
+          )
+        )
+      : null;
+    check(
+      'C',
+      'a build command reaches the server and a tower goes up',
+      Boolean(placed) &&
+        placed.built === beforeBuild.built + 1 &&
+        placed.refused === beforeBuild.refused,
+      placed
+        ? `towers went ${beforeBuild.towers} → ${placed.towers}, built ` +
+            `${beforeBuild.built} → ${placed.built}, refused ` +
+            `${beforeBuild.refused} → ${placed.refused}`
+        : `no heartbeat reported a tower on the field in ` +
+            `${readings().length} line(s); the last said towers ` +
+            `${latest()?.towers}, built ${latest()?.built}, refused ` +
+            `${latest()?.refused}`
+    );
+
+    // **And the purse, which is what says the tower was really built rather
+    // than merely drawn.** A client that placed one of its own would report the
+    // count above and leave the gold alone. The kill count is checked across
+    // the same window because a bounty paid into it would make the difference
+    // something other than the cost — the cursor was walked to the far plot for
+    // exactly that reason, and this is what would notice if that stopped
+    // being true.
+    check(
+      'C',
+      "and the purse pays the tower's cost for it",
+      Boolean(placed) &&
+        placed.kills === beforeBuild.kills &&
+        placed.gold === beforeBuild.gold - loop.cost,
+      !placed
+        ? 'no tower was ever built, so there is no purse to compare'
+        : placed.kills === beforeBuild.kills
+          ? `gold went ${beforeBuild.gold} → ${placed.gold} against a cost of ` +
+            `${loop.cost}`
+          : `${placed.kills - beforeBuild.kills} kill(s) landed in the same ` +
+            `window (gold ${beforeBuild.gold} → ${placed.gold}), so the ` +
+            'bounty and the cost cannot be told apart — the cursor is meant ' +
+            `to be on ${loop.lastPlot}, out of reach of the creeps this early`
+    );
+
+    // ---- and the control: the same plot, refused --------------------------
+    const beforeRefusal = latest();
+    await press(loop.build);
+    const refused = beforeRefusal
+      ? await until(async () =>
+          readings().find(
+            (reading) =>
+              reading.runs === beforeRefusal.runs &&
+              reading.refused > beforeRefusal.refused
+          )
+        )
+      : null;
+    check(
+      'C',
+      'and a second build on the same plot is refused rather than served',
+      Boolean(refused) &&
+        refused.towers === beforeRefusal.towers &&
+        refused.built === beforeRefusal.built &&
+        refused.gold >= beforeRefusal.gold,
+      refused
+        ? `refused went ${beforeRefusal.refused} → ${refused.refused} with ` +
+            `towers ${refused.towers}, built ${refused.built} and gold ` +
+            `${beforeRefusal.gold} → ${refused.gold}`
+        : `the refusal counter stayed at ${latest()?.refused} over ` +
+            `${readings().length} heartbeat(s), with towers ` +
+            `${latest()?.towers} and built ${latest()?.built} — the server ` +
+            'either built a second tower on a taken plot or never saw the command'
+    );
+
+    // ---- the wave the key brings forward ----------------------------------
+    // **Waited for rather than pressed on sight.** `next` is the seconds until
+    // the table sends the next wave by itself; it is absent while one is
+    // releasing, when the command would be refused, and a wave that was about
+    // to arrive anyway is one this check could not tell from a wave the key
+    // sent. `WAVE_KEY_MARGIN_S` is what makes the difference readable.
+    const gap = await until(async () => {
+      const now = latest();
+      return now && now.next !== null && now.next >= WAVE_KEY_MARGIN_S
+        ? now
+        : null;
+    });
+    const beforeSend = readings().length;
+    if (gap) await press(loop.send);
+    const sent = gap
+      ? await until(async () =>
+          readings()
+            .slice(beforeSend)
+            .find(
+              (reading) => reading.runs !== gap.runs || reading.wave > gap.wave
+            )
+        )
+      : null;
+    // The tick the table had the wave due on, from the reading the key was
+    // pressed against: `next` seconds away at `game::DEFAULT_TICK_HZ` ticks a
+    // second. A heartbeat is sixty ticks and the margin above is ninety, so a
+    // wave the key sent is reported at least one whole heartbeat early.
+    const dueAt = gap ? gap.tick + gap.next * loop.tickHz : null;
+    check(
+      'C',
+      'the wave key sends the next wave sooner than the table had it due',
+      Boolean(sent) &&
+        sent.runs === gap.runs &&
+        sent.wave === gap.wave + 1 &&
+        sent.refused === gap.refused &&
+        sent.tick < dueAt,
+      !gap
+        ? 'no heartbeat ever reported a wave due far enough ahead to press ' +
+            'against; the table was releasing or spent on every one of ' +
+            `${readings().length} line(s)`
+        : !sent
+          ? `wave stayed at ${gap.wave} after the key, over ` +
+            `${readings().length - beforeSend} heartbeat(s)`
+          : sent.runs !== gap.runs
+            ? `the run restarted under the check (runs ${gap.runs} → ` +
+              `${sent.runs}), so nothing here is about one run`
+            : sent.refused > gap.refused
+              ? `the server refused the wave command (refused ${gap.refused} ` +
+                `→ ${sent.refused})`
+              : `wave ${gap.wave} → ${sent.wave} at tick ${sent.tick}, and the ` +
+                `table had it due at ${dueAt} (tick ${gap.tick}, next ` +
+                `${gap.next} s)`
+    );
+
+    // ---- and the loop closes: a kill pays --------------------------------
+    // The one thing that puts gold back. Read as a pair of adjacent heartbeats
+    // rather than as a total, so what is asserted is that the purse moved *on
+    // the beat the kill did* — a page that started the run with more gold, or
+    // one whose economy paid on a timer, does not produce that.
+    const paid = await until(async () => {
+      const seen = readings();
+      const at = seen.findIndex(
+        (reading, index) =>
+          index > 0 &&
+          reading.runs === seen[index - 1].runs &&
+          reading.kills > seen[index - 1].kills
+      );
+      return at > 0 ? { before: seen[at - 1], after: seen[at] } : null;
+    });
+    check(
+      'C',
+      'and a kill pays its bounty into the purse',
+      Boolean(paid) && paid.after.gold > paid.before.gold,
+      paid
+        ? `kills ${paid.before.kills} → ${paid.after.kills} paid gold ` +
+            `${paid.before.gold} → ${paid.after.gold}`
+        : `nothing was ever killed in ${readings().length} heartbeat(s); the ` +
+            `last said kills ${latest()?.kills}, towers ${latest()?.towers}, ` +
+            `creeps on the field and gold ${latest()?.gold}`
     );
   }
 

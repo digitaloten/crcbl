@@ -171,6 +171,7 @@ DEMOS=(
   "breach:crcbl_breach:demos/breach"
   "shard:crcbl_shard:demos/shard"
   "options:crcbl_options:demos/options"
+  "towers:crcbl_towers:demos/towers"
 )
 
 profile_flag=()

@@ -1,10 +1,10 @@
 //! Towers — co-op tower defense, and the ladder's flagship.
 //!
-//! `docs/plan/sample/07-towers.md`, **milestone 1, slice 1**: the solo loop on
-//! a hardcoded map. Creeps walk a path, towers shoot them, kills pay gold, a
-//! scripted table of waves runs out, and the run is won or lost. Native only —
-//! the browser demo is the next slice, and that document's status section is
-//! the list of what each slice owes.
+//! `docs/plan/sample/07-towers.md`, **milestone 1, slices 1 and 2**: the solo
+//! loop on a hardcoded map, natively and in a browser. Creeps walk a path,
+//! towers shoot them, kills pay gold, a scripted table of waves runs out, and
+//! the run is won or lost. That document's status section is the list of what
+//! each remaining slice owes.
 //!
 //! # What it proves
 //!
@@ -61,14 +61,17 @@
 //! slow towers and no upgrade tiers; no tanky or swarm creeps and no
 //! world-space health bars; seven of the plan's ten waves; no `.crpix` art and
 //! so no build menu worth the name (rule 11 is owed, not exempted); no spatial
-//! audio (rule 8 is owed, not exempted); no save or resume; no dev fly/walk
-//! camera; and no browser demo, which is the next slice.
+//! audio (rule 8 is owed, not exempted); no save or resume; and no dev fly/walk
+//! camera. There is no pointer or touch input either, on the page as well as in
+//! the window — [`app`] says why a tap waits for the build menu.
 //! `docs/plan/sample/07-towers.md` carries the list with what each would take.
 //!
-//! # One library, one front end so far
+//! # One library, two front ends
 //!
-//! `src/main.rs` is argv and an exit code; everything else is here. The second
-//! front end — `src/web.rs`, and the page that drives it — lands with the demo.
+//! `src/main.rs` is argv and an exit code; everything else is here.
+//! `src/web.rs` is the second front end — compiled only on `wasm32`, which is
+//! why it is not linked on a host build — and it is what the demo site's shim
+//! drives once per `requestAnimationFrame`.
 
 pub mod app;
 mod args;
@@ -83,7 +86,10 @@ pub mod path;
 pub mod tower;
 pub mod wave;
 
-pub use app::{Loop, Summary, Towers, TowersError, run, start, with_shell};
+#[cfg(target_arch = "wasm32")]
+pub mod web;
+
+pub use app::{Loop, PendingLoop, Summary, Towers, TowersError, run, start, with_shell};
 pub use args::{Invocation, Options, USAGE, parse};
 pub use creep::{Creep, CreepView};
 pub use game::{Controls, DEFAULT_TICK_HZ, Game, GameError, RenderState, Stats};
