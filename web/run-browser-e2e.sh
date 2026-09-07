@@ -719,7 +719,7 @@ esac
 # `breach` alone, because it is the only demo shot from inside the shooter's
 # head.
 #
-# Six names are matched for the range block. Each is either a *control* — the
+# Seven names are matched for the range block. Each is either a *control* — the
 # half worth deleting when a slow machine makes it flake — or the one check
 # without which the rest of a pair is asked of the wrong page:
 #
@@ -753,6 +753,18 @@ esac
 #    it is the click a player really makes: the one that grabs the pointer.
 #    Without it, "a click pulls the trigger" passes for a build that fires on
 #    the button press that was reaching for the lock.
+#
+# And one for the rig, which is the only state this demo has — beside the pause
+# it is drawn over — where the game hands the pointer *back* while it is still
+# playing:
+#
+#  - 'opening the loadout gives the pointer lock back and the demo plays on' is
+#    the only place anything asks a browser to act on a `PointerMode::Free` this
+#    game asked for. `apps/breach/src/panel.rs` and its drag are otherwise
+#    covered by `cargo test` alone, where a pointer mode is a value the game
+#    returns and no lock is ever taken; and the "plays on" half is what tells
+#    the panel's own release from the browser taking the lock away, which
+#    arrives as a focus loss and pauses.
 #
 # Renaming any of them in the driver is meant to fail here and be renamed here
 # too.
@@ -802,6 +814,14 @@ case "$DEMO" in
             echo "               that grabbed the pointer; 'a click pulls the trigger'" >&2
             echo "               has no control, and it passes for a build that fires on" >&2
             echo "               the press that was reaching for the lock" >&2
+            exit 1
+        fi
+        RIG="$(grep -F 'opening the loadout gives the pointer lock back and the demo plays on' "${OUTPUT}.plain" || true)"
+        if [ -z "$RIG" ]; then
+            echo "crcbl web e2e: the driver never opened $DEMO's loadout; nothing asks a" >&2
+            echo "               browser to act on the PointerMode::Free that panel wants," >&2
+            echo "               so apps/breach/src/panel.rs is gated by cargo test alone" >&2
+            echo "               — where no lock is ever taken and none can be given back" >&2
             exit 1
         fi
         # And the same argument once more for the *other map*, which is

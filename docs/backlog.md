@@ -5418,15 +5418,16 @@ replayed through `Grid::place` on the way back in). What it would take is the
 whole save, not just the grid; nothing blocks it and nothing asks for it before
 the buy menu at milestone 2.
 
-### The browser gate never opens breach's loadout (2026-09-07)
+### breach's loadout luma swing is measured on one adapter (2026-09-07)
 
-`web/tools/browser-e2e.mjs`'s breach block presses `KeyW`, the arrows, `Space`
-and the mouse; it never presses `I`, so the panel and its pointer drag are
-covered by `cargo test` alone —
-`a_pointer_drag_moves_a_stack_between_two_cells_of_the_panel` scripts it through
-`HeadlessShell`. What a browser would add is the real lock release: breach asks
-for `PointerMode::Free` while the panel is open, and only a browser grants or
-declines a Pointer Lock for real. One step in the gate.
+`LOADOUT_LUMA_SWING` in `web/tools/browser-e2e.mjs` — the threshold behind
+`and the rig is on the canvas where the panel centres it` — is a fifth of the
+smaller of two radv gaps (97 and 128 bytes of mean luminance), because this
+machine's Chromium reports no canvas pixel under `--adapter swiftshader`, which
+is the adapter CI runs. The constant's margin is an argument rather than a
+second reading; the first Pages run of the check is where the SwiftShader figure
+comes from, and `web-e2e-breach`'s `breach-swiftshader.log` is where the three
+readings the check prints will be.
 
 ### Breach owes rule 11 and claims no exemption (2026-08-27)
 

@@ -1652,6 +1652,11 @@ const EXPECTATIONS = {
       tilt: { code: 'ArrowUp', key: 'ArrowUp', virtualKeyCode: 38 },
       tiltBack: { code: 'ArrowDown', key: 'ArrowDown', virtualKeyCode: 40 },
       fire: { code: 'Space', key: ' ', text: ' ', virtualKeyCode: 32 },
+      // The rig, and the only binding on this list that is not in the action
+      // map at all: `apps/breach/src/app.rs`'s `PANEL_KEY` is read off the key
+      // event, because which panels are on screen is presentation and nothing
+      // about it crosses the wire.
+      loadout: { code: 'KeyI', key: 'i', text: 'i', virtualKeyCode: 73 },
       // Which reading advances under the walk key, and which way. `pz` falls.
       advance: /\bpz: (-?[\d.]+)/,
       // Where the view is pointing. The engine's own number, read off the
@@ -2337,6 +2342,77 @@ const MOUSE_LOOK_STEPS = 8;
  * straddled the gesture.
  */
 const MOUSE_SWEEP_BEATS = 2;
+
+/**
+ * The layout `apps/breach/src/panel.rs` draws the loadout with, in framebuffer
+ * pixels.
+ *
+ * **A deliberate coupling to that module's constants**, in the shape of the one
+ * `PAUSE_INSET` makes to `crcbl::engine::pause`. The panel is centred on the
+ * surface and sized from these — `CELL_PX` across `loadout::GRID_W` columns and
+ * `GRID_H` rows, `PANEL_PAD` inside its border on every side, and a `ROW_HEIGHT`
+ * each for the title and the summary — so a gate that wants to read the canvas
+ * *where the rig is* has to do the same arithmetic. Written out rather than
+ * sampled off the whole canvas because the whole canvas is nine parts firing
+ * range: the panel is a fifth of its width and would be a rounding error in any
+ * statistic taken over all of it.
+ */
+const LOADOUT_PANEL = {
+  cellPx: 34,
+  padPx: 8,
+  rowPx: 18,
+  columns: 4,
+  rows: 3,
+};
+
+/**
+ * How much of the panel the sampled window takes, on its tighter side.
+ *
+ * {@link SAMPLE_CANVAS} cuts a window that is centred and given as a *fraction*
+ * of the canvas, and the panel is centred and fixed in *pixels*, so the window
+ * is sized from whichever of the two ratios is smaller and then shrunk by this.
+ * The margin is what keeps the sample off the panel's own border and inside it
+ * on a backing store that is not the one this was measured on — the canvas is
+ * `width: 100%` with an `aspect-ratio` and a `max-height` in `web/style.css`,
+ * so its pixels are the viewport's and not a constant anywhere.
+ */
+const LOADOUT_WINDOW_SHARE = 0.9;
+
+/**
+ * How far the window's mean luminance must move when the rig is drawn over it,
+ * in 0..255 bytes.
+ *
+ * **An opaque panel over a window is a magnitude**, which is the shape of claim
+ * [`TORCH_FLICKER_LUMA`] makes about a torch and for the same reason: a hash can
+ * say a window changed and never which way. The control is not a second
+ * constant, though. It is that the two readings taken with the panel *closed* —
+ * one before the key, one after it has been pressed again — are nearer each
+ * other than either is to the reading with it open, which needs no threshold and
+ * holds however the range behind it moves.
+ *
+ * **Not a count of colours, and not a flattest share**, which is measured rather
+ * than assumed. Two runs on radv, over the check's own window:
+ *
+ * ```text
+ *                        range      rig    range again
+ *   mean luma            37.14   133.96      37.25
+ *   distinct colours       131        8        134
+ *
+ *   mean luma             6.16   133.96       6.16
+ *   distinct colours         5        7          5
+ * ```
+ *
+ * The rig reads the same in both, because it is the same rig on the same canvas.
+ * The range does not: [`LOOK_SQUARE_RAD`] puts the view back to within half a
+ * radian, and half a radian is the difference between a wall with the lanes on
+ * it and a dark corner — which held fewer colours than the panel drawn over it.
+ * Every threshold on flatness sits inside that. The luminance gap is 97 bytes
+ * wide in the first and 128 in the second, and this asks for a fifth of the
+ * smaller: the gate runs on SwiftShader in CI, and this machine's Chromium
+ * reports no pixel at all under that adapter, so there is no second reading to
+ * bound it with.
+ */
+const LOADOUT_LUMA_SWING = 20;
 
 /**
  * How far a foot height may sit from the step it is standing on, in metres.
@@ -5765,6 +5841,146 @@ try {
       );
       await beat(mark);
     }
+
+    // ---- and the rig, which is the one thing here that gives the pointer back
+    // `docs/plan/34-inventory.md`'s loadout panel, opened with `I` —
+    // `apps/breach/src/app.rs`'s `PANEL_KEY`, which is not in the action map
+    // because which panels are on screen is presentation. `cargo test` already
+    // scripts the whole of it through `HeadlessShell`, where a pointer mode is
+    // a value the game returns and a drawn panel is a count of draw commands.
+    // What a browser adds is the *release*, and the control that says whose
+    // release it was:
+    //
+    // * the browser really lets the lock go. `web/engine/shell.js`'s
+    //   `syncPointerLock` reads the engine's request once a frame and calls
+    //   `document.exitPointerLock()` the moment it drops, so a null
+    //   `pointerLockElement` is the whole round trip — the key, `panel_open`,
+    //   `Breach::pointer_mode` answering `PointerMode::Free`, the shim, and the
+    //   browser.
+    // * **and the demo is still playing while it is open.** That is what tells
+    //   this release from the other one: `__crcbl_web_pointer_lock` in
+    //   `crates/crcbl-shell/src/web/mod.rs` turns a lock the engine did *not*
+    //   ask to give up into a `Focus` event with `focused` clear, which pauses
+    //   — the pause the free-cursor control above waited on — and a paused demo
+    //   runs no ticks and logs no heartbeat. So "the lock went, and the
+    //   heartbeats kept arriving" is a claim the panel can satisfy and a player
+    //   stepping out cannot.
+    // * and the rig is on the canvas, read where `panel::bounds` centres it.
+    //   The pointer mode is the game's own word for what it is doing; this is
+    //   the picture a visitor gets, and the two are different questions.
+    //
+    // Then `I` again, and a click takes the lock back — the panel is a switch
+    // rather than a one-way door, and the groups below are handed the page
+    // group C was handed.
+    const backing = await evaluate(
+      page,
+      `(() => { const c = document.getElementById('canvas');
+                return { width: c.width, height: c.height }; })()`
+    );
+    const panelInset =
+      (1 -
+        LOADOUT_WINDOW_SHARE *
+          Math.min(
+            (LOADOUT_PANEL.columns * LOADOUT_PANEL.cellPx +
+              2 * LOADOUT_PANEL.padPx) /
+              backing.width,
+            (LOADOUT_PANEL.rows * LOADOUT_PANEL.cellPx +
+              2 * LOADOUT_PANEL.padPx +
+              2 * LOADOUT_PANEL.rowPx) /
+              backing.height
+          )) /
+      2;
+    /** What the canvas holds where the panel is drawn, open or closed. */
+    const rigWindow = async () =>
+      evaluate(page, SAMPLE_CANVAS('#canvas', panelInset));
+    /** What one of those windows measured, for a verdict to carry. */
+    const readRig = (/** @type {any} */ sample) =>
+      sample === null
+        ? 'nothing came back'
+        : `${sample.inner.distinct} distinct colour(s), the flattest ` +
+          `${(sample.inner.share * 100).toFixed(1)}% of it, at ` +
+          `${sample.inner.luma.toFixed(2)} luma`;
+
+    const rangeRig = await rigWindow();
+    const openedAt = hud().length;
+    await tap(range.loadout);
+    const gaveBack = await until(async () =>
+      (await evaluate(page, `document.pointerLockElement === null`))
+        ? true
+        : null
+    );
+    const kept = gaveBack === true ? await settle(openedAt) : null;
+    const openStatus = await evaluate(page, `crcbl.status()`);
+    check(
+      'C',
+      'opening the loadout gives the pointer lock back and the demo plays on',
+      gaveBack === true && kept !== null && openStatus === STATUS_RUNNING,
+      gaveBack !== true
+        ? 'the canvas is still the document.pointerLockElement with the rig ' +
+            'open — nothing acted on the PointerMode::Free the panel asks for'
+        : kept === null
+          ? `the heartbeat stopped when the lock went: ${hud().length - openedAt} ` +
+            `beat(s) since the key at status ${openStatus}, which is the browser ` +
+            `taking the lock back and the focus loss pausing the demo`
+          : openStatus !== STATUS_RUNNING
+            ? `the lock went and the demo sat at status ${openStatus} rather than ` +
+              `${STATUS_RUNNING}, so it was the player stepping out`
+            : `the lock went with ${hud().length - openedAt} beat(s) still ` +
+              `arriving at status ${openStatus}`
+    );
+
+    const openRig = await rigWindow();
+    const shutAt = hud().length;
+    await tap(range.loadout);
+    const wantsItBack = await until(async () =>
+      (await evaluate(
+        page,
+        `crcbl.exports.__crcbl_web_pointer_lock_wanted(crcbl.gpu.canvasId)`
+      )) !== 0
+        ? true
+        : null
+    );
+    await settle(shutAt);
+    const shutRig = await rigWindow();
+    const swung =
+      rangeRig !== null && openRig !== null && shutRig !== null
+        ? {
+            before: Math.abs(openRig.inner.luma - rangeRig.inner.luma),
+            after: Math.abs(openRig.inner.luma - shutRig.inner.luma),
+            drift: Math.abs(shutRig.inner.luma - rangeRig.inner.luma),
+          }
+        : null;
+    const moved = swung === null ? 0 : Math.min(swung.before, swung.after);
+    check(
+      'C',
+      'and the rig is on the canvas where the panel centres it',
+      swung !== null && moved >= LOADOUT_LUMA_SWING && swung.drift < moved,
+      `over the middle ${((1 - 2 * panelInset) * 100).toFixed(1)}% of a ` +
+        `${backing.width} × ${backing.height} canvas: the range read ` +
+        `${readRig(rangeRig)}, the rig ${readRig(openRig)}, and the range again ` +
+        `${readRig(shutRig)}` +
+        (swung === null
+          ? ' — one of those windows came back empty'
+          : ` — the rig moved the luminance ${moved.toFixed(2)} against the ` +
+            `${swung.drift.toFixed(2)} the range moved on its own, and ` +
+            `${LOADOUT_LUMA_SWING} was asked for`)
+    );
+
+    await clickAt(grab);
+    const retaken = await until(async () => ((await captured()) ? true : null));
+    check(
+      'C',
+      'and closing it lets a click take the lock again',
+      wantsItBack === true && retaken === true,
+      wantsItBack !== true
+        ? 'the engine never asked for the pointer again after the second press, ' +
+            'so the rig is a one-way door and every group below it is being ' +
+            'handed a demo nobody can aim'
+        : retaken === true
+          ? 'the canvas is the document.pointerLockElement once more'
+          : 'the engine wants the pointer again and a click on the canvas did ' +
+            'not take it'
+    );
   }
 
   // **AND THE OTHER MAP, WHICH IS MILESTONE 0'S OTHER HALF.** Only breach has
