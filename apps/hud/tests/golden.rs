@@ -58,9 +58,7 @@
 
 #![cfg(feature = "golden-e2e")]
 
-use std::path::PathBuf;
-
-use crcbl_golden::{Golden, Image};
+use crcbl_golden::Image;
 use crcbl_sample_test::{Block, SampleRun, required_backend};
 
 /// How many frames the run presents before the one that gets written.
@@ -151,26 +149,20 @@ const DREW_AT_ALL: f32 = 6.0;
 
 /// The claims in front of the golden: it drew, and it drew in the right places.
 fn inspect(image: &Image) {
-    let block = Block::new(image, BLOCK);
-    let colors = image.distinct_colors(MIN_COLORS);
-    assert!(
-        colors >= MIN_COLORS,
-        "a page with {colors} distinct colour(s) (counted to {MIN_COLORS}) is not \
-         evidence — nothing drew, or only the clear did"
-    );
+    let block = Block::new(image, BLOCK, "hud");
+    block.distinct_enough("a page", MIN_COLORS);
 
     // ---- 1. the bars are widgets on top of a page --------------------------
-    let health = block.brightness(HEALTH_AT);
-    let backdrop = block.brightness(BACKDROP_AT);
-    eprintln!("hud golden: health fill {health:.1}/255, backdrop {backdrop:.1}/255");
+    //
     // No separate "the fill drew at all" floor: the page behind it is already at
     // 72/255, so any floor low enough to be a drew-at-all check is one the page
     // itself would clear. The ratio is the claim, and a UI pass that never ran
     // leaves both points reading the same backdrop and fails it at 1.0.
-    assert!(
-        health > backdrop * FILL_OVER_BACKDROP,
-        "the health bar's fill is {health:.1} and the page behind it is {backdrop:.1} — the \
-         bar is not on top of the page, or the whole frame has been flattened"
+    block.over(
+        ("health bar's fill", HEALTH_AT),
+        ("page behind it", BACKDROP_AT),
+        FILL_OVER_BACKDROP,
+        "the bar is not on top of the page",
     );
 
     // ---- 2. the page is dark rather than absent ----------------------------
@@ -178,36 +170,34 @@ fn inspect(image: &Image) {
     // The other half of claim 1, and the one that stops it being satisfied by a
     // frame that lost its backdrop: `health > backdrop * ratio` holds for
     // `backdrop == 0`, which is what a pass that never ran looks like.
-    assert!(
-        backdrop > DREW_AT_ALL,
-        "the page is at {backdrop:.1}/255, so the backdrop pass reached nothing"
+    block.drew(
+        "page",
+        BACKDROP_AT,
+        DREW_AT_ALL,
+        "the backdrop pass reached nothing",
     );
 
     // ---- 3. the health bar is red, in that order ---------------------------
-    let health_red = block.channel(HEALTH_AT, 0);
-    let health_green = block.channel(HEALTH_AT, 1);
-    let health_blue = block.channel(HEALTH_AT, 2);
-    eprintln!(
-        "hud golden: health red {health_red:.1}, green {health_green:.1}, blue {health_blue:.1}"
-    );
-    assert!(
-        health_red > health_green * HEALTH_REDNESS && health_red > health_blue * HEALTH_REDNESS,
-        "the health bar reads red {health_red:.1} / green {health_green:.1} / blue \
-         {health_blue:.1} — either no bar drew there, or the readback's channels were \
-         written the wrong way round"
+    block.channel_beats(
+        "health bar",
+        HEALTH_AT,
+        &[("red", 0), ("green", 1), ("blue", 2)],
+        HEALTH_REDNESS,
+        None,
+        "either no bar drew there, or the readback's channels were written the wrong way round",
     );
 
     // ---- 4. the mana bar is blue, in that order ----------------------------
     //
     // Pointing the opposite way to claim 3, so the pair cannot both be satisfied
     // by a frame whose channels were rotated rather than swapped.
-    let mana_blue = block.channel(MANA_AT, 2);
-    let mana_red = block.channel(MANA_AT, 0);
-    eprintln!("hud golden: mana blue {mana_blue:.1}, red {mana_red:.1}");
-    assert!(
-        mana_blue > DREW_AT_ALL && mana_blue > mana_red * MANA_BLUENESS,
-        "the mana bar reads blue {mana_blue:.1} / red {mana_red:.1} — either no fill drew \
-         there, or the readback's channels were written the wrong way round"
+    block.channel_beats(
+        "mana bar",
+        MANA_AT,
+        &[("blue", 2), ("red", 0)],
+        MANA_BLUENESS,
+        Some(DREW_AT_ALL),
+        "either no fill drew there, or the readback's channels were written the wrong way round",
     );
 }
 
@@ -216,7 +206,7 @@ fn inspect(image: &Image) {
 #[ignore = "needs a real GPU and a backend pin; run tests/run-hud-golden.sh"]
 fn the_frame_the_binary_wrote_matches_its_golden() {
     let backend = required_backend("tests/run-hud-golden.sh");
-    let (image, adapter) = SampleRun {
+    let run = SampleRun {
         name: "hud",
         binary: env!("CARGO_BIN_EXE_hud"),
         tmp_dir: env!("CARGO_TARGET_TMPDIR"),
@@ -226,16 +216,9 @@ fn the_frame_the_binary_wrote_matches_its_golden() {
         args: &[],
         stdout_contains: &["wave 1"],
         simulation_advanced: true,
-    }
-    .screenshot(&backend);
+    };
+    let (image, adapter) = run.screenshot(&backend);
     eprintln!("hud golden: device on {adapter}");
     inspect(&image);
-
-    let reference = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/panels.png");
-    let comparison = Golden::new(reference)
-        .check(&image)
-        .expect("the reference is readable")
-        .into_result()
-        .unwrap_or_else(|message| panic!("on {backend}: {message}"));
-    eprintln!("hud golden: panels on {backend} — {}", comparison.summary());
+    run.compare_to_golden(&image, &backend, env!("CARGO_MANIFEST_DIR"), "panels");
 }

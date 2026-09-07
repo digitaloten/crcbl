@@ -645,6 +645,7 @@ mod tests {
     use crcbl::shell::HeadlessShell;
 
     use super::*;
+    use crcbl_sample_test::{row_value, ui_text};
 
     /// A loop over a *concrete* `HeadlessShell`, so the test can play
     /// compositor. `run` uses `dyn Shell`; both go through the same
@@ -674,48 +675,6 @@ mod tests {
         }
     }
 
-    /// The value drawn immediately after the row labelled `label`.
-    fn row_value(drawn: &[String], label: &str) -> String {
-        let mut matches = drawn
-            .iter()
-            .enumerate()
-            .filter(|(_, text)| *text == label)
-            .map(|(at, _)| at);
-        let at = matches
-            .next()
-            .unwrap_or_else(|| panic!("no {label} row in {drawn:?}"));
-        // Row labels share one namespace across every section of the panel, and
-        // two have collided already — `crcbl-render`'s frame timings draw a
-        // `pending` row, and this sample's first draft named one of its own the
-        // same. A reader tells them apart by the heading above them; a search
-        // through the flat draw list cannot, and would read whichever came
-        // first for ever after.
-        assert!(
-            matches.next().is_none(),
-            "more than one {label} row in {drawn:?}, so this reads whichever the panel \
-             happened to draw first"
-        );
-        drawn
-            .get(at + 1)
-            .unwrap_or_else(|| panic!("no value after {label} in {drawn:?}"))
-            .clone()
-    }
-
-    /// Every `Text` command the frame handed to the UI pass.
-    fn ui_text(engine: &Loop<HeadlessShell>) -> Vec<String> {
-        use crcbl::ui::draw_list::DrawCommand;
-        engine
-            .gpu()
-            .draw_list()
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                DrawCommand::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
     /// **The sandbox can turn the panel on too, and F3 is all it takes.**
     ///
     /// Rule 4 applies to the sandbox as much as to a game, and the sandbox had
@@ -733,7 +692,7 @@ mod tests {
         engine.frame().expect("a frame");
         engine.frame().expect("a frame");
         assert!(
-            ui_text(&engine).is_empty(),
+            ui_text(engine.gpu().draw_list()).is_empty(),
             "the sandbox draws no UI at all while the panel is off",
         );
         let dump = engine.gpu().last_dump();
@@ -747,7 +706,7 @@ mod tests {
             .key_press(window, DEBUG_OVERLAY_KEY)
             .expect("the window is live");
         engine.frame().expect("a frame");
-        let drawn = ui_text(&engine);
+        let drawn = ui_text(engine.gpu().draw_list());
         for row in ["frame", "fps", "avg", "worst", "window"] {
             assert!(drawn.iter().any(|t| t == row), "missing {row}: {drawn:?}");
         }
@@ -808,9 +767,9 @@ mod tests {
             .expect("the window is live");
         engine.frame().expect("a frame");
         assert!(
-            ui_text(&engine).is_empty(),
+            ui_text(engine.gpu().draw_list()).is_empty(),
             "F3 again must take it away: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
         engine.finish(ExitReason::FrameBudget).expect("teardown");
     }
@@ -1061,7 +1020,9 @@ mod tests {
         let window = engine.window();
         run_frames(&mut engine, 2);
         assert!(
-            !ui_text(&engine).iter().any(|t| t == "PAUSED"),
+            !ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|t| t == "PAUSED"),
             "nothing is paused yet",
         );
 
@@ -1070,7 +1031,7 @@ mod tests {
             .key_press(window, PAUSE_KEY)
             .expect("the window is live");
         engine.frame().expect("a frame");
-        let drawn = ui_text(&engine);
+        let drawn = ui_text(engine.gpu().draw_list());
         assert!(drawn.iter().any(|t| t == "PAUSED"), "{drawn:?}");
         assert!(drawn.iter().any(|t| t == "RESUME"), "{drawn:?}");
         assert!(drawn.iter().any(|t| t == "PACING: AUTO"), "{drawn:?}");
@@ -1177,7 +1138,9 @@ mod tests {
 
         assert_eq!(engine.game().pacing, Pacing::Vsync);
         assert!(
-            ui_text(&engine).iter().any(|text| text == "PACING: VSYNC"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "PACING: VSYNC"),
             "the row's label must show the new value",
         );
         // Still paused, no tick has run yet — the change lands on resume.
@@ -1239,7 +1202,9 @@ mod tests {
 
         assert_eq!(engine.game().limit, FrameLimit::unlimited());
         assert!(
-            ui_text(&engine).iter().any(|text| text == "FPS: UNLIMITED"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "FPS: UNLIMITED"),
             "the row's label must show the new value",
         );
         assert_eq!(

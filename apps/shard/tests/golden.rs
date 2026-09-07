@@ -466,7 +466,7 @@ fn read_points(state: &RenderState, turns: i32) -> (Vec3, Vec3) {
 
 /// The claims in front of the golden: it drew, and it drew in the right places.
 fn inspect(frame: &Frame, turns: i32, name: &str) {
-    let block = Block::new(&frame.image, BLOCK);
+    let block = Block::new(&frame.image, BLOCK, "shard");
     let colors = frame.image.distinct_colors(MIN_COLORS);
     let (figure_at, floor_at) = read_points(&frame.state, turns);
     let figure = block.brightness(project(&frame.camera, figure_at));
@@ -638,8 +638,8 @@ fn the_torches_are_what_lights_the_zone() {
     let (_, floor_at) = read_points(&lit.state, 0);
 
     let at = project(&lit.camera, floor_at);
-    let lit_floor = Block::new(&lit.image, BLOCK).brightness(at);
-    let doused_floor = Block::new(&doused.image, BLOCK).brightness(at);
+    let lit_floor = Block::new(&lit.image, BLOCK, "shard").brightness(at);
+    let doused_floor = Block::new(&doused.image, BLOCK, "shard").brightness(at);
     eprintln!(
         "shard golden: the floor reads {lit_floor:.1}/255 lit and {doused_floor:.1}/255 doused"
     );

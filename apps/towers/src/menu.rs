@@ -20,12 +20,16 @@
 //! the server throws the run away. A menu that reached into the stage would be
 //! a client mutating server state, which rule 2 has no exemption for.
 
-use crcbl::engine::{DEBUG_OVERLAY_ID, FIRST_GAME_ID, FULLSCREEN_ID, RESUME_ID};
+use crcbl::engine::{FIRST_GAME_ID, PAUSE_TITLE, pause_items};
 use crcbl::ui::WidgetId;
 use crcbl::ui::menu::{Menu, MenuItem, MenuSet};
 
 /// The one widget id this game answers for.
 pub const RESTART_ID: WidgetId = FIRST_GAME_ID;
+
+/// Where `RESTART` sits among [`crcbl::engine::pause_items`]' three rows:
+/// directly under `RESUME`.
+const RESTART_ROW: usize = 1;
 
 /// What only towers' menu does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,27 +62,21 @@ pub type Menus = MenuSet<MenuKind>;
 /// The one menu, with nothing shown while the field is being played.
 #[must_use]
 pub fn menus() -> Menus {
+    // Inserted rather than appended: `RESTART` belongs directly under `RESUME`,
+    // which is where a player who just lost reaches for it, and the arrow keys
+    // walk the rows in this order.
+    let mut items = pause_items();
+    items.insert(RESTART_ROW, MenuItem::new(RESTART_ID, "RESTART", "R"));
     MenuSet::new(
         MenuKind::None,
-        vec![(
-            MenuKind::Paused,
-            Menu::new(
-                "PAUSED",
-                vec![
-                    MenuItem::new(RESUME_ID, "RESUME", "ESC"),
-                    MenuItem::new(RESTART_ID, "RESTART", "R"),
-                    MenuItem::new(FULLSCREEN_ID, "FULLSCREEN", "F11"),
-                    MenuItem::new(DEBUG_OVERLAY_ID, "DEBUG PANEL", "F3"),
-                ],
-            ),
-        )],
+        vec![(MenuKind::Paused, Menu::new(PAUSE_TITLE, items))],
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crcbl::engine::HostedGame as _;
+    use crcbl::engine::{DEBUG_OVERLAY_ID, FULLSCREEN_ID, HostedGame as _, RESUME_ID};
 
     /// Pause is the only thing that puts a panel on screen here, and it always
     /// does — this sample has no other state a menu could belong to.
@@ -95,6 +93,7 @@ mod tests {
         assert_eq!(
             menu.items().iter().map(|item| item.id).collect::<Vec<_>>(),
             vec![RESUME_ID, RESTART_ID, FULLSCREEN_ID, DEBUG_OVERLAY_ID],
+            "RESTART sits under RESUME, and the loop's three rows keep their order",
         );
     }
 

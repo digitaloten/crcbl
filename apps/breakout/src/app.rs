@@ -626,6 +626,7 @@ mod tests {
 
     use super::*;
     use core::time::Duration;
+    use crcbl_sample_test::{headless_common, row_value, ui_text};
 
     use crcbl::core::input::KeyCode;
     use crcbl::engine::Flow;
@@ -633,12 +634,7 @@ mod tests {
 
     fn headless(frames: u64) -> Options {
         Options {
-            common: Common {
-                headless: true,
-                backend: Some(GpuBackend::Null),
-                frames: Some(frames),
-                ..Common::new(crate::game::DEFAULT_TICK_HZ)
-            },
+            common: headless_common(crate::game::DEFAULT_TICK_HZ, frames),
             ..Options::default()
         }
     }
@@ -763,48 +759,6 @@ mod tests {
         engine.finish(ExitReason::FrameBudget).expect("teardown");
     }
 
-    /// The value drawn immediately after the row labelled `label`.
-    fn row_value(drawn: &[String], label: &str) -> String {
-        let mut matches = drawn
-            .iter()
-            .enumerate()
-            .filter(|(_, text)| *text == label)
-            .map(|(at, _)| at);
-        let at = matches
-            .next()
-            .unwrap_or_else(|| panic!("no {label} row in {drawn:?}"));
-        // Row labels share one namespace across every section of the panel, and
-        // two have collided already — `crcbl-render`'s frame timings draw a
-        // `pending` row, and this sample's first draft named one of its own the
-        // same. A reader tells them apart by the heading above them; a search
-        // through the flat draw list cannot, and would read whichever came
-        // first for ever after.
-        assert!(
-            matches.next().is_none(),
-            "more than one {label} row in {drawn:?}, so this reads whichever the panel \
-             happened to draw first"
-        );
-        drawn
-            .get(at + 1)
-            .unwrap_or_else(|| panic!("no value after {label} in {drawn:?}"))
-            .clone()
-    }
-
-    /// Every `Text` command the frame handed to the UI pass.
-    fn ui_text(engine: &Loop<HeadlessShell>) -> Vec<String> {
-        use crcbl::ui::draw_list::DrawCommand;
-        engine
-            .gpu()
-            .draw_list()
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                DrawCommand::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
     /// **A paused frame draws the pause menu over the HUD, and the graph says
     /// so.**
     ///
@@ -867,7 +821,7 @@ mod tests {
         // Two frames so the frame clock has a non-zero interval to report.
         engine.frame().expect("a frame");
         engine.frame().expect("a frame");
-        let hidden = ui_text(&engine);
+        let hidden = ui_text(engine.gpu().draw_list());
         assert!(
             hidden.iter().any(|t| t.starts_with("Score:")),
             "the game HUD is always drawn: {hidden:?}",
@@ -895,7 +849,7 @@ mod tests {
             .key_press(window, DEBUG_OVERLAY_KEY)
             .expect("the window is live");
         engine.frame().expect("a frame");
-        let shown = ui_text(&engine);
+        let shown = ui_text(engine.gpu().draw_list());
         assert!(
             shown.iter().any(|t| t == "frame") && shown.iter().any(|t| t == "fps"),
             "F3 must show the frame section: {shown:?}",
@@ -909,7 +863,7 @@ mod tests {
             .key_press(window, DEBUG_OVERLAY_KEY)
             .expect("the window is live");
         engine.frame().expect("a frame");
-        let hidden_again = ui_text(&engine);
+        let hidden_again = ui_text(engine.gpu().draw_list());
         assert!(
             !hidden_again.iter().any(|t| t == "frame"),
             "F3 again must hide it: {hidden_again:?}",
@@ -946,7 +900,7 @@ mod tests {
         };
         assert_eq!(titles, expected, "no module appears that no system offered");
 
-        let drawn = ui_text(&engine);
+        let drawn = ui_text(engine.gpu().draw_list());
         for row in ["frame", "fps", "avg", "worst", "window"] {
             assert!(drawn.iter().any(|t| t == row), "missing {row}: {drawn:?}");
         }
@@ -1552,7 +1506,9 @@ mod tests {
         assert_eq!(engine.game().game().state, GameState::Playing);
         assert!(engine.menu_layout().is_none(), "no panel is up");
         assert!(
-            !ui_text(&engine).iter().any(|text| text == "PAUSE"),
+            !ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "PAUSE"),
             "a run nobody has touched drew an on-screen control",
         );
         let parked = engine.game().game().paddle_x();
@@ -1633,9 +1589,11 @@ mod tests {
         run_frames(&mut engine, 2);
         assert!(!engine.is_paused(), "the panel could not be tapped shut");
         assert!(
-            ui_text(&engine).iter().any(|text| text == "PAUSE"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "PAUSE"),
             "the button never reached the frame: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
         engine.finish(ExitReason::FrameBudget).expect("teardown");
     }
@@ -1765,9 +1723,11 @@ mod tests {
             .expect("the window is live");
         run_frames(&mut engine, 10);
         assert!(
-            ui_text(&engine).iter().any(|t| t == "Playing"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|t| t == "Playing"),
             "the launched game reads as playing: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         engine
@@ -1775,7 +1735,7 @@ mod tests {
             .set_focus(window, false)
             .expect("the window is live");
         engine.frame().expect("a frame");
-        let drawn = ui_text(&engine);
+        let drawn = ui_text(engine.gpu().draw_list());
         assert!(
             drawn.iter().any(|t| t.starts_with("PAUSED")),
             "an unfocused game still reads as playing: {drawn:?}",
@@ -1805,7 +1765,7 @@ mod tests {
         run_frames(&mut engine, 2);
         assert_eq!(engine.menu_kind(), MenuKind::Start);
 
-        let drawn = ui_text(&engine);
+        let drawn = ui_text(engine.gpu().draw_list());
         assert!(
             drawn.iter().any(|t| t == "BREAKOUT") && drawn.iter().any(|t| t == "PLAY"),
             "the start menu's text is not in the draw list: {drawn:?}",
@@ -1846,7 +1806,7 @@ mod tests {
             "a playing frame submitted {} menu sprites",
             engine.gpu().menu_sprites().len(),
         );
-        let drawn = ui_text(&engine);
+        let drawn = ui_text(engine.gpu().draw_list());
         assert!(
             !drawn.iter().any(|t| t == "RESUME"),
             "a menu's buttons are on screen mid-game: {drawn:?}",

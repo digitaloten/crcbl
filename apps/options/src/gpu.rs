@@ -13,42 +13,37 @@
 //! `docs/plan/sample/20-options.md` claims sample rule 11's exemption on the
 //! same ground `apps/hud` does. What is behind the panel is one clear colour.
 //!
-//! # Pass order is declaration order
+//! # The frame is [`crcbl::engine::PageBundle`]'s
 //!
 //! `backdrop` (clear) → `menu` → `ui` (the debug overlay). The last two load the
 //! target rather than clearing it, so declaring the UI pass first would put the
 //! panel on top of the overlay that is meant to sit over it.
+//!
+//! That order is the bundle's rather than this file's: four samples wrote it
+//! out and it is one piece of knowledge — the build order, the acquire →
+//! begin-frame → graph → compile → present, and the sandwich
+//! `UiRenderer::add_passes` owns. What is left here is this sample's name, its
+//! clear colour, and the forwards the engine's macros resolve against.
 
-use crcbl::engine::{FrameOutcome, GpuContext, GpuContextDesc, GpuError, GpuOptions};
-use crcbl::hal::CommandEncoderDesc;
-use crcbl::render::{
-    ForwardRenderer, MAX_TIMED_PASSES, MenuRenderer, PassTimers, RenderGraph, TransientPool,
-    UiRenderer,
-};
+use crcbl::engine::{FrameOutcome, GpuContext, GpuContextDesc, GpuError, GpuOptions, PageBundle};
 use crcbl::ui::draw_list::DrawList;
 use crcbl::ui::menu::{Menu, MenuLayout};
 use crcbl::ui::text::FontAtlas;
-
-const FRAMES_IN_FLIGHT: usize = crcbl::engine::FRAMES_IN_FLIGHT;
 
 /// What the screen is drawn over: a flat, dark ground that leaves the panel the
 /// brightest thing in the frame.
 pub const BACKDROP: [f32; 4] = [0.04, 0.05, 0.07, 1.0];
 
 /// This sample's device, its swapchain and the two renderers it draws with.
+///
+/// A newtype over [`PageBundle`], which is the whole of it: the two renderers,
+/// the build order that destroys the menu pass when the UI compositor refuses
+/// the device, and the frame's acquire → begin-frame → graph → compile →
+/// present. What stays here is this sample's name, its clear colour, and the
+/// forwards `crcbl::impl_game_gpu!` resolves against — see that macro for why
+/// they are inherent methods rather than a blanket impl.
 #[derive(Debug)]
-pub struct Gpu {
-    ctx: GpuContext,
-    pool: TransientPool,
-    timers: Option<PassTimers>,
-    /// The menu pass: the settings screen itself.
-    menu: MenuRenderer,
-    /// UI compositing — here, the debug overlay and nothing else.
-    ui: UiRenderer,
-    atlas: FontAtlas,
-    draw_list: DrawList,
-    dumped: bool,
-}
+pub struct Gpu(PageBundle);
 
 /// What both [`Gpu::open`] and [`Gpu::request_open`] ask the engine for.
 ///
@@ -75,33 +70,14 @@ impl Gpu {
     ///
     /// [`GpuError`] if the menu pass or the UI compositor refused the device.
     fn from_context(ctx: GpuContext) -> Result<Self, GpuError> {
-        let format = ctx.format();
-        let timers = PassTimers::new(ctx.device(), FRAMES_IN_FLIGHT, MAX_TIMED_PASSES);
-        let menu = MenuRenderer::new(ctx.device(), ctx.queue(), format).map_err(GpuError::Hal)?;
-        let ui = match UiRenderer::new(ctx.device(), ctx.queue(), format) {
-            Ok(ui) => ui,
-            Err(error) => {
-                menu.destroy(ctx.device());
-                return Err(GpuError::Hal(error));
-            }
-        };
-
-        Ok(Self {
-            ctx,
-            pool: TransientPool::new(),
-            timers,
-            menu,
-            ui,
-            atlas: FontAtlas::built_in(),
-            draw_list: DrawList::new(),
-            dumped: false,
-        })
+        let bundle = PageBundle::new(ctx, crate::APP_NAME, BACKDROP)?;
+        Ok(Self(bundle))
     }
 
     /// The extent the swapchain is currently configured at.
     #[must_use]
     pub const fn extent(&self) -> (u32, u32) {
-        self.ctx.extent()
+        self.0.extent()
     }
 
     /// The engine's context, for the run-level knobs that are not this sample's.
@@ -110,48 +86,41 @@ impl Gpu {
     /// [`HoldsContext`](crcbl::engine::HoldsContext) to this, and
     /// [`arm_screenshot`](crcbl::engine::arm_screenshot) is what reaches it.
     pub const fn context_mut(&mut self) -> &mut GpuContext {
-        &mut self.ctx
+        self.0.context_mut()
     }
 
-    /// Takes this frame's draw list, handing the previous frame's allocation
-    /// back so the caller can refill it instead of building a new one.
+    /// See [`PageBundle::take_draw_list`].
     pub fn take_draw_list(&mut self, dl: &mut DrawList) {
-        std::mem::swap(&mut self.draw_list, dl);
+        self.0.take_draw_list(dl);
     }
 
-    /// Takes this frame's menu, or `None` on a frame that shows none — which
-    /// here is no frame at all.
+    /// See [`PageBundle::set_menu`].
     pub fn set_menu(&mut self, menu: Option<(&Menu, &MenuLayout)>) {
-        self.menu.set_menu(menu);
+        self.0.set_menu(menu);
     }
 
-    /// The most recent pass timings, or `None` on a device without timestamp
-    /// queries.
+    /// See [`PageBundle::timings`].
     #[must_use]
     pub fn timings(&self) -> Option<&crcbl::render::FrameTimings> {
-        self.timers.as_ref().map(PassTimers::latest)
+        self.0.timings()
     }
 
-    /// What the last [`Gpu::frame`] recorded, summed over the two passes this
-    /// bundle adds.
+    /// See [`PageBundle::counters`].
     #[must_use]
     pub fn counters(&self) -> crcbl::render::FrameCounters {
-        self.menu.counters().plus(self.ui.counters())
+        self.0.counters()
     }
 
-    /// The `[engine.video]` section this bundle's context read while opening.
-    ///
-    /// Forwarded rather than answered, so a run reports the player's file
-    /// rather than a default — see [`crcbl::engine::GameGpu::video`].
+    /// See [`PageBundle::video`].
     #[must_use]
     pub const fn video(&self) -> &crcbl::settings::VideoSettings {
-        self.ctx.video()
+        self.0.video()
     }
 
-    /// The glyph atlas the passes render text from.
+    /// See [`PageBundle::atlas`].
     #[must_use]
     pub const fn atlas(&self) -> &FontAtlas {
-        &self.atlas
+        self.0.atlas()
     }
 
     /// Records, submits and presents one frame.
@@ -161,68 +130,7 @@ impl Gpu {
     /// [`GpuError`] for anything except a swapchain that has merely gone out of
     /// date, which is reported as [`FrameOutcome::Reconfigured`].
     pub fn frame(&mut self) -> Result<FrameOutcome, GpuError> {
-        let Some(acquired) = self.ctx.acquire()? else {
-            self.dumped = false;
-            return Ok(FrameOutcome::Reconfigured);
-        };
-        let extent = acquired.extent;
-
-        self.menu
-            .begin_frame(self.ctx.device(), extent)
-            .map_err(GpuError::Hal)?;
-        self.ui
-            .begin_frame(self.ctx.device(), &self.draw_list, &self.atlas, 1.0)
-            .map_err(GpuError::Hal)?;
-
-        let format = self.ctx.format();
-        let compiled = {
-            let mut graph = RenderGraph::new(self.ctx.queue());
-            let target = graph.import_image(
-                "swapchain",
-                ForwardRenderer::present_target(acquired.image, acquired.view, format, extent),
-            );
-            // The only pass that does not load. This sample's whole scene.
-            graph
-                .add_render_pass("backdrop")
-                .clear_color(target, BACKDROP)
-                .execute(|_| {});
-            // One call for the whole sandwich: the game's HUD, the menu's art
-            // over it, then the menu's own labels, the debug overlay and the
-            // console over that. `UiRenderer::add_passes` owns the order so no
-            // sample can express another one.
-            self.ui
-                .add_passes(&mut graph, target, extent, Some(&self.menu));
-            graph.compile(&self.pool)?
-        };
-
-        // "The graph must be able to explain itself" — §2.4's debug-tools
-        // principle.
-        if !self.dumped {
-            crcbl::log::debug!("render graph for options:\n{}", compiled.dump());
-            self.dumped = true;
-        }
-
-        let mut encoder = self
-            .ctx
-            .device()
-            .create_command_encoder(&CommandEncoderDesc {
-                label: Some("options frame"),
-                queue: self.ctx.queue(),
-            });
-        compiled.execute(
-            self.ctx.device(),
-            &mut self.pool,
-            encoder.as_mut(),
-            self.timers.as_mut(),
-        )?;
-        let command_buffer = encoder.finish()?;
-
-        let outcome = self.ctx.submit_and_present(&acquired, command_buffer)?;
-        self.pool.retire_unused(self.ctx.device());
-        if outcome == FrameOutcome::Reconfigured {
-            self.dumped = false;
-        }
-        Ok(outcome)
+        self.0.frame()
     }
 
     /// Resizes the swapchain.
@@ -231,9 +139,7 @@ impl Gpu {
     ///
     /// [`GpuError`] if the reconfigure failed.
     pub fn resize(&mut self, extent: (u32, u32)) -> Result<(), GpuError> {
-        self.ctx.resize(extent)?;
-        self.dumped = false;
-        Ok(())
+        self.0.resize(extent)
     }
 
     /// Releases everything, in dependency order.
@@ -241,15 +147,8 @@ impl Gpu {
     /// # Errors
     ///
     /// [`GpuError`] if waiting for outstanding work failed.
-    pub fn destroy(mut self) -> Result<(), GpuError> {
-        self.ctx.drain()?;
-        self.ui.destroy(self.ctx.device());
-        self.menu.destroy(self.ctx.device());
-        self.pool.destroy(self.ctx.device());
-        if let Some(timers) = self.timers.as_mut() {
-            timers.destroy(self.ctx.device());
-        }
-        self.ctx.destroy()
+    pub fn destroy(self) -> Result<(), GpuError> {
+        self.0.destroy()
     }
 }
 

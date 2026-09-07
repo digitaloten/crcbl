@@ -50,6 +50,7 @@ crcbl = { workspace = true, features = ["scene"] }
 # shipped viewer or the wasm the browser demo loads.
 [dev-dependencies]
 crcbl-golden = { workspace = true }
+crcbl-sample-test = { workspace = true }
 tempfile = "3"
 
 [lints]

@@ -5042,58 +5042,44 @@ read are recorded in `docs/notes/samples.md` under "The demo seam review of
 over comment-stripped bodies, and the four the parent re-ran are marked. The
 rest are the review's reading, not re-verified — re-count before cutting.
 
-### Four demos carry the same menu-and-UI-only `gpu.rs` (2026-09-07)
+### `scripted` and `headless` are still copied into every `app.rs` (2026-09-07)
 
-`apps/{hud,orbit,bracket,options}/src/gpu.rs`. **Re-verified by the parent**:
-comment-stripped, hud and orbit differ in eight diff lines, all the sample's
-name (the `GpuContextDesc.label`, the graph log line, the encoder label, the
-test's label assertion); bracket adds a `const CLEAR` for
-`crate::page::BACKDROP`; options names `crate::APP_NAME` and lacks the
-`#[cfg(test)]` accessors. The shared knowledge is the whole bundle: the struct,
-`from_context`'s build order with `menu.destroy` on a failed `UiRenderer::new`,
-the accessor set, `frame`'s acquire → `menu.begin_frame` → `ui.begin_frame` →
-graph → backdrop clear → menu pass → UI pass → compile → `last_dump` → `dumped`
-one-shot → encode → present → `retire_unused`, and `resize`/`destroy` order.
-**What it would take:** a `PageBundle` in `crcbl::render` beside
-`MenuRenderer`/`UiRenderer` built from a label and a clear colour, with each
-demo's `gpu.rs` a newtype plus `desc()` and its test accessors;
-`impl_game_gpu!`/`impl_polled_gpu!` still applied per demo. Distinct from the
-declined 2D sprite bundle (breakout ↔ flappy) in `docs/notes/samples.md`: these
-four have no camera and no sprite pass. Note the pause-menu layering fix in
-flight touches every `gpu.rs`'s pass order; land that first.
+`ui_text`, `row_value` and the `Common` inside `headless` are hoisted into
+`apps/crcbl-sample-test` and gone from the demos. What is left is
+`fn scripted(options: &Options) -> Loop<HeadlessShell>` in eleven demos and the
+`Options` wrapper of `fn headless(frames)` in eight. Neither is hoistable as a
+function: `scripted` calls each sample's own `with_shell`, and `Options` is each
+sample's own type, so a shared version would be a macro with a clause per
+sample. **What it would take:** decide whether a `crcbl::scripted_loop!` macro
+earns its keep against eleven three-line functions that have not drifted, or
+close this as declined.
 
-### Seven demos carry the same pause-only `menu.rs` (2026-09-07)
+### No `PageBundle` sample's frame is checked with a menu on it (2026-09-07)
 
-`apps/{bracket,breach,hud,orbit,puppet,shard,sparks}/src/menu.rs`. **Re-verified
-by the parent**: hud vs orbit and hud vs shard differ in two diff lines, the
-game type named in the test. Each builds one `Menu::new("PAUSED", …)` from
-`RESUME_ID`/`FULLSCREEN_ID`/`DEBUG_OVERLAY_ID` with the labels `RESUME`,
-`FULLSCREEN`, `DEBUG PANEL` and the shortcuts `ESC`/`F11`/`F3`, all of which are
-`crcbl::engine`'s, and carries the same two guard tests.
-`apps/towers/src/menu.rs` is the same plus a `RESTART_ID` item, and
-`crates/crcbl-cli/templates/main.rs.tmpl` writes the `MenuSet` an eighth time.
-**What it would take:** `crcbl::ui::menu::pause_menu() -> Menu` and
-`pause_only<K>() -> MenuSet<K>` with the guard test moved beside them; towers
-pushes its item onto `pause_menu()`. `options` (`Settings`-only) and `viewer`
-(`{None, Menu}`) stay out. No browser gate moves: the drawn labels are
-unchanged.
+Measured while landing `crcbl::engine::PageBundle`: deleting the
+`menu.begin_frame` call from `PageBundle::frame` leaves every
+`apps/{hud,orbit,bracket,options}` test green **and** `run-hud-golden.sh` on
+lavapipe passing with a byte-clean comparison. hud's golden is an unpaused
+wave-1 frame, so `set_menu(None)` holds and the menu pass declares nothing
+either way, and no unit test reads the menu pass's geometry. The pass _order_ is
+covered — declaring `ui.add_passes` before the backdrop clear reddens the same
+golden — but "the menu's art reached the frame" is not. **What it would take:**
+a second hud golden blessed with the panel up (`--screenshot` after a scripted
+`ESC`), or a unit assertion on `PageBundle::counters().instances` on a paused
+frame. Not done here: a new golden is its own review.
 
-### Test helpers copied into every `app.rs`: `ui_text`, `row_value`, `scripted`, `headless` (2026-09-07)
+### The pause menu and the page bundle live in `crcbl::engine`, not where the seam review put them (2026-09-07)
 
-`fn ui_text(engine: &Loop<HeadlessShell>) -> Vec<String>` in fifteen demos,
-`fn row_value(drawn, label) -> String` in eight, `fn scripted(options)` in
-eleven, `fn headless(frames) -> Options` in eight — each a fact about the
-engine's surfaces (how a test reads the frame's text back off
-`Loop::gpu().draw_list()`; how the debug panel lays a label/value pair out and
-that a duplicate label makes the reading meaningless; what a deterministic
-headless run is). The blocker "The debug-overlay retrofit" used to record for
-`row_value` no longer holds: `apps/crcbl-sample-test` exists and is a
-dev-dependency reachable from a `src/app.rs` test module (`apps/hud/Cargo.toml`
-already wires it). **What it would take:** `ui_text`, `row_value` and a
-`headless_common(tick_hz, frames)` in `apps/crcbl-sample-test/src/lib.rs` beside
-`Block` and `SampleRun`; the nine demos without the dev-dependency gain one
-line; `cargo deny --all-features` and the workspace test are the checks (the
-edge is inside `apps/`, so the fuzz lockfile does not move).
+The 2026-09-07 seam review proposed `crcbl::ui::menu::pause_menu` and a
+`PageBundle` in `crcbl-render`. Neither is reachable: `crcbl::ui` _is_
+`crcbl_ui` (`pub use crcbl_ui as ui`), and `RESUME_ID` and its neighbours are
+defined beside `MenuAction` in `crates/crcbl/src/engine.rs`, which `crcbl-ui`
+cannot see; `PageBundle` holds a `GpuContext` and returns `GpuError`, both of
+which are `crcbl`'s and not `crcbl-render`'s. Both landed in
+`crates/crcbl/src/engine/`, beside `pause.rs` and `console_button.rs`, which are
+the same kind of hoist. Moving the widget ids down into `crcbl-ui` was
+considered and declined: their doc comments link `PAUSE_KEY` and
+`MenuAction::from_id`, which would become unresolvable and red `cargo doc`.
 
 ### Five 3D demos draw the same readout panel (2026-09-07)
 
@@ -5136,19 +5122,6 @@ would take:** a `knobs.js` under `web/engine/` beside `demo.js` exporting
 `installKnobs`, `press` and `enumName`; each page keeps its element ids and
 `refresh` body. Confirm `web/build.sh` copies `web/engine/` wholesale (the
 review inferred it and did not read the script).
-
-### The golden `inspect()` claims are three assertions written five times (2026-09-07)
-
-`apps/{asteroids,breakout,flappy,horde,hud}/tests/golden.rs` each write the
-distinct-colour floor, the bright-over-dark pair and the channel-order claim
-with the same failure sentences ("…is not evidence — nothing drew, or only the
-clear did", "…the readback's channels were written the wrong way round"), and
-the same `Golden::new(reference).check(&image)…` tail with two `eprintln!`s. The
-four large suites (sundial, alcove, lantern, shard) were not read for this.
-**What it would take:** `Block::distinct_enough`, `Block::over`,
-`Block::channel_beats` and `SampleRun::compare_to_golden` in
-`apps/crcbl-sample-test`; the centres, ratios and nouns stay in each suite. None
-of the nine harness scripts greps assertion text.
 
 ### Seventeen `web.rs` module docs restate `crcbl::web`'s wire format (2026-09-07)
 

@@ -1342,6 +1342,32 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- `crcbl::engine::pause_menu()` builds the pause panel — `RESUME`/`FULLSCREEN`/
+  `DEBUG PANEL` on `ESC`/`F11`/`F3`, the menu equivalents of the loop's three
+  reserved keys — and `crcbl::engine::pause_only(none, paused)` wraps it in the
+  `MenuSet` a sample with one menu shows. Seven demos and `crcbl new`'s scaffold
+  wrote it out character for character; `apps/towers` inserts its `RESTART` row
+  into `crcbl::engine::pause_items()`. The drawn panel is unchanged, and
+  `crcbl::engine::PAUSE_TITLE` is the `"PAUSED"` a browser row finds it by.
+- `crcbl::engine::PageBundle` is the device, swapchain, menu pass and UI pass a
+  sample whose frame has no scene in it draws with — built from a label and a
+  clear colour, and owning the build order, `frame`'s acquire → begin-frame →
+  graph → compile → present, and `resize`/`destroy`.
+  `apps/{hud,orbit,bracket,options}`'s `gpu.rs` are newtypes over it plus their
+  own `desc()`. `PageBundle::recording_graph_dumps()` opts a bundle into keeping
+  each frame's graph dump, which a shipped build never formats.
+- `apps/crcbl-sample-test` gained `ui_text(draw_list)`,
+  `row_value(drawn, label)` and `headless_common(tick_hz, frames)`, the three
+  helpers fifteen demos' own `#[cfg(test)]` modules had each written out — how a
+  frame's text comes off the draw list, how the debug panel lays a label/value
+  pair out and that a duplicate label makes the reading meaningless, and what a
+  deterministic headless run is. Nine demos gained the dev-dependency.
+- `crcbl_sample_test::Block` gained `distinct_enough`, `drew`, `over` and
+  `channel_beats`, and `SampleRun` gained `compare_to_golden`, replacing the
+  claims `apps/{asteroids,breakout,flappy,horde,hud}/tests/golden.rs` each wrote
+  out with the same failure sentences. Each suite keeps its own centres, ratios
+  and nouns. `Block::new` now takes the sample's name, which prefixes the lines
+  the claims print.
 - `crcbl::engine::ForcedPaths` is where `--force-geometry` / `--force-binding`
   turn into a feature request. `optional_features()` subtracts the flags that
   select a better path from `GpuContextDesc::default()`'s optional set; alcove,

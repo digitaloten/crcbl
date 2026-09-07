@@ -1764,6 +1764,7 @@ fn aspect_of(extent: (u32, u32)) -> f32 {
 mod tests {
     use super::*;
     use crcbl::args::Common;
+    use crcbl_sample_test::{row_value, ui_text};
 
     /// A skip whose three fields are distinguishable in a message.
     fn skip(feature: &'static str, at: &str, why: &str) -> Skip {
@@ -2216,7 +2217,7 @@ mod tests {
              reading for the wrong reason",
         );
         assert_eq!(
-            row_value(&ui_text(&engine), "held"),
+            row_value(&ui_text(engine.gpu().draw_list()), "held"),
             "off",
             "the panel said the camera was held while the turntable was moving it",
         );
@@ -2227,28 +2228,13 @@ mod tests {
             .expect("the window is live");
         engine.frame().expect("a frame");
         assert_eq!(
-            row_value(&ui_text(&engine), "held"),
+            row_value(&ui_text(engine.gpu().draw_list()), "held"),
             "on",
             "a gesture stopped the turntable and the panel went on saying nobody \
              had touched it",
         );
         assert_still(&mut engine, "a wheel");
         engine.finish(ExitReason::FrameBudget).expect("teardown");
-    }
-
-    /// Every `Text` command the frame handed to the UI pass.
-    fn ui_text(engine: &Loop<HeadlessShell>) -> Vec<String> {
-        use crcbl::ui::draw_list::DrawCommand;
-        engine
-            .gpu()
-            .draw_list()
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                DrawCommand::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect()
     }
 
     /// Every `Line` command the frame handed to the UI pass, as its two ends.
@@ -2284,7 +2270,7 @@ mod tests {
     /// is. With the overlay off the whole list is the listing's, which is what
     /// the fallback says.
     fn listing_text(engine: &Loop<HeadlessShell>) -> Vec<String> {
-        let drawn = ui_text(engine);
+        let drawn = ui_text(engine.gpu().draw_list());
         let end = drawn
             .iter()
             .position(|text| text == "frame")
@@ -2308,33 +2294,6 @@ mod tests {
             .key_release(window, key)
             .expect("the window is live");
         engine.frame().expect("a frame");
-    }
-
-    /// The value drawn immediately after the row labelled `label`.
-    fn row_value(drawn: &[String], label: &str) -> String {
-        let mut matches = drawn
-            .iter()
-            .enumerate()
-            .filter(|(_, text)| *text == label)
-            .map(|(at, _)| at);
-        let at = matches
-            .next()
-            .unwrap_or_else(|| panic!("no {label} row in {drawn:?}"));
-        // Row labels share one namespace across every section of the panel, and
-        // two have collided already — `crcbl-render`'s frame timings draw a
-        // `pending` row, and this sample's first draft named one of its own the
-        // same. A reader tells them apart by the heading above them; a search
-        // through the flat draw list cannot, and would read whichever came
-        // first for ever after.
-        assert!(
-            matches.next().is_none(),
-            "more than one {label} row in {drawn:?}, so this reads whichever the panel \
-             happened to draw first"
-        );
-        drawn
-            .get(at + 1)
-            .unwrap_or_else(|| panic!("no value after {label} in {drawn:?}"))
-            .clone()
     }
 
     /// **The whole path runs**: a `.glb` on disk, through the asset seam, the
@@ -2590,9 +2549,9 @@ mod tests {
         engine.frame().expect("a frame");
         engine.frame().expect("a frame");
         assert!(
-            ui_text(&engine).is_empty(),
+            ui_text(engine.gpu().draw_list()).is_empty(),
             "with both panels off the viewer draws no UI at all: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         engine
@@ -2600,7 +2559,7 @@ mod tests {
             .key_press(window, DEBUG_OVERLAY_KEY)
             .expect("the window is live");
         engine.frame().expect("a frame");
-        let drawn = ui_text(&engine);
+        let drawn = ui_text(engine.gpu().draw_list());
         for row in ["frame", "fps", "avg", "worst", "window", "viewer"] {
             assert!(drawn.iter().any(|t| t == row), "missing {row}: {drawn:?}");
         }
@@ -2626,7 +2585,9 @@ mod tests {
             .expect("the window is live");
         engine.frame().expect("a frame");
         assert!(
-            !ui_text(&engine).iter().any(|t| t == "frame"),
+            !ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|t| t == "frame"),
             "F3 hides it again",
         );
         engine.finish(ExitReason::FrameBudget).expect("teardown");
@@ -2659,7 +2620,7 @@ mod tests {
             .expect("the window is live");
         engine.frame().expect("a frame");
 
-        let drawn = ui_text(&engine);
+        let drawn = ui_text(engine.gpu().draw_list());
         assert_eq!(
             row_value(&drawn, "joints"),
             "2",
@@ -2694,13 +2655,13 @@ mod tests {
 
         engine.frame().expect("a frame");
         assert!(
-            ui_text(&engine).is_empty(),
+            ui_text(engine.gpu().draw_list()).is_empty(),
             "the listing is off until it is asked for: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         tap(&mut engine, window, LISTING_KEY);
-        let drawn = ui_text(&engine);
+        let drawn = ui_text(engine.gpu().draw_list());
         assert!(
             drawn.iter().any(|text| text == "panel.glb"),
             "the panel names the document it is describing: {drawn:?}",
@@ -2722,9 +2683,9 @@ mod tests {
 
         tap(&mut engine, window, LISTING_KEY);
         assert!(
-            ui_text(&engine).is_empty(),
+            ui_text(engine.gpu().draw_list()).is_empty(),
             "I hides it again: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
         engine.finish(ExitReason::FrameBudget).expect("teardown");
     }
@@ -2750,7 +2711,7 @@ mod tests {
             .expect("the window is live");
         engine.frame().expect("a frame");
         assert!(
-            !ui_text(&engine).is_empty(),
+            !ui_text(engine.gpu().draw_list()).is_empty(),
             "the press never opened the panel, so the repeats below prove nothing",
         );
 
@@ -2761,9 +2722,11 @@ mod tests {
                 .expect("the window is live");
             engine.frame().expect("a frame");
             assert!(
-                ui_text(&engine).iter().any(|text| text == "panel.glb"),
+                ui_text(engine.gpu().draw_list())
+                    .iter()
+                    .any(|text| text == "panel.glb"),
                 "a repeat closed the panel: {:?}",
-                ui_text(&engine),
+                ui_text(engine.gpu().draw_list()),
             );
         }
 
@@ -2773,15 +2736,21 @@ mod tests {
             .expect("the window is live");
         engine.frame().expect("a frame");
         assert!(
-            ui_text(&engine).iter().any(|text| text == "panel.glb"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "panel.glb"),
             "letting go closed it: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         // And the next real press still works, which is what says the guard
         // released rather than latched.
         tap(&mut engine, window, LISTING_KEY);
-        assert!(ui_text(&engine).is_empty(), "{:?}", ui_text(&engine));
+        assert!(
+            ui_text(engine.gpu().draw_list()).is_empty(),
+            "{:?}",
+            ui_text(engine.gpu().draw_list())
+        );
         engine.finish(ExitReason::FrameBudget).expect("teardown");
     }
 
@@ -2811,7 +2780,7 @@ mod tests {
              this sample's request going missing rather than the device",
         );
         assert_eq!(
-            row_value(&ui_text(&engine), "wireframe"),
+            row_value(&ui_text(engine.gpu().draw_list()), "wireframe"),
             "off",
             "the view is off until it is asked for",
         );
@@ -2822,7 +2791,7 @@ mod tests {
             .expect("the window is live");
         engine.frame().expect("a frame");
         assert_eq!(
-            row_value(&ui_text(&engine), "wireframe"),
+            row_value(&ui_text(engine.gpu().draw_list()), "wireframe"),
             "on",
             "the press never reached the renderer, so the repeats below prove nothing",
         );
@@ -2834,7 +2803,7 @@ mod tests {
                 .expect("the window is live");
             engine.frame().expect("a frame");
             assert_eq!(
-                row_value(&ui_text(&engine), "wireframe"),
+                row_value(&ui_text(engine.gpu().draw_list()), "wireframe"),
                 "on",
                 "a repeat switched the view back off",
             );
@@ -2846,7 +2815,7 @@ mod tests {
             .expect("the window is live");
         engine.frame().expect("a frame");
         assert_eq!(
-            row_value(&ui_text(&engine), "wireframe"),
+            row_value(&ui_text(engine.gpu().draw_list()), "wireframe"),
             "on",
             "letting go switched it off",
         );
@@ -2854,7 +2823,10 @@ mod tests {
         // And the next real press still works, which is what says the guard
         // released rather than latched.
         tap(&mut engine, window, WIREFRAME_KEY);
-        assert_eq!(row_value(&ui_text(&engine), "wireframe"), "off");
+        assert_eq!(
+            row_value(&ui_text(engine.gpu().draw_list()), "wireframe"),
+            "off"
+        );
         engine.finish(ExitReason::FrameBudget).expect("teardown");
     }
 
@@ -2878,7 +2850,7 @@ mod tests {
         let window = engine.window();
         engine.frame().expect("a frame");
         assert_eq!(
-            row_value(&ui_text(&engine), "normals"),
+            row_value(&ui_text(engine.gpu().draw_list()), "normals"),
             "off",
             "the view is off until it is asked for",
         );
@@ -2889,7 +2861,7 @@ mod tests {
             .expect("the window is live");
         engine.frame().expect("a frame");
         assert_eq!(
-            row_value(&ui_text(&engine), "normals"),
+            row_value(&ui_text(engine.gpu().draw_list()), "normals"),
             "world",
             "the press never reached the shared variable, so the repeats below prove nothing",
         );
@@ -2909,7 +2881,7 @@ mod tests {
                 .expect("the window is live");
             engine.frame().expect("a frame");
             assert_eq!(
-                row_value(&ui_text(&engine), "normals"),
+                row_value(&ui_text(engine.gpu().draw_list()), "normals"),
                 "world",
                 "a repeat switched the view back off",
             );
@@ -2921,7 +2893,7 @@ mod tests {
             .expect("the window is live");
         engine.frame().expect("a frame");
         assert_eq!(
-            row_value(&ui_text(&engine), "normals"),
+            row_value(&ui_text(engine.gpu().draw_list()), "normals"),
             "world",
             "letting go switched it off",
         );
@@ -2929,7 +2901,10 @@ mod tests {
         // And the next real press still works, which is what says the guard
         // released rather than latched.
         tap(&mut engine, window, NORMALS_KEY);
-        assert_eq!(row_value(&ui_text(&engine), "normals"), "off");
+        assert_eq!(
+            row_value(&ui_text(engine.gpu().draw_list()), "normals"),
+            "off"
+        );
         assert_eq!(engine.gpu().debug_view(), DebugView::Shaded);
         engine.finish(ExitReason::FrameBudget).expect("teardown");
     }
@@ -2958,7 +2933,7 @@ mod tests {
         // for.
         tap(&mut engine, window, LISTING_KEY);
         assert_eq!(
-            row_value(&ui_text(&engine), "exposure"),
+            row_value(&ui_text(engine.gpu().draw_list()), "exposure"),
             "1.00x",
             "the default is the renderer's, and it is what the panel shows",
         );
@@ -2967,7 +2942,7 @@ mod tests {
             tap(&mut engine, window, EXPOSURE_UP_KEY);
         }
         assert_eq!(
-            row_value(&ui_text(&engine), "exposure"),
+            row_value(&ui_text(engine.gpu().draw_list()), "exposure"),
             "2.00x",
             "three presses of {EXPOSURE_UP_KEY:?} is a stop, and a stop is a doubling",
         );
@@ -2988,7 +2963,7 @@ mod tests {
             engine.frame().expect("a frame");
         }
         assert_eq!(
-            row_value(&ui_text(&engine), "exposure"),
+            row_value(&ui_text(engine.gpu().draw_list()), "exposure"),
             "1.00x",
             "the repeats were folded away, so a held key does not sweep the range",
         );
@@ -2998,7 +2973,7 @@ mod tests {
             .expect("the window is live");
         engine.frame().expect("a frame");
         assert_eq!(
-            row_value(&ui_text(&engine), "exposure"),
+            row_value(&ui_text(engine.gpu().draw_list()), "exposure"),
             "1.00x",
             "letting go stepped once more",
         );
@@ -3021,7 +2996,7 @@ mod tests {
             tap(&mut engine, window, EXPOSURE_DOWN_KEY);
         }
         assert_eq!(
-            row_value(&ui_text(&engine), "exposure"),
+            row_value(&ui_text(engine.gpu().draw_list()), "exposure"),
             "1.00x",
             "the picture could not be brought back from the top of the range",
         );
@@ -3079,7 +3054,10 @@ mod tests {
         let window = engine.window();
         engine.frame().expect("a frame");
         tap(&mut engine, window, LISTING_KEY);
-        assert_eq!(row_value(&ui_text(&engine), "exposure"), "1.00x");
+        assert_eq!(
+            row_value(&ui_text(engine.gpu().draw_list()), "exposure"),
+            "1.00x"
+        );
 
         // The panel has to be on screen *before* the press: a press that began
         // before the panel did is not the panel's, which is the loop's rule.
@@ -3101,7 +3079,7 @@ mod tests {
             crcbl::render::EXPOSURE_MAX,
         );
         assert_eq!(
-            row_value(&ui_text(&engine), "exposure"),
+            row_value(&ui_text(engine.gpu().draw_list()), "exposure"),
             "32.00x",
             "the renderer moved and the listing panel did not follow",
         );
@@ -3113,7 +3091,7 @@ mod tests {
         engine.frame().expect("a frame");
         engine.frame().expect("a frame");
         assert_eq!(
-            row_value(&ui_text(&engine), "exposure"),
+            row_value(&ui_text(engine.gpu().draw_list()), "exposure"),
             "0.03x",
             "a drag to the start of the groove did not reach the bottom of the range",
         );
@@ -3130,7 +3108,7 @@ mod tests {
         engine.frame().expect("a frame");
         engine.frame().expect("a frame");
         assert_eq!(
-            row_value(&ui_text(&engine), "exposure"),
+            row_value(&ui_text(engine.gpu().draw_list()), "exposure"),
             "1.00x",
             "the middle of the groove is not the middle of the range in stops",
         );
@@ -3908,9 +3886,11 @@ mod tests {
         engine.frame().expect("a frame");
         assert_eq!(engine.menu_kind(), MenuKind::Menu);
         assert!(
-            ui_text(&engine).iter().any(|t| t == "FULLSCREEN"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|t| t == "FULLSCREEN"),
             "the panel's buttons are on screen: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         engine
@@ -4134,7 +4114,7 @@ mod tests {
             .expect("the window is live");
         engine.frame().expect("a frame");
 
-        let drawn = ui_text(&engine);
+        let drawn = ui_text(engine.gpu().draw_list());
         assert_eq!(
             row_value(&drawn, "pose"),
             format!("{:.2}", engine.game().pose()),

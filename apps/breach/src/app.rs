@@ -929,13 +929,13 @@ crcbl::impl_pending_loop!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crcbl::args::Common;
     use crcbl::core::input::PointerButton;
     use crcbl::engine::{CONSOLE_KEY, ExitReason, PAUSE_KEY};
     use crcbl::inventory::Cell;
     use crcbl::shell::{
         ButtonState as PointerState, HeadlessShell, PhysicalPoint, ShellBackend as Backend,
     };
+    use crcbl_sample_test::{headless_common, ui_text};
 
     fn scripted(options: &Options) -> Loop<HeadlessShell> {
         with_shell(Box::new(HeadlessShell::new()), options).expect("headless always starts")
@@ -948,29 +948,9 @@ mod tests {
     /// A headless run of `map`, for `frames` frames.
     fn on(map: crate::map::MapChoice, frames: u64) -> Options {
         Options {
-            common: Common {
-                headless: true,
-                backend: Some(GpuBackend::Null),
-                frames: Some(frames),
-                ..Common::new(crate::game::DEFAULT_TICK_HZ)
-            },
+            common: headless_common(crate::game::DEFAULT_TICK_HZ, frames),
             map,
         }
-    }
-
-    /// Every `Text` command the frame handed to the UI pass.
-    fn ui_text(engine: &Loop<HeadlessShell>) -> Vec<String> {
-        use crcbl::ui::draw_list::DrawCommand;
-        engine
-            .gpu()
-            .draw_list()
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                DrawCommand::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect()
     }
 
     /// Runs `count` frames.
@@ -1264,12 +1244,7 @@ mod tests {
     #[test]
     fn the_range_squares_the_shooter_up_even_when_a_frame_is_many_ticks() {
         let slow = Options {
-            common: Common {
-                headless: true,
-                backend: Some(GpuBackend::Null),
-                frames: Some(600),
-                ..Common::new(crate::game::DEFAULT_TICK_HZ * 6)
-            },
+            common: headless_common(crate::game::DEFAULT_TICK_HZ * 6, 600),
             map: crate::map::MapChoice::Range,
         };
         let mut engine = scripted(&slow);
@@ -1418,7 +1393,7 @@ mod tests {
         };
         assert_eq!(titles, expected, "no module appears that no system offered");
 
-        let drawn = ui_text(&engine);
+        let drawn = ui_text(engine.gpu().draw_list());
         for row in ["frame", "shots", "hits", "geometry", "lighting"] {
             assert!(drawn.iter().any(|t| t == row), "missing {row}: {drawn:?}");
         }
@@ -1472,9 +1447,11 @@ mod tests {
         frames(&mut engine, 4);
         assert!(!engine.game().panel_open(), "the panel opened itself");
         assert!(
-            !ui_text(&engine).iter().any(|t| t == "LOADOUT"),
+            !ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|t| t == "LOADOUT"),
             "a closed panel drew itself: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
         assert_eq!(engine.game().panel().commands, 0);
         assert_eq!(
@@ -1498,9 +1475,11 @@ mod tests {
             "the demo stopped when the panel opened"
         );
         assert!(
-            ui_text(&engine).iter().any(|t| t == "LOADOUT"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|t| t == "LOADOUT"),
             "an open panel drew nothing: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
         assert!(engine.game().panel().commands > 0);
         assert_eq!(
@@ -1654,7 +1633,9 @@ mod tests {
             "a paused loop runs no ticks",
         );
         assert!(
-            ui_text(&engine).iter().any(|t| t == "ACCURACY"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|t| t == "ACCURACY"),
             "the overlay is drawn behind the panel",
         );
         engine.finish(ExitReason::FrameBudget).expect("teardown");

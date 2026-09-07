@@ -24,6 +24,21 @@
 //! the copy that gets missed stays green while testing something slightly
 //! different. It had already happened — see `docs/notes/samples.md`.
 //!
+//! # And the helpers a sample's own unit tests share
+//!
+//! [`ui_text`], [`row_value`] and [`headless_common`] are not about a golden at
+//! all: they are what a `#[cfg(test)]` module in a sample's `src/app.rs` reads
+//! a frame back with, and each is a fact about an *engine* surface — how a
+//! frame's text comes off `Loop::gpu().draw_list()`, how the debug panel lays a
+//! label/value pair out and that a duplicate label makes the reading
+//! meaningless, and what a deterministic headless run is. Fifteen samples had
+//! written them out, character for character.
+//!
+//! They live here because a dev-dependency is reachable from a crate's own test
+//! module as well as from its `tests/`, and because this crate already exists
+//! for exactly this reason. It costs the samples nothing: it is a
+//! dev-dependency, so it reaches no shipped binary.
+//!
 //! # Why it is a crate rather than an include
 //!
 //! A test binary cannot reach another test binary's helper, so the only two
@@ -40,7 +55,88 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use crcbl_golden::Image;
+use crcbl::args::Common;
+use crcbl::backend::GpuBackend;
+use crcbl::ui::draw_list::{DrawCommand, DrawList};
+use crcbl_golden::{Golden, Image};
+
+/// A deterministic headless run of `frames` frames at `tick_hz`.
+///
+/// The [`Common`] every sample's `#[cfg(test)]` module built for itself, and
+/// the three fields on it are the whole of what makes a run a *test* run:
+///
+/// * **`headless`** — no window, so the suite runs on a machine with no
+///   compositor.
+/// * **`backend`** — [`GpuBackend::Null`], and not a detail. `headless` only
+///   says "no window"; without a backend named here the loop picks the real one
+///   and fails to start on any machine with no Vulkan driver, which is every
+///   plain CI runner.
+/// * **`frames`** — a budget, so the run terminates on its own rather than
+///   being killed.
+///
+/// Everything else is [`Common::new`]'s, so a field added there reaches every
+/// sample's tests without fifteen edits. What stays with the sample is
+/// `tick_hz`, which is its own simulation rate, and the `Options` this becomes
+/// the `common` of.
+#[must_use]
+pub fn headless_common(tick_hz: u32, frames: u64) -> Common {
+    Common {
+        headless: true,
+        backend: Some(GpuBackend::Null),
+        frames: Some(frames),
+        ..Common::new(tick_hz)
+    }
+}
+
+/// Every string the UI pass will draw this frame, in the order it draws them.
+///
+/// A frame's text is the [`DrawCommand::Text`] payloads of the list the bundle
+/// handed over and nothing else, which is what lets a test read a HUD, a menu
+/// or the debug panel back without a device. The list is a sample's
+/// `engine.gpu().draw_list()` — the `#[cfg(test)]` accessor every bundle has.
+#[must_use]
+pub fn ui_text(list: &DrawList) -> Vec<String> {
+    list.commands()
+        .iter()
+        .filter_map(|command| match command {
+            DrawCommand::Text { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The value drawn immediately after the row labelled `label`, which is how the
+/// debug panel lays a row out: label then value, in one draw list.
+///
+/// # Panics
+///
+/// When no row carries `label`, when nothing follows it, and — the reason this
+/// is not a `find` — when **two** rows do. Row labels share one namespace
+/// across every section of the panel, and two have collided already:
+/// `crcbl-render`'s frame timings draw a `pending` row, and a sample's first
+/// draft named one of its own the same. A reader tells them apart by the
+/// heading above them; a search through the flat draw list cannot, and would
+/// read whichever came first for ever after.
+#[must_use]
+pub fn row_value(drawn: &[String], label: &str) -> String {
+    let mut matches = drawn
+        .iter()
+        .enumerate()
+        .filter(|(_, text)| *text == label)
+        .map(|(at, _)| at);
+    let at = matches
+        .next()
+        .unwrap_or_else(|| panic!("no {label} row in {drawn:?}"));
+    assert!(
+        matches.next().is_none(),
+        "more than one {label} row in {drawn:?}, so this reads whichever the panel \
+         happened to draw first"
+    );
+    drawn
+        .get(at + 1)
+        .unwrap_or_else(|| panic!("no value after {label} in {drawn:?}"))
+        .clone()
+}
 
 /// Which backend must draw, from the environment.
 ///
@@ -97,13 +193,22 @@ pub fn adapter_line(stderr: &str) -> String {
 pub struct Block<'a> {
     image: &'a Image,
     half: (u32, u32),
+    sample: &'a str,
 }
 
 impl<'a> Block<'a> {
     /// Reads `image` in blocks reaching `half` pixels either side of a centre.
+    ///
+    /// `sample` is what the suite calls itself — `"breakout"`. Every line the
+    /// claims below print is prefixed `<sample> golden: `, which is the label
+    /// `tools/run-sample-golden.sh` reads its own checks out of.
     #[must_use]
-    pub fn new(image: &'a Image, half: (u32, u32)) -> Self {
-        Self { image, half }
+    pub fn new(image: &'a Image, half: (u32, u32), sample: &'a str) -> Self {
+        Self {
+            image,
+            half,
+            sample,
+        }
     }
 
     /// The mean brightness of the block around `centre`, out of 255.
@@ -116,6 +221,127 @@ impl<'a> Block<'a> {
     #[must_use]
     pub fn channel(&self, centre: (u32, u32), index: usize) -> f32 {
         self.mean(centre, Some(index))
+    }
+
+    /// **The frame has more than one thing on it.**
+    ///
+    /// The claim every suite's `inspect` opens with, and the one that makes the
+    /// golden comparison after it mean anything: two blank frames compare
+    /// perfectly, and so do two uniformly dark ones. `subject` is what this
+    /// sample calls its frame, **with its article** — `"a board"`, `"an
+    /// arena"` — because that is what the sentence reads back as.
+    ///
+    /// # Panics
+    ///
+    /// When fewer than `min` distinct colours are in the frame.
+    pub fn distinct_enough(&self, subject: &str, min: usize) {
+        let colors = self.image.distinct_colors(min);
+        assert!(
+            colors >= min,
+            "{subject} with {colors} distinct colour(s) (counted to {min}) is not \
+             evidence — nothing drew, or only the clear did"
+        );
+    }
+
+    /// **Something was drawn here at all.**
+    ///
+    /// A floor rather than a ratio, and the half of a
+    /// [`over`](Self::over) pair that stops it being satisfied by a frame that
+    /// lost the thing behind: `bright > dark * ratio` holds for `dark == 0`,
+    /// which is what a pass that never ran looks like. `verdict` finishes the
+    /// sentence "…so " and names the pass that must have reached this point —
+    /// `"the sprite pass reached nothing"`.
+    ///
+    /// # Panics
+    ///
+    /// When the block's mean brightness is not above `floor`.
+    pub fn drew(&self, noun: &str, at: (u32, u32), floor: f32, verdict: &str) {
+        let level = self.brightness(at);
+        assert!(
+            level > floor,
+            "the {noun} is at {level:.1}/255, so {verdict}"
+        );
+    }
+
+    /// **The bright thing is on top of the dark thing.**
+    ///
+    /// A ratio between two blocks rather than a level at one, because a level
+    /// is a second golden written in numbers and moves whenever the art does.
+    /// Each side is `(what it is, where it is)`; `verdict` finishes the
+    /// sentence and is this frame's own — `"the panel is not on top of the
+    /// board"`. What every suite says after it is the same, so it is added
+    /// here.
+    ///
+    /// Both means are printed whether or not the claim holds, so the next
+    /// person sizing `ratio` does not have to re-derive it.
+    ///
+    /// # Panics
+    ///
+    /// When the bright block is not at least `ratio` times the dark one.
+    pub fn over(
+        &self,
+        bright: (&str, (u32, u32)),
+        dark: (&str, (u32, u32)),
+        ratio: f32,
+        verdict: &str,
+    ) {
+        let (bright_noun, bright_at) = bright;
+        let (dark_noun, dark_at) = dark;
+        let lit = self.brightness(bright_at);
+        let unlit = self.brightness(dark_at);
+        eprintln!(
+            "{} golden: {bright_noun} {lit:.1}/255, {dark_noun} {unlit:.1}/255",
+            self.sample
+        );
+        assert!(
+            lit > unlit * ratio,
+            "the {bright_noun} is {lit:.1} and the {dark_noun} is {unlit:.1} — {verdict}, or \
+             the whole frame has been flattened"
+        );
+    }
+
+    /// **One channel of a block beats the others, in that order.**
+    ///
+    /// The claim a channel-order mistake fails and nothing else does: a BGRA
+    /// readback written as RGBA leaves every brightness ratio happy, and the
+    /// structural half of a golden comparison is computed on luma and barely
+    /// moves for a swap.
+    ///
+    /// `reads` is `(name, index)` per channel with the **winner first**; every
+    /// other named channel must be at least `ratio` below it. `floor`, where a
+    /// suite gives one, is the drew-at-all bound on the winner — the same
+    /// `bright > dark * ratio` hole [`drew`](Self::drew) exists for. `verdict`
+    /// finishes the sentence.
+    ///
+    /// # Panics
+    ///
+    /// When the first channel does not beat every other by `ratio`, or falls
+    /// below `floor`.
+    pub fn channel_beats(
+        &self,
+        subject: &str,
+        at: (u32, u32),
+        reads: &[(&str, usize)],
+        ratio: f32,
+        floor: Option<f32>,
+        verdict: &str,
+    ) {
+        let levels: Vec<(&str, f32)> = reads
+            .iter()
+            .map(|&(name, index)| (name, self.channel(at, index)))
+            .collect();
+        let ((_, winner), rest) = levels.split_first().expect("a channel to compare");
+        let reading = levels
+            .iter()
+            .map(|(name, level)| format!("{name} {level:.1}"))
+            .collect::<Vec<_>>();
+        eprintln!("{} golden: {subject} {}", self.sample, reading.join(", "));
+        assert!(
+            floor.is_none_or(|floor| *winner > floor)
+                && rest.iter().all(|(_, level)| *winner > level * ratio),
+            "the {subject} reads {} — {verdict}",
+            reading.join(" / ")
+        );
     }
 
     /// `index` names a channel, or `None` averages the three colour channels.
@@ -295,5 +521,45 @@ impl SampleRun<'_> {
             image.height()
         );
         (image, adapter_line(&stderr))
+    }
+
+    /// **The frame, against the golden checked in beside the suite.**
+    ///
+    /// The last assertion each suite makes, after its own claims about where
+    /// the frame is bright and dark: those say the picture is of the right
+    /// thing, and this says it is the same picture as last time.
+    ///
+    /// The reference is `tests/golden/` + [`file`](Self::file) under
+    /// `manifest_dir`, which a caller spells `env!("CARGO_MANIFEST_DIR")` — the
+    /// macro resolves in the caller's own test target and nowhere else, which
+    /// is why it is passed rather than read here. `subject` is what this suite
+    /// calls the picture in its log — `apps/horde` writes `horde.png` and calls
+    /// it the field.
+    ///
+    /// # Panics
+    ///
+    /// When the reference is unreadable, when the frame does not match it, and
+    /// — through [`Outcome::into_result`](crcbl_golden::Outcome::into_result) —
+    /// when `CRCBL_BLESS` rewrote it, because a blessed run is never a pass.
+    pub fn compare_to_golden(
+        &self,
+        image: &Image,
+        backend: &str,
+        manifest_dir: &str,
+        subject: &str,
+    ) {
+        let reference = PathBuf::from(manifest_dir)
+            .join("tests/golden")
+            .join(self.file);
+        let comparison = Golden::new(reference)
+            .check(image)
+            .expect("the reference is readable")
+            .into_result()
+            .unwrap_or_else(|message| panic!("on {backend}: {message}"));
+        eprintln!(
+            "{} golden: {subject} on {backend} — {}",
+            self.name,
+            comparison.summary()
+        );
     }
 }

@@ -52,9 +52,7 @@
 
 #![cfg(feature = "golden-e2e")]
 
-use std::path::PathBuf;
-
-use crcbl_golden::{Golden, Image};
+use crcbl_golden::Image;
 use crcbl_sample_test::{Block, SampleRun, required_backend};
 
 /// How many frames the run presents before the one that gets written.
@@ -142,50 +140,46 @@ const DREW_AT_ALL: f32 = 6.0;
 
 /// The claims in front of the golden: it drew, and it drew in the right places.
 fn inspect(image: &Image) {
-    let block = Block::new(image, BLOCK);
-    let colors = image.distinct_colors(MIN_COLORS);
-    assert!(
-        colors >= MIN_COLORS,
-        "a course with {colors} distinct colour(s) (counted to {MIN_COLORS}) is not \
-         evidence — nothing drew, or only the clear did"
-    );
+    let block = Block::new(image, BLOCK, "flappy");
+    block.distinct_enough("a course", MIN_COLORS);
 
     // ---- 1. the title card is a menu on top of the course ------------------
-    let button = block.brightness(BUTTON_AT);
-    let panel = block.brightness(PANEL_AT);
-    eprintln!("flappy golden: FLY button {button:.1}/255, title card {panel:.1}/255");
-    assert!(
-        panel > DREW_AT_ALL,
-        "the title card is at {panel:.1}/255, so the menu pass drew nothing"
+    block.drew(
+        "title card",
+        PANEL_AT,
+        DREW_AT_ALL,
+        "the menu pass drew nothing",
     );
-    assert!(
-        button > panel * BUTTON_OVER_PANEL,
-        "the FLY button is {button:.1} and the card behind it is {panel:.1} — the button is \
-         not on top of the card, or the whole frame has been flattened"
+    block.over(
+        ("FLY button", BUTTON_AT),
+        ("card behind it", PANEL_AT),
+        BUTTON_OVER_PANEL,
+        "the button is not on top of the card",
     );
 
     // ---- 2. the open sky is blue, in that order ----------------------------
-    let sky_blue = block.channel(SKY_AT, 2);
-    let sky_red = block.channel(SKY_AT, 0);
-    eprintln!("flappy golden: sky blue {sky_blue:.1}, red {sky_red:.1}");
-    assert!(
-        sky_blue > DREW_AT_ALL && sky_blue > sky_red * SKY_BLUENESS,
-        "the open sky reads blue {sky_blue:.1} / red {sky_red:.1} — either the backdrop pass \
-         drew nothing, or the readback's channels were written the wrong way round"
+    block.channel_beats(
+        "open sky",
+        SKY_AT,
+        &[("blue", 2), ("red", 0)],
+        SKY_BLUENESS,
+        Some(DREW_AT_ALL),
+        "either the backdrop pass drew nothing, or the readback's channels were written the \
+         wrong way round",
     );
 
     // ---- 3. the ground band is green, in that order ------------------------
     //
     // The claim a lost sprite pass fails: with no band drawn this point reads
     // the sky behind it, whose blue beats its green.
-    let ground_green = block.channel(GROUND_AT, 1);
-    let ground_blue = block.channel(GROUND_AT, 2);
-    eprintln!("flappy golden: ground green {ground_green:.1}, blue {ground_blue:.1}");
-    assert!(
-        ground_green > DREW_AT_ALL && ground_green > ground_blue * GROUND_GREENNESS,
-        "the ground band reads green {ground_green:.1} / blue {ground_blue:.1} — either the \
-         sprite pass reached nothing and this is the sky, or the readback's channels were \
-         written the wrong way round"
+    block.channel_beats(
+        "ground band",
+        GROUND_AT,
+        &[("green", 1), ("blue", 2)],
+        GROUND_GREENNESS,
+        Some(DREW_AT_ALL),
+        "either the sprite pass reached nothing and this is the sky, or the readback's \
+         channels were written the wrong way round",
     );
 }
 
@@ -194,7 +188,7 @@ fn inspect(image: &Image) {
 #[ignore = "needs a real GPU and a backend pin; run tests/run-flappy-golden.sh"]
 fn the_frame_the_binary_wrote_matches_its_golden() {
     let backend = required_backend("tests/run-flappy-golden.sh");
-    let (image, adapter) = SampleRun {
+    let run = SampleRun {
         name: "flappy",
         binary: env!("CARGO_BIN_EXE_flappy"),
         tmp_dir: env!("CARGO_TARGET_TMPDIR"),
@@ -204,19 +198,9 @@ fn the_frame_the_binary_wrote_matches_its_golden() {
         args: &[],
         stdout_contains: &["WaitingToStart"],
         simulation_advanced: true,
-    }
-    .screenshot(&backend);
+    };
+    let (image, adapter) = run.screenshot(&backend);
     eprintln!("flappy golden: device on {adapter}");
     inspect(&image);
-
-    let reference = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/course.png");
-    let comparison = Golden::new(reference)
-        .check(&image)
-        .expect("the reference is readable")
-        .into_result()
-        .unwrap_or_else(|message| panic!("on {backend}: {message}"));
-    eprintln!(
-        "flappy golden: course on {backend} — {}",
-        comparison.summary()
-    );
+    run.compare_to_golden(&image, &backend, env!("CARGO_MANIFEST_DIR"), "course");
 }

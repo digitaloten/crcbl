@@ -74,9 +74,7 @@
 
 #![cfg(feature = "golden-e2e")]
 
-use std::path::PathBuf;
-
-use crcbl_golden::{Golden, Image};
+use crcbl_golden::Image;
 use crcbl_sample_test::{Block, SampleRun, required_backend};
 
 /// How many frames the run presents before the one that gets written.
@@ -202,39 +200,34 @@ fn enemy_red_fraction(image: &Image) -> f32 {
 
 /// The claims in front of the golden: it drew, and it drew in the right places.
 fn inspect(image: &Image) {
-    let block = Block::new(image, BLOCK);
-    let colors = image.distinct_colors(MIN_COLORS);
-    assert!(
-        colors >= MIN_COLORS,
-        "an arena with {colors} distinct colour(s) (counted to {MIN_COLORS}) is not \
-         evidence — nothing drew, or only the clear did"
-    );
+    let block = Block::new(image, BLOCK, "horde");
+    block.distinct_enough("an arena", MIN_COLORS);
 
     // ---- 1. the HUD band is a band on top of an arena ----------------------
-    let hud = block.brightness(HUD_AT);
-    let ground = block.brightness(GROUND_AT);
-    eprintln!("horde golden: HUD band {hud:.1}/255, arena ground {ground:.1}/255");
-    assert!(
-        ground > DREW_AT_ALL,
-        "the arena ground is at {ground:.1}/255, so the arena pass reached nothing"
+    block.drew(
+        "arena ground",
+        GROUND_AT,
+        DREW_AT_ALL,
+        "the arena pass reached nothing",
     );
-    assert!(
-        hud > ground * HUD_OVER_GROUND,
-        "the HUD band is {hud:.1} and the arena behind it is {ground:.1} — the band is not \
-         on top of the arena, or the whole frame has been flattened"
+    block.over(
+        ("HUD band", HUD_AT),
+        ("arena behind it", GROUND_AT),
+        HUD_OVER_GROUND,
+        "the band is not on top of the arena",
     );
 
     // ---- 2. the arena drew grass ------------------------------------------
     //
     // Not the channel-order claim — see [`GROUND_GREENNESS`], which a red/blue
     // swap clears by a hair. Claim 3 is the one that refuses a swap.
-    let ground_green = block.channel(GROUND_AT, 1);
-    let ground_blue = block.channel(GROUND_AT, 2);
-    eprintln!("horde golden: ground green {ground_green:.1}, blue {ground_blue:.1}");
-    assert!(
-        ground_green > ground_blue * GROUND_GREENNESS,
-        "the arena ground reads green {ground_green:.1} / blue {ground_blue:.1} — the arena \
-         pass drew something that is not grass"
+    block.channel_beats(
+        "arena ground",
+        GROUND_AT,
+        &[("green", 1), ("blue", 2)],
+        GROUND_GREENNESS,
+        None,
+        "the arena pass drew something that is not grass",
     );
 
     // ---- 3. there is a horde on the field ----------------------------------
@@ -263,7 +256,7 @@ fn inspect(image: &Image) {
 fn the_frame_the_binary_wrote_matches_its_golden() {
     let backend = required_backend("tests/run-horde-golden.sh");
     let prefill = PREFILL.to_string();
-    let (image, adapter) = SampleRun {
+    let run = SampleRun {
         name: "horde",
         binary: env!("CARGO_BIN_EXE_horde"),
         tmp_dir: env!("CARGO_TARGET_TMPDIR"),
@@ -276,19 +269,9 @@ fn the_frame_the_binary_wrote_matches_its_golden() {
         // below rather than a nicety.
         stdout_contains: &["Playing"],
         simulation_advanced: true,
-    }
-    .screenshot(&backend);
+    };
+    let (image, adapter) = run.screenshot(&backend);
     eprintln!("horde golden: device on {adapter}");
     inspect(&image);
-
-    let reference = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/horde.png");
-    let comparison = Golden::new(reference)
-        .check(&image)
-        .expect("the reference is readable")
-        .into_result()
-        .unwrap_or_else(|message| panic!("on {backend}: {message}"));
-    eprintln!(
-        "horde golden: field on {backend} — {}",
-        comparison.summary()
-    );
+    run.compare_to_golden(&image, &backend, env!("CARGO_MANIFEST_DIR"), "field");
 }

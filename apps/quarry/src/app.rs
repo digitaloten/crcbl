@@ -846,6 +846,7 @@ mod tests {
     use crcbl::shell::HeadlessShell;
 
     use super::*;
+    use crcbl_sample_test::ui_text;
 
     /// A [`Loop`] that owns the shared debug view for the length of a check.
     ///
@@ -1077,21 +1078,6 @@ mod tests {
         assert_eq!(cull_row(None), "cull not read back yet");
     }
 
-    /// Every `Text` command the frame handed to the UI pass.
-    fn ui_text(engine: &Loop<HeadlessShell>) -> Vec<String> {
-        use crcbl::ui::draw_list::DrawCommand;
-        engine
-            .gpu()
-            .draw_list()
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                DrawCommand::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
     /// The CI-visible promise: a headless run terminates, and terminates with
     /// the same numbers every time.
     #[test]
@@ -1232,9 +1218,11 @@ mod tests {
             "the row did not reach the renderer",
         );
         assert!(
-            ui_text(&engine).iter().any(|text| text == "LOD VIEW: OFF"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "LOD VIEW: OFF"),
             "the row's label must show what the frame now draws: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         press_row(&mut engine, window, 0);
@@ -1244,9 +1232,11 @@ mod tests {
             "the row did not put it back"
         );
         assert!(
-            ui_text(&engine).iter().any(|text| text == "LOD VIEW: ON"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "LOD VIEW: ON"),
             "{:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
         engine.finish(ExitReason::FrameBudget).expect("teardown");
     }
@@ -1280,10 +1270,14 @@ mod tests {
         engine.frame().expect("a frame");
         assert!(engine.is_paused());
         assert!(
-            ui_text(&engine).iter().any(|text| text == "HEATMAP: ON")
-                && ui_text(&engine).iter().any(|text| text == "LOD VIEW: OFF"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "HEATMAP: ON")
+                && ui_text(engine.gpu().draw_list())
+                    .iter()
+                    .any(|text| text == "LOD VIEW: OFF"),
             "one overlay is drawn, so exactly one row says ON: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         // Four rows down from RESUME is LOD VIEW, five is HEATMAP. Pressing the
@@ -1295,10 +1289,14 @@ mod tests {
             "the tint's row did not replace the heatmap",
         );
         assert!(
-            ui_text(&engine).iter().any(|text| text == "HEATMAP: OFF")
-                && ui_text(&engine).iter().any(|text| text == "LOD VIEW: ON"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "HEATMAP: OFF")
+                && ui_text(engine.gpu().draw_list())
+                    .iter()
+                    .any(|text| text == "LOD VIEW: ON"),
             "{:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         // And back the other way, off the heatmap's own row.
@@ -1368,11 +1366,11 @@ mod tests {
         engine.frame().expect("a frame");
         assert!(engine.is_paused());
         assert!(
-            ui_text(&engine)
+            ui_text(engine.gpu().draw_list())
                 .iter()
                 .any(|text| text == "FREEZE SELECTION: ON"),
             "{:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         // Six rows down from RESUME is FREEZE SELECTION. Pressing it releases
@@ -1384,11 +1382,11 @@ mod tests {
             "the row did not reach the renderer",
         );
         assert!(
-            ui_text(&engine)
+            ui_text(engine.gpu().draw_list())
                 .iter()
                 .any(|text| text == "FREEZE SELECTION: OFF"),
             "{:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         // Back on, then the tint on top of it: two rows that must both hold.
@@ -1427,7 +1425,7 @@ mod tests {
         engine.frame().expect("a frame");
         engine.frame().expect("a frame");
         assert!(
-            ui_text(&engine).is_empty(),
+            ui_text(engine.gpu().draw_list()).is_empty(),
             "the fixture draws no UI at all while the panel is off",
         );
 
@@ -1451,7 +1449,7 @@ mod tests {
             );
         }
         // And the rows really reached the draw list, not just the panel.
-        let drawn = ui_text(&engine);
+        let drawn = ui_text(engine.gpu().draw_list());
         for row in [
             "geometry",
             "lod budget",
@@ -1493,16 +1491,20 @@ mod tests {
         press_row(&mut engine, window, 3);
         assert_eq!(engine.game().camera_mode(), CameraMode::Dolly);
         assert!(
-            ui_text(&engine).iter().any(|text| text == "CAMERA: DOLLY"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "CAMERA: DOLLY"),
             "the row's label must show the new value: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
         press_row(&mut engine, window, 0);
         assert_eq!(engine.game().camera_mode(), CameraMode::Free);
         assert!(
-            ui_text(&engine).iter().any(|text| text == "CAMERA: FREE"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "CAMERA: FREE"),
             "the row's label must show the new value: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         // Resume, fly, and confirm the free camera actually moved.
@@ -1536,9 +1538,11 @@ mod tests {
         press_row(&mut engine, window, 0);
         assert_eq!(engine.game().camera_mode(), CameraMode::Fixed);
         assert!(
-            ui_text(&engine).iter().any(|text| text == "CAMERA: FIXED"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "CAMERA: FIXED"),
             "the row's label must show the value it went back to: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
         assert_eq!(
             engine.game().camera().eye,

@@ -44,7 +44,7 @@
 
 use std::path::PathBuf;
 
-use crcbl_golden::{Golden, Image, Tolerance, compare};
+use crcbl_golden::{Image, Tolerance, compare};
 use crcbl_sample_test::{Block, SampleRun, required_backend};
 
 /// How many frames the run presents before the one that gets written.
@@ -125,26 +125,21 @@ const DREW_AT_ALL: f32 = 6.0;
 
 /// The claims in front of the golden: it drew, and it drew in the right places.
 fn inspect(image: &Image) {
-    let block = Block::new(image, BLOCK);
-    let colors = image.distinct_colors(MIN_COLORS);
-    assert!(
-        colors >= MIN_COLORS,
-        "a board with {colors} distinct colour(s) (counted to {MIN_COLORS}) is not \
-         evidence — nothing drew, or only the clear did"
-    );
+    let block = Block::new(image, BLOCK, "breakout");
+    block.distinct_enough("a board", MIN_COLORS);
 
     // ---- 1. the menu panel is a bright thing on a dark field ---------------
-    let menu = block.brightness(MENU_AT);
-    let field = block.brightness(FIELD_AT);
-    eprintln!("breakout golden: menu {menu:.1}/255, field {field:.1}/255");
-    assert!(
-        menu > DREW_AT_ALL,
-        "the menu panel is at {menu:.1}/255, so the menu pass drew nothing"
+    block.drew(
+        "menu panel",
+        MENU_AT,
+        DREW_AT_ALL,
+        "the menu pass drew nothing",
     );
-    assert!(
-        menu > field * MENU_OVER_FIELD,
-        "the menu panel is {menu:.1} and the field behind it is {field:.1} — the panel is \
-         not on top of the board, or the whole frame has been flattened"
+    block.over(
+        ("menu panel", MENU_AT),
+        ("field behind it", FIELD_AT),
+        MENU_OVER_FIELD,
+        "the panel is not on top of the board",
     );
 
     // ---- 2. the field is dark rather than absent ---------------------------
@@ -152,19 +147,22 @@ fn inspect(image: &Image) {
     // The other half of claim 1, and the one that stops it being satisfied by a
     // frame that simply lost the board: `menu > field * ratio` holds for
     // `field == 0`, which is what a sprite pass that never ran looks like.
-    assert!(
-        field > DREW_AT_ALL,
-        "the field is at {field:.1}/255, so the sprite pass reached nothing"
+    block.drew(
+        "field",
+        FIELD_AT,
+        DREW_AT_ALL,
+        "the sprite pass reached nothing",
     );
 
     // ---- 3. the top-left brick is red, in that order ------------------------
-    let red = block.channel(BRICK_AT, 0);
-    let blue = block.channel(BRICK_AT, 2);
-    eprintln!("breakout golden: brick red {red:.1}, blue {blue:.1}");
-    assert!(
-        red > DREW_AT_ALL && red > blue * BRICK_REDNESS,
-        "the top-left brick reads red {red:.1} / blue {blue:.1} — either no brick drew there, \
-         or the readback's channels were written the wrong way round"
+    block.channel_beats(
+        "top-left brick",
+        BRICK_AT,
+        &[("red", 0), ("blue", 2)],
+        BRICK_REDNESS,
+        Some(DREW_AT_ALL),
+        "either no brick drew there, or the readback's channels were written the wrong way \
+         round",
     );
 }
 
@@ -222,7 +220,7 @@ fn a_uniformly_darkened_frame_is_refused_by_the_tolerance_the_golden_uses() {
 #[ignore = "needs a real GPU and a backend pin; run tests/run-breakout-golden.sh"]
 fn the_frame_the_binary_wrote_matches_its_golden() {
     let backend = required_backend("tests/run-breakout-golden.sh");
-    let (image, adapter) = SampleRun {
+    let run = SampleRun {
         name: "breakout",
         binary: env!("CARGO_BIN_EXE_breakout"),
         tmp_dir: env!("CARGO_TARGET_TMPDIR"),
@@ -232,19 +230,9 @@ fn the_frame_the_binary_wrote_matches_its_golden() {
         args: &[],
         stdout_contains: &[],
         simulation_advanced: true,
-    }
-    .screenshot(&backend);
+    };
+    let (image, adapter) = run.screenshot(&backend);
     eprintln!("breakout golden: device on {adapter}");
     inspect(&image);
-
-    let reference = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/board.png");
-    let comparison = Golden::new(reference)
-        .check(&image)
-        .expect("the reference is readable")
-        .into_result()
-        .unwrap_or_else(|message| panic!("on {backend}: {message}"));
-    eprintln!(
-        "breakout golden: board on {backend} — {}",
-        comparison.summary()
-    );
+    run.compare_to_golden(&image, &backend, env!("CARGO_MANIFEST_DIR"), "board");
 }

@@ -549,6 +549,7 @@ mod tests {
     use crcbl::args::Common;
     use crcbl::engine::ExitReason;
     use crcbl::shell::{HeadlessShell, ShellBackend as Backend};
+    use crcbl_sample_test::{headless_common, ui_text};
 
     fn scripted(options: &Options) -> Loop<HeadlessShell> {
         with_shell(Box::new(HeadlessShell::new()), options).expect("headless always starts")
@@ -561,12 +562,7 @@ mod tests {
 
     /// …with one knob turned.
     fn headless_with(frames: u64, tweak: impl FnOnce(&mut Common)) -> Options {
-        let mut common = Common {
-            headless: true,
-            backend: Some(GpuBackend::Null),
-            frames: Some(frames),
-            ..Common::new(crate::game::DEFAULT_TICK_HZ)
-        };
+        let mut common = headless_common(crate::game::DEFAULT_TICK_HZ, frames);
         tweak(&mut common);
         Options { common }
     }
@@ -591,21 +587,6 @@ mod tests {
             .key_release(window, key)
             .expect("the window is live");
         frames(engine, 1);
-    }
-
-    /// Every `Text` command the frame handed to the UI pass.
-    fn ui_text(engine: &Loop<HeadlessShell>) -> Vec<String> {
-        use crcbl::ui::draw_list::DrawCommand;
-        engine
-            .gpu()
-            .draw_list()
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                DrawCommand::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect()
     }
 
     /// **A headless run plays the field and draws it.** The one check that says
@@ -752,7 +733,7 @@ mod tests {
         };
         assert_eq!(titles, expected, "no module appears that no system offered");
 
-        let drawn = ui_text(&engine);
+        let drawn = ui_text(engine.gpu().draw_list());
         for row in ["gold", "lives", "wave", "creeps", "towers", "refused"] {
             assert!(drawn.iter().any(|text| text == row), "missing {row}");
         }

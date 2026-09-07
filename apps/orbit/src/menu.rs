@@ -21,8 +21,8 @@
 //! thing. The panel exists because `ESC` pauses in every sample and a paused
 //! screen with nothing on it reads as a hang.
 
-use crcbl::engine::{DEBUG_OVERLAY_ID, FULLSCREEN_ID, RESUME_ID};
-use crcbl::ui::menu::{Menu, MenuItem, MenuSet};
+use crcbl::engine::pause_only;
+use crcbl::ui::menu::MenuSet;
 
 /// Which menu a frame shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -51,29 +51,21 @@ pub type Menus = MenuSet<MenuKind>;
 /// nothing.
 #[must_use]
 pub fn menus() -> Menus {
-    MenuSet::new(
-        MenuKind::None,
-        vec![(
-            MenuKind::Paused,
-            Menu::new(
-                "PAUSED",
-                vec![
-                    MenuItem::new(RESUME_ID, "RESUME", "ESC"),
-                    MenuItem::new(FULLSCREEN_ID, "FULLSCREEN", "F11"),
-                    MenuItem::new(DEBUG_OVERLAY_ID, "DEBUG PANEL", "F3"),
-                ],
-            ),
-        )],
-    )
+    pause_only(MenuKind::None, MenuKind::Paused)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crcbl::engine::HostedGame as _;
 
     /// Pause is the only thing that puts a panel on screen here, and it always
     /// does — this sample has no other state a menu could belong to.
+    ///
+    /// **What is on the panel is not asserted here.** Every row of it is
+    /// [`crcbl::engine::pause_menu`]'s, and the claims that used to be written
+    /// out in each sample — the title, the three ids, and that none of them is
+    /// one this game would have to answer for — are beside it in
+    /// [`crcbl::engine::menu`].
     #[test]
     fn the_pause_menu_is_shown_exactly_while_the_loop_is_paused() {
         assert_eq!(MenuKind::of(true), MenuKind::Paused);
@@ -82,36 +74,6 @@ mod tests {
         let mut menus = menus();
         assert!(!menus.is_showing(), "a running frame draws no menu");
         menus.show(MenuKind::Paused);
-        let menu = menus.current().expect("the paused kind has a menu");
-        assert_eq!(menu.title, "PAUSED");
-        assert_eq!(
-            menu.items().iter().map(|item| item.id).collect::<Vec<_>>(),
-            vec![RESUME_ID, FULLSCREEN_ID, DEBUG_OVERLAY_ID],
-            "every button on this menu is one the loop owns",
-        );
-    }
-
-    /// Nothing on this menu is numbered in the game's range, so
-    /// [`crcbl::engine::MenuAction::from_id`] never asks orbit about an id.
-    #[test]
-    fn no_item_claims_an_id_the_game_would_have_to_answer_for() {
-        let mut menus = menus();
-        menus.show(MenuKind::Paused);
-        for item in menus.current().expect("the paused menu").items() {
-            assert!(
-                item.id < crcbl::engine::FIRST_GAME_ID,
-                "{} claims {}, which the game would have to name",
-                item.label,
-                item.id,
-            );
-            assert_eq!(
-                crcbl::engine::MenuAction::from_id(item.id, crate::app::Orbit::menu_action),
-                Some(match item.id {
-                    RESUME_ID => crcbl::engine::MenuAction::Resume,
-                    FULLSCREEN_ID => crcbl::engine::MenuAction::Fullscreen,
-                    _ => crcbl::engine::MenuAction::DebugOverlay,
-                }),
-            );
-        }
+        assert!(menus.is_showing(), "the paused kind has a menu");
     }
 }

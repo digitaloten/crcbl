@@ -576,6 +576,7 @@ mod tests {
     use crcbl::shell::HeadlessShell;
 
     use super::*;
+    use crcbl_sample_test::ui_text;
 
     /// A [`Loop`] that owns the shared debug view for the length of a check.
     ///
@@ -671,21 +672,6 @@ mod tests {
             .key_release(window, MENU_ACTIVATE_KEY)
             .expect("the window is live");
         engine.frame().expect("a frame");
-    }
-
-    /// Every `Text` command the frame handed to the UI pass.
-    fn ui_text(engine: &Loop<HeadlessShell>) -> Vec<String> {
-        use crcbl::ui::draw_list::DrawCommand;
-        engine
-            .gpu()
-            .draw_list()
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                DrawCommand::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect()
     }
 
     /// The CI-visible promise: a headless run terminates, and terminates with
@@ -825,7 +811,7 @@ mod tests {
         engine.frame().expect("a frame");
         engine.frame().expect("a frame");
         assert!(
-            ui_text(&engine).is_empty(),
+            ui_text(engine.gpu().draw_list()).is_empty(),
             "the fixture draws no UI at all while the panel is off",
         );
 
@@ -849,7 +835,7 @@ mod tests {
             );
         }
         // And the rows really reached the draw list, not just the panel.
-        let drawn = ui_text(&engine);
+        let drawn = ui_text(engine.gpu().draw_list());
         for row in ["geometry", "lighting", "metal", "mode"] {
             assert!(drawn.iter().any(|t| t == row), "missing {row}: {drawn:?}");
         }
@@ -883,9 +869,11 @@ mod tests {
         press_row(&mut engine, window, 3);
         assert_eq!(engine.game().camera_mode(), CameraMode::Free);
         assert!(
-            ui_text(&engine).iter().any(|text| text == "CAMERA: FREE"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "CAMERA: FREE"),
             "the row's label must show the new value: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         // Resume, walk, and confirm the free camera actually moved.
@@ -919,9 +907,11 @@ mod tests {
         press_row(&mut engine, window, 0);
         assert_eq!(engine.game().camera_mode(), CameraMode::Fixed);
         assert!(
-            ui_text(&engine).iter().any(|text| text == "CAMERA: FIXED"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "CAMERA: FIXED"),
             "the row's label must show the value it went back to: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
         assert_eq!(
             engine.game().camera().eye,
@@ -982,9 +972,11 @@ mod tests {
         );
         assert_eq!(engine.gpu().paths().effects_row(), "ao ssr vfog cmaa2");
         assert!(
-            ui_text(&engine).iter().any(|text| text == "SHADOWS: OFF"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "SHADOWS: OFF"),
             "the row's label must show what the frame now draws: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         // And the same row puts it back, which is the comparison the charter's
@@ -993,9 +985,11 @@ mod tests {
         press_row(&mut engine, window, 0);
         assert_eq!(engine.gpu().paths().effects, room::View::Main.stack());
         assert!(
-            ui_text(&engine).iter().any(|text| text == "SHADOWS: ON"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "SHADOWS: ON"),
             "the row's label must show the value it went back to: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         // Off again, so the summary is asked about a run the menu changed.
@@ -1051,18 +1045,22 @@ mod tests {
             "the variable moved and the loop did not carry it to the renderer",
         );
         assert!(
-            ui_text(&engine).iter().any(|text| text == "AO VIEW: ON"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "AO VIEW: ON"),
             "the row's label must show what the frame now draws: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         // And the same row takes it back, which is the half a reviewer needs.
         press_row(&mut engine, window, 0);
         assert_eq!(engine.gpu().debug_view(), DebugView::Shaded);
         assert!(
-            ui_text(&engine).iter().any(|text| text == "AO VIEW: OFF"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "AO VIEW: OFF"),
             "{:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
         engine.finish(ExitReason::FrameBudget).expect("teardown");
     }

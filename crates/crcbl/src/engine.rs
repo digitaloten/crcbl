@@ -125,9 +125,13 @@ use crate::settings::VideoSettings;
 use crate::backend::GpuBackend;
 
 pub mod console_button;
+pub mod menu;
+pub mod page;
 pub mod pause;
 
 pub use console_button::ConsoleButton;
+pub use menu::{PAUSE_TITLE, pause_items, pause_menu, pause_only};
+pub use page::PageBundle;
 pub use pause::PauseControl;
 
 // ---------------------------------------------------------------------------

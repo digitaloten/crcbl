@@ -998,13 +998,13 @@ crcbl::impl_pending_loop!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crcbl::args::Common;
     use crcbl::core::input::PointerButton;
     use crcbl::engine::{ExitReason, PAUSE_KEY};
     use crcbl::inventory::Cell;
     use crcbl::shell::{
         ButtonState as PointerState, HeadlessShell, PhysicalPoint, ShellBackend as Backend,
     };
+    use crcbl_sample_test::{headless_common, ui_text};
 
     fn scripted(options: &Options) -> Loop<HeadlessShell> {
         with_shell(Box::new(HeadlessShell::new()), options).expect("headless always starts")
@@ -1012,29 +1012,9 @@ mod tests {
 
     fn headless(frames: u64) -> Options {
         Options {
-            common: Common {
-                headless: true,
-                backend: Some(GpuBackend::Null),
-                frames: Some(frames),
-                ..Common::new(crate::game::DEFAULT_TICK_HZ)
-            },
+            common: headless_common(crate::game::DEFAULT_TICK_HZ, frames),
             seed: crate::loot::DEFAULT_SEED,
         }
-    }
-
-    /// Every `Text` command the frame handed to the UI pass.
-    fn ui_text(engine: &Loop<HeadlessShell>) -> Vec<String> {
-        use crcbl::ui::draw_list::DrawCommand;
-        engine
-            .gpu()
-            .draw_list()
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                DrawCommand::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect()
     }
 
     /// Runs `count` frames.
@@ -1268,9 +1248,11 @@ mod tests {
             "the torch key ran a tick, so it is not presentation",
         );
         assert!(
-            ui_text(&engine).iter().any(|word| word == "OUT"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|word| word == "OUT"),
             "the panel still says the torches are lit: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         // …and a second press lights them again, which is what makes it a switch
@@ -1313,7 +1295,7 @@ mod tests {
         };
         assert_eq!(titles, expected, "no module appears that no system offered");
 
-        let drawn = ui_text(&engine);
+        let drawn = ui_text(engine.gpu().draw_list());
         for row in [
             "tick", "climbed", "health", "level", "foes", "engaged", "target", "carried", "loot",
             "state", "writes", "where", "geometry", "lighting", "effects",
@@ -1351,7 +1333,9 @@ mod tests {
             "a paused loop runs no ticks",
         );
         assert!(
-            ui_text(&engine).iter().any(|t| t == "TORCHES"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|t| t == "TORCHES"),
             "the overlay is drawn behind the panel",
         );
         engine.finish(ExitReason::FrameBudget).expect("teardown");
@@ -1485,9 +1469,11 @@ mod tests {
         frames(&mut engine, 4);
         assert!(!engine.game().panel_open(), "the panel opened itself");
         assert!(
-            !ui_text(&engine).iter().any(|t| t == "INVENTORY"),
+            !ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|t| t == "INVENTORY"),
             "a closed panel drew itself: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
         assert_eq!(engine.game().panel().commands, 0);
 
@@ -1510,9 +1496,11 @@ mod tests {
             "opening the panel ran a tick, so it is not presentation",
         );
         assert!(
-            ui_text(&engine).iter().any(|t| t == "INVENTORY"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|t| t == "INVENTORY"),
             "an open panel drew nothing: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
         assert!(engine.game().panel().commands > 0);
 

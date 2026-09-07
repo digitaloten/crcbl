@@ -59,9 +59,7 @@
 
 #![cfg(feature = "golden-e2e")]
 
-use std::path::PathBuf;
-
-use crcbl_golden::{Golden, Image};
+use crcbl_golden::Image;
 use crcbl_sample_test::{Block, SampleRun, required_backend};
 
 /// How many frames the run presents before the one that gets written.
@@ -155,50 +153,45 @@ const DREW_AT_ALL: f32 = 6.0;
 
 /// The claims in front of the golden: it drew, and it drew in the right places.
 fn inspect(image: &Image) {
-    let block = Block::new(image, BLOCK);
-    let colors = image.distinct_colors(MIN_COLORS);
-    assert!(
-        colors >= MIN_COLORS,
-        "a field with {colors} distinct colour(s) (counted to {MIN_COLORS}) is not \
-         evidence — nothing drew, or only the clear did"
-    );
+    let block = Block::new(image, BLOCK, "asteroids");
+    block.distinct_enough("a field", MIN_COLORS);
 
     // ---- 1. a rock is drawn into the space beside it -----------------------
-    let rock = block.brightness(ROCK_AT);
-    let space = block.brightness(SPACE_AT);
-    eprintln!("asteroids golden: rock {rock:.1}/255, space {space:.1}/255");
-    assert!(
-        rock > ROCK_DREW,
-        "the rock is at {rock:.1}/255, so the sprite pass reached nothing and this is space"
+    block.drew(
+        "rock",
+        ROCK_AT,
+        ROCK_DREW,
+        "the sprite pass reached nothing and this is space",
     );
-    assert!(
-        rock > space * ROCK_OVER_SPACE,
-        "the rock is {rock:.1} and the space beside it is {space:.1} — the rock is not on \
-         top of an empty field, or the whole frame has been flattened"
+    block.over(
+        ("rock", ROCK_AT),
+        ("space beside it", SPACE_AT),
+        ROCK_OVER_SPACE,
+        "the rock is not on top of an empty field",
     );
 
     // ---- 2. the title card is a menu on top of the field -------------------
-    let button = block.brightness(BUTTON_AT);
-    let panel = block.brightness(PANEL_AT);
-    eprintln!("asteroids golden: FLY button {button:.1}/255, title card {panel:.1}/255");
-    assert!(
-        panel > DREW_AT_ALL,
-        "the title card is at {panel:.1}/255, so the menu pass drew nothing"
+    block.drew(
+        "title card",
+        PANEL_AT,
+        DREW_AT_ALL,
+        "the menu pass drew nothing",
     );
-    assert!(
-        button > panel * BUTTON_OVER_PANEL,
-        "the FLY button is {button:.1} and the card behind it is {panel:.1} — the button is \
-         not on top of the card, or the whole frame has been flattened"
+    block.over(
+        ("FLY button", BUTTON_AT),
+        ("card behind it", PANEL_AT),
+        BUTTON_OVER_PANEL,
+        "the button is not on top of the card",
     );
 
     // ---- 3. the button's panel is blue, in that order ----------------------
-    let button_blue = block.channel(BUTTON_AT, 2);
-    let button_red = block.channel(BUTTON_AT, 0);
-    eprintln!("asteroids golden: button blue {button_blue:.1}, red {button_red:.1}");
-    assert!(
-        button_blue > button_red * BUTTON_BLUENESS,
-        "the FLY button reads blue {button_blue:.1} / red {button_red:.1} — the readback's \
-         channels were written the wrong way round"
+    block.channel_beats(
+        "FLY button",
+        BUTTON_AT,
+        &[("blue", 2), ("red", 0)],
+        BUTTON_BLUENESS,
+        None,
+        "the readback's channels were written the wrong way round",
     );
 }
 
@@ -207,7 +200,7 @@ fn inspect(image: &Image) {
 #[ignore = "needs a real GPU and a backend pin; run tests/run-asteroids-golden.sh"]
 fn the_frame_the_binary_wrote_matches_its_golden() {
     let backend = required_backend("tests/run-asteroids-golden.sh");
-    let (image, adapter) = SampleRun {
+    let run = SampleRun {
         name: "asteroids",
         binary: env!("CARGO_BIN_EXE_asteroids"),
         tmp_dir: env!("CARGO_TARGET_TMPDIR"),
@@ -217,19 +210,9 @@ fn the_frame_the_binary_wrote_matches_its_golden() {
         args: &[],
         stdout_contains: &["WaitingToStart"],
         simulation_advanced: true,
-    }
-    .screenshot(&backend);
+    };
+    let (image, adapter) = run.screenshot(&backend);
     eprintln!("asteroids golden: device on {adapter}");
     inspect(&image);
-
-    let reference = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/field.png");
-    let comparison = Golden::new(reference)
-        .check(&image)
-        .expect("the reference is readable")
-        .into_result()
-        .unwrap_or_else(|message| panic!("on {backend}: {message}"));
-    eprintln!(
-        "asteroids golden: field on {backend} — {}",
-        comparison.summary()
-    );
+    run.compare_to_golden(&image, &backend, env!("CARGO_MANIFEST_DIR"), "field");
 }

@@ -28,6 +28,7 @@ crcbl = { workspace = true, features = ["scene"] }
 # and `crcbl-vk`, which is where the comparison and its measured tolerance live.
 [dev-dependencies]
 crcbl-golden = { workspace = true }
+crcbl-sample-test = { workspace = true }
 
 [lints]
 workspace = true

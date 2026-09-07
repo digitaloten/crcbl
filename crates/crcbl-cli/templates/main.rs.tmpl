@@ -42,9 +42,9 @@ use std::process::ExitCode;
 use crcbl::args::{COMMON_OPTIONS_HELP, COMMON_TAIL_HELP, Common, Consumed, Invocation};
 use crcbl::core::input::KeyCode;
 use crcbl::engine::{
-    Booted, Clock, DEBUG_OVERLAY_ID, FRAMES_IN_FLIGHT, FULLSCREEN_ID, FrameInfo, FrameOutcome,
-    GpuContext, GpuContextDesc, GpuError, GpuOptions, HostedGame, LoopError, RESUME_ID, RunSummary,
-    drive, open_window, wait_for_configure,
+    Booted, Clock, FRAMES_IN_FLIGHT, FrameInfo, FrameOutcome, GpuContext, GpuContextDesc, GpuError,
+    GpuOptions, HostedGame, LoopError, RunSummary, drive, open_window, pause_only,
+    wait_for_configure,
 };
 use crcbl::hal::CommandEncoderDesc;
 use crcbl::math::Vec2;
@@ -56,7 +56,7 @@ use crcbl::render::{
 use crcbl::shell::{open, open_backend};
 use crcbl::ui::WidgetId;
 use crcbl::ui::draw_list::DrawList;
-use crcbl::ui::menu::{Menu, MenuItem, MenuLayout, MenuSet};
+use crcbl::ui::menu::{Menu, MenuLayout, MenuSet};
 use crcbl::ui::text::FontAtlas;
 
 /// This game's name: window title, log prefix, and the line a finished run
@@ -132,23 +132,19 @@ impl HostedGame for Game {
 
     const NAME: &'static str = NAME;
 
+    /// The pause panel, which is the loop's rather than this game's.
+    ///
+    /// `RESUME`, `FULLSCREEN` and `DEBUG PANEL` are the menu equivalents of
+    /// `ESC`, `F11` and `F3` — keys the loop acts on itself and never hands a
+    /// game — so [`crcbl::engine::pause_menu`] owns the rows and this says only
+    /// which state each belongs to. `false`, the running game, has no entry,
+    /// which is how the set is told that a running frame draws no menu at all.
+    ///
+    /// A game with a panel of its own builds the set by hand instead, or
+    /// inserts its row into [`crcbl::engine::pause_items`] the way
+    /// `apps/towers` does.
     fn menus() -> MenuSet<bool> {
-        // `false` — the running game — has no entry, which is how the set is
-        // told that a running frame draws no menu at all.
-        MenuSet::new(
-            false,
-            vec![(
-                true,
-                Menu::new(
-                    "PAUSED",
-                    vec![
-                        MenuItem::new(RESUME_ID, "RESUME", "ESC"),
-                        MenuItem::new(FULLSCREEN_ID, "FULLSCREEN", "F11"),
-                        MenuItem::new(DEBUG_OVERLAY_ID, "DEBUG PANEL", "F3"),
-                    ],
-                ),
-            )],
-        )
+        pause_only(false, true)
     }
 
     /// One fixed simulation step. Your game goes here.

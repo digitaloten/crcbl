@@ -705,7 +705,7 @@ mod tests {
     use crcbl::core::input::{ContactId, PointerButton, TouchPhase};
     use crcbl::math::DVec3;
     use crcbl::shell::{ButtonState as PointerState, HeadlessShell, PhysicalPoint, ShellBackend};
-    use crcbl::ui::draw_list::DrawCommand;
+    use crcbl_sample_test::{headless_common, ui_text};
 
     /// Options every test in this module builds its loop from.
     ///
@@ -715,12 +715,7 @@ mod tests {
     /// and flappy pin it for the same reason.
     fn headless(frames: u64) -> Options {
         Options {
-            common: Common {
-                headless: true,
-                backend: Some(GpuBackend::Null),
-                frames: Some(frames),
-                ..Common::new(crate::game::DEFAULT_TICK_HZ)
-            },
+            common: headless_common(crate::game::DEFAULT_TICK_HZ, frames),
             ..Options::default()
         }
     }
@@ -796,20 +791,6 @@ mod tests {
             matches!(real.clock_source(), Clock::Real(_)),
             "--wall-clock must hand the loop the real clock"
         );
-    }
-
-    /// Every string the UI pass will draw this frame.
-    fn ui_text(engine: &Loop<HeadlessShell>) -> Vec<String> {
-        engine
-            .gpu()
-            .draw_list()
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                DrawCommand::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect()
     }
 
     /// Presses and releases a key, and runs the frame that consumes it.
@@ -1053,7 +1034,9 @@ mod tests {
         assert_eq!(engine.game().game().state, GameState::Playing);
 
         assert!(
-            !ui_text(&engine).iter().any(|text| text == "PAUSE"),
+            !ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "PAUSE"),
             "a run nobody has touched drew an on-screen control",
         );
 
@@ -1065,9 +1048,11 @@ mod tests {
         );
         run_frames(&mut engine, 2);
         assert!(
-            ui_text(&engine).iter().any(|text| text == "PAUSE"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|text| text == "PAUSE"),
             "the button never reached the frame: {:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         // And a contact at its centre really is on it — the same point the
@@ -1444,7 +1429,7 @@ mod tests {
             !engine.gpu().menu_sprites().is_empty(),
             "the menu pass got nothing to draw",
         );
-        let text = ui_text(&engine);
+        let text = ui_text(engine.gpu().draw_list());
         assert!(
             text.iter().any(|line| line == "HORDE") && text.iter().any(|line| line == "PLAY"),
             "the start menu never reached the UI pass: {text:?}",
@@ -1596,7 +1581,9 @@ mod tests {
             "the menu pass got nothing to draw",
         );
         assert!(
-            ui_text(&engine).iter().any(|line| line == "PAUSED"),
+            ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|line| line == "PAUSED"),
             "the menu's title never reached the UI pass",
         );
     }
@@ -1624,11 +1611,11 @@ mod tests {
         run_frames(&mut engine, 2);
         assert_eq!(engine.menu_kind(), MenuKind::LevelUp);
         assert!(
-            ui_text(&engine)
+            ui_text(engine.gpu().draw_list())
                 .iter()
                 .any(|line| line.starts_with("LEVEL ")),
             "{:?}",
-            ui_text(&engine),
+            ui_text(engine.gpu().draw_list()),
         );
 
         // Take one, and the menu goes away with the state.
@@ -1891,12 +1878,14 @@ mod tests {
         }));
         engine.frame().expect("a frame");
         assert!(
-            !ui_text(&engine).iter().any(|line| line == "scene"),
+            !ui_text(engine.gpu().draw_list())
+                .iter()
+                .any(|line| line == "scene"),
             "a hidden panel gathered a section",
         );
 
         tap(&mut engine, DEBUG_OVERLAY_KEY);
-        let text = ui_text(&engine);
+        let text = ui_text(engine.gpu().draw_list());
         assert!(
             text.iter().any(|line| line == "scene"),
             "the scene section never reached the UI pass: {text:?}",
