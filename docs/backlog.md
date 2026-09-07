@@ -5323,21 +5323,47 @@ events and therefore no footstep cues, no socket prop, and none of the
 device-swap showcase — the rebind UI and the glyph hints that follow the
 last-active device. That last group is topic 19's forcing function.
 
-**Also not built:** puppet's map is authored in `apps/puppet/src/map.rs` rather
-than as a `.scn/` dir. The format is no longer the blocker — `crcbl_scene::scn`
-landed and `apps/breakout` loads one — so what is owed is the port: puppet's map
-is `crcbl-greybox` primitives with colliders beside them, and a `.scn/` of it
-needs a component type and a `chunk_of` codec for those, which nobody has
-written. **Also not built:** milestone 5's golden frames. `apps/puppet` has no
-`tests/` directory at all, so nothing pins a pose; the Pages demo half of
-milestone 5 is done (`apps/puppet/src/web.rs`, `web/demos/puppet/`, the `puppet`
-row in `DEMOS`).
+**Also not built:** milestone 5's golden frames. `apps/puppet` has no `tests/`
+directory at all, so nothing pins a pose; the Pages demo half of milestone 5 is
+done (`apps/puppet/src/web.rs`, `web/demos/puppet/`, the `puppet` row in
+`DEMOS`).
 
 **One engine limit is visible in the picture**: the slopes are rounded, because
 `crcbl-phys` has no oriented box to make a wedge out of.
 
 **What it blocks:** the footstep-timing exit criterion is topic 17's event test
 "live", and nothing else in the tree exercises animation events.
+
+### Puppet's `--scene` is proven to the simulation, not to the frame (2026-09-07)
+
+`app::a_scene_directory_is_the_map_the_run_actually_walks` runs a one-slab scene
+headless and reads where the character ends up, so the loaded map is proven to
+reach `Game::new` and the physics world. **The renderer's half is not read by
+anything.** A `Gpu::from_context` that called `Map::built_in().scene()` instead
+of the loaded map's would pass every test in the tree: the run would still
+succeed, and no summary field would differ. Puppet has no golden frame
+(`apps/puppet` has no `tests/` directory), which is what would close it — and is
+milestone 5's own owed work.
+
+### Puppet's `env.ron` camera is written and never read (2026-09-07)
+
+`crate::camera` rebuilds a follow camera every frame around wherever the
+character is, so a scene's opening eye has nowhere to go. The committed row is
+written from `camera::DISTANCE` and `camera::FOCUS_HEIGHT` at the spawn with the
+**pitch levelled**, and the writer test pins it — deliberately not
+`camera::START_PITCH`, because a sine would put a libm result in a file compared
+byte for byte on Linux, macOS and Windows. `apps/breakout`'s `env.ron` is in the
+same position for the same reason.
+
+### A loaded puppet map is capped by `map.rs`'s `CAPACITIES` (2026-09-07)
+
+The reservation is a constant sized for the committed blockout — 16 mesh slots
+against the 11 it uses, so a `--scene` map with more than ten surfaces is
+refused by the pools rather than accommodated. The refusal is loud
+(`PlaceError`, or `ForwardRenderer::with_scene`'s), not silent. **Considered and
+not done in this slice:** deriving the capacities from the loaded map, because
+the committed map must reserve exactly what it reserved before the port and a
+derived number would have changed that in the same commit as the port.
 
 ## sparks (`docs/plan/sample/10-sparks.md`)
 

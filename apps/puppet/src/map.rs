@@ -7,7 +7,7 @@
 //!  steep      │        │          │
 //!  mound  ────┼────────┤  ground  ├──────── gentle mound
 //!             │        │          │
-//!             │        ▲ spawn, z = 10, facing −Z
+//!             │        ▲ spawn, z = 16, facing −Z
 //!            −X
 //! ```
 //!
@@ -57,9 +57,57 @@
 //! cuboid, and each one's collider is a [`BoxCollider`] over the same corners.
 //! There is one set of numbers per object and both halves read it, so a map that
 //! looks like it can be walked on can be.
+//!
+//! # The map is a file, and this module is its loader
+//!
+//! `assets/scenes/blockout.scn/` is that map: a header, an environment and three
+//! chunk files, read through [`crcbl::scene::scn`] — the engine's own scene
+//! format, `docs/plan/06-assets-scenes.md`'s "Scene format: directory of chunk
+//! files".
+//!
+//! ```text
+//! assets/scenes/blockout.scn/
+//!   scene.ron          format version, name, the system manifest
+//!   env.ron            the view the map opens on, and the light it sits in
+//!   sys/surfaces.ron   one Surface per walkable thing: ground, steps, mounds
+//!   sys/spawn.ron      where the character starts, and which way it faces
+//!   sys/sun.ron        the turning sun the map is shadowed by
+//! ```
+//!
+//! The committed files are `include_str!`ed and read back through a
+//! [`MemorySource`], because a browser has no filesystem and a binary that could
+//! fail to find its own map is one whose picture depends on the working
+//! directory it was run from. `--scene <DIR>` is the run-time door onto a
+//! *different* directory, opened with a [`DirSource`] — the same [`Map::load`]
+//! call either way, which is what an [`AssetSource`] is for. `apps/breakout`
+//! reads its brick grid through the same pair.
+//!
+//! # The component is this sample's, and that is a decision
+//!
+//! [`Surface`] — a greybox primitive, the collider that is the same surface, and
+//! the tint it is painted with — is declared here, in the sample, rather than in
+//! `crcbl-greybox` or `crcbl-scene`. A chunk's component is whatever its game
+//! says it is: [`chunk_of`] bounds it by `serde` and
+//! [`ComponentHash`] and by nothing else. One consumer is not an
+//! engine type, and the moment a second sample wants these same rows is the
+//! moment to hoist them; `apps/breakout`'s `Brick` sits on the same side of that
+//! line for the same reason.
+//!
+//! # The constants below are the map's *generator*, not a second copy of it
+//!
+//! Everything the file holds was written out of them by [`Scene::save`] once,
+//! and `the_committed_map_is_what_the_writer_writes` is what keeps it that way:
+//! it builds the blockout from these constants, writes it, and asserts the
+//! result is byte for byte the five committed files. So a hand-edited coordinate
+//! is a red test rather than a map that quietly moved — and the constants go on
+//! being what `crate::game`'s tests measure the controller against, which a
+//! number that only existed inside a file could not be.
 
 use std::borrow::Cow;
+use std::path::Path;
 
+use crcbl::assets::{AssetSource, DirSource, MemorySource};
+use crcbl::ecs::{ComponentHash, System, World};
 use crcbl::greybox::{GREYBOX_TILE_M, cube, grid_material, grid_page, platform, sphere};
 use crcbl::math::{DVec3, Mat4, Vec3};
 use crcbl::phys::{BoxCollider, PhysicsWorld, Sphere};
@@ -68,6 +116,8 @@ use crcbl::render::{
     DirectionalLight, ForwardRenderer, InstanceHandle, InstancePoolError, MeshPoolError, SkinRange,
     SkinnedInstanceDesc, SkinnedMesh,
 };
+use crcbl::scene::scn::{Env, IdMap, Scene, ScnError, SystemChunk, chunk_of};
+use crcbl::serde::{Deserialize, Serialize};
 use crcbl::shaders::mesh::GpuMaterial;
 use crcbl::shaders::skinning::SkinBinding;
 
@@ -208,6 +258,400 @@ const NOSE_EDGE: f64 = 0.18;
 const NOSE_HEIGHT: f64 = 1.45;
 
 // ---------------------------------------------------------------------------
+// The scene directory
+// ---------------------------------------------------------------------------
+
+/// The system every walkable thing is a row of: the manifest entry, the chunk
+/// file's stem, and the name [`Surface`]'s codec is registered under.
+const SURFACES: &str = "surfaces";
+
+/// The system the character's start is the one row of.
+const SPAWN_POINT: &str = "spawn";
+
+/// The system the sun is the one row of.
+const SUN: &str = "sun";
+
+/// The directory the committed map lives in, and the name its keys are spelled
+/// under in the built-in source.
+const BLOCKOUT: &str = "blockout.scn";
+
+/// `assets/scenes/blockout.scn/scene.ron`, as it is committed.
+const BLOCKOUT_SCENE_RON: &str = include_str!("../assets/scenes/blockout.scn/scene.ron");
+/// `assets/scenes/blockout.scn/env.ron`, as it is committed.
+const BLOCKOUT_ENV_RON: &str = include_str!("../assets/scenes/blockout.scn/env.ron");
+/// `assets/scenes/blockout.scn/sys/surfaces.ron`, as it is committed.
+const BLOCKOUT_SURFACES_RON: &str = include_str!("../assets/scenes/blockout.scn/sys/surfaces.ron");
+/// `assets/scenes/blockout.scn/sys/spawn.ron`, as it is committed.
+const BLOCKOUT_SPAWN_RON: &str = include_str!("../assets/scenes/blockout.scn/sys/spawn.ron");
+/// `assets/scenes/blockout.scn/sys/sun.ron`, as it is committed.
+const BLOCKOUT_SUN_RON: &str = include_str!("../assets/scenes/blockout.scn/sys/sun.ron");
+
+/// One thing the character can walk on: a greybox primitive, the collider that
+/// is the same surface, and the tint the primitive is painted with.
+///
+/// **Puppet's own type**, for the reason the [module docs](self) give at length:
+/// a chunk's component is whatever its game says it is, and one consumer is not
+/// an engine type.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(crate = "crcbl::serde")]
+pub struct Surface {
+    /// What the mesh is called — the label the renderer holds it under, and what
+    /// a frame dump names it in.
+    pub label: String,
+    /// Where the primitive's own origin sits, in metres.
+    ///
+    /// `f64` and both halves read it: this is the number the physics world is
+    /// spelled in — [`BoxCollider`] and [`Sphere`] take [`DVec3`] — and a map
+    /// written as `f32` would round on the way through the file and put the
+    /// collider somewhere the mesh is not.
+    pub position: [f64; 3],
+    /// What it is, which decides the mesh and the collider together.
+    pub shape: Shape,
+    /// Linear RGB the greybox grid is tinted with, through this module's
+    /// `painted`.
+    pub tint: [f32; 3],
+}
+
+/// The two primitives this map is built from.
+///
+/// Each carries the collider that is the **same** surface the mesh draws, which
+/// is the whole claim [`Map::world`] and [`Map::place`] make together: there is
+/// one set of numbers per object and the two halves both read it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(crate = "crcbl::serde")]
+pub enum Shape {
+    /// A cuboid standing on the primitive's origin: [`platform`]'s geometry, and
+    /// a [`BoxCollider`] over the same eight corners.
+    Platform {
+        /// Its extent along `X`, in metres.
+        width: f64,
+        /// Its extent along `Z`, in metres.
+        depth: f64,
+        /// How far it rises above the origin, in metres.
+        height: f64,
+    },
+    /// A sphere centred on the primitive's origin: [`sphere`]'s tessellation at
+    /// `MOUND_RINGS` by `MOUND_SEGMENTS`, and the analytic [`Sphere`] itself as
+    /// the collider.
+    ///
+    /// Sunk far enough that what stands above the ground is a mound, which is
+    /// how this map has a slope at all — see the [module docs](self).
+    Dome {
+        /// Its radius, in metres.
+        radius: f64,
+    },
+}
+
+impl ComponentHash for Surface {
+    fn hash_component(&self, hasher: &mut dyn std::hash::Hasher) {
+        // The label's length before its bytes: two rows whose labels are "lo"
+        // and "wstep" hash the same as "low" and "step" without it.
+        hasher.write_usize(self.label.len());
+        hasher.write(self.label.as_bytes());
+        for value in self.position {
+            hasher.write(&value.to_bits().to_le_bytes());
+        }
+        match self.shape {
+            Shape::Platform {
+                width,
+                depth,
+                height,
+            } => {
+                hasher.write_u8(0);
+                for value in [width, depth, height] {
+                    hasher.write(&value.to_bits().to_le_bytes());
+                }
+            }
+            Shape::Dome { radius } => {
+                hasher.write_u8(1);
+                hasher.write(&radius.to_bits().to_le_bytes());
+            }
+        }
+        for value in self.tint {
+            hasher.write(&value.to_bits().to_le_bytes());
+        }
+    }
+}
+
+/// Where the character starts, and which way it is turned when it gets there.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(crate = "crcbl::serde")]
+pub struct Spawn {
+    /// The **feet**, in metres. See [`SPAWN`], which is what the committed row
+    /// was written from.
+    pub position: [f64; 3],
+    /// The yaw the body is turned to, in radians about `+Y`, measured the way
+    /// [`crate::camera`] measures one: zero looks down `-Z`.
+    pub facing: f64,
+}
+
+impl ComponentHash for Spawn {
+    fn hash_component(&self, hasher: &mut dyn std::hash::Hasher) {
+        for value in self.position.iter().chain(&[self.facing]) {
+            hasher.write(&value.to_bits().to_le_bytes());
+        }
+    }
+}
+
+/// The sun the map is lit and shadowed by, as the file spells it.
+///
+/// The **ambient** is not here: it is `env.ron`'s, which is the format's own
+/// slot for "the light a scene sits in when nothing else reaches it", and a
+/// second copy of it in this row would be a second thing to keep in step. See
+/// [`Map::sun`], which puts the two together.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(crate = "crcbl::serde")]
+pub struct Sun {
+    /// How high it stands, as the `+Y` component of the unit vector toward it.
+    /// See [`SUN_ELEVATION`].
+    pub elevation: f32,
+    /// Its colour, before the intensity below is applied to it. Linear RGB.
+    pub color: [f32; 3],
+    /// How bright it is. Above 1.0, like every other sun in this engine — see
+    /// [`SUN_INTENSITY`].
+    pub intensity: f32,
+    /// How long it takes to come back round to where it started, in seconds.
+    /// See [`SUN_PERIOD`].
+    pub period: f64,
+}
+
+impl ComponentHash for Sun {
+    fn hash_component(&self, hasher: &mut dyn std::hash::Hasher) {
+        hasher.write(&self.elevation.to_bits().to_le_bytes());
+        for value in self.color {
+            hasher.write(&value.to_bits().to_le_bytes());
+        }
+        hasher.write(&self.intensity.to_bits().to_le_bytes());
+        hasher.write(&self.period.to_bits().to_le_bytes());
+    }
+}
+
+/// Why a directory is not one of puppet's maps.
+///
+/// [`ScnError`] is the format's half and says which *key* it is about; the other
+/// two are this sample's, and say which *chunk* a puppet map is missing. A
+/// manifest that simply does not name one of the three would otherwise load as
+/// a map with no ground on it.
+#[derive(Debug)]
+pub enum MapError {
+    /// The directory is not a scene, or a chunk in it would not read.
+    Scene(ScnError),
+    /// The manifest does not name one of the systems a puppet map is made of.
+    Missing(&'static str),
+    /// A chunk that holds exactly one row holds some other number of them.
+    NotOne {
+        /// Which system, which is also the file: `sys/<system>.ron`.
+        system: &'static str,
+        /// How many rows it actually holds.
+        found: usize,
+    },
+}
+
+impl std::fmt::Display for MapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Scene(error) => write!(f, "{error}"),
+            Self::Missing(system) => write!(
+                f,
+                "the manifest names no `{system}` chunk, which every puppet map has"
+            ),
+            Self::NotOne { system, found } => write!(
+                f,
+                "`sys/{system}.ron` holds {found} entities, and a puppet map has exactly one"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MapError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Scene(error) => Some(error),
+            Self::Missing(_) | Self::NotOne { .. } => None,
+        }
+    }
+}
+
+/// A blockout: its surfaces in the order the chunk spells them, where the
+/// character starts, and the sun it stands under.
+///
+/// Not `Eq`: every number in it is a float. [`PartialEq`] is what
+/// [`crate::Options`] needs and all a test comparing two parses of one directory
+/// wants.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Map {
+    env: Env,
+    surfaces: Vec<Surface>,
+    spawn: Spawn,
+    sun: Sun,
+}
+
+impl Map {
+    /// The committed `assets/scenes/blockout.scn/`, parsed.
+    ///
+    /// # Panics
+    ///
+    /// If the committed directory is not a map, naming the key and the line and
+    /// column in it. It is compiled into this binary, so that is a tree in which
+    /// `the_committed_map_is_what_the_writer_writes` is red as well — the panic
+    /// is what stops a run starting on a map nobody could read.
+    #[must_use]
+    pub fn built_in() -> Self {
+        Self::load(&built_in_source(), Path::new(BLOCKOUT))
+            .unwrap_or_else(|error| panic!("apps/puppet/assets/scenes/{BLOCKOUT}: {error}"))
+    }
+
+    /// The map `dir` holds, read through `source`.
+    ///
+    /// # Errors
+    ///
+    /// [`MapError`]: a key that is not there, text that is not this format, a
+    /// header this build does not read, a manifest naming a system with no codec
+    /// — or one that leaves out a system a puppet map is made of.
+    pub fn load(source: &dyn AssetSource, dir: &Path) -> Result<Self, MapError> {
+        let codecs: Vec<Box<dyn SystemChunk>> = vec![
+            chunk_of::<Surface>(SURFACES),
+            chunk_of::<Spawn>(SPAWN_POINT),
+            chunk_of::<Sun>(SUN),
+        ];
+        let mut world = World::new();
+        world.register_system(Box::new(System::<Surface>::new(SURFACES)));
+        world.register_system(Box::new(System::<Spawn>::new(SPAWN_POINT)));
+        world.register_system(Box::new(System::<Sun>::new(SUN)));
+        let (scene, ids) =
+            Scene::load(source, dir, &codecs, &mut world).map_err(MapError::Scene)?;
+
+        // A manifest that names a system with no codec is `Scene::load`'s
+        // refusal; a manifest that names *fewer* systems is not an error to the
+        // format at all, and this is where it becomes one.
+        for system in [SURFACES, SPAWN_POINT, SUN] {
+            if !scene.systems().iter().any(|named| named == system) {
+                return Err(MapError::Missing(system));
+            }
+        }
+
+        let surfaces = rows::<Surface>(&mut world, &ids);
+        let spawn = only(rows::<Spawn>(&mut world, &ids), SPAWN_POINT)?;
+        let sun = only(rows::<Sun>(&mut world, &ids), SUN)?;
+        Ok(Self {
+            env: *scene.env(),
+            surfaces,
+            spawn,
+            sun,
+        })
+    }
+
+    /// The map the directory at `path` holds, or the message to refuse the run
+    /// with.
+    ///
+    /// Both failures read the same way — the path, then what went wrong with it
+    /// — because to a person fixing it "no such file" and "line 3, column 5" are
+    /// the same kind of answer about the same argument.
+    ///
+    /// # Errors
+    ///
+    /// The refusal message, ready to print.
+    pub fn read_dir(path: &str) -> Result<Self, String> {
+        // Rooted at the scene directory itself and read with an empty prefix:
+        // `DirSource` refuses an absolute key and a `..`, so the root is how a
+        // caller says where the scene is.
+        let source = DirSource::at(std::path::PathBuf::from(path));
+        Self::load(&source, Path::new("")).map_err(|error| format!("{path}: {error}"))
+    }
+
+    /// The surfaces, in the order the chunk file spells them — which is the
+    /// order their meshes, their painted rows and their colliders are in.
+    #[must_use]
+    pub fn surfaces(&self) -> &[Surface] {
+        &self.surfaces
+    }
+
+    /// Where the character's **feet** start.
+    #[must_use]
+    pub fn spawn(&self) -> DVec3 {
+        DVec3::from_array(self.spawn.position)
+    }
+
+    /// The yaw the body starts turned to. See [`Spawn::facing`].
+    #[must_use]
+    pub fn facing(&self) -> f64 {
+        self.spawn.facing
+    }
+
+    /// The view the map opens on and the light it sits in, as `env.ron` holds
+    /// them.
+    ///
+    /// The camera half is not read by anything that runs: [`crate::camera`]
+    /// rebuilds a follow camera every frame from wherever the character is, and
+    /// a scene's opening eye is not that. It is written from the same constants
+    /// that camera is built out of, and the writer test is what keeps the two
+    /// from drifting apart.
+    #[must_use]
+    pub fn env(&self) -> &Env {
+        &self.env
+    }
+}
+
+/// One system's rows, in the file's own id order.
+///
+/// Sorted by [`SceneEntityId`](crcbl::scene::scn::SceneEntityId) rather than taken in
+/// storage order, so the map is
+/// built in the order the chunk spells it however the ECS happened to lay the
+/// rows out.
+///
+/// Reached by component type and not by name, which [`World::system_mut`] can do
+/// safely here because the three systems [`Map::load`] registers hold three
+/// different types. The format itself reaches a chunk by name — see
+/// [`crcbl::scene::scn`] — for the case this map does not have: two systems of
+/// one component.
+fn rows<T>(world: &mut World, ids: &IdMap) -> Vec<T>
+where
+    T: Clone + ComponentHash + 'static,
+{
+    let system = world
+        .system_mut::<System<T>>()
+        .expect("the system `Map::load` registered is in the world it registered it in");
+    let mut rows: Vec<_> = system
+        .iter_entities()
+        .map(|(entity, row)| (ids.id(entity), row.clone()))
+        .collect();
+    rows.sort_by_key(|(id, _)| *id);
+    rows.into_iter().map(|(_, row)| row).collect()
+}
+
+/// The single row of a system that has exactly one, or the refusal that names
+/// its file.
+fn only<T>(rows: Vec<T>, system: &'static str) -> Result<T, MapError> {
+    let found = rows.len();
+    rows.into_iter()
+        .next()
+        .filter(|_| found == 1)
+        .ok_or(MapError::NotOne { system, found })
+}
+
+/// The committed scene directory, as a source with no filesystem under it.
+fn built_in_source() -> MemorySource {
+    let mut source = MemorySource::new();
+    for (key, text) in [
+        ("scene.ron", BLOCKOUT_SCENE_RON),
+        ("env.ron", BLOCKOUT_ENV_RON),
+        ("sys/surfaces.ron", BLOCKOUT_SURFACES_RON),
+        ("sys/spawn.ron", BLOCKOUT_SPAWN_RON),
+        ("sys/sun.ron", BLOCKOUT_SUN_RON),
+    ] {
+        // `format!` and not `Path::join`: an asset key is `/`-separated on every
+        // host, and a key joined on Windows would not be one anywhere else.
+        source
+            .insert(
+                Path::new(&format!("{BLOCKOUT}/{key}")),
+                text.as_bytes().to_vec(),
+            )
+            .expect("a nested scene key is a legal asset key");
+    }
+    source
+}
+
+// ---------------------------------------------------------------------------
 // The scene description
 // ---------------------------------------------------------------------------
 
@@ -220,40 +664,13 @@ const MOUND_RINGS: u32 = 32;
 /// See [`MOUND_RINGS`].
 const MOUND_SEGMENTS: u32 = 48;
 
-/// The ground slab — [`SceneDesc::meshes`] slot 0.
-pub const GROUND_MESH: usize = 0;
-/// The step the character can climb.
-pub const LOW_STEP_MESH: usize = 1;
-/// The step it cannot.
-pub const HIGH_STEP_MESH: usize = 2;
-/// The mound it can walk up.
-pub const GENTLE_MOUND_MESH: usize = 3;
-/// The mound it cannot.
-pub const STEEP_MOUND_MESH: usize = 4;
-/// The first of the character's own meshes — [`crate::rig::parts`] in order,
-/// one slot each.
+/// The tint the character itself is painted with, which is the one material row
+/// this map does not read out of a file.
 ///
-/// The rig replaced a single capsule at this slot when
-/// `docs/plan/sample/09-puppet.md`'s milestone 2 arrived. It is a base rather
-/// than a constant per limb because the parts are a `rig` list and this file
-/// should not be a second copy of it.
-pub const CHARACTER_MESH_BASE: usize = 5;
-/// The block on the front of the body, which is how its facing is read.
-pub const NOSE_MESH: usize = CHARACTER_MESH_BASE + rig::PARTS;
-
-/// The ground's material row — [`SceneDesc::materials`] slot 0, and therefore
-/// what an instance placed without a named material would shade through.
-pub const GROUND_MATERIAL: usize = 0;
-/// Blue: the step the character can climb.
-pub const LOW_STEP_MATERIAL: usize = 1;
-/// Orange: the step it cannot.
-pub const HIGH_STEP_MATERIAL: usize = 2;
-/// Green: the mound it can walk up.
-pub const GENTLE_MATERIAL: usize = 3;
-/// Red: the mound it cannot.
-pub const STEEP_MATERIAL: usize = 4;
-/// The character itself.
-pub const BODY_MATERIAL: usize = 5;
+/// The character is not a surface: it is [`crate::rig`]'s boxes and the nose
+/// block, and a `.scn/` that had to carry its colour would be a scene file
+/// describing something no scene of this sample can be without.
+const BODY_TINT: [f32; 3] = [0.82, 0.68, 0.26];
 
 /// What this map reserves, which is a little over what it places.
 ///
@@ -299,82 +716,102 @@ fn painted(tint: [f32; 3]) -> GpuMaterial {
     }
 }
 
-/// Everything this map makes resident: seven meshes, six painted rows and the
-/// grid page they sample.
-///
-/// The mesh and material order is the constants above, in value order; keep
-/// them and this assembly in step, which this module's
-/// `the_constants_name_their_own_meshes` test asserts.
-#[must_use]
-pub fn scene() -> SceneDesc<'static> {
-    let mesh = |label: &'static str, geometry: Geometry<'static>| MeshDesc {
-        label: Cow::Borrowed(label),
-        geometry,
-    };
-    let (_, _, gentle_radius, _) = GENTLE_MOUND;
-    let (_, _, steep_radius, _) = STEEP_MOUND;
-    SceneDesc {
-        meshes: vec![
-            mesh(
-                "ground",
-                platform(
-                    2.0 * GROUND_HALF as f32,
-                    2.0 * GROUND_HALF as f32,
-                    GROUND_THICKNESS as f32,
-                ),
-            ),
-            mesh(
-                "low step",
-                platform(
-                    2.0 * LANE_HALF as f32,
-                    (LOW_STEP_NEAR_Z - LOW_STEP_FAR_Z) as f32,
-                    LOW_STEP_TOP as f32,
-                ),
-            ),
-            mesh(
-                "high step",
-                platform(
-                    2.0 * LANE_HALF as f32,
-                    (LOW_STEP_FAR_Z - HIGH_STEP_FAR_Z) as f32,
-                    HIGH_STEP_TOP as f32,
-                ),
-            ),
-            mesh(
-                "gentle mound",
-                sphere(gentle_radius as f32, MOUND_RINGS, MOUND_SEGMENTS),
-            ),
-            mesh(
-                "steep mound",
-                sphere(steep_radius as f32, MOUND_RINGS, MOUND_SEGMENTS),
-            ),
-        ]
-        .into_iter()
-        .chain(
-            rig::parts()
-                .into_iter()
-                .map(|part| mesh(part.label, part.geometry)),
+impl Map {
+    /// Where the character's own meshes start: one slot per [`crate::rig::parts`]
+    /// entry, in that list's order, straight after the surfaces the file names.
+    ///
+    /// A base rather than a constant per limb, because the parts are a `rig` list
+    /// and this file must not be a second copy of it — and a *method* rather than
+    /// a constant, because how many slots come before it is now the chunk file's
+    /// answer and not this module's.
+    #[must_use]
+    pub fn character_mesh_base(&self) -> usize {
+        self.surfaces.len()
+    }
+
+    /// The block on the front of the body, which is how its facing is read.
+    #[must_use]
+    pub fn nose_mesh(&self) -> usize {
+        self.character_mesh_base() + rig::PARTS
+    }
+
+    /// The character's own material row — this module's `BODY_TINT`, the one
+    /// that is not a surface's.
+    #[must_use]
+    pub fn body_material(&self) -> usize {
+        self.surfaces.len()
+    }
+
+    /// Everything this map makes resident: a mesh per surface, then the
+    /// character's limbs and its nose; a painted row per surface, then the body;
+    /// and the grid page they all sample.
+    ///
+    /// Mesh slot `i` and material slot `i` are surface `i`, in the order
+    /// `sys/surfaces.ron` spells them, which is what
+    /// [`Map::place`] relies on to place each one through its own colour.
+    #[must_use]
+    pub fn scene(&self) -> SceneDesc<'static> {
+        SceneDesc {
+            meshes: self
+                .surfaces
+                .iter()
+                .map(|surface| MeshDesc {
+                    label: Cow::Owned(surface.label.clone()),
+                    geometry: surface.geometry(),
+                })
+                .chain(rig::parts().into_iter().map(|part| MeshDesc {
+                    label: Cow::Borrowed(part.label),
+                    geometry: part.geometry,
+                }))
+                .chain([MeshDesc {
+                    label: Cow::Borrowed("nose"),
+                    geometry: cube(NOSE_EDGE as f32),
+                }])
+                .collect(),
+            materials: self
+                .surfaces
+                .iter()
+                .map(|surface| painted(surface.tint))
+                .chain([painted(BODY_TINT)])
+                .collect(),
+            page: grid_page(),
+            probes: ProbeGrid::default(),
+            capacities: CAPACITIES,
+        }
+    }
+}
+
+impl Surface {
+    /// The geometry this surface is drawn as.
+    ///
+    /// Narrowed to `f32` here and only here: the file and the collider are `f64`
+    /// because the physics world is, and the vertex pool is not.
+    fn geometry(&self) -> Geometry<'static> {
+        match self.shape {
+            Shape::Platform {
+                width,
+                depth,
+                height,
+            } => platform(width as f32, depth as f32, height as f32),
+            Shape::Dome { radius } => sphere(radius as f32, MOUND_RINGS, MOUND_SEGMENTS),
+        }
+    }
+
+    /// Where its origin sits, as the renderer wants it.
+    fn origin(&self) -> Vec3 {
+        Vec3::new(
+            self.position[0] as f32,
+            self.position[1] as f32,
+            self.position[2] as f32,
         )
-        .chain([mesh("nose", cube(NOSE_EDGE as f32))])
-        .collect(),
-        materials: vec![
-            painted([0.30, 0.31, 0.33]),
-            painted([0.16, 0.38, 0.70]),
-            painted([0.72, 0.34, 0.10]),
-            painted([0.18, 0.46, 0.20]),
-            painted([0.62, 0.14, 0.13]),
-            painted([0.82, 0.68, 0.26]),
-        ],
-        page: grid_page(),
-        probes: ProbeGrid::default(),
-        capacities: CAPACITIES,
     }
 }
 
 /// The character, as the renderer holds it: one skinned instance per limb and
 /// the block that says which way it is facing.
 ///
-/// Handed back by [`place`] because everything else on this map is written once
-/// and never again, and these are rewritten every frame from wherever the
+/// Handed back by [`Map::place`] because everything else on this map is written
+/// once and never again, and these are rewritten every frame from wherever the
 /// simulation put the character and whatever pose [`crate::anim`] put it in.
 ///
 /// Not `Copy`, which the capsule it replaced was: a [`SkinnedMesh`] owns two
@@ -384,6 +821,15 @@ pub fn scene() -> SceneDesc<'static> {
 pub struct Character {
     parts: Vec<Limb>,
     nose: InstanceHandle,
+    /// The mesh slot the nose was made resident in, and the material row the
+    /// whole body shades through.
+    ///
+    /// Carried rather than recomputed, because both are a function of how many
+    /// surfaces the *loaded* map has — see [`Map::nose_mesh`] — and a character
+    /// that read them from a different map than the one it was placed on would
+    /// draw somebody else's mesh in somebody else's colour.
+    nose_mesh: usize,
+    body_material: usize,
 }
 
 /// One drawn limb: its reserved region of the vertex pool, the instance that
@@ -423,7 +869,7 @@ impl Character {
                 limb.instance,
                 &SkinnedInstanceDesc {
                     mesh: &limb.mesh,
-                    material: BODY_MATERIAL,
+                    material: self.body_material,
                     transform: body,
                 },
             );
@@ -431,8 +877,8 @@ impl Character {
         renderer.set_instance(
             self.nose,
             &InstanceDesc {
-                mesh: NOSE_MESH,
-                material: BODY_MATERIAL,
+                mesh: self.nose_mesh,
+                material: self.body_material,
                 // Just clear of the torso, on the body's own forward axis — so
                 // this is where the rotation above becomes visible.
                 transform: body
@@ -527,96 +973,83 @@ impl From<MeshPoolError> for PlaceError {
     }
 }
 
-/// Places every object on the map and hands back the character.
-///
-/// # Errors
-///
-/// [`PlaceError`] if either pool is smaller than this map — see that type.
-/// Anything reserved before the refusal is given back, so a caller that reports
-/// the error and tears the renderer down leaks nothing.
-pub fn place(renderer: &mut ForwardRenderer) -> Result<Character, PlaceError> {
-    let at =
-        |x: f64, y: f64, z: f64| Mat4::from_translation(Vec3::new(x as f32, y as f32, z as f32));
-    let (gentle_x, gentle_z, gentle_radius, gentle_summit) = GENTLE_MOUND;
-    let (steep_x, steep_z, steep_radius, steep_summit) = STEEP_MOUND;
+impl Map {
+    /// Places every object on the map and hands back the character.
+    ///
+    /// Surface `i` is placed through mesh slot `i` and painted row `i`, which is
+    /// what [`Map::scene`] made resident in that order.
+    ///
+    /// # Errors
+    ///
+    /// [`PlaceError`] if either pool is smaller than this map — see that type.
+    /// Anything reserved before the refusal is given back, so a caller that
+    /// reports the error and tears the renderer down leaks nothing.
+    pub fn place(&self, renderer: &mut ForwardRenderer) -> Result<Character, PlaceError> {
+        // A `platform` rises from its own origin and a `sphere` is centred on
+        // one, so the drop that puts the ground's top at `y = 0` and the sink
+        // that turns a sphere into a mound are both in the position the chunk
+        // file holds — there is nothing left to do here but translate.
+        for (mesh, surface) in self.surfaces.iter().enumerate() {
+            renderer.add_instance(&InstanceDesc {
+                mesh,
+                material: mesh,
+                transform: Mat4::from_translation(surface.origin()),
+            })?;
+        }
 
-    for (mesh, material, transform) in [
-        // A `platform` rises from `y = 0`, so the ground is dropped by its own
-        // thickness to put its top there.
-        (
-            GROUND_MESH,
-            GROUND_MATERIAL,
-            at(0.0, -GROUND_THICKNESS, 0.0),
-        ),
-        (
-            LOW_STEP_MESH,
-            LOW_STEP_MATERIAL,
-            at(0.0, 0.0, 0.5 * (LOW_STEP_NEAR_Z + LOW_STEP_FAR_Z)),
-        ),
-        (
-            HIGH_STEP_MESH,
-            HIGH_STEP_MATERIAL,
-            at(0.0, 0.0, 0.5 * (LOW_STEP_FAR_Z + HIGH_STEP_FAR_Z)),
-        ),
-        // A sphere is centred on its origin, so a mound whose summit is
-        // `summit` above the ground has its centre a radius below that.
-        (
-            GENTLE_MOUND_MESH,
-            GENTLE_MATERIAL,
-            at(gentle_x, gentle_summit - gentle_radius, gentle_z),
-        ),
-        (
-            STEEP_MOUND_MESH,
-            STEEP_MATERIAL,
-            at(steep_x, steep_summit - steep_radius, steep_z),
-        ),
-    ] {
-        renderer.add_instance(&InstanceDesc {
-            mesh,
-            material,
-            transform,
-        })?;
-    }
-
-    // The character last, and at the identity: `Character::place_at` writes it
-    // all before the first frame is drawn, from the simulation's own position
-    // rather than from a copy of the spawn kept here.
-    //
-    // A limb is *not* also added as an ordinary instance. It would be drawn
-    // twice — once deformed and once at the bind pose, in the same place — and
-    // the second copy is the one that would still be there if the dispatch
-    // stopped running.
-    let mut parts = Vec::with_capacity(rig::PARTS);
-    for (index, part) in rig::parts().into_iter().enumerate() {
-        let placed = reserve_limb(renderer, CHARACTER_MESH_BASE + index, part.bindings);
-        match placed {
-            Ok(limb) => parts.push(limb),
-            Err(error) => {
-                for limb in parts {
-                    renderer.release_skinned(limb.mesh);
+        // The character last, and at the identity: `Character::place_at` writes
+        // it all before the first frame is drawn, from the simulation's own
+        // position rather than from a copy of the spawn kept here.
+        //
+        // A limb is *not* also added as an ordinary instance. It would be drawn
+        // twice — once deformed and once at the bind pose, in the same place —
+        // and the second copy is the one that would still be there if the
+        // dispatch stopped running.
+        let body_material = self.body_material();
+        let mut parts = Vec::with_capacity(rig::PARTS);
+        for (index, part) in rig::parts().into_iter().enumerate() {
+            let placed = reserve_limb(
+                renderer,
+                self.character_mesh_base() + index,
+                body_material,
+                part.bindings,
+            );
+            match placed {
+                Ok(limb) => parts.push(limb),
+                Err(error) => {
+                    for limb in parts {
+                        renderer.release_skinned(limb.mesh);
+                    }
+                    return Err(error);
                 }
-                return Err(error);
             }
         }
+        let nose_mesh = self.nose_mesh();
+        let nose = renderer.add_instance(&InstanceDesc {
+            mesh: nose_mesh,
+            material: body_material,
+            transform: Mat4::IDENTITY,
+        })?;
+        Ok(Character {
+            parts,
+            nose,
+            nose_mesh,
+            body_material,
+        })
     }
-    let nose = renderer.add_instance(&InstanceDesc {
-        mesh: NOSE_MESH,
-        material: BODY_MATERIAL,
-        transform: Mat4::IDENTITY,
-    })?;
-    Ok(Character { parts, nose })
 }
 
 /// Reserves one limb's two vertex-pool runs and the instance that draws them.
 fn reserve_limb(
     renderer: &mut ForwardRenderer,
     mesh: usize,
+    material: usize,
     bindings: Vec<SkinBinding>,
 ) -> Result<Limb, PlaceError> {
     let skinned = renderer.reserve_skinned(mesh)?;
     let instance = renderer.add_skinned_instance(&SkinnedInstanceDesc {
         mesh: &skinned,
-        material: BODY_MATERIAL,
+        material,
         transform: Mat4::IDENTITY,
     });
     match instance {
@@ -636,47 +1069,39 @@ fn reserve_limb(
 // The collision side
 // ---------------------------------------------------------------------------
 
-/// The same map, as the colliders the character sweeps against.
-///
-/// Every one of them is written from the constants the meshes above are written
-/// from, which is the whole reason those constants exist.
-#[must_use]
-pub fn world() -> PhysicsWorld {
-    let mut world = PhysicsWorld::new();
-    // A `BoxCollider` is a centre and half-extents; each of the three below is
-    // the same cuboid the matching `platform` mesh draws.
-    world.add_box(BoxCollider::new(
-        DVec3::new(0.0, -0.5 * GROUND_THICKNESS, 0.0),
-        DVec3::new(GROUND_HALF, 0.5 * GROUND_THICKNESS, GROUND_HALF),
-    ));
-    world.add_box(BoxCollider::new(
-        DVec3::new(
-            0.0,
-            0.5 * LOW_STEP_TOP,
-            0.5 * (LOW_STEP_NEAR_Z + LOW_STEP_FAR_Z),
-        ),
-        DVec3::new(
-            LANE_HALF,
-            0.5 * LOW_STEP_TOP,
-            0.5 * (LOW_STEP_NEAR_Z - LOW_STEP_FAR_Z),
-        ),
-    ));
-    world.add_box(BoxCollider::new(
-        DVec3::new(
-            0.0,
-            0.5 * HIGH_STEP_TOP,
-            0.5 * (LOW_STEP_FAR_Z + HIGH_STEP_FAR_Z),
-        ),
-        DVec3::new(
-            LANE_HALF,
-            0.5 * HIGH_STEP_TOP,
-            0.5 * (LOW_STEP_FAR_Z - HIGH_STEP_FAR_Z),
-        ),
-    ));
-    for (x, z, radius, summit) in [GENTLE_MOUND, STEEP_MOUND] {
-        world.add_sphere(Sphere::new(DVec3::new(x, summit - radius, z), radius));
+impl Map {
+    /// The same map, as the colliders the character sweeps against.
+    ///
+    /// Every one of them comes out of the same [`Surface`] row its mesh does, so
+    /// there is one set of numbers per object and both halves read it: a
+    /// [`Shape::Platform`] is a [`BoxCollider`] over the cuboid `platform` draws,
+    /// and a [`Shape::Dome`] is the analytic [`Sphere`] its tessellation
+    /// approximates.
+    #[must_use]
+    pub fn world(&self) -> PhysicsWorld {
+        let mut world = PhysicsWorld::new();
+        for surface in &self.surfaces {
+            let origin = DVec3::from_array(surface.position);
+            match surface.shape {
+                // A `BoxCollider` is a centre and half-extents; a `platform`
+                // stands *on* its origin, so the centre is half a height up.
+                Shape::Platform {
+                    width,
+                    depth,
+                    height,
+                } => {
+                    world.add_box(BoxCollider::new(
+                        origin + DVec3::new(0.0, 0.5 * height, 0.0),
+                        DVec3::new(0.5 * width, 0.5 * height, 0.5 * depth),
+                    ));
+                }
+                Shape::Dome { radius } => {
+                    world.add_sphere(Sphere::new(origin, radius));
+                }
+            }
+        }
+        world
     }
-    world
 }
 
 /// The steepest slope anywhere on a mound, in **radians**: the angle its surface
@@ -701,7 +1126,17 @@ pub fn rim_angle(radius: f64, summit: f64) -> f64 {
 ///
 /// Above 1.0, like every other sun in this engine: the scene target is
 /// `Rgba16Float` and the tonemap pass is what brings it back.
-const SUN_INTENSITY: f32 = 2.2;
+pub const SUN_INTENSITY: f32 = 2.2;
+
+/// The sun's own colour, before [`SUN_INTENSITY`]: barely warm daylight.
+pub const SUN_COLOR: [f32; 3] = [1.0, 0.97, 0.90];
+
+/// The light a face no sun reaches is left with, linear RGB — `env.ron`'s
+/// `ambient`, and what [`Map::sun`] hands the renderer as such.
+///
+/// Small and cool, standing for the sky. A black face would make every shadow a
+/// measurement of an unpainted frame.
+pub const SUN_AMBIENT: [f32; 3] = [0.10, 0.11, 0.14];
 
 /// How high the sun stands, as the `+Y` component of the unit vector toward it.
 ///
@@ -709,7 +1144,7 @@ const SUN_INTENSITY: f32 = 2.2;
 /// is a shape under the thing casting it rather than a stripe across the whole
 /// map, low enough that it is a shape at all. A sun directly overhead would put
 /// the character's shadow under its own feet, where nothing can see it.
-const SUN_ELEVATION: f32 = 0.78;
+pub const SUN_ELEVATION: f32 = 0.78;
 
 /// How long the sun takes to come back round to where it started, in seconds.
 ///
@@ -728,32 +1163,36 @@ const SUN_ELEVATION: f32 = 0.78;
 /// answer to the same question.
 pub const SUN_PERIOD: f64 = 45.0;
 
-/// The sun the map is lit and shadowed by, `seconds` into the run.
-///
-/// **The direction is the vector *towards* the light.** It stands at
-/// a fixed `SUN_ELEVATION` and swings once round the compass every
-/// [`SUN_PERIOD`], so
-/// the character's shadow sweeps across the ground it is standing on.
-///
-/// A pure function of the time, and the time is the **simulation's** rather
-/// than a wall clock — see [`crate::game`] — so a frame at `t` is the same frame
-/// on every machine and a paused demo's shadows stop where they are.
-///
-/// The ambient is small and cool, standing for the sky: large enough that a face
-/// no light reaches is dark rather than black, since a black face makes every
-/// shadow a measurement of an unpainted frame.
-#[must_use]
-pub fn sun(seconds: f64) -> DirectionalLight {
-    let angle = core::f64::consts::TAU * (seconds / SUN_PERIOD);
-    #[allow(clippy::cast_possible_truncation)]
-    let (sin, cos) = (angle.sin() as f32, angle.cos() as f32);
-    // The horizontal part is what turns; the elevation is fixed, so the
-    // normalisation below is a constant and the sun neither rises nor sets.
-    let flat = (1.0 - SUN_ELEVATION * SUN_ELEVATION).sqrt();
-    DirectionalLight {
-        direction: Vec3::new(flat * sin, SUN_ELEVATION, flat * cos),
-        color: Vec3::new(1.0, 0.97, 0.90) * SUN_INTENSITY,
-        ambient: Vec3::new(0.10, 0.11, 0.14),
+impl Map {
+    /// The sun the map is lit and shadowed by, `seconds` into the run.
+    ///
+    /// **The direction is the vector *towards* the light.** It stands at the
+    /// file's own fixed elevation and swings once round the compass every
+    /// [`Sun::period`], so the character's shadow sweeps across the ground it is
+    /// standing on.
+    ///
+    /// A pure function of the time, and the time is the **simulation's** rather
+    /// than a wall clock — see [`crate::game`] — so a frame at `t` is the same
+    /// frame on every machine and a paused demo's shadows stop where they are.
+    ///
+    /// The ambient is `env.ron`'s, standing for the sky: small and cool, and
+    /// large enough that a face no light reaches is dark rather than black,
+    /// since a black face makes every shadow a measurement of an unpainted
+    /// frame.
+    #[must_use]
+    pub fn sun(&self, seconds: f64) -> DirectionalLight {
+        let sun = self.sun;
+        let angle = core::f64::consts::TAU * (seconds / sun.period);
+        #[allow(clippy::cast_possible_truncation)]
+        let (sin, cos) = (angle.sin() as f32, angle.cos() as f32);
+        // The horizontal part is what turns; the elevation is fixed, so the
+        // normalisation below is a constant and the sun neither rises nor sets.
+        let flat = (1.0 - sun.elevation * sun.elevation).sqrt();
+        DirectionalLight {
+            direction: Vec3::new(flat * sin, sun.elevation, flat * cos),
+            color: Vec3::from_array(sun.color) * sun.intensity,
+            ambient: Vec3::from_array(self.env.ambient),
+        }
     }
 }
 
@@ -761,56 +1200,388 @@ pub fn sun(seconds: f64) -> DirectionalLight {
 mod tests {
     use super::*;
 
+    use crcbl::phys::Aabb;
+    use crcbl::scene::scn::EnvCamera;
+
+    /// **The blockout as this module built it before it was a file**, written in
+    /// the same expressions the old `scene()` and `world()` used and in the same
+    /// order.
+    ///
+    /// This is the truth the committed directory is held to, from both sides:
+    /// `the_committed_map_is_what_the_writer_writes` generates the five files out
+    /// of it, and `the_committed_map_parses_to_the_blockout_this_module_builds`
+    /// reads them back. Written from the constants rather than as literals, so a
+    /// change to one of them moves the map and the expectation together — which
+    /// is what those constants are for.
+    fn the_blockout() -> Vec<Surface> {
+        let (gentle_x, gentle_z, gentle_radius, gentle_summit) = GENTLE_MOUND;
+        let (steep_x, steep_z, steep_radius, steep_summit) = STEEP_MOUND;
+        vec![
+            // A `platform` rises from `y = 0`, so the ground is dropped by its
+            // own thickness to put its top there.
+            Surface {
+                label: "ground".to_string(),
+                position: [0.0, -GROUND_THICKNESS, 0.0],
+                shape: Shape::Platform {
+                    width: 2.0 * GROUND_HALF,
+                    depth: 2.0 * GROUND_HALF,
+                    height: GROUND_THICKNESS,
+                },
+                tint: [0.30, 0.31, 0.33],
+            },
+            Surface {
+                label: "low step".to_string(),
+                position: [0.0, 0.0, 0.5 * (LOW_STEP_NEAR_Z + LOW_STEP_FAR_Z)],
+                shape: Shape::Platform {
+                    width: 2.0 * LANE_HALF,
+                    depth: LOW_STEP_NEAR_Z - LOW_STEP_FAR_Z,
+                    height: LOW_STEP_TOP,
+                },
+                tint: [0.16, 0.38, 0.70],
+            },
+            Surface {
+                label: "high step".to_string(),
+                position: [0.0, 0.0, 0.5 * (LOW_STEP_FAR_Z + HIGH_STEP_FAR_Z)],
+                shape: Shape::Platform {
+                    width: 2.0 * LANE_HALF,
+                    depth: LOW_STEP_FAR_Z - HIGH_STEP_FAR_Z,
+                    height: HIGH_STEP_TOP,
+                },
+                tint: [0.72, 0.34, 0.10],
+            },
+            // A sphere is centred on its origin, so a mound whose summit is
+            // `summit` above the ground has its centre a radius below that.
+            Surface {
+                label: "gentle mound".to_string(),
+                position: [gentle_x, gentle_summit - gentle_radius, gentle_z],
+                shape: Shape::Dome {
+                    radius: gentle_radius,
+                },
+                tint: [0.18, 0.46, 0.20],
+            },
+            Surface {
+                label: "steep mound".to_string(),
+                position: [steep_x, steep_summit - steep_radius, steep_z],
+                shape: Shape::Dome {
+                    radius: steep_radius,
+                },
+                tint: [0.62, 0.14, 0.13],
+            },
+        ]
+    }
+
+    /// The environment the committed `env.ron` holds.
+    ///
+    /// The ambient is [`SUN_AMBIENT`], which [`Map::sun`] reads back out of here
+    /// and hands the renderer — so this half of the file is load-bearing and a
+    /// change to it changes the picture.
+    ///
+    /// The camera is not read by anything that runs: [`crate::camera`] rebuilds a
+    /// follow camera every frame around wherever the character is. What it is
+    /// written from is that camera's own standoff and focus height at the spawn,
+    /// **with the pitch levelled** — [`crate::camera::START_PITCH`] would put a
+    /// sine in a file that is compared byte for byte on three platforms, and
+    /// `f32::sin` is the host's libm rather than something Rust pins. So the row
+    /// is "behind the character at chest height", exactly, and the two constants
+    /// it is made of cannot drift away from the camera that uses them.
+    fn env() -> Env {
+        let focus = Vec3::new(
+            SPAWN.x as f32,
+            SPAWN.y as f32 + crate::camera::FOCUS_HEIGHT,
+            SPAWN.z as f32,
+        );
+        Env {
+            camera: EnvCamera {
+                position: (focus + Vec3::Z * crate::camera::DISTANCE).to_array(),
+                look_at: focus.to_array(),
+            },
+            ambient: SUN_AMBIENT,
+        }
+    }
+
+    /// The spawn the committed `sys/spawn.ron` holds: [`SPAWN`], facing the way
+    /// `crate::game`'s stage starts the body turned.
+    const fn spawn() -> Spawn {
+        Spawn {
+            position: [SPAWN.x, SPAWN.y, SPAWN.z],
+            facing: 0.0,
+        }
+    }
+
+    /// The sun the committed `sys/sun.ron` holds, from the constants it was
+    /// written out of.
+    const fn sun() -> Sun {
+        Sun {
+            elevation: SUN_ELEVATION,
+            color: SUN_COLOR,
+            intensity: SUN_INTENSITY,
+            period: SUN_PERIOD,
+        }
+    }
+
+    /// The whole blockout in a world of its own, ready to be written out.
+    ///
+    /// Ids are handed out in manifest order — the surfaces, then the spawn, then
+    /// the sun — because that is the order [`Scene::load`] reads them back in,
+    /// and a writer that numbered them any other way would produce a file that
+    /// does not round-trip.
+    fn generated() -> (Scene, IdMap, World) {
+        let mut world = World::new();
+        world.register_system(Box::new(System::<Surface>::new(SURFACES)));
+        world.register_system(Box::new(System::<Spawn>::new(SPAWN_POINT)));
+        world.register_system(Box::new(System::<Sun>::new(SUN)));
+        let mut ids = IdMap::new();
+
+        let surfaces: Vec<_> = the_blockout()
+            .into_iter()
+            .map(|surface| {
+                let entity = world.spawn();
+                ids.assign(entity);
+                (entity, surface)
+            })
+            .collect();
+        let spawn_entity = world.spawn();
+        ids.assign(spawn_entity);
+        let sun_entity = world.spawn();
+        ids.assign(sun_entity);
+
+        let system = world
+            .system_mut::<System<Surface>>()
+            .expect("just registered");
+        for (entity, surface) in surfaces {
+            system.attach(entity, surface);
+        }
+        world
+            .system_mut::<System<Spawn>>()
+            .expect("just registered")
+            .attach(spawn_entity, spawn());
+        world
+            .system_mut::<System<Sun>>()
+            .expect("just registered")
+            .attach(sun_entity, sun());
+
+        let scene = Scene::new(
+            "blockout",
+            vec![
+                SURFACES.to_string(),
+                SPAWN_POINT.to_string(),
+                SUN.to_string(),
+            ],
+            env(),
+        );
+        (scene, ids, world)
+    }
+
+    /// The codecs a puppet map is read and written through.
+    fn codecs() -> Vec<Box<dyn SystemChunk>> {
+        vec![
+            chunk_of::<Surface>(SURFACES),
+            chunk_of::<Spawn>(SPAWN_POINT),
+            chunk_of::<Sun>(SUN),
+        ]
+    }
+
+    /// Asserts a committed file is what the writer wrote, and says *where* it
+    /// stopped agreeing when it is not.
+    ///
+    /// Line by line rather than as two strings: a chunk file is several lines per
+    /// row, and an `assert_eq!` over the pair prints both in full for one changed
+    /// coordinate.
+    fn assert_committed(key: &str, written: &str, committed: &str) {
+        if written == committed {
+            return;
+        }
+        match written
+            .lines()
+            .zip(committed.lines())
+            .position(|(written, committed)| written != committed)
+        {
+            Some(line) => panic!(
+                "{key} line {}: the writer writes `{}`, the file has `{}`",
+                line + 1,
+                written.lines().nth(line).expect("the line just compared"),
+                committed.lines().nth(line).expect("the line just compared"),
+            ),
+            None => panic!(
+                "{key}: the writer writes {} lines, the file has {}",
+                written.lines().count(),
+                committed.lines().count(),
+            ),
+        }
+    }
+
+    /// **The committed map is exactly what the writer writes** from the constants
+    /// above, which is what lets the blockout live in a file without a second
+    /// copy of it in code.
+    ///
+    /// Generated once by [`Scene::save`] and maintained that way: ron prints a
+    /// float through Rust's shortest-round-trip `Display`, which round-trips a
+    /// *parsed* value and not a typed one, so a hand-edited coordinate is a
+    /// failure here rather than a map that quietly moved.
+    ///
+    /// Byte for byte, on every platform: `.gitattributes` pins `*.ron` to LF, so
+    /// a Windows checkout hands `include_str!` the bytes the repository holds and
+    /// nothing here has to fold a CRLF the transport might have added.
+    #[test]
+    fn the_committed_map_is_what_the_writer_writes() {
+        let (scene, ids, mut world) = generated();
+        let files = scene
+            .save(&mut world, &ids, &codecs())
+            .expect("a generated blockout is writable");
+
+        assert_committed("scene.ron", &files["scene.ron"], BLOCKOUT_SCENE_RON);
+        assert_committed("env.ron", &files["env.ron"], BLOCKOUT_ENV_RON);
+        assert_committed(
+            "sys/surfaces.ron",
+            &files["sys/surfaces.ron"],
+            BLOCKOUT_SURFACES_RON,
+        );
+        assert_committed("sys/spawn.ron", &files["sys/spawn.ron"], BLOCKOUT_SPAWN_RON);
+        assert_committed("sys/sun.ron", &files["sys/sun.ron"], BLOCKOUT_SUN_RON);
+        assert_eq!(
+            files.keys().collect::<Vec<_>>(),
+            [
+                "env.ron",
+                "scene.ron",
+                "sys/spawn.ron",
+                "sys/sun.ron",
+                "sys/surfaces.ron",
+            ],
+            "the manifest's files and nothing else"
+        );
+        for (key, text) in &files {
+            assert!(!text.contains('\r'), "the newline is pinned in {key}");
+        }
+    }
+
+    /// The other half of the same claim: what the committed files *parse* to is
+    /// the blockout this module used to build in code. A writer that agreed with
+    /// itself while dropping a field would pass the byte comparison above.
+    #[test]
+    fn the_committed_map_parses_to_the_blockout_this_module_builds() {
+        let map = Map::built_in();
+        assert_eq!(map.surfaces(), the_blockout());
+        assert_eq!(map.spawn(), SPAWN);
+        assert_eq!(map.facing(), 0.0);
+        assert_eq!(map.env(), &env());
+        // The sun's row, through the light it actually produces: the ambient in
+        // it is `env.ron`'s and the rest is `sys/sun.ron`'s, and this is the one
+        // place both are read at once.
+        let light = map.sun(0.0);
+        assert_eq!(light.direction.y, SUN_ELEVATION);
+        assert_eq!(light.color, Vec3::from_array(SUN_COLOR) * SUN_INTENSITY);
+        assert_eq!(light.ambient, Vec3::from_array(SUN_AMBIENT));
+    }
+
+    /// **The colliders the file produces are the ones this module used to add.**
+    ///
+    /// The old `world()` body, kept verbatim below, is the expectation — so this
+    /// is the check that the [`Shape`] rows were transcribed correctly, which no
+    /// comparison between the file and [`the_blockout`] could make: both of those
+    /// are the same transcription.
+    ///
+    /// Compared as AABBs read back out of each world, which is the only shape a
+    /// [`PhysicsWorld`] hands back. A box and a sphere with the same bounds would
+    /// pass this and fail `the_committed_map_parses_to_the_blockout_this_module_builds`,
+    /// which pins the shape.
+    #[test]
+    fn the_colliders_are_the_ones_this_module_used_to_add() {
+        /// `world()` as it stood before the map became a file.
+        fn the_old_colliders() -> PhysicsWorld {
+            let mut world = PhysicsWorld::new();
+            world.add_box(BoxCollider::new(
+                DVec3::new(0.0, -0.5 * GROUND_THICKNESS, 0.0),
+                DVec3::new(GROUND_HALF, 0.5 * GROUND_THICKNESS, GROUND_HALF),
+            ));
+            world.add_box(BoxCollider::new(
+                DVec3::new(
+                    0.0,
+                    0.5 * LOW_STEP_TOP,
+                    0.5 * (LOW_STEP_NEAR_Z + LOW_STEP_FAR_Z),
+                ),
+                DVec3::new(
+                    LANE_HALF,
+                    0.5 * LOW_STEP_TOP,
+                    0.5 * (LOW_STEP_NEAR_Z - LOW_STEP_FAR_Z),
+                ),
+            ));
+            world.add_box(BoxCollider::new(
+                DVec3::new(
+                    0.0,
+                    0.5 * HIGH_STEP_TOP,
+                    0.5 * (LOW_STEP_FAR_Z + HIGH_STEP_FAR_Z),
+                ),
+                DVec3::new(
+                    LANE_HALF,
+                    0.5 * HIGH_STEP_TOP,
+                    0.5 * (LOW_STEP_FAR_Z - HIGH_STEP_FAR_Z),
+                ),
+            ));
+            for (x, z, radius, summit) in [GENTLE_MOUND, STEEP_MOUND] {
+                world.add_sphere(Sphere::new(DVec3::new(x, summit - radius, z), radius));
+            }
+            world
+        }
+
+        /// Every collider's bounds, in an order neither world chose.
+        fn bounds(world: &mut PhysicsWorld) -> Vec<[f64; 6]> {
+            let everything = Aabb::new(DVec3::splat(-1.0e9), DVec3::splat(1.0e9));
+            let ids = world.overlap_aabb(&everything);
+            let mut bounds: Vec<[f64; 6]> = ids
+                .into_iter()
+                .map(|id| world.aabb_of(id).expect("an id the world just returned"))
+                .map(|aabb| {
+                    [
+                        aabb.min.x, aabb.min.y, aabb.min.z, aabb.max.x, aabb.max.y, aabb.max.z,
+                    ]
+                })
+                .collect();
+            bounds.sort_by(|a, b| a.partial_cmp(b).expect("no map coordinate is NaN"));
+            bounds
+        }
+
+        let mut old = the_old_colliders();
+        let mut new = Map::built_in().world();
+        assert_eq!(old.len(), 5, "the blockout is five colliders");
+        assert_eq!(bounds(&mut new), bounds(&mut old));
+    }
+
     /// **Every mesh the description makes resident is placed, and every row it
-    /// declares is named**, in the order the constants say.
+    /// declares is named**, in the order the chunk file spells them.
     ///
     /// A mesh nothing places is memory taken for geometry no frame draws, and a
     /// row nothing names is a colour nobody can see — both of which leave a
     /// perfectly plausible picture.
     #[test]
-    fn the_constants_name_their_own_meshes() {
-        let scene = scene();
+    fn the_surfaces_name_their_own_meshes() {
+        let map = Map::built_in();
+        let scene = map.scene();
         let labels: Vec<&str> = scene.meshes.iter().map(|m| m.label.as_ref()).collect();
         assert_eq!(
-            [
-                GROUND_MESH,
-                LOW_STEP_MESH,
-                HIGH_STEP_MESH,
-                GENTLE_MOUND_MESH,
-                STEEP_MOUND_MESH,
-                NOSE_MESH,
-            ]
-            .map(|mesh| labels[mesh]),
+            labels[..map.character_mesh_base()],
             [
                 "ground",
                 "low step",
                 "high step",
                 "gentle mound",
                 "steep mound",
-                "nose",
             ],
         );
-        // And the character's own slots are `crate::rig`'s parts, in its order:
-        // `CHARACTER_MESH_BASE` is a base rather than a constant per limb, so
+        // The character's own slots are `crate::rig`'s parts, in its order:
+        // `Map::character_mesh_base` is a base rather than a slot per limb, so
         // this is what says the two lists have not drifted apart.
         assert_eq!(
-            labels[CHARACTER_MESH_BASE..CHARACTER_MESH_BASE + rig::PARTS],
+            labels[map.character_mesh_base()..map.nose_mesh()],
             rig::parts().map(|part| part.label)[..],
         );
-        assert_eq!(scene.meshes.len(), NOSE_MESH + 1);
+        assert_eq!(labels[map.nose_mesh()], "nose");
+        assert_eq!(scene.meshes.len(), map.nose_mesh() + 1);
         assert_eq!(
             scene.materials.len(),
-            6,
-            "six painted rows, one per constant",
+            map.body_material() + 1,
+            "one painted row per surface, and the body",
         );
-        for row in [
-            GROUND_MATERIAL,
-            LOW_STEP_MATERIAL,
-            HIGH_STEP_MATERIAL,
-            GENTLE_MATERIAL,
-            STEEP_MATERIAL,
-            BODY_MATERIAL,
-        ] {
+        for row in 0..scene.materials.len() {
             assert_eq!(
                 scene.materials[row].tiling,
                 GpuMaterial::TILING_PHYSICAL,
@@ -865,8 +1636,8 @@ mod tests {
 
     /// **The character is spawned on flat ground with the lane ahead of it**,
     /// which is what the browser gate's held key depends on: it walks from here
-    /// into the first step and then into the second, and a spawn on either
-    /// mound or already on a step would take that script's meaning away.
+    /// into the first step and then into the second, and a spawn on either mound
+    /// or already on a step would take that script's meaning away.
     #[test]
     fn the_spawn_is_on_the_flat_with_the_lane_in_front_of_it() {
         // Both halves are constants, so the compiler is what checks the first:
@@ -884,8 +1655,8 @@ mod tests {
         }
     }
 
-    /// **The drawn character is the size of the capsule that moves it.** The
-    /// mesh is built from this module's constants and the controller from
+    /// **The drawn character is the size of the capsule that moves it.** The mesh
+    /// is built from this module's constants and the controller from
     /// [`crcbl::phys::CharacterConfig`], so nothing but this holds the two
     /// together — and a mismatch is a picture that is wrong about where the
     /// character's feet are, which no assertion about the simulation can see.
@@ -904,9 +1675,10 @@ mod tests {
     /// one without the light ever leaving the map in the dark.
     #[test]
     fn the_sun_swings_round_without_changing_height() {
-        let start = sun(0.0);
+        let map = Map::built_in();
+        let start = map.sun(0.0);
         assert!((start.direction.length() - 1.0).abs() < 1e-6);
-        let quarter = sun(SUN_PERIOD / 4.0);
+        let quarter = map.sun(SUN_PERIOD / 4.0);
         assert!(
             (quarter.direction.y - start.direction.y).abs() < 1e-6,
             "the sun rose from {} to {}",
@@ -918,7 +1690,7 @@ mod tests {
             "a quarter turn moved the sun by {}",
             (quarter.direction - start.direction).length(),
         );
-        let round = sun(SUN_PERIOD);
+        let round = map.sun(SUN_PERIOD);
         assert!(
             (round.direction - start.direction).length() < 1e-5,
             "a whole period did not come back to where it started",
@@ -926,16 +1698,17 @@ mod tests {
     }
 
     /// **The colliders are the boxes the meshes draw.** Read back out of the
-    /// world rather than restated: a step whose collider sat a decimetre from
-    /// its mesh would look walkable and refuse, or refuse nothing and stop the
+    /// world rather than restated: a step whose collider sat a decimetre from its
+    /// mesh would look walkable and refuse, or refuse nothing and stop the
     /// character in mid air.
     #[test]
     fn every_lane_surface_has_its_own_collider_where_its_mesh_is() {
-        let mut world = world();
+        let map = Map::built_in();
+        let mut world = map.world();
         let config = crcbl::phys::CharacterConfig::default();
         let mut character = crcbl::phys::CharacterController::new(
             config,
-            SPAWN + DVec3::Y * (config.radius + config.half_height),
+            map.spawn() + DVec3::Y * (config.radius + config.half_height),
         );
         character.move_and_slide(&mut world, DVec3::ZERO);
         assert!(character.is_grounded(), "the spawn has no floor under it",);
@@ -947,5 +1720,88 @@ mod tests {
             "the character settled at {} rather than on the ground",
             feet(&character),
         );
+    }
+
+    /// A directory with no `scene.ron` is refused by the key that is missing, and
+    /// the key is spelled the way `--scene` points at it — the scene directory
+    /// *is* the root, so the header is `scene.ron` and not
+    /// `blockout.scn/scene.ron`. A loader looking under the built-in name would
+    /// report a file the caller never named.
+    #[test]
+    fn a_directory_with_no_header_is_refused_by_the_missing_key() {
+        let dir = std::env::temp_dir().join(format!("puppet-empty-{}.scn", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the temp dir is writable");
+        let message = Map::read_dir(dir.to_str().expect("utf-8"))
+            .expect_err("a directory with no scene.ron is not a map");
+        assert!(message.contains("scene.ron"), "{message}");
+        assert!(message.contains("path not found"), "{message}");
+        assert!(
+            !message.contains(BLOCKOUT),
+            "the key must be the caller's, not the built-in map's: {message}"
+        );
+    }
+
+    /// **A scene that is not a puppet map is refused by the chunk it is missing.**
+    ///
+    /// A manifest naming a system with no codec is the format's own refusal; a
+    /// manifest naming *fewer* systems is not, and without this check it would
+    /// load as a map with no ground, no spawn and no sun — a run that starts and
+    /// draws an empty world.
+    #[test]
+    fn a_manifest_that_leaves_out_a_chunk_is_refused_by_its_name() {
+        let dir = std::env::temp_dir().join(format!("puppet-thin-{}.scn", std::process::id()));
+        std::fs::create_dir_all(dir.join("sys")).expect("the temp dir is writable");
+        std::fs::write(
+            dir.join("scene.ron"),
+            "Scene(format: 0, name: \"thin\", systems: [\"surfaces\", \"spawn\"])",
+        )
+        .expect("the temp dir is writable");
+        std::fs::write(dir.join("env.ron"), BLOCKOUT_ENV_RON).expect("the temp dir is writable");
+        std::fs::write(dir.join("sys").join("surfaces.ron"), BLOCKOUT_SURFACES_RON)
+            .expect("the temp dir is writable");
+        std::fs::write(dir.join("sys").join("spawn.ron"), BLOCKOUT_SPAWN_RON)
+            .expect("the temp dir is writable");
+
+        let message = Map::read_dir(dir.to_str().expect("utf-8"))
+            .expect_err("a scene with no sun is not a puppet map");
+        // The *manifest*, and not the chunk that came back empty: a loader that
+        // read on and found no rows would refuse this directory too, with a
+        // message about a file the manifest never named.
+        assert!(message.contains("manifest"), "{message}");
+        assert!(message.contains("sun"), "{message}");
+
+        // And a chunk that holds the wrong number of rows is refused by its file
+        // rather than absorbed: two spawns is not "the first one".
+        std::fs::write(
+            dir.join("scene.ron"),
+            "Scene(format: 0, name: \"thin\", systems: [\"surfaces\", \"spawn\", \"sun\"])",
+        )
+        .expect("the temp dir is writable");
+        std::fs::write(dir.join("sys").join("sun.ron"), BLOCKOUT_SUN_RON)
+            .expect("the temp dir is writable");
+        std::fs::write(
+            dir.join("sys").join("spawn.ron"),
+            "Chunk(system: \"spawn\", entities: [])",
+        )
+        .expect("the temp dir is writable");
+        let message = Map::read_dir(dir.to_str().expect("utf-8"))
+            .expect_err("a map with no spawn is not a puppet map");
+        assert!(message.contains("sys/spawn.ron"), "{message}");
+        assert!(message.contains('0'), "{message}");
+
+        // And two spawns is not "the first one" either, which is the half a
+        // chunk with no rows cannot show. Numbered past every id the chunks
+        // beside it claim: a second claim on one of those is the format's own
+        // `DuplicateId`, which would refuse this directory for another reason.
+        std::fs::write(
+            dir.join("sys").join("spawn.ron"),
+            "Chunk(system: \"spawn\", entities: [\n    (7, (position: (0.0, 0.0, 0.0), \
+             facing: 0.0)),\n    (8, (position: (1.0, 0.0, 0.0), facing: 0.0)),\n])",
+        )
+        .expect("the temp dir is writable");
+        let message = Map::read_dir(dir.to_str().expect("utf-8"))
+            .expect_err("a map with two spawns is not a puppet map");
+        assert!(message.contains("sys/spawn.ron"), "{message}");
+        assert!(message.contains('2'), "{message}");
     }
 }

@@ -1,0 +1,9 @@
+Chunk(
+    system: "spawn",
+    entities: [
+        (5, Spawn(
+            position: (0.0, 0.0, 16.0),
+            facing: 0.0,
+        )),
+    ],
+)

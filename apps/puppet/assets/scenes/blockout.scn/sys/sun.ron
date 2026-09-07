@@ -1,0 +1,11 @@
+Chunk(
+    system: "sun",
+    entities: [
+        (6, Sun(
+            elevation: 0.78,
+            color: (1.0, 0.97, 0.9),
+            intensity: 2.2,
+            period: 45.0,
+        )),
+    ],
+)

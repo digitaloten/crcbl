@@ -1,20 +1,22 @@
 //! Argument parsing for the puppet sample.
 //!
 //! ```text
-//! puppet [--headless] [--frames N] [--size WxH] [--tick-hz N] …
+//! puppet [--headless] [--frames N] [--size WxH] [--tick-hz N] [--scene DIR] …
 //! ```
 //!
-//! # There is nothing left here but the shared half
+//! # What is left here after the engine took the shared half
 //!
 //! [`crcbl::args::Common`] owns `--headless`, `--frames`, `--tick-hz`,
 //! `--backend`, `--size`, `--screenshot` and the debug-overlay pair, and
-//! milestone 1 has no flag of its own to add to them: the map is fixed, the
-//! character is one capsule, and everything a player can change is a key rather
-//! than an argument. This file is still a file rather than a call into the
-//! engine's parser, because the usage prose is this sample's and because the
-//! moment milestone 2 brings a clip to select there is a place to put it.
+//! `--scene` is the one flag that is this sample's: it names a `.scn/` directory
+//! to read the blockout out of instead of the committed
+//! `assets/scenes/blockout.scn/`. The shape is `apps/breakout/src/args.rs`'s —
+//! the directory is read *here*, while there is still an exit code to refuse the
+//! run with, and [`Options`] carries the parsed map rather than the path.
 
 use crcbl::args::{Common, Consumed};
+
+use crate::map::Map;
 
 /// The `--help` text.
 ///
@@ -60,16 +62,29 @@ OPTIONS:
                          Turns --headless on: the frame is read back off the
                          offscreen ring, which is the only surface every backend
                          can copy a presented image out of.
+    --scene <DIR>        Read the map from a .scn/ scene directory instead of
+                         the committed apps/puppet/assets/scenes/blockout.scn.
+                         DIR is the scene directory itself, the one holding
+                         scene.ron. A directory that is not a scene is refused
+                         by key, line and column, and one that is a scene
+                         without puppet's chunks is refused by chunk.
     --debug-overlay      Start with the debug panel visible (F3 toggles it)
     --no-debug-overlay   Start with it hidden. The default is 'visible in a
                          debug build, hidden in a release build'
     -h, --help           Print this help";
 
 /// What the command line asked puppet for.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// **Not `Eq`.** A [`Map`] is a list of world-space coordinates, and a float has
+/// no total equality; nothing compares two invocations for anything but a test's
+/// `assert_eq!`, which [`PartialEq`] serves.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Options {
     /// The flags every sample has.
     pub common: Common,
+    /// The blockout the run opens on: the committed one unless `--scene` named
+    /// another directory.
+    pub map: Map,
 }
 
 impl Default for Options {
@@ -83,6 +98,7 @@ impl Default for Options {
             common: Common::new(crate::game::DEFAULT_TICK_HZ).with_screenshot(),
             #[cfg(target_arch = "wasm32")]
             common: Common::new(crate::game::DEFAULT_TICK_HZ),
+            map: Map::built_in(),
         }
     }
 }
@@ -92,9 +108,8 @@ pub type Invocation = crcbl::args::Invocation<Options>;
 
 /// Parses a flat `["--flag", "value", "--flag2"]` iterator.
 ///
-/// Every argument is offered to the shared set; what comes back as
-/// [`Consumed::No`] is the unknown-argument rejection, because puppet claims
-/// none of its own.
+/// Every argument is offered to the shared set first; what comes back as
+/// [`Consumed::No`] is this sample's own to claim or to reject.
 pub fn parse(args: impl Iterator<Item = String>) -> Invocation {
     let mut options = Options::default();
     let mut args = args.peekable();
@@ -104,7 +119,21 @@ pub fn parse(args: impl Iterator<Item = String>) -> Invocation {
             Consumed::Yes => continue,
             Consumed::Help => return Invocation::Help,
             Consumed::Bad(message) => return Invocation::BadUsage(message),
-            Consumed::No => return Invocation::BadUsage(format!("unknown argument: {arg}")),
+            Consumed::No => {}
+        }
+        match arg.as_str() {
+            "--scene" => match args.next() {
+                // Refused here rather than fallen back on: a run that quietly
+                // kept the built-in blockout when the directory it was pointed
+                // at would not parse is one that drew the picture it always drew
+                // and reported nothing.
+                Some(path) => match Map::read_dir(&path) {
+                    Ok(map) => options.map = map,
+                    Err(message) => return Invocation::BadUsage(message),
+                },
+                None => return Invocation::BadUsage("--scene needs a value".into()),
+            },
+            _ => return Invocation::BadUsage(format!("unknown argument: {arg}")),
         }
     }
 
@@ -185,6 +214,80 @@ mod tests {
     #[test]
     fn nonsense_is_refused_rather_than_ignored() {
         assert!(rejected(&["--nonsense"]).contains("nonsense"));
+        assert!(rejected(&["--seed", "17"]).contains("--seed"));
+    }
+
+    /// **`--scene` reads a directory at run time, and the map in it reaches the
+    /// field.**
+    ///
+    /// The one-surface scene is what makes that assertable: a parser that
+    /// accepted the flag and kept the committed blockout would pass any check
+    /// that only counted a successful parse.
+    #[test]
+    fn the_scene_flag_reads_a_directory_and_refuses_one_that_is_not_a_scene() {
+        let dir = std::env::temp_dir().join(format!("puppet-scene-{}.scn", std::process::id()));
+        std::fs::create_dir_all(dir.join("sys")).expect("the temp dir is writable");
+        std::fs::write(
+            dir.join("scene.ron"),
+            "Scene(format: 0, name: \"one\", systems: [\"surfaces\", \"spawn\", \"sun\"])",
+        )
+        .expect("the temp dir is writable");
+        std::fs::write(
+            dir.join("env.ron"),
+            "Env(camera: (position: (0.0, 0.0, 1.0), look_at: (0.0, 0.0, 0.0)), \
+             ambient: (0.0, 0.0, 0.0))",
+        )
+        .expect("the temp dir is writable");
+        std::fs::write(
+            dir.join("sys").join("surfaces.ron"),
+            "Chunk(system: \"surfaces\", entities: [\n    (0, (label: \"slab\", \
+             position: (1.0, 2.0, 3.0), shape: Platform(width: 4.0, depth: 5.0, height: 6.0), \
+             tint: (0.5, 0.5, 0.5))),\n])",
+        )
+        .expect("the temp dir is writable");
+        std::fs::write(
+            dir.join("sys").join("spawn.ron"),
+            "Chunk(system: \"spawn\", entities: [(1, (position: (7.0, 0.0, 8.0), facing: 0.0))])",
+        )
+        .expect("the temp dir is writable");
+        std::fs::write(
+            dir.join("sys").join("sun.ron"),
+            "Chunk(system: \"sun\", entities: [(2, (elevation: 0.5, color: (1.0, 1.0, 1.0), \
+             intensity: 1.0, period: 10.0))])",
+        )
+        .expect("the temp dir is writable");
+
+        let path = dir.to_str().expect("utf-8");
+        let map = parsed(&["--scene", path]).map;
+        assert_eq!(map.surfaces().len(), 1, "the file's map must reach the run");
+        assert_eq!(map.surfaces()[0].label, "slab");
+        assert_eq!(map.spawn(), crcbl::math::DVec3::new(7.0, 0.0, 8.0));
+
+        // A chunk that is not this system's is refused by the file it is in, not
+        // absorbed as an empty map.
+        std::fs::write(
+            dir.join("sys").join("surfaces.ron"),
+            "Chunk(system: \"walls\", entities: [])",
+        )
+        .expect("the temp dir is writable");
+        let message = rejected(&["--scene", path]);
+        assert!(message.contains("sys/surfaces.ron"), "{message}");
+        assert!(message.contains("walls"), "{message}");
+
+        assert!(
+            matches!(
+                parse(["--scene".to_string()].into_iter()),
+                Invocation::BadUsage(_)
+            ),
+            "--scene at the end of an argv is a run that silently kept the built-in map"
+        );
+    }
+
+    /// With no `--scene`, the map is the committed one — the browser's only path,
+    /// since a wasm build has no directory to point the flag at.
+    #[test]
+    fn the_default_map_is_the_committed_scene_directory() {
+        assert_eq!(parsed(&[]).map, Map::built_in());
     }
 
     /// The shared flags are documented in two places — here and in

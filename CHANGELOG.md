@@ -77,6 +77,26 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **Puppet reads its map from a `.scn/` directory**, the second sample to load
+  one. `apps/puppet/assets/scenes/blockout.scn/` is `scene.ron`, `env.ron` and
+  three chunk files — `sys/surfaces.ron`, `sys/spawn.ron` and `sys/sun.ron` —
+  read through `crcbl_scene::scn` from a `MemorySource` seeded with
+  `include_str!` of the five committed files, or from a `DirSource` when the new
+  **`--scene <DIR>`** names another directory. The chunk row is `map::Surface`:
+  a `crcbl-greybox` primitive (`Shape::Platform` or `Shape::Dome`) with the
+  collider that is the _same_ surface, so a map that looks walkable can be. It
+  is declared in the sample rather than in an engine crate — a chunk's component
+  is whatever its game says it is, and `chunk_of` bounds it by `serde` and
+  `ComponentHash` and nothing else. A directory that is not a scene is refused
+  by key, line and column with exit 2; a scene without puppet's chunks is
+  refused by the chunk it is missing, rather than loading a map with no ground.
+  `env.ron`'s `ambient` is the light the frame actually uses. The constants in
+  `apps/puppet/src/map.rs` are no longer the map: they are the committed file's
+  generator, and a canonical-file test asserts the five files are byte for byte
+  what `Scene::save` writes from them. `map::{scene, place, world, sun}` are now
+  methods on `map::Map`, and the mesh- and material-slot constants
+  (`GROUND_MESH` … `BODY_MATERIAL`) are gone — slot `i` is surface `i`, and the
+  character's own slots start after however many the file names.
 - **`apps/towers` is built, and milestone 1's first slice is a playable solo
   loop.** The flagship sample's first cut: a hardcoded greybox map whose creeps
   walk `map::PATH`'s waypoints as kinematic spheres, one single-target tower

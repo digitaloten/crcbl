@@ -35,7 +35,7 @@
 //! is the acceptance test that path is meant to be rather than a picture that
 //! happens to move.
 //!
-//! The sun turns while it happens, which is [`map::sun`] and the only thing on
+//! The sun turns while it happens, which is [`map::Map::sun`] and the only thing on
 //! the map that moves without a key being held: a shadow that never moves is
 //! indistinguishable from a dark patch painted on the ground, and "does it read
 //! as grounded" is the eyeball test this milestone is for.
@@ -45,6 +45,17 @@
 //! does not. Nothing here reimplements any of it — rule 9 — and nothing here is
 //! a special case: the same displacement goes into the same call whichever
 //! surface is under the capsule.
+//!
+//! # The map is content, not code
+//!
+//! Those surfaces live in `assets/scenes/blockout.scn/` — a `.scn/` directory of
+//! RON chunk files, read through [`crcbl::scene::scn`] — and [`map`] is its
+//! loader. `--scene <DIR>` walks a different one, and the committed directory is
+//! compiled in so a browser (which has no filesystem) and a golden (which must
+//! not depend on a working directory) both get the same map. The component a
+//! chunk row is — a greybox primitive with the collider that is the same
+//! surface — is puppet's own type rather than an engine one, and [`map`] says
+//! why.
 //!
 //! # The controller does not know which camera is watching, and this is why
 //!

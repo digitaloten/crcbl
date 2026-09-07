@@ -18,15 +18,20 @@ crate-type = ["cdylib", "rlib"]
 name = "puppet"
 path = "src/main.rs"
 
-# One engine dependency, like every other sample — with the `greybox` feature
-# on, which is what this sample is the first consumer of. The map is ground,
-# two mounds and two steps, and `crcbl::greybox`'s primitives are where the
-# geometry for each of them comes from; writing a second cuboid generator here
-# would be a copy of the one the engine already ships. The `scene` feature stays
-# off: nothing here imports a glTF document, and milestone 1 has no character
-# asset at all.
+# One engine dependency, like every other sample — with two features on.
+#
+# `greybox` is what this sample is the first consumer of. The map is ground, two
+# mounds and two steps, and `crcbl::greybox`'s primitives are where the geometry
+# for each of them comes from; writing a second cuboid generator here would be a
+# copy of the one the engine already ships.
+#
+# `scn` is the scene *format* half of `crcbl::scene` — `crcbl_scene::scn`, the
+# `.scn/` directory `assets/scenes/blockout.scn/` is one of. Not `scene`: that
+# feature turns on the glTF importer as well, nothing here imports a glTF
+# document, and milestone 1 has no character asset at all. See
+# `crates/crcbl/Cargo.toml`, where the two are split for exactly this build.
 [dependencies]
-crcbl = { workspace = true, features = ["greybox"] }
+crcbl = { workspace = true, features = ["greybox", "scn"] }
 
 [lints]
 workspace = true

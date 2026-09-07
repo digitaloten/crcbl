@@ -43,6 +43,7 @@ use crate::anim::Animator;
 use crate::camera::Follow;
 use crate::game::{Controls, Game, RenderState, Stats};
 use crate::gpu::Gpu;
+use crate::map::Map;
 use crate::menu::{MenuKind, Menus};
 use crate::page::PageStats;
 
@@ -160,6 +161,13 @@ pub type PuppetError = crcbl::engine::LoopError<crate::game::GameError>;
 #[derive(Debug)]
 pub struct Puppet {
     game: Game,
+    /// The blockout this run opened on — the committed one, or whatever
+    /// `--scene` pointed at.
+    ///
+    /// Kept because the sun is the map's: [`Puppet::draw`] asks it for the light
+    /// at the simulation's own elapsed time, and a run reading the built-in
+    /// map's sun while walking a loaded one would light the wrong world.
+    map: Map,
     /// The keyboard, resolved into [`Controls`] once per tick.
     actions: ActionMap,
     /// Key events from the shell pump, replayed after `ActionMap::begin_tick`.
@@ -296,7 +304,13 @@ pub fn with_shell<S: Shell + ?Sized>(
     let mut events = 0;
     let extent = wait_for_configure(shell.as_mut(), window, &mut events)?;
 
-    let gpu = Gpu::open(shell.as_ref(), window, extent, options.common.gpu())?;
+    let gpu = Gpu::open(
+        shell.as_ref(),
+        window,
+        extent,
+        options.common.gpu(),
+        &options.map,
+    )?;
     assemble(
         Booted {
             shell,
@@ -337,11 +351,12 @@ fn assemble<S: Shell + ?Sized>(
         }
         booted
     };
-    let game = Game::new(options.common.tick_hz).map_err(PuppetError::Game)?;
+    let game = Game::new(options.common.tick_hz, &options.map).map_err(PuppetError::Game)?;
     Ok(Loop::new(
         booted,
         Puppet {
             game,
+            map: options.map.clone(),
             actions: action_map(),
             pending_keys: Vec::new(),
             follow: Follow::default(),
@@ -491,8 +506,8 @@ impl HostedGame for Puppet {
         );
         gpu.set_camera(self.follow.camera(focus));
         // The sun turns on the simulation's clock, so the shadows on the map
-        // stop where they are while the loop is paused — see [`crate::map::sun`].
-        gpu.set_sun(crate::map::sun(self.render_state.elapsed));
+        // stop where they are while the loop is paused — see [`Map::sun`].
+        gpu.set_sun(self.map.sun(self.render_state.elapsed));
 
         self.page = crate::page::draw(
             draw_list,
@@ -587,7 +602,7 @@ impl<S: Shell + ?Sized> PendingLoop<S> {
                 window,
                 clock_source,
                 options.common.gpu(),
-                (),
+                options.map.clone(),
             ),
             options: options.clone(),
         })
@@ -628,6 +643,7 @@ mod tests {
                 frames: Some(frames),
                 ..Common::new(crate::game::DEFAULT_TICK_HZ)
             },
+            ..Options::default()
         }
     }
 
@@ -668,6 +684,84 @@ mod tests {
         assert!(
             summary.feet[1].abs() < 0.05,
             "the circuit left the flat, at {:.2} m",
+            summary.feet[1],
+        );
+    }
+
+    /// **A map read off disk reaches the simulation and the frame.**
+    ///
+    /// The end of the `--scene` path, and the only place it is a *run* rather
+    /// than a parse: `crate::args` proves the directory reaches
+    /// [`Options::map`], and this proves that field reaches the stage the
+    /// character stands on. A binding that read `Map::built_in` on the way to
+    /// [`Game::new`] would pass every test in `crate::map` and walk the
+    /// committed blockout while the flag said otherwise.
+    ///
+    /// **The renderer's half is not what this reads.** The whole run goes
+    /// through `Gpu::from_context`, so a map that could not be made resident is
+    /// a failure here — but the picture is not, and nothing in this summary
+    /// would change if the frame drew the committed blockout beside the slab the
+    /// character walks. `docs/backlog.md` carries that gap.
+    ///
+    /// The one-slab scene puts the spawn where the committed one does not, so
+    /// where the run *ends* is the answer: the circuit walks a couple of metres
+    /// from wherever it started, and the two spawns are sixteen apart.
+    #[test]
+    fn a_scene_directory_is_the_map_the_run_actually_walks() {
+        let dir = std::env::temp_dir().join(format!("puppet-run-{}.scn", std::process::id()));
+        std::fs::create_dir_all(dir.join("sys")).expect("the temp dir is writable");
+        std::fs::write(
+            dir.join("scene.ron"),
+            "Scene(format: 0, name: \"slab\", systems: [\"surfaces\", \"spawn\", \"sun\"])",
+        )
+        .expect("the temp dir is writable");
+        std::fs::write(
+            dir.join("env.ron"),
+            "Env(camera: (position: (0.0, 2.0, 6.0), look_at: (0.0, 1.0, 0.0)), \
+             ambient: (0.1, 0.11, 0.14))",
+        )
+        .expect("the temp dir is writable");
+        std::fs::write(
+            dir.join("sys").join("surfaces.ron"),
+            "Chunk(system: \"surfaces\", entities: [(0, (label: \"slab\", \
+             position: (0.0, -1.0, 0.0), shape: Platform(width: 40.0, depth: 40.0, \
+             height: 1.0), tint: (0.3, 0.31, 0.33)))])",
+        )
+        .expect("the temp dir is writable");
+        std::fs::write(
+            dir.join("sys").join("spawn.ron"),
+            "Chunk(system: \"spawn\", entities: [(1, (position: (-9.0, 0.0, -7.0), \
+             facing: 0.0))])",
+        )
+        .expect("the temp dir is writable");
+        std::fs::write(
+            dir.join("sys").join("sun.ron"),
+            "Chunk(system: \"sun\", entities: [(2, (elevation: 0.78, \
+             color: (1.0, 0.97, 0.9), intensity: 2.2, period: 45.0))])",
+        )
+        .expect("the temp dir is writable");
+
+        let map = crate::map::Map::read_dir(dir.to_str().expect("utf-8"))
+            .expect("the slab scene is a puppet map");
+        let options = Options {
+            map,
+            ..headless(60)
+        };
+        let summary = run(&options).expect("the null backend always runs");
+        let from_slab = (summary.feet[0] - (-9.0_f64)).hypot(summary.feet[2] - (-7.0_f64));
+        let from_committed =
+            (summary.feet[0] - crate::map::SPAWN.x).hypot(summary.feet[2] - crate::map::SPAWN.z);
+        assert!(
+            from_slab < 4.0,
+            "the run ended {from_slab:.2} m from the slab's spawn",
+        );
+        assert!(
+            from_committed > 4.0,
+            "the run walked the committed blockout, {from_committed:.2} m from its spawn",
+        );
+        assert!(
+            summary.feet[1].abs() < 0.05,
+            "the slab is flat and the character ended at {:.2} m",
             summary.feet[1],
         );
     }

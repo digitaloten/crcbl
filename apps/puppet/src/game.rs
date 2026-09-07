@@ -12,7 +12,7 @@
 //!
 //! Every metre the character moves goes through
 //! [`CharacterController::move_and_slide`], which sweeps the capsule against
-//! [`crate::map::world`] and slides it along what it hits. This file decides
+//! [`crate::map::Map::world`] and slides it along what it hits. This file decides
 //! **how far** to ask for and **which way**; the world decides what is left of
 //! the request, and [`MoveOutcome`] is what it says about it.
 //!
@@ -61,7 +61,7 @@ use crcbl::phys::{CharacterConfig, CharacterController, MoveOutcome, PhysicsWorl
 use crcbl::session::Loopback;
 
 use crate::camera::{facing_of, walk_direction};
-use crate::map;
+use crate::map::Map;
 
 /// Distinct from every other sample's, because they are distinct protocols: a
 /// client built for one must not hand-shake with a server running another. The
@@ -313,7 +313,7 @@ struct Stage {
     patrolling: bool,
     /// Seconds of **simulated** time, accumulated a tick at a time.
     ///
-    /// What [`crate::map::sun`] is drawn from, so the light is a pure function
+    /// What [`crate::map::Map::sun`] is drawn from, so the light is a pure function
     /// of the tick rather than of a wall clock: two runs of the same length draw
     /// the same frame, and a paused demo's shadows stop where they are.
     elapsed: f64,
@@ -359,23 +359,28 @@ fn feet_of(character: &CharacterController) -> f64 {
 }
 
 impl Stage {
-    /// The character on the spawn pad, ungrounded until the first move finds the
-    /// floor.
-    fn new() -> Self {
+    /// The character on `map`'s spawn pad, ungrounded until the first move finds
+    /// the floor.
+    ///
+    /// The map is a parameter and not [`Map::built_in`], because `--scene`
+    /// is a directory the run was pointed at: a stage that read the committed
+    /// blockout here would put the character on one map and draw another.
+    fn new(map: &Map) -> Self {
         let config = CharacterConfig::default();
-        let centre = map::SPAWN + DVec3::Y * (config.radius + config.half_height);
+        let spawn = map.spawn();
+        let centre = spawn + DVec3::Y * (config.radius + config.half_height);
         Self {
-            world: map::world(),
+            world: map.world(),
             character: CharacterController::new(config, centre),
             fall_speed: 0.0,
-            facing: 0.0,
+            facing: map.facing(),
             ticks: 0,
             patrolling: true,
             elapsed: 0.0,
             outcome: MoveOutcome::default(),
             climbed: 0,
             blocked: 0,
-            highest: map::SPAWN.y,
+            highest: spawn.y,
             speed: 0.0,
         }
     }
@@ -537,7 +542,7 @@ pub struct RenderState {
     /// How fast it is travelling over the ground, in metres a second — the
     /// smoothed, *measured* speed [`crate::anim`] blends the locomotion set on.
     pub speed: f64,
-    /// Seconds of simulated time — what [`crate::map::sun`] takes.
+    /// Seconds of simulated time — what [`crate::map::Map::sun`] takes.
     pub elapsed: f64,
 }
 
@@ -626,7 +631,7 @@ impl std::fmt::Debug for Game {
 }
 
 impl Game {
-    /// Builds the server, its client and the stage between them.
+    /// Builds the server, its client and the stage `map` between them.
     ///
     /// # Errors
     ///
@@ -637,9 +642,9 @@ impl Game {
     /// # Panics
     ///
     /// If `tick_hz` is zero.
-    pub fn new(tick_hz: u32) -> Result<Self, GameError> {
+    pub fn new(tick_hz: u32, map: &Map) -> Result<Self, GameError> {
         assert!(tick_hz > 0, "tick rate must be positive");
-        let shared = Arc::new(Mutex::new(Stage::new()));
+        let shared = Arc::new(Mutex::new(Stage::new(map)));
 
         // An empty world, and that is the honest shape: this sample has no
         // entity and no ECS system. What the server hosts is the module, and
@@ -740,13 +745,13 @@ impl Game {
     ///   requires `pz` to advance, then releases it and requires `pz` to stop,
     ///   which is the pair a demo that merely drifts cannot pass.
     /// * `climbed` — [`MoveOutcome::stepped_up`], counted. It rises when the
-    ///   character walks onto [`map::LOW_STEP_TOP`] and at no other time in the
+    ///   character walks onto [`crate::map::LOW_STEP_TOP`] and at no other time in the
     ///   lane.
     /// * `blocked` — [`MoveOutcome::hit_wall`], counted. It says the character
     ///   is *pushing* against the riser it did not climb rather than standing
     ///   near it.
     /// * `top` — the highest its feet have been. The control for `climbed`: it
-    ///   reaches [`map::LOW_STEP_TOP`] and never [`map::HIGH_STEP_TOP`].
+    ///   reaches [`crate::map::LOW_STEP_TOP`] and never [`crate::map::HIGH_STEP_TOP`].
     fn log_heartbeat(&self) {
         let stage = lock(&self.shared);
         if !stage.ticks.is_multiple_of(HEARTBEAT_TICKS) {
@@ -811,13 +816,15 @@ impl Game {
 mod tests {
     use super::*;
 
+    use crate::map;
+
     /// One tick at the default rate.
     const DT: f64 = 1.0 / DEFAULT_TICK_HZ as f64;
 
     /// A stage that has already found the floor, with the circuit switched off
     /// so a test drives it.
     fn standing() -> Stage {
-        let mut stage = Stage::new();
+        let mut stage = Stage::new(&Map::built_in());
         stage.patrolling = false;
         run_tick(&mut stage, Intent::default(), DT);
         assert!(stage.outcome.grounded, "the spawn has no floor under it");
@@ -1019,7 +1026,7 @@ mod tests {
     /// **The circuit walks the character and the first key ends it for good.**
     #[test]
     fn the_circuit_runs_until_somebody_takes_the_controls() {
-        let mut stage = Stage::new();
+        let mut stage = Stage::new(&Map::built_in());
         walk(&mut stage, Intent::default(), 1.0);
         assert!(stage.patrolling, "a page with no input keeps the circuit");
         let moved = (stage.character.position() - map::SPAWN).length();
@@ -1052,7 +1059,7 @@ mod tests {
     /// the character, so everywhere the circuit can reach has to be ground.
     #[test]
     fn the_patrol_stays_on_the_flat() {
-        let mut stage = Stage::new();
+        let mut stage = Stage::new(&Map::built_in());
         walk(&mut stage, Intent::default(), 4.0 * PATROL_PERIOD);
         assert!(stage.patrolling);
         assert_eq!(stage.climbed, 0, "the circuit climbed something");
@@ -1087,7 +1094,7 @@ mod tests {
     fn the_gates_walk_works_from_every_point_of_the_circuit() {
         let period_ticks = (PATROL_PERIOD / DT).round() as u64;
         for eighth in 0..8 {
-            let mut stage = Stage::new();
+            let mut stage = Stage::new(&Map::built_in());
             for _ in 0..(period_ticks * eighth / 8) {
                 run_tick(&mut stage, Intent::default(), DT);
             }
