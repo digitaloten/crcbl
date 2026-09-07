@@ -5081,18 +5081,6 @@ the same kind of hoist. Moving the widget ids down into `crcbl-ui` was
 considered and declined: their doc comments link `PAUSE_KEY` and
 `MenuAction::from_id`, which would become unresolvable and red `cargo doc`.
 
-### `installKnobs` is one knob-panel driver written twice (2026-09-07)
-
-`web/demos/alcove/main.js` and `web/demos/sundial/main.js` carry the same
-`el`/`button`/`slider` casts, `drive`, `press` (with its verbatim
-`preventDefault`-on-`mousedown` paragraph) and `open` (the wait for
-`RUNNING`/`PAUSED` with the `requestAnimationFrame` retry and the
-`FAILED || STOPPED` bail), and the same `readUtf8` enum-name reader. **What it
-would take:** a `knobs.js` under `web/engine/` beside `demo.js` exporting
-`installKnobs`, `press` and `enumName`; each page keeps its element ids and
-`refresh` body. Confirm `web/build.sh` copies `web/engine/` wholesale (the
-review inferred it and did not read the script).
-
 ### Seventeen `web.rs` module docs restate `crcbl::web`'s wire format (2026-09-07)
 
 Every `apps/*/src/web.rs` except viewer's carries the same four sections — the
@@ -5183,6 +5171,14 @@ Its tests are `crates/crcbl/tests/knob.rs` and not a `mod tests`:
 `crcbl_console::guard::declared_names` holds `crcbl::console_table` to every
 `convar!` under `crates/crcbl/src`, so fixture variables declared beside the
 code would be ones the engine's own table is then required to publish.
+
+### A file under `web/engine/` must name no sample's export, even in prose (2026-09-07)
+
+`web/tools/check-exports.mjs` scans the _shared_ half of the shim
+(`web/engine/`) for `ex.__crcbl_…` and requires every symbol it finds there of
+**every** demo's artifact. A doc comment in `web/engine/knobs.js` naming
+`__crcbl_alcove_technique` failed `web/build.sh` on breakout. Recorded so the
+next shared module does not trip it.
 
 ### Smaller seam findings, stated but not worked up (2026-09-07)
 

@@ -17,6 +17,7 @@ framework that owns policy — and it applies here for the same reason.
 | `style.css`                    | one stylesheet for the site                                                |
 | `favicon.svg`                  | the site icon, declared by the layout                                      |
 | `engine/demo.js`               | the boot sequence and the frame loop, shared by every demo                 |
+| `engine/knobs.js`              | the knob panel a fixture page installs: press, refresh, open               |
 | `engine/wasm.js`               | reading/writing wasm memory, and the detached-view rule                    |
 | `engine/shell.js`              | canvas, DPI/resize, focus, fullscreen, keyboard, pointer → `__crcbl_web_*` |
 | `engine/storage.js`            | asset pre-load over `fetch()`, OPFS restore and drain                      |

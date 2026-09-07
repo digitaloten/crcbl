@@ -698,6 +698,8 @@ Verified present in the tree:
 - **`crcbl::web::{ASSET_BASE, STATUS_*}`** — one definition of the wire format.
 - **`web/engine/demo.js`'s `bootDemo`** — boot sequence and rAF loop for all
   eighteen shims. Also `web/engine/{wasm,log,storage,shell,audio}.js`.
+- **`web/engine/knobs.js`** — the knob-panel driver alcove's and sundial's pages
+  share (hoisted 2026-09-07).
 - **`crcbl::args`** — `Common`, `Consumed`, `Invocation`, `run_front_end`,
   `COMMON_OPTIONS_HELP`, `SCREENSHOT_HELP`, `COMMON_TAIL_HELP`, `positive`,
   `number`, `size`, `HEADLESS_FRAME_BUDGET`, `MAX_TICK_RATE`.
@@ -829,6 +831,8 @@ elsewhere. Stated plainly, I did **not** read:
   `web/templates/`** — unread, so my claim that a new `knobs.js` under
   `web/engine/` needs no build change (finding 11) is an inference from
   `web/build.sh` copying `web/engine/` wholesale, which I did not confirm.
+  (Confirmed 2026-09-07 while landing it: `assemble_static()` walks `web/`
+  pruning only `tools`, `jobs`, `pages`, `templates`, `*.sh` and `README.md`.)
 - **`.github/workflows/ci.yml`** — I grepped it for the nine golden `run:` lines
   and read nothing else, so the "which gates this touches" notes are from those
   greps plus the demo lists, not from reading the workflow.

@@ -1342,6 +1342,9 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- `web/engine/knobs.js` is the knob-panel driver `web/demos/alcove/main.js` and
+  `web/demos/sundial/main.js` each carried: `installKnobs`, `press` and
+  `enumName`. Each page keeps its element ids and its `refresh` body.
 - `crcbl::knob::Knob` drives a console variable by name — find-or-panic against
   a `Table`, the declared name set, `cycle`, a float clamped into the declared
   range, `reset` — with `reset_all` beside it. `apps/alcove/src/occlusion.rs`

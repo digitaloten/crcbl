@@ -27,8 +27,14 @@
 // with no score and no save file.
 
 import init from './crcbl_alcove.js';
-import { bootDemo, STATUS } from '../../engine/demo.js';
-import { readUtf8 } from '../../engine/wasm.js';
+import { bootDemo } from '../../engine/demo.js';
+import {
+  button,
+  el,
+  enumName,
+  installKnobs,
+  slider,
+} from '../../engine/knobs.js';
 
 /**
  * Wires the page's occlusion controls to the sample's own exports.
@@ -38,23 +44,15 @@ import { readUtf8 } from '../../engine/wasm.js';
  * single sample — `web/demos/viewer/main.js` says the same thing about its drop
  * target, for the same reason.
  *
- * Nothing here keeps a copy of a knob. Every control is written *and then read
- * back* through `apps/alcove/src/web.rs`, whose answer is what the console holds
- * after the write — so a slider the engine clamped shows where it landed, and a
- * value moved by a key, by the pause panel or by a typed console line is picked
- * up the next time anything on this page refreshes.
+ * The wiring itself — the focus-safe press, the drive-then-refresh cycle, the
+ * wait for a running loop before the panel opens — is `web/engine/knobs.js`,
+ * shared with the other fixture page that has a panel. What is this sample's is
+ * below: its element ids, what each control writes, and `refresh`.
  *
  * @param {Record<string, any>} ex the instance's raw exports
  */
-function installKnobs(ex) {
+function occlusionKnobs(ex) {
   const memory = /** @type {WebAssembly.Memory} */ (ex.memory);
-
-  /** @param {string} id */
-  const el = (id) => /** @type {HTMLElement} */ (document.getElementById(id));
-  /** @param {string} id */
-  const button = (id) => /** @type {HTMLButtonElement} */ (el(id));
-  /** @param {string} id */
-  const slider = (id) => /** @type {HTMLInputElement} */ (el(id));
 
   const view = button('knob-view');
   const bentView = button('knob-bent-view');
@@ -69,34 +67,23 @@ function installKnobs(ex) {
   const radiusValue = el('knob-radius-value');
   const intensityValue = el('knob-intensity-value');
 
-  const controls = [
-    view,
-    bentView,
-    technique,
-    bent,
-    seam,
-    reset,
-    seamAt,
-    radius,
-    intensity,
-  ];
-
   /** Where the seam stands when the page raises it: the middle of the frame. */
   const SEAM_CENTRE = 0.5;
 
   /**
-   * The technique's own name, out of the engine's variable.
-   *
-   * The length and the address are one read — the call below moves nothing when
-   * it is passed zero — and the name is the `&'static str` the console holds, so
-   * this page never spells the set of techniques itself.
+   * The technique's own name, out of the engine's variable, so this page never
+   * spells the set of techniques itself.
    *
    * @param {number} cycle non-zero moves the gather on to the next one
    * @returns {string}
    */
   function techniqueName(cycle) {
-    const len = ex.__crcbl_alcove_technique(cycle);
-    return readUtf8(memory, ex.__crcbl_alcove_technique_ptr(), len);
+    return enumName(
+      memory,
+      ex.__crcbl_alcove_technique,
+      ex.__crcbl_alcove_technique_ptr,
+      cycle
+    );
   }
 
   /** Puts every control where the console now is. */
@@ -123,84 +110,39 @@ function installKnobs(ex) {
     intensityValue.textContent = ex.__crcbl_alcove_intensity(-1).toFixed(2);
   }
 
-  /**
-   * Runs `act`, then puts every control back where the engine is.
-   *
-   * @param {() => void} act
-   */
-  function drive(act) {
-    act();
-    refresh();
-  }
-
-  /**
-   * Wires a button so that pressing it does not take the keyboard off the
-   * canvas.
-   *
-   * **A canvas that loses focus is a demo the engine pauses**, and focus coming
-   * back does not resume it — so a button that took the focus the way a button
-   * normally does would pause the fixture on every press. `preventDefault` on
-   * `mousedown` is what stops the focus moving at all; the `click` still fires,
-   * because a click is raised on release over the same element whatever the
-   * press did.
-   *
-   * A slider is deliberately *not* wired this way: cancelling its `mousedown`
-   * would cancel the drag with it, and the drag is the whole control. Moving one
-   * does pause the fixture, which costs nothing to look at — a court with
-   * nothing in it that moves draws the same picture paused, and the knobs go on
-   * changing that picture — and `web/pages/alcove.html` says how to set it
-   * ticking again.
-   *
-   * @param {HTMLButtonElement} control
-   * @param {() => void} act
-   */
-  function press(control, act) {
-    control.addEventListener('mousedown', (event) => event.preventDefault());
-    control.addEventListener('click', () => drive(act));
-  }
-
-  press(view, () => ex.__crcbl_alcove_view(ex.__crcbl_alcove_view(-1) ? 0 : 1));
-  press(bentView, () => ex.__crcbl_alcove_bent_view(1));
-  press(technique, () => ex.__crcbl_alcove_technique(1));
-  press(bent, () =>
-    ex.__crcbl_alcove_bent_normals(ex.__crcbl_alcove_bent_normals(-1) ? 0 : 1)
-  );
-  press(seam, () =>
-    ex.__crcbl_alcove_seam(ex.__crcbl_alcove_seam(-1) > 0 ? 0 : SEAM_CENTRE)
-  );
-  press(reset, () => ex.__crcbl_alcove_reset());
-
-  seamAt.addEventListener('input', () =>
-    drive(() => ex.__crcbl_alcove_seam(Number(seamAt.value)))
-  );
-  radius.addEventListener('input', () =>
-    drive(() => ex.__crcbl_alcove_radius(Number(radius.value)))
-  );
-  intensity.addEventListener('input', () =>
-    drive(() => ex.__crcbl_alcove_intensity(Number(intensity.value)))
-  );
-
-  /**
-   * Opens the controls once the demo is actually running.
-   *
-   * They start disabled in the markup and stay that way until there is a loop
-   * behind them: a page that let a visitor move the seam while start-up was
-   * still polling would write a value `Options::apply` then overwrites on the
-   * first frame, which reads as a control that did nothing. The status export is
-   * the same one `demo.js` drives its own loop on, and it answers without
-   * advancing anything.
-   */
-  function open() {
-    const status = ex.__crcbl_alcove_status();
-    if (status === STATUS.RUNNING || status === STATUS.PAUSED) {
-      refresh();
-      for (const control of controls) control.disabled = false;
-      return;
-    }
-    if (status === STATUS.FAILED || status === STATUS.STOPPED) return;
-    requestAnimationFrame(open);
-  }
-  requestAnimationFrame(open);
+  // Dragging a slider pauses the fixture, and here that costs nothing to look
+  // at: a court with nothing in it that moves draws the same picture paused,
+  // and the knobs go on changing that picture. `web/pages/alcove.html` says
+  // how to set it ticking again.
+  installKnobs({
+    status: () => ex.__crcbl_alcove_status(),
+    refresh,
+    buttons: [
+      [view, () => ex.__crcbl_alcove_view(ex.__crcbl_alcove_view(-1) ? 0 : 1)],
+      [bentView, () => ex.__crcbl_alcove_bent_view(1)],
+      [technique, () => ex.__crcbl_alcove_technique(1)],
+      [
+        bent,
+        () =>
+          ex.__crcbl_alcove_bent_normals(
+            ex.__crcbl_alcove_bent_normals(-1) ? 0 : 1
+          ),
+      ],
+      [
+        seam,
+        () =>
+          ex.__crcbl_alcove_seam(
+            ex.__crcbl_alcove_seam(-1) > 0 ? 0 : SEAM_CENTRE
+          ),
+      ],
+      [reset, () => ex.__crcbl_alcove_reset()],
+    ],
+    sliders: [
+      [seamAt, (at) => ex.__crcbl_alcove_seam(at)],
+      [radius, (at) => ex.__crcbl_alcove_radius(at)],
+      [intensity, (at) => ex.__crcbl_alcove_intensity(at)],
+    ],
+  });
 }
 
 bootDemo({
@@ -208,7 +150,7 @@ bootDemo({
   hint: 'the knobs under the canvas drive the occlusion · ESC opens the panel — CAMERA swaps to the free one · then WASD, Space/Shift and the arrows fly it · F3 shows the panel · F11 fullscreen',
   savedLabel: 'Nothing',
   bind: (ex) => {
-    installKnobs(ex);
+    occlusionKnobs(ex);
     return {
       prepare: () => ex.__crcbl_alcove_prepare(),
       boot: () => ex.__crcbl_alcove_boot(),
