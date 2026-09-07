@@ -109,9 +109,39 @@ pub enum DrawCommand {
 /// An ordered list of draw commands for one frame.
 ///
 /// Create one per frame, push commands into it, then hand it to the renderer.
+///
+/// # Two layers, one list
+///
+/// The list is cut in two by [`begin_overlay`](DrawList::begin_overlay): the
+/// commands before the cut are the game's HUD and GUI, the ones after it are
+/// what has to stay on top of a menu — the menu's own labels, the debug overlay
+/// and the console. The renderer draws the halves as two passes with the menu's
+/// art between them, which is the only reason the cut exists; a list nobody cut
+/// is one layer and draws exactly as it used to.
 #[derive(Debug, Clone, Default)]
 pub struct DrawList {
     commands: Vec<DrawCommand>,
+    /// Where [`begin_overlay`](DrawList::begin_overlay) last cut the list.
+    ///
+    /// `None` on a list nobody cut, which puts every command below the cut.
+    overlay_start: Option<usize>,
+}
+
+/// A draw list expanded to triangles, with the overlay cut carried through.
+///
+/// The return of [`DrawList::to_triangles_split`]. One expansion produces both
+/// halves' geometry *and* the index the second half starts at, so a renderer
+/// that draws them as two passes never triangulates the list twice.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Triangles {
+    /// Every vertex, in command order, shared by both halves.
+    pub vertices: Vec<Vertex2d>,
+    /// Every index, in command order.
+    pub indices: Vec<u32>,
+    /// Where the overlay's indices start: `indices[..overlay]` is the HUD half
+    /// and `indices[overlay..]` is the overlay half. Equal to `indices.len()`
+    /// on a list with no overlay.
+    pub overlay: usize,
 }
 
 impl DrawList {
@@ -120,6 +150,7 @@ impl DrawList {
     pub fn new() -> Self {
         Self {
             commands: Vec::new(),
+            overlay_start: None,
         }
     }
 
@@ -190,6 +221,54 @@ impl DrawList {
         &self.commands
     }
 
+    /// Cut the list here: everything pushed after this call is **overlay**.
+    ///
+    /// `crcbl-render`'s UI pass draws the two halves as two render passes with
+    /// the menu's sprites between them, so a command pushed after this call
+    /// paints over a pause menu and one pushed before it goes under the scrim.
+    /// The engine calls this once a frame — after the game has drawn its HUD,
+    /// before the menu's labels, the debug overlay and the console go in.
+    ///
+    /// **The last call wins.** A second call moves the cut down to the new
+    /// length rather than being refused, which is the only answer that keeps
+    /// the engine's overlays on top: a game that marked a boundary of its own
+    /// during `draw` marked an earlier one, and the engine's comes after it.
+    ///
+    /// [`clear`](Self::clear) drops the cut along with the commands.
+    pub fn begin_overlay(&mut self) {
+        self.overlay_start = Some(self.commands.len());
+    }
+
+    /// The commands below the cut — the game's HUD and GUI.
+    ///
+    /// The whole list on a frame where
+    /// [`begin_overlay`](Self::begin_overlay) was never called.
+    #[must_use]
+    pub fn base_commands(&self) -> &[DrawCommand] {
+        &self.commands[..self.overlay_start()]
+    }
+
+    /// The commands above the cut — what must stay on top of a menu.
+    ///
+    /// Empty on a frame where [`begin_overlay`](Self::begin_overlay) was never
+    /// called.
+    #[must_use]
+    pub fn overlay_commands(&self) -> &[DrawCommand] {
+        &self.commands[self.overlay_start()..]
+    }
+
+    /// Where the overlay starts, clamped into the list.
+    ///
+    /// The clamp is what makes the two slicings above infallible rather than
+    /// merely unreachable: `begin_overlay` records a length and the list only
+    /// grows until it is cleared, and a cut that somehow outran the commands
+    /// would lose the split rather than panic the frame.
+    fn overlay_start(&self) -> usize {
+        self.overlay_start
+            .unwrap_or(self.commands.len())
+            .min(self.commands.len())
+    }
+
     /// Number of commands in the list.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -202,14 +281,36 @@ impl DrawList {
         self.commands.is_empty()
     }
 
-    /// Clear all commands (reuse the allocation across frames).
+    /// Clear all commands and the overlay cut (reuse the allocation across
+    /// frames).
+    ///
+    /// The cut goes with them: a frame that kept the previous frame's cut would
+    /// put its first few commands above a menu for no reason anyone wrote down.
     pub fn clear(&mut self) {
         self.commands.clear();
+        self.overlay_start = None;
     }
 
     /// Expand every draw command into screen-space triangles.
     ///
-    /// Returns `(vertices, indices)` in a format a render backend can upload
+    /// [`to_triangles_split`](Self::to_triangles_split) without the overlay cut,
+    /// for a caller that draws the whole list as one thing.
+    #[must_use]
+    pub fn to_triangles(&self, atlas: Option<&FontAtlas>, scale: f32) -> (Vec<Vertex2d>, Vec<u32>) {
+        let triangles = self.to_triangles_split(atlas, scale);
+        (triangles.vertices, triangles.indices)
+    }
+
+    /// Expand every draw command into screen-space triangles, both halves in
+    /// one pass over the list.
+    ///
+    /// [`Triangles::overlay`] is where the indices of the commands pushed after
+    /// [`begin_overlay`](Self::begin_overlay) start, so a renderer drawing the
+    /// halves as two passes gets both ranges out of **one** expansion — running
+    /// the tessellation twice would double the work and could disagree with
+    /// itself about the glyph layout.
+    ///
+    /// The vertices and indices are in a format a render backend can upload
     /// directly. Each `Rect` becomes one quad (4 vertices, 6 indices).
     /// `RectOutline` becomes 4 thin quads — one per side — forming a hollow
     /// border. `Line` and `Polyline` become one quad per segment plus one
@@ -234,129 +335,122 @@ impl DrawList {
     /// Glyph UVs follow the same convention: `v = 0` is the atlas's top row and
     /// is emitted at the quad's `min.y` vertex, so glyphs render upright.
     #[must_use]
-    pub fn to_triangles(&self, atlas: Option<&FontAtlas>, scale: f32) -> (Vec<Vertex2d>, Vec<u32>) {
+    pub fn to_triangles_split(&self, atlas: Option<&FontAtlas>, scale: f32) -> Triangles {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
 
-        for cmd in &self.commands {
-            match cmd {
-                DrawCommand::Rect { min, max, color } => {
-                    push_quad(
-                        *min,
-                        *max,
-                        Vec2::ZERO,
-                        Vec2::ZERO,
-                        *color,
-                        &mut vertices,
-                        &mut indices,
-                    );
-                }
-                DrawCommand::RectOutline {
-                    min,
-                    max,
-                    thickness,
-                    color,
-                } => {
-                    // Four quads: top and bottom span the full width, left and
-                    // right fill the gap between them. Every corner is covered
-                    // exactly once, and both ends of each edge are built the
-                    // same way.
-                    //
-                    // The thickness is clamped to half the smaller extent: an
-                    // unclamped border would invert the inner rect and emit
-                    // self-intersecting bowties that paint over the whole box.
-                    let half = (*max - *min) * 0.5;
-                    let t = thickness.max(0.0).min(half.x.max(0.0)).min(half.y.max(0.0));
-                    let c = *color;
+        for cmd in self.base_commands() {
+            expand(cmd, atlas, scale, &mut vertices, &mut indices);
+        }
+        let overlay = indices.len();
+        for cmd in self.overlay_commands() {
+            expand(cmd, atlas, scale, &mut vertices, &mut indices);
+        }
+        Triangles {
+            vertices,
+            indices,
+            overlay,
+        }
+    }
+}
 
-                    let inner_min = Vec2::new(min.x + t, min.y + t);
-                    let inner_max = Vec2::new(max.x - t, max.y - t);
+/// Expand one draw command onto the end of `vertices` and `indices`.
+///
+/// A free function rather than a loop body, because
+/// [`DrawList::to_triangles_split`] walks the list in two runs and both runs
+/// must expand a command the same way.
+fn expand(
+    cmd: &DrawCommand,
+    atlas: Option<&FontAtlas>,
+    scale: f32,
+    vertices: &mut Vec<Vertex2d>,
+    indices: &mut Vec<u32>,
+) {
+    match cmd {
+        DrawCommand::Rect { min, max, color } => {
+            push_quad(
+                *min,
+                *max,
+                Vec2::ZERO,
+                Vec2::ZERO,
+                *color,
+                vertices,
+                indices,
+            );
+        }
+        DrawCommand::RectOutline {
+            min,
+            max,
+            thickness,
+            color,
+        } => {
+            // Four quads: top and bottom span the full width, left and
+            // right fill the gap between them. Every corner is covered
+            // exactly once, and both ends of each edge are built the
+            // same way.
+            //
+            // The thickness is clamped to half the smaller extent: an
+            // unclamped border would invert the inner rect and emit
+            // self-intersecting bowties that paint over the whole box.
+            let half = (*max - *min) * 0.5;
+            let t = thickness.max(0.0).min(half.x.max(0.0)).min(half.y.max(0.0));
+            let c = *color;
 
-                    let mut edge = |q_min: Vec2, q_max: Vec2| {
-                        push_quad(
-                            q_min,
-                            q_max,
-                            Vec2::ZERO,
-                            Vec2::ZERO,
-                            c,
-                            &mut vertices,
-                            &mut indices,
-                        );
-                    };
-                    // top (full width, including both corners)
-                    edge(*min, Vec2::new(max.x, inner_min.y));
-                    // bottom (full width, including both corners)
-                    edge(Vec2::new(min.x, inner_max.y), *max);
-                    // left (between the two horizontal edges)
-                    edge(
-                        Vec2::new(min.x, inner_min.y),
-                        Vec2::new(inner_min.x, inner_max.y),
-                    );
-                    // right (between the two horizontal edges)
-                    edge(
-                        Vec2::new(inner_max.x, inner_min.y),
-                        Vec2::new(max.x, inner_max.y),
-                    );
-                }
-                DrawCommand::Line {
-                    from,
-                    to,
-                    thickness,
-                    color,
-                } => {
-                    push_stroke(
-                        &[*from, *to],
-                        false,
-                        *thickness,
-                        *color,
-                        &mut vertices,
-                        &mut indices,
-                    );
-                }
-                DrawCommand::Polyline {
-                    points,
-                    thickness,
-                    closed,
-                    color,
-                } => {
-                    push_stroke(
-                        points,
-                        *closed,
-                        *thickness,
-                        *color,
-                        &mut vertices,
-                        &mut indices,
-                    );
-                }
-                DrawCommand::Text {
-                    pos,
-                    text,
-                    color,
-                    size,
-                } => {
-                    if let Some(atlas) = atlas {
-                        let layout_scale = (*size / GLYPH_HEIGHT as f32) * scale;
-                        let glyphs = atlas.layout_line(text, *pos, layout_scale);
-                        for (c, min, max) in glyphs {
-                            // v = 0 is the atlas's top row, and `min.y` is the
-                            // quad's top edge in the Y-down screen convention.
-                            let uv_min = Vec2::new(atlas.glyph_u_min(c), 0.0);
-                            let uv_max = Vec2::new(atlas.glyph_u_max(c), 1.0);
-                            push_quad(
-                                min,
-                                max,
-                                uv_min,
-                                uv_max,
-                                *color,
-                                &mut vertices,
-                                &mut indices,
-                            );
-                        }
-                    }
+            let inner_min = Vec2::new(min.x + t, min.y + t);
+            let inner_max = Vec2::new(max.x - t, max.y - t);
+
+            let mut edge = |q_min: Vec2, q_max: Vec2| {
+                push_quad(q_min, q_max, Vec2::ZERO, Vec2::ZERO, c, vertices, indices);
+            };
+            // top (full width, including both corners)
+            edge(*min, Vec2::new(max.x, inner_min.y));
+            // bottom (full width, including both corners)
+            edge(Vec2::new(min.x, inner_max.y), *max);
+            // left (between the two horizontal edges)
+            edge(
+                Vec2::new(min.x, inner_min.y),
+                Vec2::new(inner_min.x, inner_max.y),
+            );
+            // right (between the two horizontal edges)
+            edge(
+                Vec2::new(inner_max.x, inner_min.y),
+                Vec2::new(max.x, inner_max.y),
+            );
+        }
+        DrawCommand::Line {
+            from,
+            to,
+            thickness,
+            color,
+        } => {
+            push_stroke(&[*from, *to], false, *thickness, *color, vertices, indices);
+        }
+        DrawCommand::Polyline {
+            points,
+            thickness,
+            closed,
+            color,
+        } => {
+            push_stroke(points, *closed, *thickness, *color, vertices, indices);
+        }
+        DrawCommand::Text {
+            pos,
+            text,
+            color,
+            size,
+        } => {
+            if let Some(atlas) = atlas {
+                let layout_scale = (*size / GLYPH_HEIGHT as f32) * scale;
+                let glyphs = atlas.layout_line(text, *pos, layout_scale);
+                for (c, min, max) in glyphs {
+                    // v = 0 is the atlas's top row, and `min.y` is the
+                    // quad's top edge in the Y-down screen convention.
+                    let uv_min = Vec2::new(atlas.glyph_u_min(c), 0.0);
+                    let uv_max = Vec2::new(atlas.glyph_u_max(c), 1.0);
+                    push_quad(min, max, uv_min, uv_max, *color, vertices, indices);
                 }
             }
         }
-        (vertices, indices)
     }
 }
 
@@ -1316,5 +1410,104 @@ mod tests {
                 vertices.len()
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // The overlay cut
+    // -----------------------------------------------------------------------
+
+    /// **The cut lands where `begin_overlay` was called**, in the commands and
+    /// in the triangles both.
+    ///
+    /// The two halves are asserted against each other rather than against a
+    /// written-down count: `base` plus `overlay` must be the whole list and the
+    /// whole index buffer, so a cut recorded at zero — which is what an
+    /// uninitialised marker gives — puts every command in the overlay and fails
+    /// the first pair, and a cut that never moved off `len()` fails the second.
+    #[test]
+    fn the_overlay_cut_splits_the_list_where_it_was_taken() {
+        let mut dl = DrawList::new();
+        dl.rect(Vec2::ZERO, Vec2::splat(10.0), RED);
+        dl.rect(Vec2::splat(20.0), Vec2::splat(30.0), RED);
+        dl.begin_overlay();
+        dl.rect(Vec2::splat(40.0), Vec2::splat(50.0), RED);
+
+        assert_eq!(dl.base_commands().len(), 2, "two commands went in first");
+        assert_eq!(dl.overlay_commands().len(), 1, "one went in after the cut");
+        assert_eq!(
+            dl.base_commands().len() + dl.overlay_commands().len(),
+            dl.len()
+        );
+
+        let triangles = dl.to_triangles_split(None, 1.0);
+        // Every rect here is one quad, so the cut falls on a quad boundary and
+        // the two halves are countable without re-tessellating anything.
+        let per_quad = triangles.indices.len() / 3;
+        assert_eq!(per_quad, 6, "three quads, two triangles each");
+        assert_eq!(
+            triangles.overlay,
+            triangles.indices.len() * 2 / 3,
+            "the first two of three quads are below the cut"
+        );
+        assert_eq!(
+            triangles.indices,
+            dl.to_triangles(None, 1.0).1,
+            "splitting the list must not change the geometry it expands to"
+        );
+    }
+
+    /// A list nobody cut is **one** layer: the whole thing below, nothing above,
+    /// and an overlay index at the end of the buffer so a renderer's second
+    /// range is empty.
+    #[test]
+    fn a_list_with_no_cut_is_all_below_it() {
+        let mut dl = DrawList::new();
+        dl.rect(Vec2::ZERO, Vec2::splat(10.0), RED);
+
+        assert_eq!(dl.base_commands().len(), 1);
+        assert!(dl.overlay_commands().is_empty());
+        let triangles = dl.to_triangles_split(None, 1.0);
+        assert!(!triangles.indices.is_empty(), "the rect tessellated");
+        assert_eq!(triangles.overlay, triangles.indices.len());
+    }
+
+    /// **`clear` drops the cut with the commands.** A frame that inherited the
+    /// previous frame's cut would put its opening commands above the menu, which
+    /// is the bug with the widest blast radius here: the draw list is reused
+    /// every frame and cleared exactly once.
+    #[test]
+    fn clear_drops_the_overlay_cut() {
+        let mut dl = DrawList::new();
+        dl.begin_overlay();
+        dl.rect(Vec2::ZERO, Vec2::splat(10.0), RED);
+        assert_eq!(dl.overlay_commands().len(), 1, "the cut was taken at zero");
+
+        dl.clear();
+        dl.rect(Vec2::ZERO, Vec2::splat(10.0), RED);
+        assert_eq!(
+            dl.base_commands().len(),
+            1,
+            "the cleared list starts below the cut again"
+        );
+        assert!(dl.overlay_commands().is_empty());
+    }
+
+    /// The **last** cut wins, which is what keeps the engine's overlays on top
+    /// of a game that marked a boundary of its own during `draw`.
+    #[test]
+    fn a_second_cut_moves_the_boundary_down() {
+        let mut dl = DrawList::new();
+        dl.rect(Vec2::ZERO, Vec2::splat(10.0), RED);
+        dl.begin_overlay();
+        dl.rect(Vec2::splat(20.0), Vec2::splat(30.0), RED);
+        dl.begin_overlay();
+        dl.rect(Vec2::splat(40.0), Vec2::splat(50.0), RED);
+
+        assert_eq!(
+            dl.base_commands().len(),
+            2,
+            "the later cut is the one taken"
+        );
+        assert_eq!(dl.overlay_commands().len(), 1);
     }
 }

@@ -16,6 +16,13 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Breaking
 
+- `UiRenderer::add_pass` is gone.
+  `UiRenderer::add_passes(graph, target, extent, menu)` replaces it and adds the
+  whole sandwich — `ui-composite` for the draw list below the overlay cut, the
+  menu's sprite pass, then `ui-overlay` for the commands above it. `menu` is an
+  `Option<&MenuRenderer>` for a caller with no menu. A half with no geometry
+  adds no pass, so an unpaused frame still records exactly one `ui-composite`,
+  and no caller can order the three passes any other way.
 - **A depth-bias constant is a count, so it is an `i32`.**
   `crcbl_hal::DepthBias::constant` was an `f32` and is now an `i32`; a caller
   that wrote a fractional literal there no longer compiles. The field counts the
@@ -77,6 +84,13 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- `DrawList::begin_overlay` marks where a frame stops drawing the game and
+  starts drawing what must stay on top of a menu; `DrawList::base_commands` and
+  `DrawList::overlay_commands` read the two halves, and
+  `DrawList::to_triangles_split` returns the new `crcbl_ui::Triangles` — both
+  halves' geometry plus the index the second starts at, from one expansion.
+  `crcbl::engine`'s frame calls `begin_overlay` for a hosted game, so a game
+  needs no change.
 - **The flagship sample is on the demo site.** `apps/towers` publishes its
   browser front end — `src/web.rs`'s ten `__crcbl_towers_*` exports — and
   `/demos/towers/` runs the solo loop from the same build that runs natively:
@@ -1168,6 +1182,12 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Fixed
 
+- The pause menu is drawn **above** the game's HUD instead of behind it. Every
+  sample assembled its frame as the game's passes, then `MenuRenderer`'s sprite
+  pass, then a single `ui-composite` pass carrying the whole `DrawList` — so the
+  game's HUD rectangles and text painted over the scrim and the panel that were
+  meant to cover them. The layer order is now console > debug overlay > menu >
+  HUD and GUI > the game, in every demo.
 - **CMAA2 antialiases again.** `cmaa2_shapes.slang` handed each blend share to
   the pixel across the boundary from the one it belonged to, so every `Z`-shape
   darkened the fully covered pixel at one end of a run and brightened the
@@ -1313,6 +1333,10 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- `UiRenderer::MAX_PASSES` is 2, which moves `MAX_TIMED_PASSES` with it, and
+  `UiRenderer::counters` now reports one draw per half actually drawn. The new
+  pass label `ui-overlay` appears in graph dumps and pass timings on any frame
+  with a menu, the debug panel, the console or the console button on it.
 - **`crcbl-scene` gained an on-by-default `gltf` feature** gating `gltf_import`,
   `gltf_check`, `gltf_render`, `gltf_fixture` and `lod_resolve`. The workspace
   entry for the crate sets `default-features = false` (cargo silently ignores

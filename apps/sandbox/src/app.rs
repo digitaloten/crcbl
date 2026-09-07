@@ -736,10 +736,10 @@ mod tests {
             ui_text(&engine).is_empty(),
             "the sandbox draws no UI at all while the panel is off",
         );
+        let dump = engine.gpu().last_dump();
         assert!(
-            !engine.gpu().last_dump().contains("ui-composite"),
-            "and declares no UI pass either:\n{}",
-            engine.gpu().last_dump(),
+            !dump.contains("ui-composite") && !dump.contains("ui-overlay"),
+            "and declares neither half of the UI pass either:\n{dump}",
         );
 
         engine
@@ -785,14 +785,21 @@ mod tests {
         };
         assert_eq!(titles, expected, "no module appears that no system offered");
 
-        // **And it reaches the GPU.** `UiRenderer::add_pass` declares nothing
-        // when the draw list is empty, so the pass's presence in the frame's
-        // graph is the difference between "the overlay was drawn" and "the
-        // overlay was composited onto the frame the player sees".
+        // **And it reaches the GPU, in the half that draws over a menu.**
+        // `UiRenderer::add_passes` declares nothing for an empty half, so which
+        // pass is in the frame's graph says both that the overlay was
+        // composited onto the frame the player sees *and* which layer it landed
+        // in. The sandbox draws no HUD at all, so the half below the menu is
+        // empty and `ui-composite` must be absent — the debug panel is overlay
+        // and nothing else is.
+        let dump = engine.gpu().last_dump();
         assert!(
-            engine.gpu().last_dump().contains("ui-composite"),
-            "the UI pass must be in the frame:\n{}",
-            engine.gpu().last_dump(),
+            dump.contains("ui-overlay"),
+            "the overlay half of the UI pass must be in the frame:\n{dump}",
+        );
+        assert!(
+            !dump.contains("ui-composite"),
+            "the sandbox draws no HUD, so the half under the menu is empty:\n{dump}",
         );
 
         engine

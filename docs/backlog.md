@@ -12444,6 +12444,12 @@ The modular panel is built and every sample switches it on with F3 (or
   entry this replaces named `draw_pause_menu`, which no longer exists — each
   sample's `menu.rs` owns a `MenuKind` now.)
 
+  Partly closed 2026-09-07: `crates/crcbl/tests/sprite_e2e/menu.rs`'s
+  `the_menu_dims_the_hud_and_leaves_the_overlay_alone` reads back a real frame
+  and asserts the scrim dims a HUD rectangle under it while leaving an overlay
+  rectangle at full white. What is still open is the picture over _live art_ in
+  a sample golden, which is what the horde capture above buys.
+
 - **The changelog starts mid-project.** `CHANGELOG.md` covers changes from
   2026-08-01 onward; everything before it is in `git log` only. Worth doing at
   the first tagged release, or not at all — there are no releases yet for a

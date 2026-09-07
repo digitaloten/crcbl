@@ -327,11 +327,12 @@ impl Gpu {
             let _hdr = self
                 .renderer
                 .add_passes(&mut graph, &self.pool, target, extent);
-            // Between the scene and the text: the menu's scrim dims what is
-            // already in the target and the readout has to stay legible over
-            // both.
-            self.menu.add_pass(&mut graph, target);
-            self.ui.add_pass(&mut graph, target, extent);
+            // One call for the whole sandwich: the game's HUD, the menu's art
+            // over it, then the menu's own labels, the debug overlay and the
+            // console over that. `UiRenderer::add_passes` owns the order so no
+            // sample can express another one.
+            self.ui
+                .add_passes(&mut graph, target, extent, Some(&self.menu));
             graph.compile(&self.pool)?
         };
 

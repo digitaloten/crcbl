@@ -3,13 +3,29 @@
 //! ```text
 //! UiRenderer ──begin_frame──▶ uploads vertex/index buffers from DrawList
 //!      │
-//!      └──add_pass──▶ inserts an alpha-blended render pass into the graph
-//!                       after the tonemap, drawing the UI on top of the target
+//!      └──add_passes──▶ ui-composite ─▶ the menu's sprites ─▶ ui-overlay
+//!                       three alpha-blended passes onto the same target,
+//!                       after the tonemap
 //! ```
 //!
 //! The UI pass uses the same target as the tonemap pass, compositing on top
 //! with alpha blending. The glyph atlas is a static R8_UNORM texture uploaded
 //! once at creation.
+//!
+//! # The menu is drawn *inside* this pass, not before it
+//!
+//! A [`DrawList`] carries the game's HUD **and** the engine's overlays — the
+//! menu's own labels, the debug panel, the console — and
+//! [`DrawList::begin_overlay`] marks where one ends and the other begins. This
+//! module draws the two halves as two passes and puts
+//! [`MenuRenderer::add_pass`](crate::menu::MenuRenderer::add_pass) between
+//! them, so the scrim dims the HUD and the labels stay legible over the panel.
+//!
+//! It used to be the caller's job to interleave them, and every sample got it
+//! the same way round: the whole draw list in one pass *after* the menu, which
+//! painted the game's HUD over the panel that was supposed to be covering it.
+//! [`add_passes`](UiRenderer::add_passes) is one call for all three passes
+//! precisely so no caller can order them at all.
 //!
 //! # Per-pass constants are a uniform buffer, on every tier
 //!
@@ -66,8 +82,11 @@ use crcbl_shaders::{Stage, UI};
 use crcbl_ui::draw_list::{DrawList, Vertex2d};
 use crcbl_ui::text::FontAtlas;
 
+use core::ops::Range;
+
 use crate::counters::FrameCounters;
 use crate::graph::{ImageId, RenderGraph};
+use crate::menu::MenuRenderer;
 use crate::texture::{UploadedTexture, upload_texture};
 
 /// The constant block matching `ui.slang`'s `UiConstants`.
@@ -112,7 +131,7 @@ fn grown(needed: u64) -> u64 {
 /// The UI compositing renderer.
 ///
 /// Created once; `begin_frame` uploads the current frame's geometry, and
-/// `add_pass` inserts the draw pass into the graph.
+/// `add_passes` inserts the draw passes into the graph.
 #[derive(Debug)]
 pub struct UiRenderer {
     // Pipeline state
@@ -144,6 +163,12 @@ pub struct UiRenderer {
     // Element counts, for the draw call and for "is there anything to draw".
     last_vertex_count: Vec<usize>,
     last_index_count: Vec<usize>,
+
+    /// Where the overlay's indices start in [`Self::last_index_count`]'s range,
+    /// per frame in flight — [`crcbl_ui::draw_list::Triangles::overlay`] as the
+    /// upload left it. The one number that turns a frame's geometry into the
+    /// two ranges [`UiRenderer::add_passes`] draws.
+    last_overlay_index: Vec<usize>,
 
     /// The format the pipeline was built for. Dynamic rendering checks the
     /// pipeline's colour-target format against the attachment at pass-begin, so
@@ -279,6 +304,7 @@ impl UiRenderer {
         let mut constant_buffers = Vec::with_capacity(FRAMES_IN_FLIGHT);
         let mut last_vertex_count = Vec::with_capacity(FRAMES_IN_FLIGHT);
         let mut last_index_count = Vec::with_capacity(FRAMES_IN_FLIGHT);
+        let mut last_overlay_index = Vec::with_capacity(FRAMES_IN_FLIGHT);
         let mut vertex_capacity = Vec::with_capacity(FRAMES_IN_FLIGHT);
         let mut index_capacity = Vec::with_capacity(FRAMES_IN_FLIGHT);
         for _ in 0..FRAMES_IN_FLIGHT {
@@ -316,6 +342,7 @@ impl UiRenderer {
             frame_groups.push(bg);
             last_vertex_count.push(0);
             last_index_count.push(0);
+            last_overlay_index.push(0);
             vertex_capacity.push(INITIAL_RING_BYTES);
             index_capacity.push(INITIAL_RING_BYTES);
         }
@@ -386,6 +413,7 @@ impl UiRenderer {
             index_capacity,
             last_vertex_count,
             last_index_count,
+            last_overlay_index,
             target_format,
             destroyed: false,
         })
@@ -399,8 +427,13 @@ impl UiRenderer {
 
     /// Uploads the draw list's triangulated geometry and advances the ring.
     ///
-    /// Call once per frame before `add_pass`. If the draw list is empty, the
-    /// frame stores zero geometry and the pass will draw nothing.
+    /// Call once per frame before `add_passes`. If the draw list is empty, the
+    /// frame stores zero geometry and the passes draw nothing.
+    ///
+    /// **One expansion, both halves.** The list is tessellated once and the
+    /// index where [`DrawList::begin_overlay`] cut it comes back with the
+    /// geometry, so the two passes below share one upload and cannot disagree
+    /// about where the HUD ends.
     ///
     /// # Errors
     ///
@@ -415,7 +448,11 @@ impl UiRenderer {
         self.frame = (self.frame + 1) % FRAMES_IN_FLIGHT;
         let idx = self.frame;
 
-        let (vertices, indices) = draw_list.to_triangles(Some(atlas), scale);
+        let crcbl_ui::draw_list::Triangles {
+            vertices,
+            indices,
+            overlay,
+        } = draw_list.to_triangles_split(Some(atlas), scale);
 
         // Grow the ring buffers only when this frame genuinely needs more room.
         // Both sides of every comparison here are **bytes**.
@@ -468,6 +505,7 @@ impl UiRenderer {
         // stale indices (a Vulkan OOB index read).
         self.last_vertex_count[idx] = vertices.len();
         self.last_index_count[idx] = indices.len();
+        self.last_overlay_index[idx] = overlay;
 
         // Only a new vertex buffer needs a new bind group; the atlas and the
         // sampler never change, so a steady-state frame writes no descriptors.
@@ -490,33 +528,65 @@ impl UiRenderer {
         Ok(())
     }
 
-    /// The most passes [`add_pass`](Self::add_pass) adds to a frame.
+    /// The most passes [`add_passes`](Self::add_passes) adds to a frame.
     ///
-    /// The most rather than the count: a frame with an empty draw list adds
-    /// none. What a caller sizing [`PassTimers`](crate::timing::PassTimers) adds
-    /// up — see [`MAX_TIMED_PASSES`](crate::timing::MAX_TIMED_PASSES).
-    pub const MAX_PASSES: u32 = 1;
+    /// Two: the HUD half and the overlay half, either of which a frame can
+    /// leave empty — a frame with no menu and no console draws only the first,
+    /// and a frame with an empty draw list draws neither. The menu's own pass
+    /// is not counted here; it is
+    /// [`MenuRenderer::MAX_PASSES`](crate::menu::MenuRenderer::MAX_PASSES),
+    /// which [`MAX_TIMED_PASSES`](crate::timing::MAX_TIMED_PASSES) already adds
+    /// beside this one.
+    ///
+    /// The most rather than the count. What a caller sizing
+    /// [`PassTimers`](crate::timing::PassTimers) adds up — see
+    /// [`MAX_TIMED_PASSES`](crate::timing::MAX_TIMED_PASSES).
+    pub const MAX_PASSES: u32 = 2;
+
+    /// This frame's two index ranges: the HUD half, then the overlay half.
+    ///
+    /// **The one place the split is computed**, so
+    /// [`counters`](Self::counters) and [`add_passes`](Self::add_passes) cannot
+    /// disagree about which halves a frame draws — the pair the counters' docs
+    /// promise. Both are empty on a frame with nothing uploaded, and the second
+    /// is empty on a frame whose draw list was never cut.
+    fn segments(&self) -> (Range<u32>, Range<u32>) {
+        let idx = self.frame;
+        if self.last_vertex_count[idx] == 0 {
+            return (0..0, 0..0);
+        }
+        let total = self.last_index_count[idx] as u32;
+        // Clamped rather than trusted: the two ranges must partition the index
+        // buffer, and a cut past its end would otherwise hand the draw call a
+        // range the buffer does not hold.
+        let split = (self.last_overlay_index[idx] as u32).min(total);
+        (0..split, split..total)
+    }
 
     /// What the last [`begin_frame`](Self::begin_frame) left this pass to draw.
     ///
-    /// **Off the same two counts [`add_pass`](Self::add_pass) branches on**, so
-    /// a frame this reports as recording nothing is a frame that adds no pass,
-    /// and the two cannot disagree.
+    /// **Off `segments`, the same two index ranges
+    /// [`add_passes`](Self::add_passes) branches on**, so a half this reports as
+    /// drawn is a half that gets a pass and the two cannot disagree. One draw of
+    /// one instance per non-empty half: a frame with no overlay on it reports
+    /// one, a paused frame reports two, and an empty draw list reports nothing.
     ///
-    /// One draw of one instance, covering the triangles of the index list this
-    /// pass wrote — `draw_list.to_triangles` produced it and the pipeline's
+    /// The triangles are the index counts of the halves actually drawn —
+    /// `draw_list.to_triangles_split` produced them and the pipeline's
     /// `PrimitiveState::default()` is a triangle list, so the count is a
     /// division and not an estimate.
     #[must_use]
     pub fn counters(&self) -> FrameCounters {
-        if self.last_vertex_count[self.frame] == 0 || self.last_index_count[self.frame] == 0 {
+        let (below, above) = self.segments();
+        let draws = u64::from(!below.is_empty()) + u64::from(!above.is_empty());
+        if draws == 0 {
             return FrameCounters::default();
         }
         FrameCounters {
-            draws: 1,
-            instances: 1,
-            drawn: Some(1),
-            triangles: Some(self.last_index_count[self.frame] as u64 / 3),
+            draws,
+            instances: draws,
+            drawn: Some(draws),
+            triangles: Some((below.len() + above.len()) as u64 / 3),
             // No cluster geometry and no readback: a known zero and no second
             // lag to declare — see [`crate::counters`].
             clusters: Some(0),
@@ -524,10 +594,29 @@ impl UiRenderer {
         }
     }
 
-    /// Adds the UI compositing pass to `graph`, drawing on top of `target`.
+    /// Adds the whole UI sandwich to `graph`, drawing on top of `target`.
     ///
-    /// The pass reads nothing except its own vertex buffer; it blends onto the
-    /// target using alpha blending. Call after the tonemap pass.
+    /// In order: `ui-composite` for the commands below
+    /// [`DrawList::begin_overlay`]'s cut — the game's HUD and GUI — then
+    /// `menu`'s own sprite pass, then `ui-overlay` for the commands above it —
+    /// the menu's labels, the debug panel and the console. **That is the layer
+    /// order the whole engine draws in**, and it is one call so that no caller
+    /// can express any other one: a sample that added the menu pass itself
+    /// could only add it before or after the entire draw list, and drawing the
+    /// HUD over a pause menu is exactly what that used to do.
+    ///
+    /// A half with no triangles in it adds **no pass at all** rather than an
+    /// empty one, the rule this pass has always had — so an unpaused frame with
+    /// the console closed still records exactly one pass, named as it always
+    /// was.
+    ///
+    /// `menu` is optional for the one caller that has no menu to draw between
+    /// the halves: `crcbl`'s offscreen screenshot fixture renders a draw list
+    /// with no game and no engine loop behind it. Passing `None` keeps the
+    /// halves and their order, and simply leaves the filling out.
+    ///
+    /// Each pass reads nothing except its own vertex buffer; both blend onto
+    /// the target using alpha blending. Call after the tonemap pass.
     ///
     /// `extent` is the target's size in pixels, which the shader divides by to
     /// reach NDC. It is *not* used to set the viewport or the scissor: the
@@ -536,16 +625,39 @@ impl UiRenderer {
     /// body that set them again could only disagree with it.
     ///
     /// `extent` is also the *only* source of the viewport constants, which is
-    /// why the uniform buffer is written here rather than in
+    /// why the uniform buffer is written in the pass body rather than in
     /// [`begin_frame`](Self::begin_frame): a second extent taken a second time
     /// is a second thing that can disagree.
-    pub fn add_pass<'a>(
+    pub fn add_passes<'a>(
         &'a self,
         graph: &mut RenderGraph<'a>,
         target: ImageId,
         extent: (u32, u32),
+        menu: Option<&'a MenuRenderer>,
     ) {
-        if self.last_vertex_count[self.frame] == 0 || self.last_index_count[self.frame] == 0 {
+        let (below, above) = self.segments();
+        self.add_segment(graph, target, extent, "ui-composite", below);
+        if let Some(menu) = menu {
+            menu.add_pass(graph, target);
+        }
+        self.add_segment(graph, target, extent, "ui-overlay", above);
+    }
+
+    /// Adds one half of the draw list as one render pass, or nothing if the
+    /// half is empty.
+    ///
+    /// Both halves index the *same* vertex and index buffers — the shader reads
+    /// `vertices[SV_VertexID]` and the index values are absolute — so a half is
+    /// a range of the frame's one upload rather than a second one.
+    fn add_segment<'a>(
+        &'a self,
+        graph: &mut RenderGraph<'a>,
+        target: ImageId,
+        extent: (u32, u32),
+        label: &'static str,
+        segment: Range<u32>,
+    ) {
+        if segment.is_empty() {
             return; // nothing to draw
         }
 
@@ -553,11 +665,10 @@ impl UiRenderer {
         let pipeline_layout = self.pipeline_layout;
         let bg = self.frame_groups[self.frame];
         let index_buffer = self.index_buffers[self.frame];
-        let index_count = self.last_index_count[self.frame] as u32;
         let constants = self.constant_buffers[self.frame];
 
         graph
-            .add_render_pass("ui-composite")
+            .add_render_pass(label)
             // Draw on top of the tonemapped target with alpha blending.
             .color(target, LoadOp::Load, StoreOp::Store, Default::default())
             .execute(move |ctx| {
@@ -581,7 +692,7 @@ impl UiRenderer {
                 encoder.bind_graphics_pipeline(pipeline);
                 encoder.bind_group(0, bg, &[], pipeline_layout);
                 encoder.bind_index_buffer(index_buffer, 0, IndexFormat::Uint32);
-                encoder.draw_indexed(0..index_count, 0, 0..1);
+                encoder.draw_indexed(segment.clone(), 0, 0..1);
             });
     }
 
@@ -1242,6 +1353,199 @@ mod tests {
         renderer.destroy(device.as_ref());
         assert_eq!(recorder.total_live_objects(), before);
         recorder.assert_valid();
+    }
+
+    // -----------------------------------------------------------------------
+    // The sandwich
+    // -----------------------------------------------------------------------
+
+    /// A pause menu, laid out for `extent`, as `apps/*/src/menu.rs` builds one.
+    fn pause_menu() -> crcbl_ui::menu::Menu {
+        use crcbl_ui::menu::{Menu, MenuItem};
+        Menu::new(
+            "PAUSED",
+            vec![
+                MenuItem::new(1, "RESUME", "ESC"),
+                MenuItem::new(2, "QUIT", ""),
+            ],
+        )
+    }
+
+    /// A draw list shaped like a paused frame: a HUD bar, the cut, then two
+    /// lines of overlay text.
+    fn paused_list() -> DrawList {
+        let mut list = DrawList::new();
+        list.rect(
+            glam::Vec2::new(0.0, 0.0),
+            glam::Vec2::new(64.0, 8.0),
+            [1.0; 4],
+        );
+        list.begin_overlay();
+        list.text(glam::Vec2::new(8.0, 40.0), "PAUSED", [1.0; 4], 14.0);
+        list.text(glam::Vec2::new(8.0, 56.0), "RESUME", [1.0; 4], 14.0);
+        list
+    }
+
+    /// **The menu is drawn between the two halves of the draw list, and the two
+    /// halves partition the index buffer.**
+    ///
+    /// The whole slice, in one frame: the pass labels come out of the compiled
+    /// graph in execution order, and the index ranges come out of the recorded
+    /// draw calls — so a swap of the two `add_segment` calls fails the labels,
+    /// and a range that overlapped or left a gap fails the arithmetic. The
+    /// ranges are asserted against each other and against the frame's own index
+    /// count rather than against literals, which is what keeps the test about
+    /// the partition instead of about the glyph layout.
+    #[test]
+    fn the_menu_pass_sits_between_the_two_halves_of_the_draw_list() {
+        use crate::graph::{CompiledPass, RenderGraph};
+        use crate::transient::{TransientImageDesc, TransientPool};
+        use crcbl_hal::null::{Command, Event};
+        use crcbl_hal::{CommandEncoderDesc, Format as HalFormat, ImageUsage};
+
+        const EXTENT: (u32, u32) = (128, 96);
+
+        let (recorder, device, queue) = open_recorded();
+        let mut pool = TransientPool::new();
+        let mut ui =
+            UiRenderer::new(device.as_ref(), queue, Format::Bgra8UnormSrgb).expect("built");
+        let mut menu = MenuRenderer::new(device.as_ref(), queue, Format::Bgra8UnormSrgb)
+            .expect("the null backend accepts the sprite pipeline and the sheet");
+
+        let atlas = FontAtlas::built_in();
+        let list = paused_list();
+        let panel = pause_menu();
+        let layout = panel.layout(EXTENT, &atlas);
+        menu.set_menu(Some((&panel, &layout)));
+        menu.begin_frame(device.as_ref(), EXTENT)
+            .expect("the instance and constant buffers are writable");
+        ui.begin_frame(device.as_ref(), &list, &atlas, 1.0)
+            .expect("upload");
+
+        let total = ui.last_index_count[ui.frame] as u32;
+        let split = ui.last_overlay_index[ui.frame] as u32;
+        assert!(
+            split > 0 && split < total,
+            "the fixture must put geometry on both sides of the cut: {split} of {total}"
+        );
+
+        // The uploads are start-up and per-frame CPU work; what is under test is
+        // the passes the frame records.
+        recorder.clear();
+
+        let mut graph = RenderGraph::new(queue);
+        let target = graph.create_image(
+            "target",
+            TransientImageDesc::new(
+                EXTENT,
+                HalFormat::Bgra8UnormSrgb,
+                ImageUsage::COLOR_ATTACHMENT,
+            ),
+        );
+        ui.add_passes(&mut graph, target, EXTENT, Some(&menu));
+        let compiled = graph.compile(&pool).expect("a legal frame");
+
+        let labels: Vec<&str> = compiled.passes().iter().map(CompiledPass::label).collect();
+        assert_eq!(
+            labels,
+            ["ui-composite", "sprites", "ui-overlay"],
+            "the menu's sprite pass belongs between the HUD half and the overlay half"
+        );
+
+        let mut encoder = device.create_command_encoder(&CommandEncoderDesc {
+            label: Some("ui sandwich"),
+            queue,
+        });
+        compiled
+            .execute(device.as_ref(), &mut pool, encoder.as_mut(), None)
+            .expect("the graph executed");
+
+        // The recorder sees a command stream only once the encoder is finished
+        // — the shape `tests/ui_pass_stream.rs` reads it in.
+        let commands = encoder.finish().expect("recording succeeded");
+
+        let drawn: Vec<std::ops::Range<u32>> = recorder
+            .commands()
+            .into_iter()
+            .filter_map(|command| match command {
+                Command::DrawIndexed { indices, .. } => Some(indices),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            drawn,
+            vec![0..split, split..total],
+            "the two halves must partition the frame's one index buffer"
+        );
+
+        // Both halves are drawn out of the *same* upload — the assertion that
+        // separates a split pass from a second tessellation.
+        let writes = recorder
+            .events()
+            .into_iter()
+            .filter(|event| matches!(event, Event::BufferWritten { .. }))
+            .count();
+        assert_eq!(
+            writes, 2,
+            "one viewport-constants write per pass and no second geometry \
+             upload: the tessellation happened before the frame"
+        );
+
+        let counters = ui.counters();
+        assert_eq!(counters.draws, 2, "one draw per half");
+        assert_eq!(counters.drawn, Some(2));
+        assert_eq!(
+            counters.triangles,
+            Some(u64::from(total) / 3),
+            "and every triangle in the buffer is in one half or the other"
+        );
+
+        device.destroy_command_buffer(commands);
+        menu.destroy(device.as_ref());
+        ui.destroy(device.as_ref());
+        pool.destroy(device.as_ref());
+    }
+
+    /// A frame with nothing above the cut records **one** pass, named as it
+    /// always was — the unpaused case every sample spends its life in, and the
+    /// reason every existing `contains("ui-composite")` assertion still holds.
+    #[test]
+    fn an_uncut_draw_list_is_still_one_ui_composite_pass() {
+        use crate::graph::{CompiledPass, RenderGraph};
+        use crate::transient::{TransientImageDesc, TransientPool};
+        use crcbl_hal::{Format as HalFormat, ImageUsage};
+
+        const EXTENT: (u32, u32) = (128, 96);
+
+        let (device, queue) = open();
+        let mut pool = TransientPool::new();
+        let mut ui =
+            UiRenderer::new(device.as_ref(), queue, Format::Bgra8UnormSrgb).expect("built");
+        let atlas = FontAtlas::built_in();
+        let mut list = DrawList::new();
+        list.text(glam::Vec2::new(4.0, 4.0), "SCORE", [1.0; 4], 14.0);
+        ui.begin_frame(device.as_ref(), &list, &atlas, 1.0)
+            .expect("upload");
+
+        let mut graph = RenderGraph::new(queue);
+        let target = graph.create_image(
+            "target",
+            TransientImageDesc::new(
+                EXTENT,
+                HalFormat::Bgra8UnormSrgb,
+                ImageUsage::COLOR_ATTACHMENT,
+            ),
+        );
+        ui.add_passes(&mut graph, target, EXTENT, None);
+        let compiled = graph.compile(&pool).expect("a legal frame");
+
+        let labels: Vec<&str> = compiled.passes().iter().map(CompiledPass::label).collect();
+        assert_eq!(labels, ["ui-composite"]);
+        assert_eq!(ui.counters().draws, 1, "one half, one draw");
+
+        drop(compiled);
+        ui.destroy(device.as_ref());
+        pool.destroy(device.as_ref());
     }
 
     /// A frame that grows its ring rebuilds a bind group that still names the

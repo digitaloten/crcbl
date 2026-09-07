@@ -22,6 +22,7 @@
 use crate::harness::Headless;
 use crate::sprite::{
     FrameStaging, SPRITE_CLEAR, background_rgb, close, report_goldens, rgb, sprite_golden,
+    srgb_byte,
 };
 use crcbl::hal::{CommandEncoderDesc, PresentInfo, ResourceState, SubmitInfo};
 
@@ -238,6 +239,216 @@ fn the_shared_menu_keeps_its_frame_at_two_panel_sizes_and_two_shapes() {
     assert_menu_pixels(&wide_image, &wide_layout, MENU_WIDE_EXTENT);
     assert_menu_corners_match(&tall_image, &tall_layout, &wide_image, &wide_layout);
     report_goldens(vec![verdict]);
+}
+
+// ---------------------------------------------------------------------------
+// The layer order, as pixels
+// ---------------------------------------------------------------------------
+
+/// The colour both marker rectangles are drawn in — full white, so the scrim's
+/// black tint has the whole range to move it through.
+const MARKER: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
+/// One marker rectangle's size in pixels, and the inset of its corner from the
+/// framebuffer's.
+///
+/// Small, because the panel fills most of a 416x352 frame and both squares have
+/// to sit in the margin outside it — the test asserts that they do rather than
+/// assuming it, so a layout change fails here instead of quietly sampling the
+/// window frame.
+const MARKER_SIZE: f32 = 12.0;
+/// See [`MARKER_SIZE`].
+const MARKER_INSET: f32 = 2.0;
+
+/// Renders one paused frame **through the real `UiRenderer` sandwich**: a clear,
+/// the draw list's HUD half, the menu's sprites, then the draw list's overlay
+/// half.
+///
+/// Two identical white squares go into the draw list, one either side of
+/// `DrawList::begin_overlay`: the left one is HUD and must end up under the
+/// scrim, the right one is overlay and must not. Their positions are returned
+/// with the frame so the assertions sample the rectangles the list actually
+/// asked for.
+fn render_paused_frame(
+    headless: &Headless,
+    ui: &mut crcbl::render::UiRenderer,
+    menu: &mut crcbl::render::MenuRenderer,
+    pool: &mut crcbl::render::TransientPool,
+    extent: (u32, u32),
+) -> (crcbl_golden::Image, [glam::Vec2; 2], [glam::Vec2; 2]) {
+    use crcbl::render::RenderGraph;
+    use crcbl::ui::draw_list::DrawList;
+
+    let device = headless.device.as_ref();
+    let acquired = device
+        .acquire_next_frame(headless.swapchain)
+        .expect("the ring always has an image");
+    assert_eq!(acquired.extent, extent);
+    let staging = FrameStaging::new(device, extent);
+
+    let hud = [
+        glam::Vec2::splat(MARKER_INSET),
+        glam::Vec2::splat(MARKER_INSET + MARKER_SIZE),
+    ];
+    let overlay = [
+        glam::Vec2::new(extent.0 as f32 - MARKER_INSET - MARKER_SIZE, MARKER_INSET),
+        glam::Vec2::new(extent.0 as f32 - MARKER_INSET, MARKER_INSET + MARKER_SIZE),
+    ];
+
+    let mut list = DrawList::new();
+    list.rect(hud[0], hud[1], MARKER);
+    // Exactly what `crcbl::engine`'s frame does between the game's draw and the
+    // menu's labels.
+    list.begin_overlay();
+    list.rect(overlay[0], overlay[1], MARKER);
+
+    let atlas = crcbl::render::FontAtlas::built_in();
+    menu.begin_frame(device, extent)
+        .expect("the instance and constant buffers are writable");
+    ui.begin_frame(device, &list, &atlas, 1.0)
+        .expect("the geometry uploads");
+
+    let mut encoder = device.create_command_encoder(&CommandEncoderDesc {
+        label: Some("paused frame"),
+        queue: headless.queue,
+    });
+
+    let compiled = {
+        let mut graph = RenderGraph::new(headless.queue);
+        let target = graph.import_image(
+            "swapchain",
+            crcbl::render::ImportedImage {
+                image: acquired.image,
+                view: acquired.view,
+                format: headless.format,
+                extent,
+                initial: ResourceState::Undefined,
+                claim: crcbl::render::InitialClaim::Acquired,
+                final_state: ResourceState::TransferSrc,
+            },
+        );
+        graph
+            .add_render_pass("menu background")
+            .clear_color(target, SPRITE_CLEAR)
+            .execute(|_| {});
+        ui.add_passes(&mut graph, target, extent, Some(menu));
+        graph.compile(&*pool).expect("a legal frame")
+    };
+    assert_eq!(
+        compiled
+            .passes()
+            .iter()
+            .map(crcbl::render::CompiledPass::label)
+            .collect::<Vec<_>>(),
+        ["menu background", "ui-composite", "sprites", "ui-overlay"],
+        "the frame under test is the sandwich, not two passes in the old order"
+    );
+    compiled
+        .execute(device, pool, encoder.as_mut(), None)
+        .expect("the graph executed");
+
+    staging.copy_from(encoder.as_mut(), acquired.image);
+    let commands = encoder.finish().expect("recording succeeded");
+    device
+        .submit(headless.queue, &SubmitInfo::new(&[commands]))
+        .expect("submit");
+    device
+        .present(
+            headless.queue,
+            &PresentInfo {
+                swapchain: headless.swapchain,
+                waits: acquired.present_semaphore.as_slice(),
+                present_id: None,
+            },
+        )
+        .expect("present");
+
+    let image = staging.read(headless);
+    device.destroy_command_buffer(commands);
+    (image, hud, overlay)
+}
+
+/// **The pause menu draws over the HUD and under its own labels — in pixels.**
+///
+/// Two identical white squares, one on each side of the draw list's overlay cut,
+/// both outside the panel so the only thing that can touch them is the scrim.
+/// The HUD square must come back dimmed and the overlay square must come back
+/// white; before this slice the whole draw list was one pass *after* the menu
+/// and both squares read white, which is the bug a player saw as "the pause menu
+/// is behind the UI".
+///
+/// The two are compared against each other as well as against the scrim's own
+/// arithmetic, so a frame that dimmed *both* — a sandwich assembled the other
+/// way round — fails on the difference rather than sliding under a tolerance.
+#[test]
+#[ignore = "needs a real GPU and a backend pin; run tests/run-sprite-e2e.sh"]
+fn the_menu_dims_the_hud_and_leaves_the_overlay_alone() {
+    let style = crcbl::render::MenuStyle::pixel_art(MENU_SCALE);
+    let atlas = crcbl::render::FontAtlas::built_in();
+    let panel = golden_pause_menu();
+    let layout = panel.layout_with(MENU_TALL_EXTENT, &atlas, &style);
+
+    let headless = Headless::open_for_sprites_at(MENU_TALL_EXTENT);
+    let mut pool = crcbl::render::TransientPool::new();
+    let mut menu =
+        crcbl::render::MenuRenderer::new(headless.device.as_ref(), headless.queue, headless.format)
+            .expect("the menu renderer builds");
+    let mut ui =
+        crcbl::render::UiRenderer::new(headless.device.as_ref(), headless.queue, headless.format)
+            .expect("the UI renderer builds");
+    menu.set_menu(Some((&panel, &layout)));
+
+    let (image, hud, overlay) =
+        render_paused_frame(&headless, &mut ui, &mut menu, &mut pool, MENU_TALL_EXTENT);
+
+    ui.destroy(headless.device.as_ref());
+    menu.destroy(headless.device.as_ref());
+    pool.destroy(headless.device.as_ref());
+    headless.finish();
+
+    // Neither square may touch the panel, or the comparison would be about the
+    // window frame instead of about the scrim.
+    let [px0, py0, px1, py1] = panel_pixels(&layout);
+    for (name, rect) in [("hud", hud), ("overlay", overlay)] {
+        let (x0, y0) = (rect[0].x as u32, rect[0].y as u32);
+        let (x1, y1) = (rect[1].x as u32, rect[1].y as u32);
+        assert!(
+            x1 <= px0 || x0 >= px1 || y1 <= py0 || y0 >= py1,
+            "the {name} square {x0}..{x1}, {y0}..{y1} overlaps the panel \
+             {px0}..{px1}, {py0}..{py1}"
+        );
+    }
+
+    let sample = |rect: [glam::Vec2; 2]| {
+        rgb(
+            &image,
+            (rect[0].x + rect[1].x) as u32 / 2,
+            (rect[0].y + rect[1].y) as u32 / 2,
+        )
+    };
+    let under = sample(hud);
+    let over = sample(overlay);
+
+    // The overlay square is untouched white — the anti-blank half: a frame that
+    // drew no UI at all would leave the clear colour here and fail this first.
+    assert!(
+        close(over, [0xff, 0xff, 0xff], 2),
+        "the overlay square must be full white, got {over:?}"
+    );
+    // And the HUD square is white through the scrim. `MenuStyle`'s scrim is
+    // black at its own alpha, blended in linear light because the target is an
+    // sRGB format, so the expected value is that blend rather than a number
+    // written down here.
+    let scrim_alpha = layout.style().scrim_color[3];
+    let expected = srgb_byte(1.0 - scrim_alpha);
+    assert!(
+        close(under, [expected; 3], 4),
+        "the HUD square must be white dimmed by the scrim ({expected}), got {under:?}"
+    );
+    assert!(
+        i32::from(under[0]) + 16 < i32::from(over[0]),
+        "the two squares must differ: under {under:?}, over {over:?}"
+    );
 }
 
 /// What one half of the menu golden claims on its own: the panel is where the

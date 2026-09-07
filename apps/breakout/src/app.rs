@@ -864,6 +864,54 @@ mod tests {
             .collect()
     }
 
+    /// **A paused frame draws the pause menu over the HUD, and the graph says
+    /// so.**
+    ///
+    /// The whole layer order, as pass labels in declaration order: the board's
+    /// clear, the game's sprites, the HUD half of the draw list, the menu's own
+    /// sprite pass, then the overlay half the panel's title and labels are in.
+    /// `ui-composite` used to be *last* — the entire draw list in one pass after
+    /// the menu — which is what painted the score over the pause panel.
+    ///
+    /// Asserted as the ordered list of labels rather than as `contains`, because
+    /// what is wrong about the old frame is only the order.
+    #[test]
+    fn a_paused_frame_puts_the_menu_between_the_hud_and_the_panels_labels() {
+        let mut engine = scripted(&headless(16));
+        let window = engine.window();
+        engine.frame().expect("a frame");
+
+        engine
+            .shell_mut()
+            .key_press(window, PAUSE_KEY)
+            .expect("the window is live");
+        engine
+            .shell_mut()
+            .key_release(window, PAUSE_KEY)
+            .expect("the window is live");
+        engine.frame().expect("a frame");
+        assert!(engine.is_paused(), "the frame under test is a paused one");
+
+        let dump = engine.gpu().last_dump();
+        let labels: Vec<&str> = dump
+            .lines()
+            .filter_map(|line| line.split(" pass ").nth(1))
+            .filter_map(|rest| rest.split('"').nth(1))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "surround",
+                "sprites",
+                "ui-composite",
+                "sprites",
+                "ui-overlay"
+            ],
+            "the paused frame's passes, in declaration order:\n{dump}"
+        );
+        engine.finish(ExitReason::FrameBudget).expect("teardown");
+    }
+
     /// **Switching the panel on is one thing, and it works through the real
     /// loop.** F3 arrives as an ordinary shell key event and the very next
     /// frame's draw list gains the frame section; F3 again and it is gone. The

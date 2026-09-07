@@ -4560,10 +4560,22 @@ pub trait GameGpu: GpuSurface + Sized {
     fn atlas(&self) -> &crcbl_ui::FontAtlas;
 
     /// Takes this frame's menu, or `None` on a frame that shows none.
+    ///
+    /// The menu's **art** only — the scrim, the window frame and the button
+    /// skins, which are sprites. Its title and labels are text and arrive in the
+    /// draw list instead, above the cut
+    /// [`DrawList::begin_overlay`](crcbl_ui::draw_list::DrawList::begin_overlay)
+    /// takes, so the compositor draws them over the art rather than under it.
     fn set_menu(&mut self, menu: Option<(&crcbl_ui::menu::Menu, &crcbl_ui::menu::MenuLayout)>);
 
     /// Takes this frame's UI geometry, handing the previous frame's allocation
     /// back so the loop can refill it instead of building a new one.
+    ///
+    /// The list arrives already cut in two: the game's own HUD below the cut,
+    /// and the menu's labels, the debug overlay and the console above it. A
+    /// bundle passes the whole list to
+    /// [`UiRenderer::begin_frame`](crcbl_render::UiRenderer::begin_frame) and
+    /// the cut travels with it.
     fn take_draw_list(&mut self, list: &mut crcbl_ui::draw_list::DrawList);
 
     /// The most recent pass timings, or `None` on a device without timestamp
@@ -6333,6 +6345,13 @@ impl<S: Shell + ?Sized, G: HostedGame> Loop<S, G> {
         };
         self.draw_list.clear();
         self.game.draw(&mut self.gpu, &mut self.draw_list, info);
+        // **Everything after this line draws over the menu.** The UI pass cuts
+        // the draw list here and puts the menu's art — the scrim, the window
+        // frame, the button skins — between the two halves, so the game's HUD
+        // goes under the scrim while the panel's own labels, the debug overlay
+        // and the console stay legible on top of it. See
+        // `crcbl_ui::draw_list::DrawList::begin_overlay`.
+        self.draw_list.begin_overlay();
         self.draw_menu();
         self.draw_debug_overlay();
         // **Last, so nothing covers it** — plan decision 6. The overlay is a
@@ -6611,6 +6630,9 @@ impl<S: Shell + ?Sized, G: HostedGame> Loop<S, G> {
     /// nine-sliced sprites and go to the menu pass through
     /// [`GameGpu::set_menu`]; the title and the labels are text and go to the
     /// UI pass through the draw list.
+    ///
+    /// Both land **above** the cut the caller took before calling this, so the
+    /// menu's art covers the game's HUD and the menu's own text covers its art.
     fn draw_menu(&mut self) {
         let kind = self.game.menu_kind(&mut self.menus, self.paused);
         // A panel that has been replaced takes the press with it, the same way
@@ -15312,6 +15334,62 @@ mod tests {
             engine.game.scrolls.is_empty(),
             "and the game got the wheel as well: {:?}",
             engine.game.scrolls,
+        );
+    }
+
+    /// **The game's HUD is below the overlay cut and everything the loop draws
+    /// after it is above** — which is what puts a pause menu over a HUD instead
+    /// of under it.
+    ///
+    /// [`FakeGame::draw`] pushes exactly one rectangle, so the half below the
+    /// cut is countable; the menu's own title and its item's label are text and
+    /// must land in the half above, together with the debug overlay. Asserted as
+    /// a partition — the two halves add back up to the whole list — so a marker
+    /// that recorded zero fails the first count and one taken after
+    /// [`Loop::draw_menu`] fails it the other way, with the menu's commands
+    /// counted as HUD.
+    #[test]
+    fn the_games_hud_is_below_the_cut_and_the_loops_own_drawing_is_above_it() {
+        let mut engine = hosted(None);
+        // The panel as well, so the half above the cut is more than the menu's
+        // own labels and a marker that landed between the two would still fail.
+        engine.debug.toggle();
+        tap(&mut engine, PAUSE_KEY);
+        step(&mut engine);
+        assert!(engine.paused, "the frame under test is a paused one");
+        assert!(engine.gpu.had_menu, "and one with a menu's art on it");
+
+        let list = &engine.gpu.draw_list;
+        assert_eq!(
+            list.base_commands().len(),
+            1,
+            "the game drew one rectangle and nothing else belongs under the \
+             menu's scrim: {:?}",
+            list.base_commands(),
+        );
+        assert_eq!(
+            list.base_commands().len() + list.overlay_commands().len(),
+            list.len(),
+            "the two halves must be the whole list",
+        );
+
+        let above: Vec<&str> = list
+            .overlay_commands()
+            .iter()
+            .filter_map(|command| match command {
+                crcbl_ui::draw_list::DrawCommand::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for label in ["PAUSED", "RESUME"] {
+            assert!(
+                above.contains(&label),
+                "the menu's own text must draw over its art: {above:?}",
+            );
+        }
+        assert!(
+            above.contains(&"frame"),
+            "and so must the debug panel: {above:?}",
         );
     }
 

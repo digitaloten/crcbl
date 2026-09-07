@@ -47,13 +47,16 @@
 //! ```
 //!
 //! [`RenderGraph`](crate::RenderGraph) runs passes in **declaration order** —
-//! there is no topological sort, and `SpriteRenderer::add_pass` and
-//! `UiRenderer::add_pass` both load rather than clear. So
-//! `SpriteRenderer::add_pass` must be called **before** `UiRenderer::add_pass`
-//! or the skin paints over its own text. Nothing enforces it but the order of
-//! two lines; `apps/breakout/src/gpu.rs` and `apps/flappy/src/gpu.rs` today add
-//! the forward passes and then the UI pass, and the sprite pass goes between
-//! them.
+//! there is no topological sort, and `SpriteRenderer::add_pass` and the UI
+//! compositor's passes all load rather than clear. So the sprite pass carrying
+//! the skin must be declared **before** the UI pass carrying the label, or the
+//! skin paints over its own text. For the shared menu nothing can get that
+//! wrong any more: [`MenuRenderer`](crate::menu::MenuRenderer)'s pass is
+//! declared by [`UiRenderer::add_passes`](crate::ui_pass::UiRenderer::add_passes)
+//! itself, between the HUD half of the draw list and the overlay half the menu's
+//! labels are in. A game skinning buttons of its own still owns the join, and
+//! `apps/breakout/src/gpu.rs` and `apps/flappy/src/gpu.rs` show the shape: the
+//! scene's passes, then the game's sprite pass, then the UI sandwich.
 //!
 //! The other half of the join is layout. [`crcbl_ui::Button`] cannot name a
 //! sheet or a [`NineSlice`](crcbl_sprite::NineSlice) — `crcbl-render` depends

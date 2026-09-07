@@ -1136,10 +1136,14 @@ uncertainty.
   instanced RGBA pass with alpha blending, and a skinned button is nine sprites.
   _The cost paid_: the caller owns the ordering. `RenderGraph` runs passes in
   declaration order with no topological sort, and both passes load rather than
-  clear, so `SpriteRenderer::add_pass` must precede `UiRenderer::add_pass` or a
-  skin paints over its own label — enforced by nothing but the order of two
-  lines. _Changes it_: a UI element needing colour art _interleaved_ with text
-  rather than behind it, which two passes cannot express at any ordering.
+  clear, so the sprite pass carrying a skin must precede the UI pass carrying
+  its label or the skin paints over its own words. For the **shared menu** that
+  is no longer a caller's job: `UiRenderer::add_passes` declares
+  `MenuRenderer`'s pass itself, between the two halves of the draw list, and a
+  sample cannot express any other order. A game skinning buttons of its own
+  still pays it, enforced by nothing but the order of two lines. _Changes it_: a
+  UI element needing colour art _interleaved_ with text rather than behind it,
+  which two passes cannot express at any ordering.
 
 - **A fixed backdrop for breakout, or a parallax band?** Taken: **fixed.**
   _(Moved here from Considered and declined — it is a judgement about this

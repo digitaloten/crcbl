@@ -167,9 +167,9 @@ pub struct Gpu {
     draw_list: DrawList,
     dumped: bool,
     /// The last frame's graph dump, kept only for the loop's own tests: it is
-    /// how a test sees whether the UI pass was in the frame at all. `add_pass`
-    /// declares nothing when the draw list is empty, so the pass's presence in
-    /// this string *is* "the UI reached the GPU".
+    /// how a test sees whether the UI pass was in the frame at all.
+    /// `add_passes` declares nothing when the draw list is empty, so the pass's
+    /// presence in this string *is* "the UI reached the GPU".
     #[cfg(test)]
     last_dump: String,
 }
@@ -413,14 +413,12 @@ impl Gpu {
                 .clear_color(target, SURROUND)
                 .execute(|_| {});
             self.sprites.add_pass(&mut graph, target);
-            // **Between the board and the text, and that order is the whole
-            // join.** The menu's scrim dims what is already in the target, so it
-            // has to come after the board; the panel is opaque and the labels
-            // are UI-pass text, so it has to come before the UI or the frame
-            // paints over its own words.
-            self.menu.add_pass(&mut graph, target);
-            // Composite the UI on top of the board.
-            self.ui.add_pass(&mut graph, target, extent);
+            // One call for the whole sandwich: the game's HUD, the menu's art
+            // over it, then the menu's own labels, the debug overlay and the
+            // console over that. `UiRenderer::add_passes` owns the order so no
+            // sample can express another one.
+            self.ui
+                .add_passes(&mut graph, target, extent, Some(&self.menu));
             graph.compile(&self.pool)?
         };
 

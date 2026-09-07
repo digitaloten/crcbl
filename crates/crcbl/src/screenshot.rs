@@ -7292,7 +7292,11 @@ impl OffscreenSetup {
                         .add_render_pass("scene background")
                         .clear_color(target, SCENE_CLEAR)
                         .execute(|_| {});
-                    renderer.add_pass(&mut graph, target, extent);
+                    // `None`: this fixture has no menu to sandwich between the
+                    // draw list's two halves, and `ui_draw_list` never cuts the
+                    // list — so the frame is the one `ui-composite` pass it has
+                    // always been.
+                    renderer.add_passes(&mut graph, target, extent, None);
                 }
             }
             graph.compile(&self.pool)?
@@ -8051,7 +8055,7 @@ mod tests {
     /// import — so the passes the device actually executed are the observable
     /// that says the right one ran. A `Sprite` frame that quietly drew a cube,
     /// or a `Ui` frame whose composite pass dropped out because
-    /// [`UiRenderer::add_pass`](crate::render::UiRenderer::add_pass) found
+    /// [`UiRenderer::add_passes`](crate::render::UiRenderer::add_passes) found
     /// nothing to draw, both hand back the same pixel count and the same `Ok`.
     ///
     /// This test replaced one that opened the null backend, hand-rolled a

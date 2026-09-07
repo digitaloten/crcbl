@@ -2604,8 +2604,12 @@ mod tests {
             "the panel's numbers are this document's: {drawn:?}",
         );
         assert_eq!(row_value(&drawn, "skipped"), "0");
+        // `ui-overlay`, not `ui-composite`: the debug panel is the engine's and
+        // is drawn above the cut the UI pass puts the menu's art at, so it
+        // composites over a pause panel rather than under it. The listing
+        // below is the *game*'s UI and lands in the other half.
         assert!(
-            engine.gpu().last_dump().contains("ui-composite"),
+            engine.gpu().last_dump().contains("ui-overlay"),
             "the panel must be composited, not merely drawn:\n{}",
             engine.gpu().last_dump(),
         );

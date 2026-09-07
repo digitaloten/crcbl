@@ -54,7 +54,7 @@ pub use debug::{
     DEFAULT_FRAME_WINDOW, DebugModule, DebugOverlay, DebugPanel, DebugRow, DebugSection,
     DebugStyle, FrameStats,
 };
-pub use draw_list::{DrawCommand, DrawList, Vertex2d};
+pub use draw_list::{DrawCommand, DrawList, Triangles, Vertex2d};
 pub use hud::{Anchor, Hud, HudPanel};
 pub use menu::{
     BUTTON_INSETS, Cycler, FIT_FRACTION, Menu, MenuItem, MenuItemKind, MenuItemLayout, MenuLayout,

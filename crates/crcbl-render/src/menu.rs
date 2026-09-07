@@ -73,9 +73,14 @@
 //! sample and no extra draw on a frame with no menu:
 //! [`SpriteRenderer::add_pass`] declares nothing when there are no sprites.
 //!
-//! **Declaration order is execution order.** The menu pass must be added after
-//! the game's sprite pass and *before* the UI pass, or the scrim dims the menu's
-//! own frame and the panel paints over its own labels.
+//! **Declaration order is execution order, and no caller declares this one.**
+//! The menu pass belongs *between* the two halves of the UI pass: after the
+//! game's sprite pass and after the HUD half, so the scrim dims the game rather
+//! than the menu's own frame; before the overlay half, so the panel does not
+//! paint over its own labels. Both neighbours are the UI compositor's, so
+//! [`crate::ui_pass::UiRenderer::add_passes`] adds all three in one call and
+//! this type's [`add_pass`](MenuRenderer::add_pass) is what it calls in the
+//! middle. A sample declares the sandwich, never its order.
 
 use crcbl_hal::{Device, HalError, QueueHandle};
 use crcbl_sprite::load::{Loaded, load_baked};
@@ -400,7 +405,10 @@ impl MenuRenderer {
 
     /// Adds the menu pass to `graph`, drawing on top of `target`.
     ///
-    /// **After the game's passes and before the UI pass** — see the module docs.
+    /// **Between the two halves of the UI pass** — see the module docs. The
+    /// caller is [`UiRenderer::add_passes`](crate::ui_pass::UiRenderer::add_passes),
+    /// which is where the sandwich is assembled; a sample calls that and not
+    /// this.
     pub fn add_pass<'a>(
         &'a self,
         graph: &mut crate::graph::RenderGraph<'a>,
