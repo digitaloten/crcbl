@@ -107,7 +107,7 @@ pub use app::{
     Loop, PendingLoop, Quarry, QuarryError, Summary, cull_row, dolly_at, run, start, with_shell,
 };
 pub use args::{DEFAULT_TICK_HZ, Invocation, Options, USAGE, parse};
-pub use gpu::{CELLS, Forced, Gpu, GpuError, Paths};
+pub use gpu::{CELLS, Gpu, GpuError, Paths};
 pub use menu::{
     CAMERA_ID, CameraMode, FREEZE_ID, FREEZE_KEY, HEATMAP_ID, LOD_VIEW_ID, Menus, QuarryAction,
     action_for, menus, pause_menu,

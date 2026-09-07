@@ -107,7 +107,7 @@ pub use args::{DEFAULT_TICK_HZ, Invocation, Options, USAGE, built_in_stack, pars
 /// `crcbl-render` so a second sample could fly the same one, and this keeps
 /// `crcbl_lantern::Flyer` resolving for anything that already named it.
 pub use crcbl::render::{Flyer, SPEED, TURN};
-pub use gpu::{Forced, Gpu, GpuError, Paths, Unbuilt};
+pub use gpu::{Gpu, GpuError, Paths, Unbuilt};
 pub use menu::{
     AO_ID, CAMERA_ID, CameraMode, LanternAction, Menus, REFLECTIONS_ID, SHADOWS_ID, action_for,
     menus, pause_menu, toggled_effect,

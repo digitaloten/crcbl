@@ -829,60 +829,15 @@ impl crcbl::ui::DebugModule for Quarry {
 
 // ---- polled start-up ---------------------------------------------------------
 
-/// A [`Loop`] being started one poll at a time, for a caller that may not
-/// block — which on a browser main thread is every caller.
-///
-/// The state machine, the pump and the resize-during-start-up race are
-/// [`crcbl::engine::PolledBoot`]'s; all that is left here is this sample's
-/// `Options` and the `assemble` call the engine deliberately stops short of.
-#[derive(Debug)]
-pub struct PendingLoop<S: Shell + ?Sized = dyn Shell> {
-    boot: crcbl::engine::PolledBoot<S, Gpu>,
+crcbl::impl_pending_loop!(
+    running: Loop,
+    gpu: Gpu,
     options: Options,
-}
-
-impl<S: Shell + ?Sized> PendingLoop<S> {
-    /// Creates the window and starts the wait, without blocking on either half.
-    ///
-    /// `clock_source` is the caller's because the browser's cannot be
-    /// [`Clock::new`]'s: `std::time::Instant::now` panics on
-    /// `wasm32-unknown-unknown`, so a page drives the loop from
-    /// `performance.now()` instead.
-    ///
-    /// # Errors
-    ///
-    /// [`QuarryError`] if the shell refused the window.
-    pub fn request(
-        mut shell: Box<S>,
-        options: &Options,
-        clock_source: Clock,
-    ) -> Result<Self, QuarryError> {
-        let window = open_the_window(shell.as_mut(), &clock_source, options)?;
-        Ok(Self {
-            boot: crcbl::engine::PolledBoot::request(
-                shell,
-                window,
-                clock_source,
-                options.common.gpu(),
-                (),
-            ),
-            options: options.clone(),
-        })
-    }
-
-    /// Advances start-up. `Ok(None)` means "not yet, poll again next frame".
-    ///
-    /// # Errors
-    ///
-    /// [`QuarryError`] if the window went away before it had a size, or if the
-    /// device request failed.
-    pub fn poll(&mut self) -> Result<Option<Loop<S>>, QuarryError> {
-        let Some(booted) = self.boot.poll::<QuarryError>()? else {
-            return Ok(None);
-        };
-        Ok(Some(assemble(booted, &self.options)))
-    }
-}
+    error: QuarryError,
+    window: |shell, clock, options| open_the_window(shell, clock, options),
+    context: |_options| (),
+    assemble: |booted, options| Ok(assemble(booted, options)),
+);
 
 #[cfg(test)]
 mod tests {
@@ -1003,7 +958,7 @@ mod tests {
                 geometry: GeometryPath::MeshShader,
                 binding: BindingModel::Bindless,
                 lighting: LightingPath::Rasterised,
-                forced: crate::gpu::Forced::default(),
+                forced: crcbl::engine::ForcedPaths::default(),
                 effects: crcbl::render::RenderEffects::DEFAULT_STACK,
             },
             1000,
@@ -1180,7 +1135,7 @@ mod tests {
             crcbl::hal::LightingPath::Rasterised,
             "no device in this engine can trace anything yet",
         );
-        assert_eq!(summary.paths.forced, crate::gpu::Forced::default());
+        assert_eq!(summary.paths.forced, crcbl::engine::ForcedPaths::default());
         assert_eq!(
             summary.triangles,
             crate::face::quarry_face(crate::gpu::CELLS).triangles(),

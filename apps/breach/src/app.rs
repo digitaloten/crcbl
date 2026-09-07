@@ -552,21 +552,7 @@ fn assemble<S: Shell + ?Sized>(
     booted: Booted<S, Gpu>,
     options: &Options,
 ) -> Result<Loop<S>, BreachError> {
-    // `--screenshot`, armed before the first frame because the frame it names is
-    // counted from this point. The flag forces `--headless` on, so the context
-    // behind this is always an offscreen ring.
-    //
-    // The mutable binding lives inside the `cfg` rather than on the parameter: a
-    // browser build arms nothing, so a `mut` in the signature would be one the
-    // wasm32 target correctly reports as unused.
-    #[cfg(not(target_arch = "wasm32"))]
-    let booted = {
-        let mut booted = booted;
-        if let Some(request) = options.common.screenshot_request() {
-            booted.gpu.context_mut().set_screenshot(request);
-        }
-        booted
-    };
+    let booted = crcbl::engine::arm_screenshot(booted, &options.common);
     let paths = booted.gpu.paths();
     let game = Game::new(options.common.tick_hz, options.map).map_err(BreachError::Game)?;
     Ok(Loop::new(
@@ -923,65 +909,20 @@ impl HostedGame for Breach {
 
 // ---- polled start-up ---------------------------------------------------------
 
-/// A [`Loop`] being started one poll at a time, for a caller that may not block
-/// — which on a browser main thread is every caller.
-///
-/// The state machine, the pump and the resize-during-start-up race are
-/// [`crcbl::engine::PolledBoot`]'s; all that is left here is this sample's
-/// `Options` and the `assemble` call the engine deliberately stops short of.
-#[derive(Debug)]
-pub struct PendingLoop<S: Shell + ?Sized = dyn Shell> {
-    boot: crcbl::engine::PolledBoot<S, Gpu>,
+crcbl::impl_pending_loop!(
+    running: Loop,
+    gpu: Gpu,
     options: Options,
-}
-
-impl<S: Shell + ?Sized> PendingLoop<S> {
-    /// Creates the window and starts the wait, without blocking on either half.
-    ///
-    /// `clock_source` is the caller's because the browser's cannot be
-    /// [`Clock::new`]'s: `std::time::Instant::now` panics on
-    /// `wasm32-unknown-unknown`, so a page drives the loop from
-    /// `performance.now()` instead.
-    ///
-    /// # Errors
-    ///
-    /// [`BreachError`] if the shell refused the window.
-    pub fn request(
-        mut shell: Box<S>,
-        options: &Options,
-        clock_source: Clock,
-    ) -> Result<Self, BreachError> {
-        let window = open_the_window(
-            shell.as_mut(),
-            &clock_source,
-            options.common.display_mode(),
-            options.common.size,
-        )?;
-        Ok(Self {
-            boot: crcbl::engine::PolledBoot::request(
-                shell,
-                window,
-                clock_source,
-                options.common.gpu(),
-                options.map,
-            ),
-            options: options.clone(),
-        })
-    }
-
-    /// Advances start-up. `Ok(None)` means "not yet, poll again next frame".
-    ///
-    /// # Errors
-    ///
-    /// [`BreachError`] if the window went away before it had a size, if the
-    /// device request failed, or if the simulation could not be built.
-    pub fn poll(&mut self) -> Result<Option<Loop<S>>, BreachError> {
-        let Some(booted) = self.boot.poll::<BreachError>()? else {
-            return Ok(None);
-        };
-        assemble(booted, &self.options).map(Some)
-    }
-}
+    error: BreachError,
+    window: |shell, clock, options| open_the_window(
+        shell,
+        clock,
+        options.common.display_mode(),
+        options.common.size,
+    ),
+    context: |options| options.map,
+    assemble: |booted, options| assemble(booted, options),
+);
 
 // ---- tests -------------------------------------------------------------------
 

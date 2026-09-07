@@ -129,9 +129,10 @@ compares two screen-space gathers.
 
 ## What is owed
 
-- **Milestone 4, ray-traced AO**, gated on P7C. `Paths::ray_tracing_note` says
-  "raster only (P7C)" on the panel rather than leaving the row out, so the rung
-  that is missing is named rather than absent.
+- **Milestone 4, ray-traced AO**, gated on P7C.
+  `crcbl::render::ray_tracing_note` says "raster only (P7C)" on the panel rather
+  than leaving the row out, so the rung that is missing is named rather than
+  absent.
 - **Per-technique cost, on the second gather.** `OcclusionCost` reads the
   frame's `ssao` and `ssao-shipped` timing rows and prints both on the panel and
   in the headless summary, so the seam gives a cost per technique **when it is

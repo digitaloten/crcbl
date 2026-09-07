@@ -616,6 +616,12 @@ fn assemble<S: Shell + ?Sized>(
 /// built out of the glTF it was asked to show, so the document has to be
 /// carried through the wait rather than loaded after it. See
 /// [`crcbl::engine::PolledGpu::Context`].
+///
+/// **Written out rather than through
+/// [`crcbl::impl_pending_loop!`](crcbl::impl_pending_loop), which every other
+/// sample takes**: the document is a second field here and a fourth argument to
+/// [`request`](Self::request), and a clause for one sample's extra field would
+/// put its exception into seventeen other invocations.
 #[derive(Debug)]
 pub struct PendingLoop<S: Shell + ?Sized = dyn Shell> {
     boot: crcbl::engine::PolledBoot<S, Gpu>,

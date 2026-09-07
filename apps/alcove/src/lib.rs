@@ -82,6 +82,6 @@ pub use args::{
 /// Re-exported rather than defined here: the free-fly camera lives in
 /// `crcbl-render` so every sample flies the same one.
 pub use crcbl::render::{Flyer, SPEED, TURN};
-pub use gpu::{Forced, Gpu, GpuError, OcclusionCost, Paths};
+pub use gpu::{Gpu, GpuError, OcclusionCost, Paths};
 pub use menu::{AlcoveAction, CameraMode, Menus, action_for, menus, pause_menu, toggled_effect};
 pub use occlusion::Knobs;

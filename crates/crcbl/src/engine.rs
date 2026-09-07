@@ -106,10 +106,10 @@ use std::time::Duration;
 
 use crcbl_core::time::{ManualTime, MonotonicTime, TimeSource};
 use crcbl_hal::{
-    AcquiredFrame, CommandBufferHandle, DeviceDesc, DisplayTiming, Features, Format, HalError,
-    PresentInfo, PresentMode, QueueHandle, QueueKind, SemaphoreDesc, SemaphoreHandle,
-    SemaphoreKind, SemaphoreSignal, SemaphoreWait, SubmitInfo, SurfaceError, SurfaceHandle,
-    SwapchainDesc, SwapchainHandle,
+    AcquiredFrame, BindingModel, CommandBufferHandle, DeviceDesc, DisplayTiming, Features, Format,
+    GeometryPath, HalError, LightingPath, PresentInfo, PresentMode, QueueHandle, QueueKind,
+    SemaphoreDesc, SemaphoreHandle, SemaphoreKind, SemaphoreSignal, SemaphoreWait, SubmitInfo,
+    SurfaceError, SurfaceHandle, SwapchainDesc, SwapchainHandle,
 };
 use crcbl_hal::{Device, Instance};
 use crcbl_render::{EffectRequest, RenderEffects};
@@ -871,6 +871,135 @@ impl From<GpuOptions> for GpuContextDesc<'_> {
             pacing: gpu.pacing,
             ..Self::default()
         }
+    }
+}
+
+/// A selector a run asked to be held **below** what the device offers.
+///
+/// Each field names a path, and what the type does is withhold the features
+/// that select anything better — so a run that forces one is a run on a device
+/// that genuinely does not have them, which is the only way a fallback gets
+/// executed on hardware that would otherwise never take it.
+///
+/// `docs/plan/sample/00-samples-overview.md` rule 12's "every sample accepts a
+/// flag forcing a lesser path" is what asks for this, and the flags themselves
+/// are [`crate::args::geometry_from_name`] and [`crate::args::binding_from_name`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ForcedPaths {
+    /// The geometry path to hold at, or `None` for whatever the device selects.
+    pub geometry: Option<GeometryPath>,
+    /// The binding model to hold at, on the same terms.
+    pub binding: Option<BindingModel>,
+}
+
+impl ForcedPaths {
+    /// What to ask a device for, given what a run wants held down.
+    ///
+    /// Starts from [`GpuContextDesc::default`]'s optional set — the one every
+    /// sample opens with — and removes the flags whose presence would select
+    /// something better than the forced value.
+    ///
+    /// **Subtraction rather than a hand-written set per path.** A path's inputs
+    /// are [`GeometryPath::INPUTS`] and [`BindingModel::INPUTS`], and the set to
+    /// remove is derived from them below, so a selector that grows a flag does
+    /// not leave a second table behind still naming the old ones. This used to
+    /// be written out in each sample that takes the flag, which gave a new path
+    /// four chances to reach three of them and force the wrong one while
+    /// reporting it as forced.
+    #[must_use]
+    pub fn optional_features(self) -> Features {
+        // `TASK_SHADER` is not in the default set and is added here: it is what
+        // `ForwardRenderer` builds `docs/plan/03-gpu-driven-rendering.md` §3.5's
+        // amplification stage from, so a mesh device without it culls no
+        // clusters — and a sample that takes this flag is a sample about what
+        // the device did, which makes "the best path, completely" the right
+        // thing to ask for.
+        let mut features = GpuContextDesc::default().optional_features | Features::TASK_SHADER;
+        match self.geometry {
+            None | Some(GeometryPath::MeshShader) => {}
+            Some(GeometryPath::IndirectCount) => {
+                features.remove(Features::MESH_SHADER | Features::TASK_SHADER);
+            }
+            Some(GeometryPath::IndirectPerBatch) => {
+                features.remove(
+                    Features::MESH_SHADER | Features::TASK_SHADER | Features::DRAW_INDIRECT_COUNT,
+                );
+            }
+        }
+        match self.binding {
+            None | Some(BindingModel::Bindless) => {}
+            Some(BindingModel::ArrayPages) => features.remove(Features::DESCRIPTOR_INDEXING),
+        }
+        features
+    }
+}
+
+/// The three selector rows every sample's `paths` debug section opens with.
+///
+/// `docs/plan/39-capabilities.md`'s selectors, as a value rather than as a log
+/// line, so the debug panel, the headless summary and the golden suites all
+/// read the same answer. A sample owns the rows that follow these three — its
+/// ray-tracing note, its effect set, `apps/lantern`'s second camera — and
+/// delegates the opening three here, because what they say and how a forced one
+/// is marked is the engine's fact and was seven copies of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DevicePathRows {
+    /// The path the renderer's submission tail actually takes.
+    pub geometry: GeometryPath,
+    /// How the fragment stage addresses the base-colour page.
+    pub binding: BindingModel,
+    /// How indirect lighting is resolved.
+    pub lighting: LightingPath,
+    /// What the run asked to be held down. [`ForcedPaths::default`] for a
+    /// sample with no such flag, which marks nothing.
+    pub forced: ForcedPaths,
+}
+
+impl DevicePathRows {
+    /// The three selectors and what the run held down, in one value.
+    ///
+    /// Positional because the three are distinct types: a call that swapped two
+    /// of them does not compile, which is what makes the order safe to fix here
+    /// rather than at every sample's `debug_section`.
+    #[must_use]
+    pub const fn new(
+        geometry: GeometryPath,
+        binding: BindingModel,
+        lighting: LightingPath,
+        forced: ForcedPaths,
+    ) -> Self {
+        Self {
+            geometry,
+            binding,
+            lighting,
+            forced,
+        }
+    }
+
+    /// Writes `geometry`, `binding` and `lighting` into `section`, in that
+    /// order.
+    ///
+    /// A forced selector is spelled `"MeshShader (forced)"` rather than
+    /// `"MeshShader"`, which is the difference between "this machine is like
+    /// that" and "this run made it like that" — a report without it is one a
+    /// reader cannot act on, and it is the distinction rule 12's flag exists to
+    /// make.
+    pub fn write(&self, section: &mut crcbl_ui::DebugSection) {
+        fn row(selected: impl core::fmt::Debug, forced: bool) -> String {
+            if forced {
+                format!("{selected:?} (forced)")
+            } else {
+                format!("{selected:?}")
+            }
+        }
+        section.row_str(
+            "geometry",
+            &row(self.geometry, self.forced.geometry.is_some()),
+        );
+        section.row_str("binding", &row(self.binding, self.forced.binding.is_some()));
+        // No third field on [`ForcedPaths`]: nothing withholds a feature that
+        // would select a lesser lighting path, so this row is never marked.
+        section.row("lighting", format_args!("{:?}", self.lighting));
     }
 }
 
@@ -4686,6 +4815,68 @@ pub trait GameGpu: GpuSurface + Sized {
     fn destroy(self) -> Result<(), GpuError>;
 }
 
+/// A bundle that owns the engine's [`GpuContext`], so a run-level knob can
+/// reach it.
+///
+/// Separate from [`GameGpu`] rather than a method on it: the loop's own test
+/// doubles hold no context at all — they answer what a check asks and open no
+/// device — and a required method they could only answer by lying is worse than
+/// a trait they simply do not implement.
+/// [`impl_game_gpu!`](crate::impl_game_gpu) writes the impl for
+/// every sample, forwarding to the bundle's own `context_mut`.
+///
+/// [`arm_screenshot`] is the only caller. The trait is declared on every target
+/// even though a browser build arms nothing, so that one `impl_game_gpu!`
+/// expansion serves both and a sample carries no `cfg` of its own for it.
+pub trait HoldsContext {
+    /// The context this bundle presents its frames through.
+    fn context_mut(&mut self) -> &mut GpuContext;
+}
+
+/// Arms `--screenshot` on a freshly booted bundle, before its first frame.
+///
+/// **Before the first frame because the frame it names is counted from here.**
+/// [`crate::args::Common::screenshot_request`] resolves the flag against
+/// [`frame_budget`](crate::args::Common::frame_budget) — the last frame the run
+/// will present — and a run that armed the request one frame late would write
+/// out a picture nobody asked for and call it the one they did. The flag forces
+/// `--headless` on, so the context behind this is always an offscreen ring.
+///
+/// Called by every sample's `assemble` as its first statement. It was written
+/// out there sixteen times, and a copy that armed after the loop was built is a
+/// screenshot of a stale frame that no test compares against anything.
+///
+/// Takes and returns the [`Booted`] rather than borrowing it, so the call site
+/// is one line with no `mut` binding — the `mut` is the part the browser build
+/// has no use for.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn arm_screenshot<S: Shell + ?Sized, G: HoldsContext>(
+    mut booted: Booted<S, G>,
+    common: &crate::args::Common,
+) -> Booted<S, G> {
+    if let Some(request) = common.screenshot_request() {
+        booted.gpu.context_mut().set_screenshot(request);
+    }
+    booted
+}
+
+/// The browser's half: nothing to arm.
+///
+/// A page has no filesystem to write a picture to, and
+/// [`crate::args::Common`] does not carry `--screenshot` on this target at all.
+/// Present so a sample's `assemble` is one line on both targets rather than a
+/// `cfg` block per sample, which is what the sixteen copies were.
+#[cfg(target_arch = "wasm32")]
+#[must_use]
+pub fn arm_screenshot<S: Shell + ?Sized, G>(
+    booted: Booted<S, G>,
+    common: &crate::args::Common,
+) -> Booted<S, G> {
+    let _ = common;
+    booted
+}
+
 /// Implements [`GameGpu`] and [`GpuSurface`] for a bundle that already has
 /// every method as an inherent one.
 ///
@@ -4721,6 +4912,11 @@ pub trait GameGpu: GpuSurface + Sized {
 /// Nothing here is optional: a bundle that wants a different `frame` writes the
 /// impl by hand rather than reaching for a macro flag, because at that point the
 /// block is no longer the shared one.
+///
+/// [`HoldsContext`] comes with it, forwarded to the bundle's own `context_mut`,
+/// so [`arm_screenshot`] reaches the context the frames are presented through.
+/// It is a second trait rather than a `GameGpu` method because the loop's test
+/// doubles hold no context — see [`HoldsContext`].
 ///
 /// # The one clause, and why it is not a flag
 ///
@@ -4830,7 +5026,14 @@ macro_rules! __impl_game_gpu {
             > = <$gpu>::frame;
             let _: fn($gpu) -> ::core::result::Result<(), $crate::engine::GpuError> =
                 <$gpu>::destroy;
+            let _: fn(&mut $gpu) -> &mut $crate::engine::GpuContext = <$gpu>::context_mut;
         };
+
+        impl $crate::engine::HoldsContext for $gpu {
+            fn context_mut(&mut self) -> &mut $crate::engine::GpuContext {
+                Self::context_mut(self)
+            }
+        }
 
         impl $crate::engine::GpuSurface for $gpu {
             fn extent(&self) -> (u32, u32) {
@@ -4930,6 +5133,161 @@ macro_rules! impl_polled_gpu {
             ) -> ::core::result::Result<::core::option::Option<Self>, $crate::engine::GpuError>
             {
                 pending.poll()
+            }
+        }
+    };
+}
+
+/// Declares a sample's `PendingLoop` — the polled half of start-up.
+///
+/// Every sample with a `web.rs` carried this type: the same struct, the same
+/// `request` down to the paragraph explaining whose clock it takes, and the
+/// same four-statement `poll`. Only four things were the sample's, and they are
+/// this macro's clauses — the window it opens, what it hands the bundle at
+/// open, its error type, and whether `assemble` can fail. Eighteen copies is
+/// eighteen chances for one to stop pumping events during the wait, or to drop
+/// the `options.clone()` and boot the browser against a default.
+///
+/// The state machine, the event pump and the resize-during-start-up race are
+/// [`PolledBoot`]'s; what this adds is the sample's `Options` and the
+/// `assemble` call the engine deliberately stops short of.
+///
+/// # The clauses read like closures and are not
+///
+/// `macro_rules!` hygiene means a local this macro introduces is invisible to
+/// an expression written at the call site, so `window:` cannot simply be an
+/// expression naming `shell`. Each clause therefore **binds** the names it is
+/// written with: `window: |shell, clock, options| …` says "call this expression
+/// with the window's shell, clock and options bound to those three names".
+/// They are ordinary bindings, not closures — a closure could not be generic
+/// over the shell type, which is the reason for the shape.
+///
+/// * **`window`** — `shell` is `&mut S`, `clock` is `&Clock` and `options` is
+///   `&$options`; the expression is the sample's `open_the_window` call and
+///   yields `Result<WindowId, $error>`.
+/// * **`context`** — what [`PolledGpu::Context`] is filled from. `|_options|
+///   ()` for a bundle that opens from the window alone; `apps/breach` and
+///   `apps/puppet` thread their map through it.
+/// * **`assemble`** — `booted` is the [`Booted`] this poll produced and
+///   `options` the run's; the expression yields `Result<$running<S>, $error>`,
+///   so a sample whose `assemble` cannot fail writes `Ok(assemble(booted,
+///   options))` and one whose can writes the call alone. Explicit rather than
+///   inferred: the two are different functions and the wrapper says which.
+///
+/// `options.common.gpu()` is spelled here, so this is for a sample whose
+/// `Options` carries a [`crate::args::Common`] — which is every one of them.
+///
+/// # What writes it by hand instead
+///
+/// `apps/viewer`, whose pending state carries the document the page compiled in
+/// as well as the options, and whose `request` therefore takes a fourth
+/// argument. Adding a clause for one sample's extra field would put its
+/// exception into seventeen other invocations.
+///
+/// # Examples
+///
+/// ```ignore
+/// crcbl::impl_pending_loop!(
+///     running: Loop,
+///     gpu: Gpu,
+///     options: Options,
+///     error: HudError,
+///     window: |shell, clock, options| open_the_window(
+///         shell,
+///         clock,
+///         options.common.display_mode(),
+///         options.common.size,
+///     ),
+///     context: |_options| (),
+///     assemble: |booted, options| assemble(booted, options),
+/// );
+/// ```
+///
+/// The example is `ignore` because it needs the sample's own `Loop`, `Gpu` and
+/// `Options`. Every sample under `apps/` with a browser build exercises it.
+#[macro_export]
+macro_rules! impl_pending_loop {
+    (
+        running: $running:ident,
+        gpu: $gpu:ty,
+        options: $options:ty,
+        error: $error:ty,
+        window: |$wshell:ident, $wclock:ident, $wopts:ident| $window:expr,
+        context: |$copts:ident| $context:expr,
+        assemble: |$booted:ident, $aopts:ident| $assemble:expr $(,)?
+    ) => {
+        /// A [`Loop`] being started one poll at a time, for a caller that may
+        /// not block — which on a browser main thread is every caller.
+        ///
+        /// Written by [`crcbl::impl_pending_loop!`](crcbl::impl_pending_loop),
+        /// which is where the shape and its reasons live.
+        #[derive(Debug)]
+        pub struct PendingLoop<
+            S: $crate::shell::Shell + ?::core::marker::Sized = dyn $crate::shell::Shell,
+        > {
+            boot: $crate::engine::PolledBoot<S, $gpu>,
+            options: $options,
+        }
+
+        impl<S: $crate::shell::Shell + ?::core::marker::Sized> PendingLoop<S> {
+            /// Creates the window and starts the wait, without blocking on
+            /// either half.
+            ///
+            /// `clock_source` is the caller's because the browser's cannot be
+            /// `Clock::new`'s: `std::time::Instant::now` panics on
+            /// `wasm32-unknown-unknown`, so a page drives the loop from
+            /// `performance.now()` instead.
+            ///
+            /// # Errors
+            ///
+            /// The sample's error if the shell refused the window.
+            pub fn request(
+                mut shell: ::std::boxed::Box<S>,
+                options: &$options,
+                clock_source: $crate::engine::Clock,
+            ) -> ::core::result::Result<Self, $error> {
+                let window = {
+                    let $wshell = shell.as_mut();
+                    let $wclock = &clock_source;
+                    let $wopts: &$options = options;
+                    $window
+                }?;
+                let context = {
+                    let $copts: &$options = options;
+                    $context
+                };
+                ::core::result::Result::Ok(Self {
+                    boot: $crate::engine::PolledBoot::request(
+                        shell,
+                        window,
+                        clock_source,
+                        options.common.gpu(),
+                        context,
+                    ),
+                    options: ::core::clone::Clone::clone(options),
+                })
+            }
+
+            /// Advances start-up. `Ok(None)` means "not yet, poll again next
+            /// frame".
+            ///
+            /// # Errors
+            ///
+            /// The sample's error if the window went away before it had a size,
+            /// if the device request failed, or if `assemble` refused what came
+            /// back.
+            pub fn poll(
+                &mut self,
+            ) -> ::core::result::Result<::core::option::Option<$running<S>>, $error> {
+                let ::core::option::Option::Some(booted) = self.boot.poll::<$error>()? else {
+                    return ::core::result::Result::Ok(::core::option::Option::None);
+                };
+                let assembled: ::core::result::Result<$running<S>, $error> = {
+                    let $booted = booted;
+                    let $aopts: &$options = &self.options;
+                    $assemble
+                };
+                ::core::result::Result::map(assembled, ::core::option::Option::Some)
             }
         }
     };
@@ -7144,6 +7502,153 @@ mod tests {
     fn a_headless_run_opens_the_headless_backend_by_name() {
         let shell = open_shell::<core::convert::Infallible>(true).expect("headless always opens");
         assert_eq!(shell.backend(), crcbl_shell::ShellBackend::Headless);
+    }
+
+    /// **Forcing a path withholds exactly the flags that select a better one**,
+    /// and the device that set opens then selects the forced path.
+    ///
+    /// Two observables rather than one, because either alone passes a plausible
+    /// wrong answer: the selector says a removed flag was the *right* flag — a
+    /// bit taken off the other axis, or one no selector reads, both leave a set
+    /// that still resolves somewhere — and the exact difference says nothing
+    /// else went with it, which is what a hand-written per-path table gets
+    /// wrong the moment [`GpuContextDesc::default`] asks for one more flag.
+    /// `from_features` is the same function a real device's caps go through.
+    ///
+    /// This is the one copy. It was written out in every sample that takes
+    /// `--force-geometry`, which is what let the four disagree.
+    #[test]
+    fn forcing_a_path_withholds_the_flags_that_select_a_better_one() {
+        let unforced = ForcedPaths::default().optional_features();
+        assert_eq!(
+            GeometryPath::from_features(unforced),
+            GeometryPath::MeshShader,
+        );
+        assert_eq!(
+            BindingModel::from_features(unforced),
+            BindingModel::Bindless
+        );
+        assert!(
+            unforced.contains(GpuContextDesc::default().optional_features),
+            "an unforced run must ask for at least the engine's own set; missing {:?}",
+            GpuContextDesc::default()
+                .optional_features
+                .difference(unforced),
+        );
+        assert!(
+            unforced.contains(Features::TASK_SHADER),
+            "the amplification stage is what culls clusters, and a sample that \
+             forces a path is asking for the best one completely",
+        );
+
+        for (forced, gone) in [
+            (
+                ForcedPaths {
+                    geometry: Some(GeometryPath::IndirectCount),
+                    binding: None,
+                },
+                Features::MESH_SHADER | Features::TASK_SHADER,
+            ),
+            (
+                ForcedPaths {
+                    geometry: Some(GeometryPath::IndirectPerBatch),
+                    binding: None,
+                },
+                Features::MESH_SHADER | Features::TASK_SHADER | Features::DRAW_INDIRECT_COUNT,
+            ),
+            (
+                ForcedPaths {
+                    geometry: None,
+                    binding: Some(BindingModel::ArrayPages),
+                },
+                Features::DESCRIPTOR_INDEXING,
+            ),
+            (
+                // Both axes at once, which is what `--force-geometry
+                // indirect-per-batch --force-binding array-pages` asks for: the
+                // browser's shape, on a desktop that has everything.
+                ForcedPaths {
+                    geometry: Some(GeometryPath::IndirectPerBatch),
+                    binding: Some(BindingModel::ArrayPages),
+                },
+                Features::MESH_SHADER
+                    | Features::TASK_SHADER
+                    | Features::DRAW_INDIRECT_COUNT
+                    | Features::DESCRIPTOR_INDEXING,
+            ),
+        ] {
+            let asked = forced.optional_features();
+            assert_eq!(
+                asked,
+                unforced.difference(gone),
+                "{forced:?} withheld something other than the selector's own inputs",
+            );
+            if let Some(want) = forced.geometry {
+                assert_eq!(
+                    GeometryPath::from_features(asked),
+                    want,
+                    "a device given {asked:?} does not select {want:?}",
+                );
+            }
+            assert_eq!(
+                BindingModel::from_features(asked),
+                forced.binding.unwrap_or(BindingModel::Bindless),
+                "{forced:?} disturbed the binding axis",
+            );
+        }
+    }
+
+    /// **The `paths` section names the selector and says whether the run forced
+    /// it.**
+    ///
+    /// A report that printed the path alone reads identically for a machine with
+    /// no mesh shaders and a run that turned them off, which is the one
+    /// distinction rule 12's flag exists to make. Forcing one axis must also
+    /// leave the other's row alone.
+    #[test]
+    fn a_forced_selector_row_is_marked_and_the_other_axis_is_not() {
+        let device_chose = DevicePathRows {
+            geometry: GeometryPath::IndirectCount,
+            binding: BindingModel::ArrayPages,
+            lighting: LightingPath::Rasterised,
+            forced: ForcedPaths::default(),
+        };
+        let run_chose = DevicePathRows {
+            forced: ForcedPaths {
+                geometry: Some(GeometryPath::IndirectCount),
+                binding: None,
+            },
+            ..device_chose
+        };
+        let rows = |paths: &DevicePathRows| {
+            let mut section = crcbl_ui::DebugSection::new("");
+            paths.write(&mut section);
+            section
+                .rows()
+                .iter()
+                .map(|row| (row.label.to_string(), row.value.to_string()))
+                .collect::<Vec<_>>()
+        };
+
+        let plain = rows(&device_chose);
+        let forced = rows(&run_chose);
+        assert_eq!(
+            plain,
+            vec![
+                ("geometry".to_string(), "IndirectCount".to_string()),
+                ("binding".to_string(), "ArrayPages".to_string()),
+                ("lighting".to_string(), "Rasterised".to_string()),
+            ],
+        );
+        assert_eq!(
+            forced[0],
+            ("geometry".to_string(), "IndirectCount (forced)".to_string()),
+        );
+        assert_eq!(
+            plain[1..],
+            forced[1..],
+            "forcing the geometry axis relabelled another row",
+        );
     }
 
     /// **`--size` names pixels and the window request is logical**, and the

@@ -8,8 +8,8 @@
 use crcbl::args::{Common, Consumed, binding_from_name, geometry_from_name};
 use crcbl::render::{CameraStack, RenderEffects};
 
-use crate::gpu::Forced;
 use crate::menu::CameraMode;
+use crcbl::engine::ForcedPaths;
 
 /// The simulation rate. Nothing here integrates anything but a camera and a
 /// lamp's orbit, so it is the engine's ordinary 60.
@@ -46,7 +46,7 @@ pub struct Options {
     /// Which camera the run starts on.
     pub camera: CameraMode,
     /// Which selectors the run asks to be held below the device's own.
-    pub forced: Forced,
+    pub forced: ForcedPaths,
     /// Which of topic 18's effects the run draws.
     ///
     /// The charter's "every effect toggles independently", reached from the
@@ -81,7 +81,7 @@ impl Default for Options {
             #[cfg(target_arch = "wasm32")]
             common: Common::new(DEFAULT_TICK_HZ),
             camera: CameraMode::default(),
-            forced: Forced::default(),
+            forced: ForcedPaths::default(),
             effects: RenderEffects::all(),
             stack: built_in_stack(),
         }
@@ -252,7 +252,7 @@ mod tests {
             panic!("no arguments is a run");
         };
         assert_eq!(options.camera, CameraMode::Fixed);
-        assert_eq!(options.forced, Forced::default());
+        assert_eq!(options.forced, ForcedPaths::default());
         assert_eq!(options.common.tick_hz, DEFAULT_TICK_HZ);
         assert_eq!(
             options.effects,
@@ -384,7 +384,7 @@ mod tests {
         assert_eq!(options.camera, CameraMode::Free);
         assert_eq!(
             options.forced,
-            Forced {
+            ForcedPaths {
                 geometry: Some(GeometryPath::IndirectPerBatch),
                 binding: Some(BindingModel::ArrayPages),
             }

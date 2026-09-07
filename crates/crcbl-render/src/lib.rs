@@ -213,7 +213,7 @@ pub use cull::{Aabb, Frustum, visible_instances};
 pub use cull_stats::{ClusterCull, CullStats, CullStatsRing};
 pub use debug_draw::{DebugDraw, DebugVertex, frustum_corners};
 pub use draw_gen::{DrawGen, DrawGenDesc, GeneratedDraws};
-pub use effects::{Antialiasing, EffectOverride, EffectRequest, RenderEffects};
+pub use effects::{Antialiasing, EffectOverride, EffectRequest, RenderEffects, ray_tracing_note};
 pub use exposure::{ExposureAdaptation, ExposureBuffers};
 pub use fly::{Flyer, LOOK, SPEED, TURN};
 pub use forward::{

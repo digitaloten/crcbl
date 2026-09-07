@@ -90,5 +90,5 @@ pub use args::{DEFAULT_TICK_HZ, Invocation, Options, USAGE, parse};
 /// `crcbl-render` so every sample flies the same one.
 pub use crcbl::render::{Flyer, SPEED, TURN};
 pub use filter::Knobs;
-pub use gpu::{Forced, Gpu, GpuError, Paths, ShadowCost};
+pub use gpu::{Gpu, GpuError, Paths, ShadowCost};
 pub use menu::{CameraMode, Menus, SundialAction, action_for, menus, pause_menu, toggled_effect};

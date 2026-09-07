@@ -193,22 +193,7 @@ fn assemble<S: Shell + ?Sized>(
     booted: Booted<S, Gpu>,
     options: &Options,
 ) -> Result<Loop<S>, AsteroidsError> {
-    // `--screenshot`, armed before the first frame because the frame it names
-    // is counted from this point. The flag forces `--headless` on, so the
-    // context behind this is always an offscreen ring — see
-    // [`crcbl::args::Common::screenshot`].
-    //
-    // The mutable binding lives inside the `cfg` rather than on the parameter:
-    // a browser build arms nothing, so a `mut` in the signature would be one
-    // the wasm32 target correctly reports as unused.
-    #[cfg(not(target_arch = "wasm32"))]
-    let booted = {
-        let mut booted = booted;
-        if let Some(request) = options.common.screenshot_request() {
-            booted.gpu.context_mut().set_screenshot(request);
-        }
-        booted
-    };
+    let booted = crcbl::engine::arm_screenshot(booted, &options.common);
     let game = Game::with_balance(
         options.common.headless,
         options.common.tick_hz,
@@ -410,64 +395,20 @@ fn open_the_window<S: Shell + ?Sized>(
     )?)
 }
 
-/// A [`Loop`] being started one poll at a time, for a caller that may not
-/// block — which on a browser main thread is every caller.
-///
-/// The state machine, the pump and the resize-during-start-up race are
-/// [`crcbl::engine::PolledBoot`]'s; all that is left here is this game's
-/// `Options` and the `Loop::assemble` call the engine deliberately stops
-/// short of.
-#[derive(Debug)]
-pub struct PendingLoop<S: Shell + ?Sized = dyn Shell> {
-    boot: crcbl::engine::PolledBoot<S, Gpu>,
+crcbl::impl_pending_loop!(
+    running: Loop,
+    gpu: Gpu,
     options: Options,
-}
-
-impl<S: Shell + ?Sized> PendingLoop<S> {
-    /// Creates the window and starts the wait, without blocking on either half.
-    ///
-    /// `clock_source` is the caller's because the browser's cannot be
-    /// [`Clock::new`]'s — see [`Loop::set_frame_step`].
-    ///
-    /// # Errors
-    ///
-    /// [`AsteroidsError`] if the shell refused the window.
-    pub fn request(
-        mut shell: Box<S>,
-        options: &Options,
-        clock_source: Clock,
-    ) -> Result<Self, AsteroidsError> {
-        let window = open_the_window(
-            shell.as_mut(),
-            &clock_source,
-            options.common.display_mode(),
-            options.common.size,
-        )?;
-        Ok(Self {
-            boot: crcbl::engine::PolledBoot::request(
-                shell,
-                window,
-                clock_source,
-                options.common.gpu(),
-                (),
-            ),
-            options: options.clone(),
-        })
-    }
-
-    /// Advances start-up. `Ok(None)` means "not yet, poll again next frame".
-    ///
-    /// # Errors
-    ///
-    /// [`AsteroidsError`] if the window went away before it had a size, if the device
-    /// request failed, or if the game could not be built.
-    pub fn poll(&mut self) -> Result<Option<Loop<S>>, AsteroidsError> {
-        let Some(booted) = self.boot.poll::<AsteroidsError>()? else {
-            return Ok(None);
-        };
-        assemble(booted, &self.options).map(Some)
-    }
-}
+    error: AsteroidsError,
+    window: |shell, clock, options| open_the_window(
+        shell,
+        clock,
+        options.common.display_mode(),
+        options.common.size,
+    ),
+    context: |_options| (),
+    assemble: |booted, options| assemble(booted, options),
+);
 
 // ---- drawing ----------------------------------------------------------------
 

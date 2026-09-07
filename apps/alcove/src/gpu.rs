@@ -15,7 +15,7 @@
 //! with, and there should not be — the selectors are computed from what the
 //! *device* has ([`crcbl::hal::DeviceCaps::geometry_path`] and its two
 //! siblings), so the honest way to reach a lesser one is to open a device
-//! without the feature that selects the better one. [`Forced`] is that, and
+//! without the feature that selects the better one. [`ForcedPaths`] is that, and
 //! [`Paths`] is what says which arm the frame actually took.
 //!
 //! # One view, and the cost of the two that matter
@@ -29,9 +29,11 @@
 
 pub use crcbl::engine::{FrameOutcome, GpuError};
 
-use crcbl::engine::{GpuContext, GpuContextDesc, GpuOptions, Pacing, PendingGpuContext};
+use crcbl::engine::{
+    DevicePathRows, ForcedPaths, GpuContext, GpuContextDesc, GpuOptions, Pacing, PendingGpuContext,
+};
 use crcbl::hal::{
-    BindingModel, CommandEncoderDesc, DeviceCaps, Features, GeometryPath, LightingPath, downgrades,
+    BindingModel, CommandEncoderDesc, DeviceCaps, GeometryPath, LightingPath, downgrades,
 };
 use crcbl::prelude::*;
 use crcbl::render::{
@@ -56,52 +58,6 @@ const FRAMES_IN_FLIGHT: usize = crcbl::engine::FRAMES_IN_FLIGHT;
 /// naming the old set.
 const OCCLUSION_PASS_PREFIX: &str = "ssao";
 
-/// A selector this run asked to be held **below** what the device offers.
-///
-/// Each variant names a path, and what it does is withhold the features that
-/// select anything better — so a run that forces one is a run on a device that
-/// genuinely does not have them, which is the only way a fallback gets executed
-/// on hardware that would otherwise never take it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Forced {
-    /// The geometry path to hold at, or `None` for whatever the device selects.
-    pub geometry: Option<GeometryPath>,
-    /// The binding model to hold at, on the same terms.
-    pub binding: Option<BindingModel>,
-}
-
-impl Forced {
-    /// What to ask a device for, given what a run wants held down.
-    ///
-    /// **Subtraction rather than a hand-written set per path.** A path's inputs
-    /// are `GeometryPath::INPUTS` and `BindingModel::INPUTS`, and the set to
-    /// remove is derived from them below, so a selector that grows a flag does
-    /// not leave a second table behind still naming the old ones.
-    #[must_use]
-    pub fn optional_features(self) -> Features {
-        // `TASK_SHADER` is not in the default set and is added here: it is what
-        // `ForwardRenderer` builds the amplification stage from, so a mesh
-        // device without it culls no clusters.
-        let mut features = GpuContextDesc::default().optional_features | Features::TASK_SHADER;
-        match self.geometry {
-            None | Some(GeometryPath::MeshShader) => {}
-            Some(GeometryPath::IndirectCount) => {
-                features.remove(Features::MESH_SHADER | Features::TASK_SHADER);
-            }
-            Some(GeometryPath::IndirectPerBatch) => {
-                features.remove(
-                    Features::MESH_SHADER | Features::TASK_SHADER | Features::DRAW_INDIRECT_COUNT,
-                );
-            }
-        }
-        match self.binding {
-            None | Some(BindingModel::Bindless) => {}
-            Some(BindingModel::ArrayPages) => features.remove(Features::DESCRIPTOR_INDEXING),
-        }
-        features
-    }
-}
-
 /// Which of `docs/plan/39-capabilities.md`'s three selectors this frame was
 /// drawn through, and whether the run asked for less than the device offers.
 ///
@@ -117,7 +73,7 @@ pub struct Paths {
     /// How indirect lighting is resolved.
     pub lighting: LightingPath,
     /// What the run asked to be held down.
-    pub forced: Forced,
+    pub forced: ForcedPaths,
     /// Which of the render effects the frame draws, **resolved** — what came out
     /// of the four layers rather than what the command line asked for.
     pub effects: RenderEffects,
@@ -126,7 +82,7 @@ pub struct Paths {
 impl Paths {
     /// What the device opened as, beside what the run asked for.
     #[must_use]
-    pub const fn of(caps: &DeviceCaps, forced: Forced, effects: RenderEffects) -> Self {
+    pub const fn of(caps: &DeviceCaps, forced: ForcedPaths, effects: RenderEffects) -> Self {
         Self {
             geometry: caps.geometry_path(),
             binding: caps.binding_model(),
@@ -141,48 +97,13 @@ impl Paths {
     pub fn effects_row(&self) -> String {
         self.effects.row()
     }
-
-    /// Why [`LightingPath::RayTraced`] never appears, in one line for the panel.
-    ///
-    /// **Not a device answer.** `crcbl-vk` can report `RAY_QUERY`, so the
-    /// selector would choose it — but nothing in `crcbl-render` builds an
-    /// acceleration structure, so a run that selected it would draw the
-    /// rasterised frame and say it had done something else.
-    /// `docs/plan/sample/19-alcove.md`'s milestone 4 is the ray-traced occlusion
-    /// rung, and until it exists the panel says so rather than implying a choice
-    /// was made.
-    #[must_use]
-    pub const fn ray_tracing_note() -> &'static str {
-        "raster only (P7C)"
-    }
-}
-
-/// The row the panel and the summary both print for a selector.
-///
-/// `"MeshShader"` where the device chose it, `"MeshShader (forced)"` where the
-/// run asked for it — which is the difference between "this machine is like
-/// that" and "this run made it like that".
-fn selector_row(selected: impl core::fmt::Debug, forced: bool) -> String {
-    if forced {
-        format!("{selected:?} (forced)")
-    } else {
-        format!("{selected:?}")
-    }
 }
 
 impl crcbl::ui::DebugModule for Paths {
     fn debug_section(&self, section: &mut crcbl::ui::DebugSection) {
         section.set_title("paths");
-        section.row_str(
-            "geometry",
-            &selector_row(self.geometry, self.forced.geometry.is_some()),
-        );
-        section.row_str(
-            "binding",
-            &selector_row(self.binding, self.forced.binding.is_some()),
-        );
-        section.row_str("lighting", &format!("{:?}", self.lighting));
-        section.row_str("ray tracing", Self::ray_tracing_note());
+        DevicePathRows::new(self.geometry, self.binding, self.lighting, self.forced).write(section);
+        section.row_str("ray tracing", crcbl::render::ray_tracing_note());
         section.row_str("effects", &self.effects_row());
     }
 }
@@ -273,7 +194,7 @@ pub struct Gpu {
 /// One value rather than two copies: the two bring-up paths must open the *same*
 /// device, or a feature only one of them requested is a bug nobody sees until
 /// the other path runs.
-fn desc(gpu: GpuOptions, forced: Forced) -> GpuContextDesc<'static> {
+fn desc(gpu: GpuOptions, forced: ForcedPaths) -> GpuContextDesc<'static> {
     GpuContextDesc {
         label: "alcove",
         optional_features: forced.optional_features(),
@@ -285,7 +206,7 @@ fn desc(gpu: GpuOptions, forced: Forced) -> GpuContextDesc<'static> {
 #[derive(Debug)]
 pub struct PendingGpu {
     pending: PendingGpuContext,
-    forced: Forced,
+    forced: ForcedPaths,
     effects: RenderEffects,
 }
 
@@ -320,7 +241,7 @@ impl Gpu {
         window: WindowId,
         extent: (u32, u32),
         gpu: GpuOptions,
-        forced: Forced,
+        forced: ForcedPaths,
         effects: RenderEffects,
     ) -> Result<Self, GpuError> {
         Self::from_context(
@@ -342,7 +263,7 @@ impl Gpu {
         window: WindowId,
         extent: (u32, u32),
         gpu: GpuOptions,
-        forced: Forced,
+        forced: ForcedPaths,
         effects: RenderEffects,
     ) -> Result<PendingGpu, GpuError> {
         Ok(PendingGpu {
@@ -361,7 +282,7 @@ impl Gpu {
     /// cannot hold, or if any HAL call fails.
     fn from_context(
         ctx: GpuContext,
-        forced: Forced,
+        forced: ForcedPaths,
         effects: RenderEffects,
     ) -> Result<Self, GpuError> {
         let optional_features = forced.optional_features();
@@ -467,7 +388,11 @@ impl Gpu {
         self.paths.effects = self.renderer.resolved_effects();
     }
 
-    /// The context, for a caller arming `--screenshot` before the first frame.
+    /// The engine's context, for the run-level knobs that are not this sample's.
+    ///
+    /// `crcbl::impl_game_gpu!` forwards
+    /// [`HoldsContext`](crcbl::engine::HoldsContext) to this, and
+    /// [`arm_screenshot`](crcbl::engine::arm_screenshot) is what reaches it.
     pub const fn context_mut(&mut self) -> &mut GpuContext {
         &mut self.ctx
     }
@@ -765,6 +690,7 @@ impl crcbl::engine::PolledGpu for Gpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crcbl::hal::Features;
 
     /// **An unforced run opens the engine's own bundle**, and forcing a path
     /// withholds exactly the flags that select a better one.
@@ -772,11 +698,11 @@ mod tests {
     /// The assertion is containment rather than equality, on
     /// `apps/lantern`'s ground: this sample overrides the optional set and
     /// deliberately adds `TASK_SHADER` on top, so a superset check is what
-    /// catches [`Forced::optional_features`] being rewritten as a hand-written
+    /// catches [`ForcedPaths::optional_features`] being rewritten as a hand-written
     /// list that goes stale the moment the engine asks for one more flag.
     #[test]
     fn an_unforced_run_asks_for_everything_the_engine_does() {
-        let asked = desc(GpuOptions::default(), Forced::default());
+        let asked = desc(GpuOptions::default(), ForcedPaths::default());
         assert_eq!(asked.label, "alcove");
 
         let engine = GpuContextDesc::default().optional_features;
@@ -790,48 +716,6 @@ mod tests {
             "the amplification stage is what culls clusters, and this fixture wants the best \
              path completely",
         );
-    }
-
-    /// **Forcing a path takes away the features that select a better one**, and
-    /// takes away nothing else.
-    #[test]
-    fn forcing_a_path_withholds_the_flags_that_select_a_better_one() {
-        let unforced = Forced::default().optional_features();
-        for (forced, gone) in [
-            (
-                Forced {
-                    geometry: Some(GeometryPath::IndirectCount),
-                    binding: None,
-                },
-                Features::MESH_SHADER | Features::TASK_SHADER,
-            ),
-            (
-                Forced {
-                    geometry: Some(GeometryPath::IndirectPerBatch),
-                    binding: None,
-                },
-                Features::MESH_SHADER | Features::TASK_SHADER | Features::DRAW_INDIRECT_COUNT,
-            ),
-            (
-                Forced {
-                    geometry: None,
-                    binding: Some(BindingModel::ArrayPages),
-                },
-                Features::DESCRIPTOR_INDEXING,
-            ),
-        ] {
-            let asked = forced.optional_features();
-            assert!(
-                !asked.intersects(gone),
-                "{forced:?} still asks for {:?}",
-                asked.intersection(gone)
-            );
-            assert_eq!(
-                asked,
-                unforced.difference(gone),
-                "{forced:?} withheld more than the selector's own inputs",
-            );
-        }
     }
 
     /// **The cost row tells three states apart**, which is what makes it a

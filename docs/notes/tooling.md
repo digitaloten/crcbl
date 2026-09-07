@@ -857,3 +857,12 @@ consumer. Decisions, so they are not re-argued:
   by construction, which is what §3.5 actually requires.
 - **Offsets are `usize`.** Narrowing them for the GPU is the later slice's call,
   and `u32` here would have needed a third error variant for overflow.
+
+## A broken intra-doc link poisons rustdoc's report for the same name (2026-09-07)
+
+Writing `[`impl_game_gpu!`]` above that macro's own definition in
+`crates/crcbl/src/engine.rs` made `cargo doc` also report two correct links to
+the same macro, further down the file, as unresolved. Verified by documenting
+the previous commit's `engine.rs`, which is clean. So a doc run's error list is
+not a list of independent defects: fix the first and re-run before chasing the
+rest. The fix was the explicit path `[`impl_game_gpu!`](crate::impl_game_gpu)`.

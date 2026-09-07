@@ -104,12 +104,11 @@ impl Gpu {
         self.ctx.extent()
     }
 
-    /// The engine's context, for the run-level knobs that are not this game's.
+    /// The engine's context, for the run-level knobs that are not this sample's.
     ///
-    /// `--screenshot` is the one that needs it: the frame to write out is the
-    /// one this bundle presents, so the arming ([`GpuContext::set_screenshot`])
-    /// has to reach the context this bundle holds.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// `crcbl::impl_game_gpu!` forwards
+    /// [`HoldsContext`](crcbl::engine::HoldsContext) to this, and
+    /// [`arm_screenshot`](crcbl::engine::arm_screenshot) is what reaches it.
     pub const fn context_mut(&mut self) -> &mut GpuContext {
         &mut self.ctx
     }

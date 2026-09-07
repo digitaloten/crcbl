@@ -278,9 +278,11 @@ impl Gpu {
         self.ctx.extent()
     }
 
-    /// The engine's context, for the run-level knobs that are not this
-    /// sample's — `--screenshot` is the one that needs it.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// The engine's context, for the run-level knobs that are not this sample's.
+    ///
+    /// `crcbl::impl_game_gpu!` forwards
+    /// [`HoldsContext`](crcbl::engine::HoldsContext) to this, and
+    /// [`arm_screenshot`](crcbl::engine::arm_screenshot) is what reaches it.
     pub const fn context_mut(&mut self) -> &mut GpuContext {
         &mut self.ctx
     }

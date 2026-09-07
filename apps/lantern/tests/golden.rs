@@ -35,6 +35,7 @@
 
 #![cfg(feature = "golden-e2e")]
 
+use crcbl::engine::ForcedPaths;
 use crcbl::hal::{AdapterInfo, BindingModel, Features, Format, GeometryPath};
 use crcbl::math::Vec3;
 use crcbl::render::{Camera, EffectOverride, EffectRequest, Fog, ForwardRenderer, RenderEffects};
@@ -42,7 +43,7 @@ use crcbl::screenshot::{ForwardScene, OffscreenSetup};
 use crcbl::shaders::probe::GpuProbe;
 use crcbl::shaders::tonemap::TonemapCurve;
 use crcbl_golden::{ChannelOrder, Golden, Image};
-use crcbl_lantern::{Forced, room};
+use crcbl_lantern::room;
 
 /// The extent the checked-in golden is blessed at.
 ///
@@ -424,7 +425,7 @@ const UNCHANGED: f32 = 0.02;
 /// above the floor gives the two arms a real difference to compare, and the one
 /// that offers nothing above it says so through the assertion rather than
 /// quietly.
-const BELOW: Forced = Forced {
+const BELOW: ForcedPaths = ForcedPaths {
     geometry: Some(GeometryPath::IndirectPerBatch),
     binding: Some(BindingModel::ArrayPages),
 };
@@ -432,21 +433,21 @@ const BELOW: Forced = Forced {
 /// What to ask the lesser arm's device for: [`draw`]'s own set, minus the flags
 /// whose presence would select something above [`BELOW`].
 ///
-/// **The subtraction is `crcbl_lantern`'s, not this file's.** `Forced` is what the
-/// binary's `--force-geometry` and `--force-binding` go through, so taking the
-/// difference there and applying it here means a selector that grows a flag
+/// **The subtraction is the engine's, not this file's.** `ForcedPaths` is what
+/// the binary's `--force-geometry` and `--force-binding` go through, so taking
+/// the difference there and applying it here means a selector that grows a flag
 /// moves this arm too, instead of leaving a second table behind still naming the
 /// old ones.
 ///
 /// It has to be a difference rather than `BELOW.optional_features()` outright,
 /// because the two sets do **not** share a base:
-/// `Forced::optional_features` starts from `GpuContextDesc::default`'s optional
+/// `ForcedPaths::optional_features` starts from `GpuContextDesc::default`'s optional
 /// set plus `TASK_SHADER`, which also carries the timestamp, present-feedback
 /// and present-timing flags [`OffscreenSetup::OPTIONAL_FEATURES`] never asks
 /// for. An arm opened from a different base than the one it is compared against
 /// is not a comparison.
 fn below_features() -> Features {
-    let selecting = Forced::default()
+    let selecting = ForcedPaths::default()
         .optional_features()
         .difference(BELOW.optional_features());
     OffscreenSetup::OPTIONAL_FEATURES.difference(selecting)

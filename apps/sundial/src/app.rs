@@ -478,16 +478,7 @@ fn open_the_window<S: Shell + ?Sized>(
 
 /// The half of start-up that is the same however the GPU arrived.
 fn assemble<S: Shell + ?Sized>(booted: Booted<S, Gpu>, options: &Options) -> Loop<S> {
-    // `--screenshot`, armed before the first frame because the frame it names is
-    // counted from this point.
-    #[cfg(not(target_arch = "wasm32"))]
-    let booted = {
-        let mut booted = booted;
-        if let Some(request) = options.common.screenshot_request() {
-            booted.gpu.context_mut().set_screenshot(request);
-        }
-        booted
-    };
+    let booted = crcbl::engine::arm_screenshot(booted, &options.common);
     // The starting filter state, into the cells `crate::filter` reads — before
     // the first frame and before the pause panel is first built, so a run started
     // with `--filter box` shows that on its first pause.
@@ -788,60 +779,15 @@ impl crcbl::ui::DebugModule for Sundial {
 
 // ---- polled start-up ---------------------------------------------------------
 
-/// A [`Loop`] being started one poll at a time, for a caller that may not block —
-/// which on a browser main thread is every caller.
-///
-/// The state machine, the pump and the resize-during-start-up race are
-/// [`crcbl::engine::PolledBoot`]'s; all that is left here is this sample's
-/// `Options` and the `assemble` call the engine deliberately stops short of.
-#[derive(Debug)]
-pub struct PendingLoop<S: Shell + ?Sized = dyn Shell> {
-    boot: crcbl::engine::PolledBoot<S, Gpu>,
+crcbl::impl_pending_loop!(
+    running: Loop,
+    gpu: Gpu,
     options: Options,
-}
-
-impl<S: Shell + ?Sized> PendingLoop<S> {
-    /// Creates the window and starts the wait, without blocking on either half.
-    ///
-    /// `clock_source` is the caller's because the browser's cannot be
-    /// [`ClockSource::new`]'s: `std::time::Instant::now` panics on
-    /// `wasm32-unknown-unknown`, so a page drives the loop from
-    /// `performance.now()` instead.
-    ///
-    /// # Errors
-    ///
-    /// [`SundialError`] if the shell refused the window.
-    pub fn request(
-        mut shell: Box<S>,
-        options: &Options,
-        clock_source: ClockSource,
-    ) -> Result<Self, SundialError> {
-        let window = open_the_window(shell.as_mut(), &clock_source, options)?;
-        Ok(Self {
-            boot: crcbl::engine::PolledBoot::request(
-                shell,
-                window,
-                clock_source,
-                options.common.gpu(),
-                (),
-            ),
-            options: options.clone(),
-        })
-    }
-
-    /// Advances start-up. `Ok(None)` means "not yet, poll again next frame".
-    ///
-    /// # Errors
-    ///
-    /// [`SundialError`] if the window went away before it had a size, or if the
-    /// device request failed.
-    pub fn poll(&mut self) -> Result<Option<Loop<S>>, SundialError> {
-        let Some(booted) = self.boot.poll::<SundialError>()? else {
-            return Ok(None);
-        };
-        Ok(Some(assemble(booted, &self.options)))
-    }
-}
+    error: SundialError,
+    window: |shell, clock, options| open_the_window(shell, clock, options),
+    context: |_options| (),
+    assemble: |booted, options| Ok(assemble(booted, options)),
+);
 
 #[cfg(test)]
 mod tests {
@@ -940,7 +886,7 @@ mod tests {
                 geometry: crcbl::hal::GeometryPath::MeshShader,
                 binding: crcbl::hal::BindingModel::Bindless,
                 lighting: crcbl::hal::LightingPath::Rasterised,
-                forced: crate::gpu::Forced::default(),
+                forced: crcbl::engine::ForcedPaths::default(),
                 effects: RenderEffects::DEFAULT_STACK,
             },
             EffectRequest::default(),
@@ -1062,7 +1008,7 @@ mod tests {
                 geometry: crcbl::hal::GeometryPath::IndirectPerBatch,
                 binding: crcbl::hal::BindingModel::ArrayPages,
                 lighting: crcbl::hal::LightingPath::Rasterised,
-                forced: crate::gpu::Forced::default(),
+                forced: crcbl::engine::ForcedPaths::default(),
                 effects: RenderEffects::DEFAULT_STACK,
             },
             EffectRequest::default(),
@@ -1097,7 +1043,7 @@ mod tests {
                 geometry: crcbl::hal::GeometryPath::MeshShader,
                 binding: crcbl::hal::BindingModel::Bindless,
                 lighting: crcbl::hal::LightingPath::Rasterised,
-                forced: crate::gpu::Forced::default(),
+                forced: crcbl::engine::ForcedPaths::default(),
                 effects: RenderEffects::DEFAULT_STACK,
             },
             EffectRequest::default(),
@@ -1156,7 +1102,7 @@ mod tests {
                 geometry: crcbl::hal::GeometryPath::MeshShader,
                 binding: crcbl::hal::BindingModel::Bindless,
                 lighting: crcbl::hal::LightingPath::Rasterised,
-                forced: crate::gpu::Forced::default(),
+                forced: crcbl::engine::ForcedPaths::default(),
                 effects: RenderEffects::DEFAULT_STACK,
             },
             EffectRequest::default(),
@@ -1287,7 +1233,7 @@ mod tests {
                 geometry: crcbl::hal::GeometryPath::MeshShader,
                 binding: crcbl::hal::BindingModel::Bindless,
                 lighting: crcbl::hal::LightingPath::Rasterised,
-                forced: crate::gpu::Forced::default(),
+                forced: crcbl::engine::ForcedPaths::default(),
                 effects: RenderEffects::DEFAULT_STACK,
             },
             EffectRequest::default(),

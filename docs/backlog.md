@@ -5062,30 +5062,6 @@ declined 2D sprite bundle (breakout ↔ flappy) in `docs/notes/samples.md`: thes
 four have no camera and no sprite pass. Note the pause-menu layering fix in
 flight touches every `gpu.rs`'s pass order; land that first.
 
-### `Forced::optional_features` restates the engine's path selector in four demos (2026-09-07)
-
-`apps/{alcove,lantern,quarry,sundial}/src/gpu.rs` each carry a
-character-identical `Forced::optional_features` that removes `MESH_SHADER` /
-`TASK_SHADER` / `DRAW_INDIRECT_COUNT` / `DESCRIPTOR_INDEXING` from
-`GpuContextDesc::default().optional_features` according to the forced
-`GeometryPath`/`BindingModel` — a second table of exactly the inputs
-`GeometryPath::INPUTS` and `BindingModel::INPUTS` already declare, four times.
-Add a path or move a bit and the copy that is missed forces the wrong path and
-reports it as forced. Beside it: `selector_row` (identical in the four),
-`Paths::ray_tracing_note` (four identical `"raster only (P7C)"` strings; shard's
-differs and is its own), and the three-row `DebugModule` core of `Paths` in
-seven demos (`alcove`, `breach`, `lantern`, `quarry`, `shard`, `sundial`,
-`towers`) whose field sets genuinely differ. **What it would take:** a
-`ForcedPaths { geometry, binding }` with `optional_features()` in
-`crcbl::engine` beside `GpuContextDesc`; `selector_row` and the note beside
-`RenderEffects::row` in `crcbl::render`; a `DevicePathRows` core the demos'
-`Paths` delegate to, so lantern's monitor row and shard's note stay local. The
-per-demo `the_paths_this_device_reports_are_its_own` tests collapse to one.
-`docs/plan/sample/13-lantern.md` names `Forced::optional_features` and
-`19-alcove.md` names `ray_tracing_note`; both move in the same commit. This
-file's own lantern/quarry entries call `Forced` "the shape to copy" — after the
-hoist they should point at the engine type.
-
 ### Seven demos carry the same pause-only `menu.rs` (2026-09-07)
 
 `apps/{bracket,breach,hud,orbit,puppet,shard,sparks}/src/menu.rs`. **Re-verified
@@ -5118,34 +5094,6 @@ already wires it). **What it would take:** `ui_text`, `row_value` and a
 `Block` and `SampleRun`; the nine demos without the dev-dependency gain one
 line; `cargo deny --all-features` and the workspace test are the checks (the
 edge is inside `apps/`, so the fuzz lockfile does not move).
-
-### The `PendingLoop` polled-boot wrapper, in eighteen demos (2026-09-07)
-
-`pub struct PendingLoop<S> { boot: PolledBoot<S, Gpu>, options: Options }` with
-`request` (~25 lines: `open_the_window`, `PolledBoot::request(…, ())`, the
-"`clock_source` is the caller's" paragraph) and the four-statement `poll` in
-every demo with a `web.rs`; only the error type, whether `assemble` is fallible,
-and the context (`lantern`, `viewer` thread content) vary.
-`crcbl::impl_web_pending!` already writes the other half of the same type.
-**What it would take:**
-`crcbl::impl_pending_loop!(pending, loop, options, error, assemble)` beside
-`impl_polled_gpu!`, with an arm taking a context expression. `web.rs` names
-`PendingLoop` by path, so the macro declares the type under that name. Not the
-declined `with_shell`/`open_the_window` (see `docs/notes/samples.md`): the
-variation here is a type parameter and a context.
-
-### The `--screenshot` arming block, in sixteen `assemble`s (2026-09-07)
-
-The
-`#[cfg(not(target_arch = "wasm32"))] let booted = { … set_screenshot(request) … }`
-block in `assemble` of sixteen demos, plus sixteen copies of the `context_mut()`
-accessor in `gpu.rs`, all carrying the same three facts: the screenshot is armed
-before the first frame because its frame is counted from there, a browser build
-arms nothing, and the `mut` lives inside the `cfg` so wasm32 reports no unused
-`mut`. **What it would take:** one place in `crcbl::engine` — a `cfg`-gated
-`GameGpu::context_mut` forwarded by `impl_game_gpu!`, or a free
-`arm_screenshot(&mut Booted, &Common)` — and the nine golden harnesses as the
-check (`SampleRun::screenshot` fails on a stale file).
 
 ### Five 3D demos draw the same readout panel (2026-09-07)
 
@@ -5222,24 +5170,34 @@ say so. `apps/horde` is incidentally covered (its truncation test would read a
 stale record on the second run); the other three are not. Judged not worth four
 one-line tests, recorded so the trade-off is not re-derived.
 
-### `crcbl new`'s template asks for the wrong feature bundle (2026-09-07)
+### The screenshot arming reaches the context through a second trait (2026-09-07)
 
-**A defect, not a duplication.** `crates/crcbl-cli/templates/main.rs.tmpl`
-spells `optional_features` as
-`GPU_DRIVEN | TIMESTAMP_QUERY | DEBUG_MARKERS | PUSH_CONSTANTS | SAMPLER_ANISOTROPY`
-(**re-verified by the parent**), where `GpuContextDesc::default()` asks for
-`GPU_DRIVEN | MESH_SHADER | TIMESTAMP_QUERY | DEBUG_MARKERS | PRESENT_FEEDBACK | PRESENT_TIMING | SAMPLER_ANISOTROPY`.
-So every scaffolded game drops `MESH_SHADER`, `PRESENT_FEEDBACK` and
-`PRESENT_TIMING` — the exact open-loop defect `apps/hud/src/gpu.rs`'s comment
-records against itself and fourteen demos now test against with
-`the_features_this_sample_asks_for_are_the_engine_s_own`. The template has no
-such test and is compiled only by the cli-e2e gate. It also hand-writes the
-`GameGpu`/`GpuSurface` forwards `crcbl::impl_game_gpu!` exists for, and a fourth
-copy of the PAUSED `MenuSet`. **What it would take:**
-`..GpuContextDesc::from(gpu)` with no `optional_features` line,
-`crcbl::impl_game_gpu!(Gpu)` in place of the two impls, the feature-parity test
-added to the template, and `pause_menu()` once that lands; the cli-e2e harness
-is the gate.
+`crcbl::engine::HoldsContext` exists because `GameGpu` could not carry
+`context_mut`: `engine.rs`'s own `FakeGpu` and `BareGpu` hold no `GpuContext` at
+all, so a required method there is one they could only answer by lying. The
+sixteen inherent `context_mut` accessors were therefore **not** deleted —
+`impl_game_gpu!` forwards to them, which is the pattern that keeps
+`unconditional_recursion` working — but their five-line rationale collapsed to
+one pointer at the trait. **Considered and declined:** putting the screenshot
+request on `GpuOptions` so `GpuContext::open` arms it itself, which would delete
+the accessors and the free function both. It is the better shape and it touches
+`GpuOptions`, `GpuContextDesc`, both bring-up paths and `crcbl new`'s scaffold,
+so it is its own task.
+
+### `impl_game_gpu!` now requires `context_mut`, which quarry and viewer gained (2026-09-07)
+
+Both hold a `ctx: GpuContext` and neither arms `--screenshot` in its `assemble`;
+the accessor exists only for the macro's forward. That they do not arm it is a
+pre-existing gap — `apps/quarry` and `apps/viewer` are the two samples with no
+golden-harness screenshot — and was not fixed here.
+
+### `apps/viewer`'s `PendingLoop` stays hand-written (2026-09-07)
+
+`crcbl::impl_pending_loop!` covers the other seventeen. Viewer's pending state
+carries an `Rc<Model>` beside the options and its `request` takes a fourth
+argument, so a `carry:` clause would put one sample's exception into every other
+invocation. Recorded so it is not re-proposed; the same reasoning is written on
+the struct and in the macro's docs.
 
 ### Smaller seam findings, stated but not worked up (2026-09-07)
 

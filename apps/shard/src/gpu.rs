@@ -53,7 +53,9 @@
 //! of the words it exists to frame.
 
 use crate::foe::FoeView;
-use crcbl::engine::{FrameOutcome, GpuContext, GpuContextDesc, GpuError, GpuOptions};
+use crcbl::engine::{
+    DevicePathRows, ForcedPaths, FrameOutcome, GpuContext, GpuContextDesc, GpuError, GpuOptions,
+};
 use crcbl::hal::{
     BindingModel, CommandEncoderDesc, DeviceCaps, GeometryPath, HalError, LightingPath,
 };
@@ -167,9 +169,13 @@ impl Paths {
 impl crcbl::ui::DebugModule for Paths {
     fn debug_section(&self, section: &mut crcbl::ui::DebugSection) {
         section.set_title("paths");
-        section.row("geometry", format_args!("{:?}", self.geometry));
-        section.row("binding", format_args!("{:?}", self.binding));
-        section.row("lighting", format_args!("{:?}", self.lighting));
+        DevicePathRows::new(
+            self.geometry,
+            self.binding,
+            self.lighting,
+            ForcedPaths::default(),
+        )
+        .write(section);
         section.row_str("ray tracing", Self::ray_tracing_note());
         section.row_str("effects", &self.effects_row());
     }
@@ -323,9 +329,11 @@ impl Gpu {
         self.paths
     }
 
-    /// The engine's context, for the run-level knobs that are not this sample's —
-    /// `--screenshot` is the one that needs it.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// The engine's context, for the run-level knobs that are not this sample's.
+    ///
+    /// `crcbl::impl_game_gpu!` forwards
+    /// [`HoldsContext`](crcbl::engine::HoldsContext) to this, and
+    /// [`arm_screenshot`](crcbl::engine::arm_screenshot) is what reaches it.
     pub const fn context_mut(&mut self) -> &mut GpuContext {
         &mut self.ctx
     }

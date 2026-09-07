@@ -8,8 +8,8 @@
 use crcbl::args::{Common, Consumed, binding_from_name, geometry_from_name};
 use crcbl::render::{DebugView, ForwardRenderer};
 
-use crate::gpu::Forced;
 use crate::menu::CameraMode;
+use crcbl::engine::ForcedPaths;
 
 /// The simulation rate. Nothing here integrates anything but a camera, so it is
 /// the engine's ordinary 60.
@@ -26,7 +26,7 @@ pub struct Options {
     /// Which camera the run starts on.
     pub camera: CameraMode,
     /// Which selectors the run asks to be held below the device's own.
-    pub forced: Forced,
+    pub forced: ForcedPaths,
     /// The screen-space error budget the cut is selected under, in pixels.
     ///
     /// Larger is coarser: a group projecting *over* the budget is expanded and
@@ -55,7 +55,7 @@ impl Default for Options {
         Self {
             common: Common::new(DEFAULT_TICK_HZ),
             camera: CameraMode::default(),
-            forced: Forced::default(),
+            forced: ForcedPaths::default(),
             lod_budget: ForwardRenderer::LOD_ERROR_BUDGET,
             lod_view: false,
             heatmap: false,
@@ -277,7 +277,7 @@ mod tests {
             panic!("no arguments is a run");
         };
         assert_eq!(options.camera, CameraMode::Fixed);
-        assert_eq!(options.forced, Forced::default());
+        assert_eq!(options.forced, ForcedPaths::default());
         assert_eq!(options.common.tick_hz, DEFAULT_TICK_HZ);
         assert_eq!(
             options.lod_budget,
@@ -317,7 +317,7 @@ mod tests {
         assert_eq!(options.camera, CameraMode::Free);
         assert_eq!(
             options.forced,
-            Forced {
+            ForcedPaths {
                 geometry: Some(GeometryPath::IndirectPerBatch),
                 binding: Some(BindingModel::ArrayPages),
             }

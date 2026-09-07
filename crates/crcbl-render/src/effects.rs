@@ -346,6 +346,25 @@ impl RenderEffects {
     }
 }
 
+/// Why a ray-traced lighting path never appears in a sample's `paths` section,
+/// in the one line the panel prints.
+///
+/// **Not a device answer.** `crcbl-vk` can report `RAY_QUERY` and
+/// `ACCELERATION_STRUCTURE`, so [`crcbl_hal::DeviceCaps::lighting_path`] would
+/// choose [`LightingPath::RayTraced`](crcbl_hal::LightingPath::RayTraced) — but
+/// nothing in this crate builds an acceleration structure or traces one, so a
+/// run that selected it would draw the rasterised frame and say it had done
+/// something else. The row says so instead of implying a choice was made.
+///
+/// One string for every sample whose milestone this is, because the claim is
+/// about **this crate**: the day a ray-traced path lands here, the row that
+/// still says otherwise must not be four rows in four samples. A sample whose
+/// own charter numbers the rung differently — `apps/shard` — spells its own.
+#[must_use]
+pub const fn ray_tracing_note() -> &'static str {
+    "raster only (P7C)"
+}
+
 /// Which tier fills the frame's one antialiasing slot.
 ///
 /// `docs/plan/49-antialiasing.md`'s eighth decision, taken 2026-08-30 with

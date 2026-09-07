@@ -1182,6 +1182,15 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Fixed
 
+- `crcbl new`'s scaffold asked for
+  `GPU_DRIVEN | TIMESTAMP_QUERY | DEBUG_MARKERS | PUSH_CONSTANTS | SAMPLER_ANISOTROPY`,
+  so every scaffolded game opened its device without `MESH_SHADER`,
+  `PRESENT_FEEDBACK` and `PRESENT_TIMING` — the closed pacing loop was dead code
+  and the frame cadence read `Unknown` for ever. It takes
+  `GpuContextDesc::default()`'s own optional set now, ships
+  `crcbl::impl_game_gpu!(Gpu)` in place of the hand-written
+  `GameGpu`/`GpuSurface` impls, and carries the feature-parity test
+  (`the_features_this_game_asks_for_are_the_engine_s_own`) the samples carry.
 - The pause menu is drawn **above** the game's HUD instead of behind it. Every
   sample assembled its frame as the game's passes, then `MenuRenderer`'s sprite
   pass, then a single `ui-composite` pass carrying the whole `DrawList` — so the
@@ -1333,6 +1342,25 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- `crcbl::engine::ForcedPaths` is where `--force-geometry` / `--force-binding`
+  turn into a feature request. `optional_features()` subtracts the flags that
+  select a better path from `GpuContextDesc::default()`'s optional set; alcove,
+  lantern, quarry and sundial carried a character-identical copy each and now
+  name the engine type (their `Forced` is gone, and so are their per-demo
+  `forcing_a_path_*` tests, which are one engine test).
+- `crcbl::engine::DevicePathRows` writes the `geometry`, `binding` and
+  `lighting` rows of a sample's `paths` debug section, marking a forced selector
+  `"MeshShader (forced)"`. Seven demos delegate to it; the rows they print are
+  unchanged. `crcbl::render::ray_tracing_note` is the one `"raster only (P7C)"`
+  string the four samples whose milestone it is now share.
+- `crcbl::impl_pending_loop!` writes a sample's `PendingLoop` — the struct, the
+  `PolledBoot::request` wiring and the four-statement `poll`. Seventeen demos
+  take it; `apps/viewer`, whose pending state also carries the document the page
+  compiled in, still writes its own.
+- `crcbl::engine::arm_screenshot` arms `--screenshot` before the first frame,
+  reaching the bundle's context through the new `crcbl::engine::HoldsContext`
+  that `crcbl::impl_game_gpu!` forwards. Sixteen `assemble`s carried the block
+  and now call one line; `impl_game_gpu!` requires an inherent `context_mut`.
 - `crcbl::store::record::Record::for_app(app, file, headless)` replaces the
   "`Backing::None` if headless else `Backing::platform`" that
   `apps/{asteroids,flappy,horde}/src/best.rs` and

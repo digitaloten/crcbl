@@ -43,10 +43,10 @@ use crcbl::args::{COMMON_OPTIONS_HELP, COMMON_TAIL_HELP, Common, Consumed, Invoc
 use crcbl::core::input::KeyCode;
 use crcbl::engine::{
     Booted, Clock, DEBUG_OVERLAY_ID, FRAMES_IN_FLIGHT, FULLSCREEN_ID, FrameInfo, FrameOutcome,
-    GameGpu, GpuContext, GpuContextDesc, GpuError, GpuOptions, GpuSurface, HostedGame, LoopError,
-    RESUME_ID, RunSummary, drive, open_window, wait_for_configure,
+    GpuContext, GpuContextDesc, GpuError, GpuOptions, HostedGame, LoopError, RESUME_ID, RunSummary,
+    drive, open_window, wait_for_configure,
 };
-use crcbl::hal::{CommandEncoderDesc, Features};
+use crcbl::hal::CommandEncoderDesc;
 use crcbl::math::Vec2;
 use crcbl::prelude::*;
 use crcbl::render::{
@@ -303,6 +303,27 @@ struct Gpu {
     draw_list: DrawList,
 }
 
+/// What this game asks the engine for when it opens a device.
+///
+/// **The engine's own optional set, not a list spelled out here.** Every flag
+/// [`GpuContextDesc::default`] asks for is optional — a device without one
+/// simply does not enable it — so naming a subset here buys nothing and costs
+/// the flags a later engine adds. `PRESENT_FEEDBACK` and `PRESENT_TIMING` are
+/// the ones that bite: `acquire` calls `wait_until_presented` every frame and a
+/// device never asked for the capability answers immediately for ever, so the
+/// closed pacing loop becomes dead code and the frame cadence reports
+/// `Unknown`. The label and `--backend`/`--pacing` are what is genuinely this
+/// run's.
+///
+/// One function rather than a literal inside [`Gpu::open`] so that
+/// `the_features_this_game_asks_for_are_the_engine_s_own` has something to ask.
+fn desc(gpu: GpuOptions) -> GpuContextDesc<'static> {
+    GpuContextDesc {
+        label: NAME,
+        ..GpuContextDesc::from(gpu)
+    }
+}
+
 impl Gpu {
     /// Opens a backend, a surface, a device and a swapchain, and builds the
     /// renderers on top of them.
@@ -316,26 +337,7 @@ impl Gpu {
         extent: (u32, u32),
         gpu: GpuOptions,
     ) -> Result<Self, GpuError> {
-        let ctx = GpuContext::open(
-            shell,
-            window,
-            extent,
-            &GpuContextDesc {
-                label: NAME,
-                // Optional, never required: the UI pass hands its shader the
-                // viewport size through a push constant where there are any and
-                // through a uniform buffer where there are none. A browser is
-                // always the second case — WebGPU has no push constants at all.
-                optional_features: Features::GPU_DRIVEN
-                    | Features::TIMESTAMP_QUERY
-                    | Features::DEBUG_MARKERS
-                    | Features::PUSH_CONSTANTS
-                    | Features::SAMPLER_ANISOTROPY,
-                // The command line's half: `--backend` and `--pacing`. The
-                // label and the features above are this game's.
-                ..GpuContextDesc::from(gpu)
-            },
-        )?;
+        let ctx = GpuContext::open(shell, window, extent, &desc(gpu))?;
 
         let format = ctx.format();
         let timers = PassTimers::new(ctx.device(), FRAMES_IN_FLIGHT, MAX_TIMED_PASSES);
@@ -430,14 +432,36 @@ impl Gpu {
         self.pool.retire_unused(self.ctx.device());
         Ok(outcome)
     }
-}
 
-/// The frame's half of this bundle, for [`crcbl::engine::Loop`].
-impl GameGpu for Gpu {
+    /// The extent the swapchain was actually created at.
+    fn extent(&self) -> (u32, u32) {
+        self.ctx.extent()
+    }
+
+    /// Rebuilds the swapchain at a new size.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError`] if the swapchain could not be recreated.
+    fn resize(&mut self, extent: (u32, u32)) -> Result<(), GpuError> {
+        self.ctx.resize(extent)
+    }
+
+    /// The engine's context, for the run-level knobs that are not this game's.
+    ///
+    /// `crcbl::impl_game_gpu!` forwards
+    /// [`HoldsContext`](crcbl::engine::HoldsContext) to this, and
+    /// [`arm_screenshot`](crcbl::engine::arm_screenshot) is what reaches it.
+    const fn context_mut(&mut self) -> &mut GpuContext {
+        &mut self.ctx
+    }
+
+    /// The font the loop draws its menu and its debug panel with.
     fn atlas(&self) -> &FontAtlas {
         &self.atlas
     }
 
+    /// The menu to draw this frame, or `None` for a frame with none on it.
     fn set_menu(&mut self, menu: Option<(&Menu, &MenuLayout)>) {
         self.menu.set_menu(menu);
     }
@@ -471,10 +495,6 @@ impl GameGpu for Gpu {
         self.ctx.video()
     }
 
-    fn frame(&mut self) -> Result<FrameOutcome, GpuError> {
-        Self::frame(self)
-    }
-
     /// Releases everything, in dependency order.
     ///
     /// Nothing may be destroyed while the device might still be using it, which
@@ -491,16 +511,11 @@ impl GameGpu for Gpu {
     }
 }
 
-/// The two questions both halves of the engine ask a swapchain's owner.
-impl GpuSurface for Gpu {
-    fn extent(&self) -> (u32, u32) {
-        self.ctx.extent()
-    }
-
-    fn resize(&mut self, extent: (u32, u32)) -> Result<(), GpuError> {
-        self.ctx.resize(extent)
-    }
-}
+// The forwards `crcbl::engine` calls this bundle through: `GameGpu` and
+// `GpuSurface`, each method one of the inherent ones above. Written by the
+// macro rather than by hand so that a bundle missing one fails to compile
+// naming it, instead of the trait's own method calling itself for ever.
+crcbl::impl_game_gpu!(Gpu);
 
 // ---- start-up ---------------------------------------------------------------
 
@@ -638,6 +653,25 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The bundle this game opens with is the engine's own.**
+    ///
+    /// A hand-written `optional_features` list is a copy, and a copy goes stale
+    /// the moment [`GpuContextDesc::default`] gains a flag. The failure is
+    /// silent both ways: the missing capability changes no picture, only
+    /// whether the engine's closed pacing loop and its display-timing query can
+    /// reach anything. This scaffold shipped exactly that list once, and
+    /// nothing said so. Every sample in the engine checkout carries this check.
+    #[test]
+    fn the_features_this_game_asks_for_are_the_engine_s_own() {
+        let asked = desc(GpuOptions::default());
+        assert_eq!(asked.label, NAME);
+        assert_eq!(
+            asked.optional_features,
+            GpuContextDesc::default().optional_features,
+            "a subset spelled out here is a copy, and a copy goes stale",
+        );
+    }
 
     /// This game's whole menu vocabulary, which is the loop's three actions and
     /// nothing else — [`Infallible`] as the game half makes
