@@ -1,0 +1,121 @@
+<!--meta
+{
+  "out": "demos/towers/index.html",
+  "slug": "towers",
+  "name": "Towers",
+  "title": "Towers — Crucible",
+  "description": "Crucible's flagship sample: a co-op tower defense played solo over the engine's own loopback transport, with every build and every wave a command the server validates.",
+  "nav": [
+    { "href": "/", "label": "all demos" },
+    { "href": "#controls", "label": "controls" },
+    { "href": "https://github.com/kryptic-sh/crcbl/tree/main/apps/towers", "label": "source" }
+  ],
+  "footer": "<a href=\"https://github.com/kryptic-sh/crcbl/tree/main/apps/towers\">apps/towers</a>",
+  "body_end": "<script type=\"module\" src=\"/demos/towers/main.js\"></script>"
+}
+meta-->
+<!--body-->
+<header class="hero">
+  <div class="badges">
+    <span class="badge live">● flagship</span>
+    <span class="badge">WebGPU</span>
+    <span class="badge">wasm32</span>
+  </div>
+  <h1><span class="grad">Towers</span></h1>
+  <p class="tagline">
+    Creeps walk a lane, towers shoot them, kills pay for the next tower. Build
+    nothing and the field overruns you, because the table releases more creeps
+    than the team has lives. The interesting part is not on screen: every build
+    and every wave is a command a server validates, and this page is running
+    both halves of it.
+  </p>
+</header>
+
+<!--include demo-window-->
+
+<section id="controls">
+  <h2>controls</h2>
+  <h3>The waves arrive on their own. What you do is spend the purse.</h3>
+  <ul class="keys">
+    <li class="key-row">
+      <span>Pick a build plot from the list</span>
+      <span><kbd>←</kbd> <kbd>→</kbd></span>
+    </li>
+    <li class="key-row">
+      <span
+        >Build a tower on it. The server refuses a plot that is taken and a
+        purse that is short.</span
+      >
+      <span><kbd>B</kbd></span>
+    </li>
+    <li class="key-row">
+      <span
+        >Send the next wave now rather than waiting the build phase out</span
+      >
+      <span><kbd>N</kbd></span>
+    </li>
+    <li class="key-row">
+      <span>Throw the run away and start again</span>
+      <span><kbd>R</kbd></span>
+    </li>
+    <!--include demo-loop-keys-->
+  </ul>
+  <div class="note">
+    <strong>There is no pointer or finger here yet.</strong> The build list is
+    picked through with two keys, so a phone gets a field that plays itself —
+    the waves arrive on the table's own clock and a finished run starts over.
+    What a tap wants to land on is the build menu that arrives with this
+    sample's pixel art, and a hit test written against the untextured list above
+    would be thrown away with it.
+  </div>
+</section>
+
+<section id="whats-running">
+  <h2>what is actually running</h2>
+  <h3>Solo is the co-op build with one player in it.</h3>
+  <p>
+    <strong>Nothing here is a shortcut for being alone.</strong> Pressing
+    <kbd>B</kbd> does not place a tower; it seals the plot number into a command
+    and hands it to a server, which decides whether the plot is free and the
+    purse is deep enough and only then makes one. The same is true of the wave
+    and of the restart. On this page the transport between the two is the
+    engine's in-memory loopback, and in a co-op session it is a wire — the game
+    on either side of it does not change, which is the whole reason a tower
+    defense was chosen as the sample that proves multiplayer.
+  </p>
+  <p>
+    The debug panel counts the refusals. It reads zero while you play honestly,
+    and climbs the moment you ask for a plot that is already built — which is
+    the difference between a client that asks and a client that decides.
+  </p>
+  <p>
+    <strong>The combat is three physics queries and no special cases.</strong>
+    A tower finds a target with one sphere overlap, and the interesting half is
+    the filter: the same query hands it the ground slab and the exit volume, so
+    a tower that took the first thing it touched would shoot the floor. A bolt
+    finds its creep with a swept sphere, because a bolt covers more ground in a
+    tick than a creep is wide and a test at either end of that tick sees
+    nothing. And a creep reaches the exit by walking into a trigger volume —
+    non-solid, so every sweep and every ray passes straight through it and only
+    an overlap reports it, which is exactly what a "did anything get in here?"
+    volume wants.
+  </p>
+  <p>
+    <strong>This slice is one map, one tower and three waves.</strong> The plan
+    asks for three tower types with an upgrade tier each, three creep types, ten
+    waves, pixel art, spatial audio and a map authored in an editor that does
+    not exist yet. None of that is here. What is here is the loop, end to end,
+    in the same build that runs natively — so the wasm target cannot quietly rot
+    while the rest of it is written.
+  </p>
+  <p>
+    The field is a lane, a ground slab, five build pads and a box per creep,
+    every one of them a primitive generated in code from a table of constants.
+    It draws through the three arms a browser resolves to by construction — draw
+    arguments generated per batch, textures bound as array pages, lighting
+    rasterised — and the panel says which, because a demo that reports the path
+    it took is a demo you can believe about the one it did not.
+  </p>
+  <!--include demo-console-note-->
+</section>
+<!--/body-->
