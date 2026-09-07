@@ -5031,6 +5031,302 @@ asks a grid that the grid cannot answer, and "how many of tag X" would be a
 second copy of the walk. Worth a `Grid::holds_tag(&Catalog, Tag) -> bool` only
 if a third consumer wants it; noted so the third does not re-derive it silently.
 
+## The demo seam — what the review of 2026-09-07 found owed
+
+A read-only review of every demo asked what code carries the **same knowledge**
+in two or more of them and belongs in the engine (`crates/*`,
+`apps/crcbl-sample-test`, `web/engine/`, `tools/`). What it ruled out as
+same-shape-different-knowledge, what is already hoisted, and what it did not
+read are recorded in `docs/notes/samples.md` under "The demo seam review of
+2026-09-07". Every entry below is owed work; the copy counts are the review's
+over comment-stripped bodies, and the four the parent re-ran are marked. The
+rest are the review's reading, not re-verified — re-count before cutting.
+
+### The nine golden harness scripts are one script, and five carry a wrong comment (2026-09-07)
+
+`apps/{alcove,asteroids,breakout,flappy,horde,hud,lantern,shard,sundial}/tests/run-<sample>-golden.sh`
+share, byte for byte once the sample's name is normalised: the
+`crcbl_pin_vk_icd` sourcing, the `CRCBL_GPU`-unset refusal, the
+`CRCBL_VK_VALIDATION=1` forcing, the `mktemp`/`trap` pair, the
+`cargo nextest run … --features golden-e2e --test golden --run-ignored all --no-tests fail`
+invocation, `crcbl_nextest_plain`, the `crcbl_validation_saw_nothing` and
+`crcbl_nextest_summary` gates and the "never named the adapter" refusal.
+**Re-verified by the parent**: asteroids vs shard differ only by the name and
+shard's own extra "no frame was compared" block. **They have drifted**: the four
+newest (`alcove`, `lantern`, `shard`, `sundial`) echo `CRCBL_ADAPTER` and grep
+`device on adapter `; the five older ones grep `device on ` and say "There is no
+`CRCBL_ADAPTER` here" — which is false, because a golden run is a `--screenshot`
+run and `crates/crcbl/src/screenshot.rs`'s `start_device` is the caller of
+`crcbl::adapter::pin()`, so an inherited `CRCBL_ADAPTER` steers those five runs
+and they neither say so nor print it. **What it would take:** a shared a
+`run-sample-golden.sh` under `tools/` beside `tools/nextest-summary.sh` taking
+the package, the label and the success line, with the nine files reduced to thin
+wrappers that keep their paths (CI's nine `run:` lines,
+`docs/plan/sample/04-hud.md` and this file cite them). Shard's extra block and
+alcove's views variant stay in their wrappers.
+
+### Four demos carry the same menu-and-UI-only `gpu.rs` (2026-09-07)
+
+`apps/{hud,orbit,bracket,options}/src/gpu.rs`. **Re-verified by the parent**:
+comment-stripped, hud and orbit differ in eight diff lines, all the sample's
+name (the `GpuContextDesc.label`, the graph log line, the encoder label, the
+test's label assertion); bracket adds a `const CLEAR` for
+`crate::page::BACKDROP`; options names `crate::APP_NAME` and lacks the
+`#[cfg(test)]` accessors. The shared knowledge is the whole bundle: the struct,
+`from_context`'s build order with `menu.destroy` on a failed `UiRenderer::new`,
+the accessor set, `frame`'s acquire → `menu.begin_frame` → `ui.begin_frame` →
+graph → backdrop clear → menu pass → UI pass → compile → `last_dump` → `dumped`
+one-shot → encode → present → `retire_unused`, and `resize`/`destroy` order.
+**What it would take:** a `PageBundle` in `crcbl::render` beside
+`MenuRenderer`/`UiRenderer` built from a label and a clear colour, with each
+demo's `gpu.rs` a newtype plus `desc()` and its test accessors;
+`impl_game_gpu!`/`impl_polled_gpu!` still applied per demo. Distinct from the
+declined 2D sprite bundle (breakout ↔ flappy) in `docs/notes/samples.md`: these
+four have no camera and no sprite pass. Note the pause-menu layering fix in
+flight touches every `gpu.rs`'s pass order; land that first.
+
+### `Forced::optional_features` restates the engine's path selector in four demos (2026-09-07)
+
+`apps/{alcove,lantern,quarry,sundial}/src/gpu.rs` each carry a
+character-identical `Forced::optional_features` that removes `MESH_SHADER` /
+`TASK_SHADER` / `DRAW_INDIRECT_COUNT` / `DESCRIPTOR_INDEXING` from
+`GpuContextDesc::default().optional_features` according to the forced
+`GeometryPath`/`BindingModel` — a second table of exactly the inputs
+`GeometryPath::INPUTS` and `BindingModel::INPUTS` already declare, four times.
+Add a path or move a bit and the copy that is missed forces the wrong path and
+reports it as forced. Beside it: `selector_row` (identical in the four),
+`Paths::ray_tracing_note` (four identical `"raster only (P7C)"` strings; shard's
+differs and is its own), and the three-row `DebugModule` core of `Paths` in
+seven demos (`alcove`, `breach`, `lantern`, `quarry`, `shard`, `sundial`,
+`towers`) whose field sets genuinely differ. **What it would take:** a
+`ForcedPaths { geometry, binding }` with `optional_features()` in
+`crcbl::engine` beside `GpuContextDesc`; `selector_row` and the note beside
+`RenderEffects::row` in `crcbl::render`; a `DevicePathRows` core the demos'
+`Paths` delegate to, so lantern's monitor row and shard's note stay local. The
+per-demo `the_paths_this_device_reports_are_its_own` tests collapse to one.
+`docs/plan/sample/13-lantern.md` names `Forced::optional_features` and
+`19-alcove.md` names `ray_tracing_note`; both move in the same commit. This
+file's own lantern/quarry entries call `Forced` "the shape to copy" — after the
+hoist they should point at the engine type.
+
+### Seven demos carry the same pause-only `menu.rs` (2026-09-07)
+
+`apps/{bracket,breach,hud,orbit,puppet,shard,sparks}/src/menu.rs`. **Re-verified
+by the parent**: hud vs orbit and hud vs shard differ in two diff lines, the
+game type named in the test. Each builds one `Menu::new("PAUSED", …)` from
+`RESUME_ID`/`FULLSCREEN_ID`/`DEBUG_OVERLAY_ID` with the labels `RESUME`,
+`FULLSCREEN`, `DEBUG PANEL` and the shortcuts `ESC`/`F11`/`F3`, all of which are
+`crcbl::engine`'s, and carries the same two guard tests.
+`apps/towers/src/menu.rs` is the same plus a `RESTART_ID` item, and
+`crates/crcbl-cli/templates/main.rs.tmpl` writes the `MenuSet` an eighth time.
+**What it would take:** `crcbl::ui::menu::pause_menu() -> Menu` and
+`pause_only<K>() -> MenuSet<K>` with the guard test moved beside them; towers
+pushes its item onto `pause_menu()`. `options` (`Settings`-only) and `viewer`
+(`{None, Menu}`) stay out. No browser gate moves: the drawn labels are
+unchanged.
+
+### Test helpers copied into every `app.rs`: `ui_text`, `row_value`, `scripted`, `headless` (2026-09-07)
+
+`fn ui_text(engine: &Loop<HeadlessShell>) -> Vec<String>` in fifteen demos,
+`fn row_value(drawn, label) -> String` in eight, `fn scripted(options)` in
+eleven, `fn headless(frames) -> Options` in eight — each a fact about the
+engine's surfaces (how a test reads the frame's text back off
+`Loop::gpu().draw_list()`; how the debug panel lays a label/value pair out and
+that a duplicate label makes the reading meaningless; what a deterministic
+headless run is). The blocker "The debug-overlay retrofit" used to record for
+`row_value` no longer holds: `apps/crcbl-sample-test` exists and is a
+dev-dependency reachable from a `src/app.rs` test module (`apps/hud/Cargo.toml`
+already wires it). **What it would take:** `ui_text`, `row_value` and a
+`headless_common(tick_hz, frames)` in `apps/crcbl-sample-test/src/lib.rs` beside
+`Block` and `SampleRun`; the nine demos without the dev-dependency gain one
+line; `cargo deny --all-features` and the workspace test are the checks (the
+edge is inside `apps/`, so the fuzz lockfile does not move).
+
+### The `PendingLoop` polled-boot wrapper, in eighteen demos (2026-09-07)
+
+`pub struct PendingLoop<S> { boot: PolledBoot<S, Gpu>, options: Options }` with
+`request` (~25 lines: `open_the_window`, `PolledBoot::request(…, ())`, the
+"`clock_source` is the caller's" paragraph) and the four-statement `poll` in
+every demo with a `web.rs`; only the error type, whether `assemble` is fallible,
+and the context (`lantern`, `viewer` thread content) vary.
+`crcbl::impl_web_pending!` already writes the other half of the same type.
+**What it would take:**
+`crcbl::impl_pending_loop!(pending, loop, options, error, assemble)` beside
+`impl_polled_gpu!`, with an arm taking a context expression. `web.rs` names
+`PendingLoop` by path, so the macro declares the type under that name. Not the
+declined `with_shell`/`open_the_window` (see `docs/notes/samples.md`): the
+variation here is a type parameter and a context.
+
+### The `--screenshot` arming block, in sixteen `assemble`s (2026-09-07)
+
+The
+`#[cfg(not(target_arch = "wasm32"))] let booted = { … set_screenshot(request) … }`
+block in `assemble` of sixteen demos, plus sixteen copies of the `context_mut()`
+accessor in `gpu.rs`, all carrying the same three facts: the screenshot is armed
+before the first frame because its frame is counted from there, a browser build
+arms nothing, and the `mut` lives inside the `cfg` so wasm32 reports no unused
+`mut`. **What it would take:** one place in `crcbl::engine` — a `cfg`-gated
+`GameGpu::context_mut` forwarded by `impl_game_gpu!`, or a free
+`arm_screenshot(&mut Booted, &Common)` — and the nine golden harnesses as the
+check (`SampleRun::screenshot` fails on a stale file).
+
+### Five 3D demos draw the same readout panel (2026-09-07)
+
+`page::draw` in `apps/{breach,puppet,shard,sparks,towers}/src/page.rs`: the same
+inset box, label/right-aligned-value row loop, centred hint measured with the
+atlas, and the same geometry constants (`PANEL_INSET` 16, `ROW_HEIGHT` 18,
+`PANEL_PAD` 8, `BORDER_WIDTH` 1); puppet and sparks are character-identical,
+towers has it inside `fn panel`, shard and towers re-tint the palette on
+purpose. Plus `PageStats { commands }` in six. **Not the declined
+`crcbl_ui::hud` adoption** (`docs/notes/samples.md`): the objections there —
+`Label` has no colour, `HudPanel` self-sizes — are designed out by a row tuple
+with a colour and an explicit width. **What it would take:** a `ReadoutPanel` in
+`crcbl::ui` beside `widget.rs` with `draw(list, atlas, extent, rows) -> usize`
+and a `hint` helper, extracted **byte-for-byte** — shard's goldens and the
+shard/breach/puppet/sparks/towers browser rows read this panel's pixels, so diff
+the draw lists before and after rather than redesign.
+
+### `--force-geometry` / `--force-binding` parsing, in four demos (2026-09-07)
+
+`geometry_from_name` and `binding_from_name` in
+`apps/{alcove,lantern,quarry,sundial}/src/args.rs`, identical down to the doc
+comment, plus the two parse arms and the help block: the command line's
+spellings for `GeometryPath` and `BindingModel`. A new path needs four tables
+edited. **What it would take:** the two functions and a `FORCED_PATH_HELP` in
+`crcbl::args` beside `positive`/`number`/`size` and `SCREENSHOT_HELP`; quarry's
+extra help sentence stays its own. The accepted spellings must not change:
+`apps/quarry/tests/run-quarry-e2e.sh` and the alcove/lantern/sundial golden
+scripts pass them on the command line.
+
+### `occlusion.rs` and `filter.rs` are the same console-variable driver (2026-09-07)
+
+`apps/alcove/src/occlusion.rs` and `apps/sundial/src/filter.rs` share nine
+identical functions — `var`, `names`, `cycle`, `toggle_seam`, `nudge_seam`,
+`set_seam`, `reset`, `set`, `float_range` — every one a fact about
+`crcbl::render::console_table()` and `ConVar` (find-or-panic, enum names, cycle,
+clamp to the declared float range, restore defaults). `quarry` and `lantern`
+drive console variables too. **What it would take:** a `Knob(&'static ConVar)`
+with `named`, `cycle`, `set_float`, `range`, `reset` and a `reset_all` beside
+`console_table()` (or in `crcbl-console`); the knob names, the `DebugModule`
+rows and the per-sample steps stay. Sundial's `KNOB_SWITCH`/`Held` guard exists
+because console rows race under `cargo test` and must stay local. The alcove and
+sundial browser rows re-run.
+
+### `installKnobs` is one knob-panel driver written twice (2026-09-07)
+
+`web/demos/alcove/main.js` and `web/demos/sundial/main.js` carry the same
+`el`/`button`/`slider` casts, `drive`, `press` (with its verbatim
+`preventDefault`-on-`mousedown` paragraph) and `open` (the wait for
+`RUNNING`/`PAUSED` with the `requestAnimationFrame` retry and the
+`FAILED || STOPPED` bail), and the same `readUtf8` enum-name reader. **What it
+would take:** a `knobs.js` under `web/engine/` beside `demo.js` exporting
+`installKnobs`, `press` and `enumName`; each page keeps its element ids and
+`refresh` body. Confirm `web/build.sh` copies `web/engine/` wholesale (the
+review inferred it and did not read the script).
+
+### The golden `inspect()` claims are three assertions written five times (2026-09-07)
+
+`apps/{asteroids,breakout,flappy,horde,hud}/tests/golden.rs` each write the
+distinct-colour floor, the bright-over-dark pair and the channel-order claim
+with the same failure sentences ("…is not evidence — nothing drew, or only the
+clear did", "…the readback's channels were written the wrong way round"), and
+the same `Golden::new(reference).check(&image)…` tail with two `eprintln!`s. The
+four large suites (sundial, alcove, lantern, shard) were not read for this.
+**What it would take:** `Block::distinct_enough`, `Block::over`,
+`Block::channel_beats` and `SampleRun::compare_to_golden` in
+`apps/crcbl-sample-test`; the centres, ratios and nouns stay in each suite. None
+of the nine harness scripts greps assertion text.
+
+### Seventeen `web.rs` module docs restate `crcbl::web`'s wire format (2026-09-07)
+
+Every `apps/*/src/web.rs` except viewer's carries the same four sections — the
+ABI-prefix table, the ten-row export table, the status codes with the
+rAF-while-`BOOTING`/`RUNNING`/`PAUSED` rule, and the twelve-line call-ordering
+block — about sixty doc lines each, in which only the symbol prefix is the
+sample's. A new status code means seventeen tables. **What it would take:** the
+prose moves to `crates/crcbl/src/web.rs`'s module docs; each demo keeps its
+"what is genuinely this sample's" paragraph, its symbol list and a link.
+`cargo doc` on wasm32 with `--document-private-items` is the gate.
+
+### `best.rs` / `high_score.rs`: the headless rule, four times (2026-09-07)
+
+`apps/{asteroids,flappy,horde}/src/best.rs` and
+`apps/breakout/src/high_score.rs` each reduce to `Backing::None` if headless
+else `Backing::platform(APP)`, then `Record::open`, with the same
+`a_headless_run_keeps_its_best_in_memory_and_writes_nothing` test. **What it
+would take:** `Record::for_app(app, file, headless)` in `crcbl::store::record`
+with the test beside it; horde's `Best` wrapper (whole seconds, `is_finite`)
+stays. The config-vs-data directory question under "Profiles" is unchanged:
+still one consumer (`apps/shard`).
+
+### `walk_direction` is verbatim in puppet and shard (2026-09-07)
+
+`apps/puppet/src/camera.rs::walk_direction` and
+`apps/shard/src/camera.rs::walk_direction` are the same four statements
+(`yaw.sin_cos()`, ahead `(-sin, 0, -cos)`, right `(cos, 0, -sin)`,
+`normalize_or_zero`), and shard's module doc says so. This is **not** the
+declined breach ↔ puppet pair in `docs/notes/samples.md` — those have opposite
+signs and the decline is right about them — but that note names its own trigger,
+"a third … sample" on the orbit basis, and shard is it. **What it would take:**
+`OrbitCamera::walk_direction(yaw, ahead, strafe)` beside `OrbitCamera` in
+`crcbl::render`, so the conversion still belongs to the rig; breach keeps its
+`Flyer`-side copy until a second first-person demo arrives. The puppet and shard
+browser rows measure walk advance in metres and would catch a sign error.
+
+### `crcbl new`'s template asks for the wrong feature bundle (2026-09-07)
+
+**A defect, not a duplication.** `crates/crcbl-cli/templates/main.rs.tmpl`
+spells `optional_features` as
+`GPU_DRIVEN | TIMESTAMP_QUERY | DEBUG_MARKERS | PUSH_CONSTANTS | SAMPLER_ANISOTROPY`
+(**re-verified by the parent**), where `GpuContextDesc::default()` asks for
+`GPU_DRIVEN | MESH_SHADER | TIMESTAMP_QUERY | DEBUG_MARKERS | PRESENT_FEEDBACK | PRESENT_TIMING | SAMPLER_ANISOTROPY`.
+So every scaffolded game drops `MESH_SHADER`, `PRESENT_FEEDBACK` and
+`PRESENT_TIMING` — the exact open-loop defect `apps/hud/src/gpu.rs`'s comment
+records against itself and fourteen demos now test against with
+`the_features_this_sample_asks_for_are_the_engine_s_own`. The template has no
+such test and is compiled only by the cli-e2e gate. It also hand-writes the
+`GameGpu`/`GpuSurface` forwards `crcbl::impl_game_gpu!` exists for, and a fourth
+copy of the PAUSED `MenuSet`. **What it would take:**
+`..GpuContextDesc::from(gpu)` with no `optional_features` line,
+`crcbl::impl_game_gpu!(Gpu)` in place of the two impls, the feature-parity test
+added to the template, and `pause_menu()` once that lands; the cli-e2e harness
+is the gate.
+
+### Smaller seam findings, stated but not worked up (2026-09-07)
+
+- The three
+  `assert!(USAGE.contains(crcbl::args::…_HELP), "… has drifted from crcbl::args")`
+  asserts in every demo's `args.rs` tests: a
+  `crcbl::args::assert_shared_help(usage)` beside the constants.
+- The instance-pool overflow wrap
+  `GpuError::Hal(HalError::InvalidDescriptor( format!("<sample>'s <thing> does not fit its own pools: {error}")))`
+  after `place()` in `apps/{breach,puppet,shard,sparks,towers}/src/gpu.rs`: a
+  `From<InstancePoolError> for GpuError` or a `GpuError::pools(subject, error)`.
+- The heartbeat cadence gate (`HEARTBEAT_TICKS` plus the `is_multiple_of` early
+  return and a `ticks` counter) in fourteen demos, with 60/30/15 as the
+  per-sample value: a `Heartbeat::every(ticks)` in `crcbl::engine`; the value
+  and the line content stay each demo's.
+- `--seed` parsing verbatim in five demos, with shard and sparks narrowing to
+  `u32` under different messages: a `seed_u64`/`seed_u32` pair in `crcbl::args`
+  only; the help prose is content.
+- `crcbl_audio::CueDeck` is already owed above and is not re-listed.
+
+### Eight Rust constants are mirrored into `browser-e2e.mjs` with nothing enforcing them (2026-09-07)
+
+`web/tools/browser-e2e.mjs`'s `EXPECTATIONS` writes game constants beside a
+comment naming the Rust symbol: shard's `foe::Kind::experience` (20/35/60),
+`loot::Rarity::experience` (5/15/40), `level::THRESHOLDS` (`[0, 30, 75, 130]`),
+`loot::LOOT_REACH_M` (2.5), `foe::FOES` (3), `foe::HEALTH_MAX` (100), the
+`zone::LAYOUT` spawn (6.0), and breach's `map::practice::BOTS` (3). The review
+confirmed five against the Rust. A change to a threshold reddens the shard
+browser row with "the number is not the one the rules give" rather than a
+compile error, and a changed `FOES`/`HEALTH_MAX` makes the gate's control wrong
+while it still passes. **What it would take:** the cheap step is a Rust test in
+`apps/shard` (and `apps/breach`) that reads the tracked gate file and asserts
+its literals; the real fix is a constants file the demo emits and the gate
+reads. Other Rust ↔ JS mirrors almost certainly exist in the parts of the driver
+the review did not open.
+
 ## The sample plans — what they still owe
 
 Every file under `docs/plan/sample/` was audited against its app and against the
@@ -5262,10 +5558,15 @@ it would be sample code.
 **Rules owed rather than exempted, stated so the next slice does not read them
 as decisions:** rule 11 (no `.crpix` art anywhere — the tower and creep icons,
 the wave banner and the build menu are untextured rectangles and the built-in
-font), rule 8 (the sample ships silent), rule 7 (no `DEMOS` row, no demo
-directory), and rule 12's third selector (the three paths are reported on the
-panel, the `[HUD]` line and the summary, but there is no flag to hold one below
-what the device offers).
+font), rule 8 (the sample ships silent), and rule 12's third selector (the three
+paths are reported on the panel, the `[HUD]` line and the summary, but there is
+no flag to hold one below what the device offers). There is still **no pointer
+or touch input**, in the window or on the page, and slice 2 shipped without
+adding any on purpose: the only tap target today is `page`'s untextured build
+list, which slice 3 replaces with the `.crpix` build menu. It is also blocked on
+the `PointerUpdate`-has-no-`pixels`-twin entry elsewhere in this file —
+`apps/breach` and `apps/shard` each carry a private `surface_pixels`, and towers
+would have been the third copy.
 
 ## arena (`docs/plan/sample/08-arena.md`)
 
@@ -13744,9 +14045,11 @@ Two findings that are **not** fixed:
   first — which immediately turned up a live one, the viewer drawing an
   `instances` row in both its listing panel and its overlay section, with a test
   reading across the two. That test scopes itself to the listing now. What
-  stands: the helper is one text copied into every sample (extracting it needs a
-  new crate or a change to `crcbl-ui`, since the samples are separate binaries),
-  and a panel with two same-named rows is still legible only by heading.
+  stands: the helper is one text copied into every sample — the blocker that
+  used to sit here ("extracting it needs a new crate") is gone, since
+  `apps/crcbl-sample-test` is that crate and is reachable from a `src/app.rs`
+  test module as a dev-dependency; the hoist is owed under "The demo seam" — and
+  a panel with two same-named rows is still legible only by heading.
 
 ## `apps/hud` milestone 1: what was deliberately left out
 

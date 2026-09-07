@@ -661,3 +661,179 @@ storage root", which is the right refusal wearing the wrong words. Reading the
 file with `std::fs` instead — the shape `apps/lantern/src/args.rs`'s
 `read_stack` has — would drop the constraint and the one-loader-two-sources
 property together. Documented in `apps/asteroids/src/balance.rs`'s header.
+
+## The demo seam review of 2026-09-07 — what it ruled out, and what it did not read
+
+A read-only review of every crate under `apps/` (except `apps/crcbl-sample-test`
+and `apps/render-harness`), the `crcbl new` template, `web/demos/*/main.js` and
+`web/tools/`, asking what code carries the same knowledge in two or more demos
+and belongs in the engine. The owed work it found is in `docs/backlog.md` under
+"The demo seam"; this is the half that must not be re-proposed and the half that
+was not looked at. The review's own diff counts were taken over comment-stripped
+bodies; the parent re-ran four of them (`hud`/`orbit` `gpu.rs`: 8 lines, all the
+sample's name; `hud`/`shard` `menu.rs`: 2 lines; the nine golden scripts; the
+template's feature list) and they held.
+
+### Already hoisted — do not re-propose
+
+Verified present in the tree:
+
+- **`apps/crcbl-sample-test`** — `SampleRun` (the whole `--screenshot` drive:
+  stale-file removal, the `--headless --no-debug-overlay --screenshot`
+  invocation, the exit-code and extent assertions, the summary-state check, and
+  the `simulation_advanced` tick check), `Block` (`brightness`, `channel`),
+  `required_backend`, `adapter_line`. Used by six demos.
+- **`crcbl::impl_game_gpu!`, `impl_polled_gpu!`, `impl_polled_bundle!`** in
+  `crates/crcbl/src/engine.rs` — the `GameGpu`/`GpuSurface` forwards,
+  `PendingGpu` and its `poll`, and both `open` paths routed through one `desc`.
+  `apps/lantern` deliberately writes `impl PolledGpu` by hand because it threads
+  its forced path through `request_open`; the macro's own docs say so.
+- **`crcbl::impl_web_pending!` and `crcbl::web_exports!`** — the whole browser
+  lifecycle. `apps/viewer` writes its `WebPending` by hand because its `Options`
+  has a field no default can fill; `apps/orbit/src/web.rs` records why.
+- **`crcbl::web::{ASSET_BASE, STATUS_*}`** — one definition of the wire format.
+- **`web/engine/demo.js`'s `bootDemo`** — boot sequence and rAF loop for all
+  eighteen shims. Also `web/engine/{wasm,log,storage,shell,audio}.js`.
+- **`crcbl::args`** — `Common`, `Consumed`, `Invocation`, `run_front_end`,
+  `COMMON_OPTIONS_HELP`, `SCREENSHOT_HELP`, `COMMON_TAIL_HELP`, `positive`,
+  `number`, `size`, `HEADLESS_FRAME_BUDGET`, `MAX_TICK_RATE`.
+- **`crcbl::store::record::Record`** — the platform arms, the encode, the
+  corrupt-file case (the residue is finding 14).
+- **`crcbl-golden`** — `Image`, `Golden`, `compare`, `Tolerance`, `srgb`.
+- **`crcbl::render::MenuRenderer` / `UiRenderer` / `RenderGraph` /
+  `TransientPool` / `PassTimers` / `ForwardRenderer::present_target`**.
+- **`crcbl-greybox`** — the primitive kit and `scene3d()` with its `GREYBOX_*`
+  slots.
+- **`tools/nextest-summary.sh`, `tools/vk-validation-log.sh`,
+  `crates/crcbl-vk/tests/vulkan-icd.sh`** — sourced by all nine golden
+  harnesses.
+- **`horde/src/controls.rs`'s shared parts** — `TouchStick`, `PauseControl`,
+  `CONTROL_STYLE` are already engine.
+
+---
+
+### Considered and ruled out — same shape, different knowledge
+
+- **The 2D sprite `gpu.rs` bundle (asteroids / breakout / flappy / horde /
+  sparks).** Comment-stripped, `asteroids` and `breakout` differ by 127 of ~300
+  lines: `breakout` holds `paddle_x`/`ball`/`bricks` where asteroids holds a
+  `RenderState` and an `alpha`, its camera is fitted to a fixed field where
+  asteroids applies `TEXELS_PER_UNIT`, and their `Scene::build` signatures
+  differ outright. `asteroids` vs `flappy` is 178 lines. This is what
+  `docs/notes/samples.md`'s "The two sample `gpu.rs` files that stopped being
+  identical" predicted, and its decline still holds: the helper would need a
+  flag per caller. **Already declined — not re-proposed.** (Finding 2 is a
+  different bundle: no camera, no sprite pass.)
+- **`apps/breach/src/camera.rs` vs `apps/puppet/src/camera.rs`.** Opposite
+  signs, and the pair is deliberate evidence that the conversion is the rig's.
+  **Already declined** in `docs/notes/samples.md`; see finding 15 for the part
+  the decline does not cover.
+- **`crcbl_ui::hud`'s `Hud`/`HudPanel` for the 2D samples' HUDs.** **Already
+  declined** in `docs/notes/samples.md`: `Label` has no per-label colour and
+  every sample draws three colours in one panel.
+- **`HudStrings` / `draw_hud`.** The cache keys and the strings are each game's
+  content. **Already declined.**
+- **`with_shell` / `open_the_window`.** **Already declined** with stated
+  reasons.
+- **`DebugModule` impls per demo** (`FieldStats`, `BoardStats`, `CourseStats`,
+  `HudStats`, `Stats`, …). Same shape, genuinely different numbers. **Already
+  declined.**
+- **The `bind: (ex) => ({ prepare, boot, frame, … })` block in every
+  `web/demos/*/main.js`.** Eighteen copies of ten forwards, and it must stay:
+  `web/tools/check-exports.mjs` scans the shim for `.__crcbl_…` literals to
+  learn which exports to require of the artifact, and a template literal would
+  hide every one of them. The reason is written into each shim's own header.
+  Ruled out on the code's own evidence.
+- **Mesh and material slot constants** (`towers::map::GROUND_MESH`,
+  `breach::map::FLOOR_MESH`, `shard::zone::SLAB_MESH`, …). Same _pattern_ —
+  hand-numbered indices into a `SceneDesc` — but each set names that demo's own
+  geometry, and `crcbl-greybox` already publishes `GREYBOX_*` for the shared
+  kit. Ruled out.
+- **`apps/bare`.** Its module doc states it "must never be converted to the
+  engine-owned loop — a guard that adopts the thing it guards against is not a
+  guard". Every resemblance to the other demos is the point. Ruled out.
+- **`apps/sandbox`'s `args`/`Options`.** `crcbl::args`'s own module doc names
+  sandbox as deliberately not a consumer: "A design that could not accommodate
+  it would be a design that had guessed." Ruled out.
+- **The `parse()` loop skeleton** (18 copies of the `while let Some(arg)` /
+  `match options.common.consume(...)` shape). `crcbl::args`'s module doc calls
+  this "Offered, not imposed" and argues a game must own its parse loop, its
+  error messages and its ordering. The _arms_ inside it are candidates (finding
+  9, and `--seed`); the loop is not. Ruled out.
+- **`fn grouped(value: u64)`** — the thousands separator in
+  `apps/sparks/src/page.rs`. One copy. Not a finding.
+- **Balance loading (`apps/asteroids/src/balance.rs`), the save payload
+  (`apps/shard/src/save.rs`), loot RNG salts and level tables
+  (`apps/shard/src/{loot,level}.rs`).** One consumer each — `grep -l` for
+  `SaveWriter`/`AutosaveRing`/`save_ticks` returns `apps/shard` only, and
+  `--balance` appears in `apps/asteroids/src/args.rs` only. Nothing to share
+  yet; they are what a _second_ consumer would trigger.
+- **`HEARTBEAT_TICKS`'s value.** 60 / 30 / 15 across fourteen demos — a
+  per-sample tuning knob, not one fact. Only the gate around it is shared
+  (finding 17).
+
+---
+
+### Coverage — what I did not read
+
+I read whole files where a finding rested on them and extracted specific items
+elsewhere. Stated plainly, I did **not** read:
+
+- **Game logic**: `apps/horde/src/game.rs` (8577 lines),
+  `apps/asteroids/src/game.rs` (5190), `apps/breakout/src/game.rs` (3292),
+  `apps/flappy/src/game.rs` (2486), `apps/breach/src/game.rs` (2230),
+  `apps/shard/src/game.rs` (2147), `apps/orbit/src/game.rs`,
+  `apps/puppet/src/game.rs`, `apps/towers/src/game.rs`, `apps/hud/src/game.rs`.
+  A cross-demo simulation finding could be hiding there and I would not have
+  seen it.
+- **`apps/viewer` almost entirely** — `app.rs` (4135), `gpu.rs` (2103),
+  `demo_model.rs`, `model.rs`, `anim.rs`, `listing.rs`, `shelf.rs`,
+  `fixture.rs`, `watch.rs`, `web.rs`. I only checked its
+  `ui_text`/`row_value`/`poll` against the others. Viewer's `gpu.rs` is the
+  largest in the tree and I did not compare it to anything.
+- **Content modules**: `apps/lantern/src/room.rs` (3010),
+  `apps/sundial/src/plaza.rs` (1753), `apps/puppet/src/map.rs` (1807),
+  `apps/alcove/src/court.rs` (1389), `apps/shard/src/zone.rs`,
+  `apps/breach/src/map.rs` and `map/practice.rs`, `apps/towers/src/map.rs`, all
+  five `art.rs`, `apps/breakout/src/scene.rs`,
+  `apps/quarry/src/{face,tile,dag,scene}.rs`,
+  `apps/sparks/src/{stage,show,effects}.rs`,
+  `apps/bracket/src/{rating,sim,queue}.rs`,
+  `apps/towers/src/{creep,path,tower,wave}.rs`,
+  `apps/shard/src/{foe,loot,light,save}.rs` beyond their constants,
+  `apps/puppet/src/{rig,anim}.rs`, `apps/alcove/src/occlusion.rs` and
+  `apps/sundial/src/filter.rs` beyond the nine helper functions.
+- **`apps/options` beyond `gpu.rs` and the arming block** — `menu.rs` (1023),
+  `view.rs`, `audio.rs`, `app.rs` (2781). The settings screen is the one demo
+  whose menu is not a pause panel and I did not evaluate it for shared knobs.
+- **Audio**: I confirmed the `plays`-counter duplication by symbol listing, not
+  by reading `apps/{asteroids,horde,options}/src/audio.rs` in full. The backlog
+  already owns that finding.
+- **The four large golden suites**: `apps/sundial/tests/golden.rs` (4033),
+  `apps/alcove/tests/golden.rs` (1909), `apps/lantern/tests/golden.rs` (1863),
+  `apps/shard/tests/golden.rs` (651), and all of `apps/quarry/tests/device/*`
+  (~2600 lines across nine files) and `apps/alcove/tests/run-alcove-views.sh`
+  (710). Finding 12's claim-shape duplication is asserted for the five small
+  suites I read and _not_ verified for these.
+- **`web/tools/browser-e2e.mjs`** — 512 KB; I read roughly 400 lines around the
+  shard and breach expectation blocks and listed its top-level constants. Other
+  Rust↔JS mirrors almost certainly exist in the parts I did not open.
+- **`web/tools/{gpu-replay,probe-groups,stream-decode,reply-encode}.mjs`** and
+  `web/engine/{gpu-probe,gpu-replay,gpu-stream}.js` — none of them demo code,
+  all unread.
+- **`web/build.sh`, `web/run-browser-e2e.sh`, `web/pages/*.html`,
+  `web/templates/`** — unread, so my claim that a new `knobs.js` under
+  `web/engine/` needs no build change (finding 11) is an inference from
+  `web/build.sh` copying `web/engine/` wholesale, which I did not confirm.
+- **`.github/workflows/ci.yml`** — I grepped it for the nine golden `run:` lines
+  and read nothing else, so the "which gates this touches" notes are from those
+  greps plus the demo lists, not from reading the workflow.
+- **`docs/backlog.md`** — 16,982 lines; I searched by symbol and by the topic
+  words the brief suggested and read six sections. An entry phrased in words I
+  did not guess would have been missed.
+  `docs/notes/{backends,browser,ci,process, rendering,simulation,tooling}.md`
+  were searched by symbol only; `docs/notes/samples.md` I read in the four
+  relevant sections.
+- **`docs/plan/sample/*.md`** — not read; the "which docs name the moved
+  symbols" notes come from `grep -rl` over `docs/`, which finds a path but not
+  whether the prose around it would also go stale.
