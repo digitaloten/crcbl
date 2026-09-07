@@ -14,7 +14,7 @@
 //! ```text
 //!   shell key ──▶ ActionMap ──▶ Controls ──wire──▶ Intent
 //!                                                    │
-//!                    camera yaw ──▶ walk_direction ──┤
+//!                    camera yaw ──▶ OrbitCamera::walk_direction ──┤
 //!                                                    ▼
 //!                                    CharacterController::move_and_slide
 //!                                                    │
@@ -61,7 +61,7 @@
 //!
 //! [`crcbl::phys::CharacterController`] takes a world-space displacement and
 //! stores no orientation at all. So **this sample** turns a stick into a
-//! direction ([`camera::walk_direction`]) and **this sample** turns the body
+//! direction ([`crcbl::render::OrbitCamera::walk_direction`]) and **this sample** turns the body
 //! toward where it went ([`game`]). That seam is deliberate — `docs/backlog.md`
 //! records why — and a demo that wanted a yaw inside `crcbl-phys` would be the
 //! constraint being violated rather than a feature being missed.
@@ -131,7 +131,7 @@ pub mod web;
 
 pub use app::{Loop, PendingLoop, Puppet, PuppetError, Summary, run, start, with_shell};
 pub use args::{Invocation, Options, USAGE, parse};
-pub use camera::{Follow, walk_direction};
+pub use camera::Follow;
 pub use game::{Controls, DEFAULT_TICK_HZ, Game, GameError, RenderState, Stats};
 pub use menu::{MenuKind, Menus};
 pub use page::PageStats;

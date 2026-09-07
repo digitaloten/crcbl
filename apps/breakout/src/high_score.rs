@@ -25,7 +25,7 @@
 //! `Record` treats as "no previous save" for reading and *not* as a reason to
 //! skip writing — the write is what makes the next session's read succeed.
 
-use crcbl::store::record::{Backing, Record};
+use crcbl::store::record::Record;
 
 /// The application directory. `~/.config/breakout/` on Linux.
 ///
@@ -39,29 +39,5 @@ const HIGH_SCORE_FILE: &str = "high_score.bin";
 /// Opens the high score, or an in-memory one for a headless run.
 #[must_use]
 pub fn open(headless: bool) -> Record {
-    let backing = if headless {
-        Backing::None
-    } else {
-        Backing::platform(APP)
-    };
-    Record::open(backing, HIGH_SCORE_FILE)
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests {
-    use super::*;
-
-    /// The headless rule is this module's own — `Record` writes to whatever
-    /// backing it is handed, and choosing `None` here is what stops the test
-    /// suite writing into a developer's real config directory.
-    #[test]
-    fn a_headless_run_keeps_its_score_in_memory_and_writes_nothing() {
-        let mut score = open(true);
-        assert_eq!(score.get(), 0);
-        assert!(score.raise(500), "it still tracks the best in memory");
-        assert_eq!(score.get(), 500);
-
-        // Nothing was written, so a second headless open starts over.
-        assert_eq!(open(true).get(), 0, "a headless run left a file behind");
-    }
+    Record::for_app(APP, HIGH_SCORE_FILE, headless)
 }

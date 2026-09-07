@@ -21,7 +21,7 @@
 //! ```text
 //!   keys ──▶ Controls ──▶ Intent { yaw, forward, strafe } ──wire──▶ Intent
 //!                                                                    │
-//!                            crate::camera::walk_direction(yaw, …) ──┘
+//!                            OrbitCamera::walk_direction(yaw, …) ──┘
 //!                                     │
 //!                        × WALK_SPEED × dt  ──▶ move_and_slide
 //! ```
@@ -31,7 +31,7 @@
 //! the camera was pointing when they pressed them — rather than a vector it
 //! worked out for itself, because that is what a third-person game's move
 //! command carries and what a predicted one will have to. The conversion is
-//! [`crate::camera::walk_direction`], which is this sample's and not the
+//! [`OrbitCamera::walk_direction`], which is this sample's and not the
 //! controller's; see that module for why the seam is drawn there.
 //!
 //! # The body turns toward where it went, not toward where the camera is
@@ -58,9 +58,10 @@ use crcbl::ecs::{ClientInputs, GameModule, World};
 use crcbl::math::DVec3;
 use crcbl::net::ProtocolCompatibility;
 use crcbl::phys::{CharacterConfig, CharacterController, MoveOutcome, PhysicsWorld};
+use crcbl::render::OrbitCamera;
 use crcbl::session::Loopback;
 
-use crate::camera::{facing_of, walk_direction};
+use crate::camera::facing_of;
 use crate::map::Map;
 
 /// Distinct from every other sample's, because they are distinct protocols: a
@@ -241,7 +242,7 @@ impl Intent {
     /// length, a flag outside [`INTENT_FLAGS`], or a yaw that is not a finite
     /// number. **Validated rather than trusted**, because these are the only
     /// bytes in this sample a peer chooses — and a `NaN` yaw would reach
-    /// [`walk_direction`] and put the character at a position nothing can
+    /// [`OrbitCamera::walk_direction`] and put the character at a position nothing can
     /// recover from.
     fn from_wire(bytes: &[u8]) -> Option<Self> {
         if bytes.len() != INTENT_BYTES {
@@ -429,7 +430,8 @@ fn run_tick(stage: &mut Stage, player: Intent, dt: f64) {
 
     // **The conversion**: a view angle and two axes become a direction in the
     // world. Everything below this line is metres.
-    let direction = walk_direction(f64::from(intent.yaw), intent.ahead(), intent.across());
+    let direction =
+        OrbitCamera::walk_direction(f64::from(intent.yaw), intent.ahead(), intent.across());
     let horizontal = direction * WALK_SPEED * dt;
 
     // Gravity is integrated while the character is off the ground and reset the

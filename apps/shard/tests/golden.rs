@@ -84,7 +84,7 @@ use std::path::PathBuf;
 
 use crcbl::hal::{AdapterInfo, Features, Format, GeometryPath};
 use crcbl::math::Vec3;
-use crcbl::render::{Camera, EffectRequest, ForwardRenderer, RenderEffects};
+use crcbl::render::{Camera, EffectRequest, ForwardRenderer, OrbitCamera, RenderEffects};
 use crcbl::screenshot::{ForwardScene, OffscreenError, OffscreenSetup};
 use crcbl_golden::{ChannelOrder, Golden, Image, Tolerance};
 use crcbl_sample_test::Block;
@@ -445,7 +445,7 @@ fn project(camera: &Camera, point: Vec3) -> (u32, u32) {
 ///
 /// The figure is the capsule the physics moves, so it is read at the feet the
 /// stage reported; the floor is [`FLOOR_OFFSET_M`] to the **camera's** right,
-/// which is [`crcbl_shard::walk_direction`]'s "strafe" axis for this bearing —
+/// which is [`OrbitCamera::walk_direction`]'s "strafe" axis for this bearing —
 /// the sample's own conversion rather than a second one written here.
 fn read_points(state: &RenderState, turns: i32) -> (Vec3, Vec3) {
     #[allow(clippy::cast_possible_truncation)]
@@ -455,7 +455,7 @@ fn read_points(state: &RenderState, turns: i32) -> (Vec3, Vec3) {
         state.feet.z as f32,
     );
     let yaw = f64::from(turns) * f64::from(camera::YAW_STEP);
-    let right = crcbl_shard::walk_direction(yaw, 0.0, 1.0);
+    let right = OrbitCamera::walk_direction(yaw, 0.0, 1.0);
     #[allow(clippy::cast_possible_truncation)]
     let right = Vec3::new(right.x as f32, right.y as f32, right.z as f32);
     (

@@ -53,7 +53,7 @@
 
 use core::f32::consts::FRAC_PI_2;
 
-use glam::Vec3;
+use glam::{DVec3, Vec3};
 
 use crate::camera::{Camera, Projection};
 use crate::cull::Aabb;
@@ -312,6 +312,37 @@ impl OrbitCamera {
                 near: self.near,
             },
         }
+    }
+
+    /// The world-space direction a stick means, at the yaw the view is at.
+    ///
+    /// `ahead` is positive away from the camera and `strafe` positive to the
+    /// camera's right; both are expected in `-1..=1`. The result is a **unit**
+    /// direction, or zero where nothing was asked for — the caller multiplies
+    /// by a speed and a timestep to get the displacement a character controller
+    /// takes.
+    ///
+    /// An associated function rather than a method because a follow camera
+    /// rebuilds its [`OrbitCamera`] every frame from a pivot that has moved,
+    /// and holds only the two angles between frames: it has a yaw before it has
+    /// a rig. What makes this the rig's arithmetic and not the caller's is the
+    /// **measure** — the yaw is the one this module turns, so `ahead` is the
+    /// direction [`camera`](Self::camera) looks with the vertical taken out and
+    /// `right` is the cross product this camera's own basis is built from.
+    ///
+    /// It is `f64` where the rest of this module is `f32` because a character
+    /// controller integrates a position in metres over a whole session, which
+    /// is where single precision runs out first.
+    ///
+    /// Normalised rather than passed through, so holding two keys does not walk
+    /// `√2` times faster than holding one — which is the oldest bug in this
+    /// conversion.
+    #[must_use]
+    pub fn walk_direction(yaw: f64, ahead: f64, strafe: f64) -> DVec3 {
+        let (sin, cos) = yaw.sin_cos();
+        let along = DVec3::new(-sin, 0.0, -cos);
+        let right = DVec3::new(cos, 0.0, -sin);
+        (along * ahead + right * strafe).normalize_or_zero()
     }
 
     /// The unit vector from the pivot towards the eye.

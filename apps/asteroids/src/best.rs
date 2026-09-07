@@ -19,7 +19,7 @@
 //! sample's own shim before the restore pass runs, and nothing in `crcbl-store`
 //! can reach for it.
 
-use crcbl::store::record::{Backing, Record};
+use crcbl::store::record::Record;
 
 /// The application directory. `~/.config/asteroids/` on Linux.
 ///
@@ -33,29 +33,5 @@ const BEST_FILE: &str = "best.bin";
 /// Opens the best score, or an in-memory one for a headless run.
 #[must_use]
 pub fn open(headless: bool) -> Record {
-    let backing = if headless {
-        Backing::None
-    } else {
-        Backing::platform(APP)
-    };
-    Record::open(backing, BEST_FILE)
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests {
-    use super::*;
-
-    /// The headless rule is this module's own — `Record` writes to whatever
-    /// backing it is handed, and choosing `None` here is what stops the test
-    /// suite writing into a developer's real config directory.
-    #[test]
-    fn a_headless_run_keeps_its_best_in_memory_and_writes_nothing() {
-        let mut best = open(true);
-        assert_eq!(best.get(), 0);
-        assert!(best.raise(500), "it still tracks the best in memory");
-        assert_eq!(best.get(), 500);
-
-        // Nothing was written, so a second headless open starts over.
-        assert_eq!(open(true).get(), 0, "a headless run left a file behind");
-    }
+    Record::for_app(APP, BEST_FILE, headless)
 }

@@ -33,7 +33,7 @@
 //!                                                    │
 //!    Q / E ──▶ Iso { yaw } ──────────────────────────┤
 //!                                                    ▼
-//!                          walk_direction ──▶ CharacterController::move_and_slide
+//!                          OrbitCamera::walk_direction ──▶ CharacterController::move_and_slide
 //!                                                    │
 //!                            zone::LAYOUT ──▶ world ─┴──▶ where the character can go
 //!
@@ -159,7 +159,7 @@ pub mod web;
 
 pub use app::{Loop, PendingLoop, Shard, ShardError, Summary, run, start, with_shell};
 pub use args::{Invocation, Options, USAGE, parse};
-pub use camera::{Iso, walk_direction};
+pub use camera::Iso;
 pub use foe::{Foe, FoeView, Kind};
 pub use game::{Controls, DEFAULT_TICK_HZ, Dropped, Game, GameError, RenderState, Stats};
 pub use gpu::{EXPOSURE, Gpu, Paths};

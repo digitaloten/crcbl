@@ -175,6 +175,29 @@ impl Record {
         }
     }
 
+    /// Opens `file` for `app`, or an in-memory record when `headless`.
+    ///
+    /// The headless rule, which every sample that keeps a number wanted and
+    /// each of them wrote out: a run with no window must leave nothing behind,
+    /// so a CI job cannot write into whoever's config directory it happened to
+    /// run as. It is stated here rather than in a game because it is a fact
+    /// about the *run*, not about the number — `--headless` is the engine's
+    /// flag, and the four samples that had it spelled the same three lines
+    /// four times.
+    ///
+    /// What stays the game's is `app` and `file`: which directory the value
+    /// belongs to and what it is called are the two things the engine could not
+    /// have guessed.
+    #[must_use]
+    pub fn for_app(app: &str, file: &str, headless: bool) -> Self {
+        let backing = if headless {
+            Backing::None
+        } else {
+            Backing::platform(app)
+        };
+        Self::open(backing, file)
+    }
+
     /// The value.
     #[must_use]
     pub const fn get(&self) -> u32 {
@@ -306,6 +329,29 @@ mod tests {
             "a headless record wrote a file"
         );
         std::fs::remove_dir_all(&dir).expect("the scratch directory is this test's");
+    }
+
+    /// **A headless run picks `Backing::None`**, which is the whole of what
+    /// `for_app` decides — and the assertion is that nothing reached a file,
+    /// not merely that the number came back, because an in-memory value is
+    /// what a run writing into the real config directory would also answer.
+    ///
+    /// The windowed half is deliberately not asserted here: it would name
+    /// whoever's config directory the suite is running as and write into it,
+    /// which is the thing this rule exists to prevent.
+    #[test]
+    fn a_headless_run_keeps_its_value_in_memory_and_writes_nothing() {
+        let mut record = Record::for_app("crcbl-record-test", "best.bin", true);
+        assert_eq!(record.get(), 0);
+        assert!(record.raise(500), "it still tracks the value in memory");
+        assert_eq!(record.get(), 500);
+
+        // Nothing was written, so a second headless open starts over.
+        assert_eq!(
+            Record::for_app("crcbl-record-test", "best.bin", true).get(),
+            0,
+            "a headless run left a file behind"
+        );
     }
 
     /// Wrong length is corruption and reads as absent rather than as a

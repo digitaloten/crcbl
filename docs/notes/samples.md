@@ -179,22 +179,26 @@ else. What was considered and left out, each with the reason:
   harder than a practice map should punish it. Ballistics (topic 28) is where
   spread belongs.
 
-### `apps/breach` and `apps/puppet` each own a copy of the yaw→direction step
+### `apps/breach` keeps its own copy of the yaw→direction step
 
-`apps/breach/src/camera.rs::walk_direction` and
-`apps/puppet/src/camera.rs::walk_direction` are the same three lines of
-trigonometry with opposite signs, because the two demos measure yaw in the two
-conventions their cameras came with — puppet's is `OrbitCamera`'s and breach's
-is `Flyer`'s. **This duplication is deliberate and should not be merged**: the
-whole claim the pair exists to make is that the conversion belongs to the demo
-rather than to `crcbl-phys`, and a shared helper in a third place would be the
-first step back toward putting it in the engine. Recorded here so the idea is
-not re-proposed every time somebody greps for `walk_direction`.
+`apps/breach/src/camera.rs::walk_direction` and the orbit-measured conversion
+are the same three lines of trigonometry with opposite signs, because the two
+demos measure yaw in the two conventions their cameras came with — breach's is
+`Flyer`'s and puppet's was `OrbitCamera`'s. **This pair should not be merged
+into one function**: the whole claim it exists to make is that the conversion
+belongs to the rig rather than to `crcbl-phys`, and a helper taking a flag for
+which convention it was handed would put the choice back in a third place.
+Recorded here so the idea is not re-proposed every time somebody greps for
+`walk_direction`.
 
-What _would_ be worth doing, if a third first-person sample arrives, is moving
-the conversion into `crcbl-render` beside `Flyer` — where a camera basis already
-lives — rather than into the physics crate. That is a different move and it does
-not weaken the claim.
+The orbit half **has** since moved, and by the route this note named: the
+trigger it stated was "a third sample on the orbit basis", `apps/shard` was it,
+and `OrbitCamera::walk_direction` in `crates/crcbl-render/src/orbit.rs` is where
+the conversion for that convention now lives — beside the rig whose measure it
+is, not in the physics crate. Puppet and shard call it and keep their own tests
+against the `Camera` their own yaw builds. Breach's copy stays where it is until
+a second first-person demo arrives, at which point the same move is available
+beside `Flyer`.
 
 ### The viewer frames the document's geometry, not the geometry it draws
 

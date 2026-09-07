@@ -5213,30 +5213,14 @@ prose moves to `crates/crcbl/src/web.rs`'s module docs; each demo keeps its
 "what is genuinely this sample's" paragraph, its symbol list and a link.
 `cargo doc` on wasm32 with `--document-private-items` is the gate.
 
-### `best.rs` / `high_score.rs`: the headless rule, four times (2026-09-07)
+### Nothing checks that a sample forwards its own `--headless` to `Record` (2026-09-07)
 
-`apps/{asteroids,flappy,horde}/src/best.rs` and
-`apps/breakout/src/high_score.rs` each reduce to `Backing::None` if headless
-else `Backing::platform(APP)`, then `Record::open`, with the same
-`a_headless_run_keeps_its_best_in_memory_and_writes_nothing` test. **What it
-would take:** `Record::for_app(app, file, headless)` in `crcbl::store::record`
-with the test beside it; horde's `Best` wrapper (whole seconds, `is_finite`)
-stays. The config-vs-data directory question under "Profiles" is unchanged:
-still one consumer (`apps/shard`).
-
-### `walk_direction` is verbatim in puppet and shard (2026-09-07)
-
-`apps/puppet/src/camera.rs::walk_direction` and
-`apps/shard/src/camera.rs::walk_direction` are the same four statements
-(`yaw.sin_cos()`, ahead `(-sin, 0, -cos)`, right `(cos, 0, -sin)`,
-`normalize_or_zero`), and shard's module doc says so. This is **not** the
-declined breach ↔ puppet pair in `docs/notes/samples.md` — those have opposite
-signs and the decline is right about them — but that note names its own trigger,
-"a third … sample" on the orbit basis, and shard is it. **What it would take:**
-`OrbitCamera::walk_direction(yaw, ahead, strafe)` beside `OrbitCamera` in
-`crcbl::render`, so the conversion still belongs to the rig; breach keeps its
-`Flyer`-side copy until a second first-person demo arrives. The puppet and shard
-browser rows measure walk advance in metres and would catch a sign error.
+`Record::for_app`'s headless rule is tested once, beside it. The four samples'
+copies of that test were deleted with the hoist, so a `best.rs` that passed a
+literal `false` would write into the runner's config directory and no test would
+say so. `apps/horde` is incidentally covered (its truncation test would read a
+stale record on the second run); the other three are not. Judged not worth four
+one-line tests, recorded so the trade-off is not re-derived.
 
 ### `crcbl new`'s template asks for the wrong feature bundle (2026-09-07)
 
@@ -6665,12 +6649,13 @@ single stored yaw is the thing to refuse.
 
 **A demo uses it in a browser, so the rule is met.** `apps/puppet` milestone 1
 walks the capsule over a map of steps and mounds, and the conversion that the
-constraint is about lives in the demo: `puppet::camera::walk_direction` turns
-the follow camera's yaw and two axes into a world direction, and
-`puppet::game::run_tick` scales it and hands `move_and_slide` a displacement.
-Nothing in `crcbl-phys` learned about a camera. `puppet::camera::tests` checks
-`walk_direction` against the `Camera` the same yaw builds, so the two cannot
-drift apart silently.
+constraint is about lives in the demo:
+`crcbl::render::OrbitCamera::walk_direction` turns the follow camera's yaw and
+two axes into a world direction, and `puppet::camera`'s tests hold it to the
+`Camera` the same yaw builds, and `puppet::game::run_tick` scales it and hands
+`move_and_slide` a displacement. Nothing in `crcbl-phys` learned about a camera.
+`puppet::camera::tests` checks `walk_direction` against the `Camera` the same
+yaw builds, so the two cannot drift apart silently.
 
 What else is open:
 

@@ -23,7 +23,7 @@
 //! duration, that the caller measures it as an `f64`, and that the conversion
 //! happens on the near side of the comparison.
 
-use crcbl::store::record::{Backing, Record};
+use crcbl::store::record::Record;
 
 /// The application directory. `~/.config/horde/` on Linux.
 ///
@@ -44,13 +44,8 @@ impl Best {
     /// Loads the best run. Headless runs are in-memory only.
     #[must_use]
     pub fn load(headless: bool) -> Self {
-        let backing = if headless {
-            Backing::None
-        } else {
-            Backing::platform(APP)
-        };
         Self {
-            record: Record::open(backing, BEST_FILE),
+            record: Record::for_app(APP, BEST_FILE, headless),
         }
     }
 
@@ -113,20 +108,5 @@ mod tests {
             assert!(!best.update(bad), "{bad} was accepted as a run length");
         }
         assert_eq!(best.get(), 0, "one of them reached the record");
-    }
-
-    /// The headless rule is this module's own — `Record` writes to whatever
-    /// backing it is handed, and choosing `None` here is what stops the test
-    /// suite writing into a developer's real config directory.
-    #[test]
-    fn a_headless_run_keeps_its_best_in_memory_and_writes_nothing() {
-        let mut best = Best::load(true);
-        assert!(best.update(42.0));
-        assert_eq!(best.get(), 42);
-        assert_eq!(
-            Best::load(true).get(),
-            0,
-            "a headless run left a file behind"
-        );
     }
 }

@@ -2,9 +2,10 @@
 //! and the one place a yaw becomes a world direction.
 //!
 //! ```text
-//!   Q / E ──▶ Iso { yaw → target_yaw } ──▶ Camera        (what the frame is drawn from)
+//!   Q / E ──▶ Iso { yaw → target_yaw } ──▶ Camera   (what the frame is drawn from)
 //!                        │
-//!                        └── yaw ──▶ walk_direction ──▶ DVec3   (what the controller is asked for)
+//!                        └── yaw ──▶ OrbitCamera::walk_direction ──▶ DVec3
+//!                                            (what the controller is asked for)
 //! ```
 //!
 //! # Three rigs, one controller, and no line of `crcbl-phys` between them
@@ -25,13 +26,15 @@
 //! controller gained nothing for any of the three, and the diff for this sample
 //! is the proof of that.
 //!
-//! **What is genuinely this module's is the rig, not the trigonometry.**
-//! [`walk_direction`] measures its yaw the way [`OrbitCamera`] does, which is
-//! the way `apps/puppet` measures its yaw too — the same three lines, because
-//! two rigs built on the same orbit basis have the same conversion and pretending
-//! otherwise would be a third spelling of one fact. The claim this sample adds is
-//! that the *controller* takes a rig it has never seen without changing, not
-//! that the arithmetic is novel.
+//! **What is genuinely this module's is the rig, not the trigonometry.** The
+//! conversion is
+//! [`OrbitCamera::walk_direction`](crcbl::render::OrbitCamera::walk_direction),
+//! and it is the rig's rather than either sample's: two rigs built on the same
+//! orbit basis measure their yaw the same way, so this module and
+//! `apps/puppet` asking for one function is one fact with one spelling. It used
+//! to be two, character for character. The claim this sample adds is that the
+//! *controller* takes a rig it has never seen without changing, not that the
+//! arithmetic is novel.
 //!
 //! # Isometric-**ish**, and the "ish" is a perspective divide
 //!
@@ -62,11 +65,11 @@
 //! measures a yaw so that **zero puts the eye on `+Z` looking down `−Z`** — the
 //! pose [`Camera::default`](crcbl::render::Camera) is in, and the direction
 //! [`crate::zone`]'s layout runs away from the spawn.
-//! `the_walk_is_where_the_camera_is_actually_looking` is what holds this
-//! module's arithmetic to the matrix the frame is drawn with rather than to this
-//! paragraph.
+//! `the_walk_is_where_the_camera_is_actually_looking` is what holds the
+//! engine's arithmetic to the matrix *this* frame is drawn with rather than to
+//! this paragraph, and is why the hoist left the test here.
 
-use crcbl::math::{DVec3, Vec3};
+use crcbl::math::Vec3;
 use crcbl::render::{Camera, OrbitCamera, Projection};
 
 /// How far the eye sits from the character, in metres.
@@ -128,7 +131,7 @@ impl Iso {
     /// If the resulting bearing is not finite, which needs a step count no
     /// keyboard can produce. Asserted anyway: an angle that goes `NaN` here stays
     /// `NaN` for the rest of the session, it reaches
-    /// [`walk_direction`] and puts the character somewhere nothing can recover
+    /// [`OrbitCamera::walk_direction`] and puts the character somewhere nothing can recover
     /// from, and the panic would be several ticks from the input that caused it.
     pub fn rotate(&mut self, steps: i32) {
         #[allow(clippy::cast_precision_loss)]
@@ -196,32 +199,10 @@ impl Iso {
     }
 }
 
-/// The world-space direction a stick means, given the bearing the view is at.
-///
-/// `ahead` is positive away from the camera and `strafe` positive to the
-/// camera's right; both are expected in `-1..=1`. The result is a **unit**
-/// direction, or zero where nothing was asked for — the caller multiplies by a
-/// speed and a timestep to get the displacement the controller takes.
-///
-/// [`OrbitCamera`]'s measure, which is `apps/puppet/src/camera.rs`'s too: see
-/// this module's docs for why that is one fact spelled twice rather than a third
-/// convention.
-///
-/// Normalised rather than passed through, so holding two keys does not walk `√2`
-/// times faster than holding one — which is the oldest bug in this conversion.
-#[must_use]
-pub fn walk_direction(yaw: f64, ahead: f64, strafe: f64) -> DVec3 {
-    let (sin, cos) = yaw.sin_cos();
-    // The camera's own basis on the ground plane. `along` is where the view
-    // looks with the vertical taken out; `right` is `along × up`, which is the
-    // same cross product `OrbitCamera` builds its own right from.
-    let along = DVec3::new(-sin, 0.0, -cos);
-    let right = DVec3::new(cos, 0.0, -sin);
-    (along * ahead + right * strafe).normalize_or_zero()
-}
-
 #[cfg(test)]
 mod tests {
+    use crcbl::math::DVec3;
+
     use super::*;
 
     /// **The pitch is the isometric elevation** — the angle whose tangent is
@@ -261,7 +242,7 @@ mod tests {
             let view = camera.target - camera.eye;
             let flat = Vec3::new(view.x, 0.0, view.z).normalize();
 
-            let walk = walk_direction(f64::from(iso.yaw()), 1.0, 0.0);
+            let walk = OrbitCamera::walk_direction(f64::from(iso.yaw()), 1.0, 0.0);
             assert_eq!(walk.y, 0.0, "the walk left the ground");
             assert!(
                 (walk.x - f64::from(flat.x)).abs() < 1e-5
@@ -271,7 +252,7 @@ mod tests {
 
             // And the strafe is the character's own right: a quarter turn from
             // ahead, in the sense that leaves the pair right-handed about +Y.
-            let strafe = walk_direction(f64::from(iso.yaw()), 0.0, 1.0);
+            let strafe = OrbitCamera::walk_direction(f64::from(iso.yaw()), 0.0, 1.0);
             let cross = walk.cross(strafe);
             assert!(
                 cross.y < -0.99,
@@ -288,18 +269,18 @@ mod tests {
     /// the layout that the layout's own constants are written to.
     #[test]
     fn a_zero_bearing_walks_into_the_zone() {
-        let ahead = walk_direction(0.0, 1.0, 0.0);
+        let ahead = OrbitCamera::walk_direction(0.0, 1.0, 0.0);
         assert!((ahead - DVec3::new(0.0, 0.0, -1.0)).length() < 1e-12);
-        let right = walk_direction(0.0, 0.0, 1.0);
+        let right = OrbitCamera::walk_direction(0.0, 0.0, 1.0);
         assert!((right - DVec3::new(1.0, 0.0, 0.0)).length() < 1e-12);
     }
 
     /// Holding two keys walks at one speed, not at `√2` of it.
     #[test]
     fn a_diagonal_is_not_faster_than_a_straight_line() {
-        let diagonal = walk_direction(0.7, 1.0, 1.0);
+        let diagonal = OrbitCamera::walk_direction(0.7, 1.0, 1.0);
         assert!((diagonal.length() - 1.0).abs() < 1e-12);
-        assert_eq!(walk_direction(0.7, 0.0, 0.0), DVec3::ZERO);
+        assert_eq!(OrbitCamera::walk_direction(0.7, 0.0, 0.0), DVec3::ZERO);
     }
 
     /// **A rotate key swings the view a quarter turn and stops there**, which is

@@ -1333,6 +1333,13 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- `crcbl::store::record::Record::for_app(app, file, headless)` replaces the
+  "`Backing::None` if headless else `Backing::platform`" that
+  `apps/{asteroids,flappy,horde}/src/best.rs` and
+  `apps/breakout/src/high_score.rs` each spelled out.
+- `crcbl::render::OrbitCamera::walk_direction(yaw, ahead, strafe)` replaces the
+  verbatim copies in `apps/puppet` and `apps/shard`; `apps/breach` keeps its
+  own, which measures yaw in `Flyer`'s opposite convention.
 - `crcbl::args` gained `geometry_from_name`, `binding_from_name` and
   `FORCED_PATH_HELP`, moved out of `apps/{alcove,lantern,quarry,sundial}`'s
   `args.rs`. The spellings `--force-geometry` and `--force-binding` accept are

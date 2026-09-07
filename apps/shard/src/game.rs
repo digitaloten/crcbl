@@ -88,9 +88,9 @@ use crcbl::inventory::{Cell, Grid, Stack};
 use crcbl::math::DVec3;
 use crcbl::net::ProtocolCompatibility;
 use crcbl::phys::{CharacterConfig, CharacterController, MoveOutcome, PhysicsWorld};
+use crcbl::render::OrbitCamera;
 use crcbl::session::Loopback;
 
-use crate::camera::walk_direction;
 use crate::foe::{self, Foe, FoeView, Kind};
 use crate::level;
 use crate::loot;
@@ -250,7 +250,7 @@ impl Intent {
     /// length, a flag outside [`INTENT_FLAGS`], or a bearing that is not a finite
     /// number. **Validated rather than trusted**, because these are the only
     /// bytes in this sample a peer chooses — and a `NaN` bearing would reach
-    /// [`walk_direction`] and put the character somewhere nothing can recover
+    /// [`OrbitCamera::walk_direction`] and put the character somewhere nothing can recover
     /// from.
     fn from_wire(bytes: &[u8]) -> Option<Self> {
         if bytes.len() != INTENT_BYTES {
@@ -764,7 +764,8 @@ fn run_tick(stage: &mut Stage, intent: Intent, dt: f64) {
 
     // **The walk conversion**: a bearing and two axes become a direction in the
     // world. Everything below this line is metres.
-    let direction = walk_direction(f64::from(intent.yaw), intent.ahead(), intent.across());
+    let direction =
+        OrbitCamera::walk_direction(f64::from(intent.yaw), intent.ahead(), intent.across());
     let horizontal = direction * WALK_SPEED * dt;
 
     // Gravity is integrated while the character is off the floor and reset the
@@ -1430,7 +1431,7 @@ mod tests {
     /// simulation is ever told about it is this one angle.
     ///
     /// A quarter turn anticlockwise about `+Y` puts "away from the camera" along
-    /// `−X`, which is [`crate::camera::walk_direction`]'s measure and not a sign
+    /// `−X`, which is [`OrbitCamera::walk_direction`]'s measure and not a sign
     /// this test is free to choose — `a_zero_bearing_walks_into_the_zone` in that
     /// module is what pins the convention, and this is it reaching the wire.
     #[test]
@@ -1490,7 +1491,7 @@ mod tests {
 
     /// **A sealed intent survives the wire, and nothing else does.** These are
     /// the only bytes in this sample a peer chooses, and a `NaN` bearing reaching
-    /// [`walk_direction`] is unrecoverable.
+    /// [`OrbitCamera::walk_direction`] is unrecoverable.
     #[test]
     fn only_an_intent_this_build_sealed_reads_back() {
         for intent in [
