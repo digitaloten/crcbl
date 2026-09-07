@@ -75,6 +75,73 @@
 //! the ~340 imports `wasm-bindgen` generated for `wgpu`'s `web-sys` calls;
 //! `crcbl-wgpu` is not a wasm dependency of the umbrella any more, so the
 //! honest count is zero.
+//!
+//! # The ABIs a page has to drive
+//!
+//! Five, and a sample's own `web.rs` is one of them. The other four are
+//! specified, symbol by symbol, by the crates that own them, and the shim in
+//! `web/` calls them directly:
+//!
+//! | Prefix | Owner | What it is |
+//! | --- | --- | --- |
+//! | `__crcbl_web_` (input/frame) | [`crate::shell`]'s `web` backend | canvas size, focus, keys, pointer |
+//! | `__crcbl_web_audio_` | [`crate::audio::web`] | the AudioWorklet pull |
+//! | `__crcbl_web_fetch_` | [`crate::store::web::fetch`] | assets over `fetch()` |
+//! | `__crcbl_web_opfs_` | [`crate::store::web::opfs`] | saves in the Origin Private File System |
+//! | `__crcbl_<sample>_` | that sample's `web.rs` | boot, one rAF frame, teardown, logs |
+//!
+//! ## The ten symbols a sample exports
+//!
+//! [`web_exports!`] writes these, with the demo's own name in place of
+//! `<sample>` — two demos can be open in one browser and the exports must not
+//! collide, so the macro takes each name as an argument rather than building it
+//! from a prefix. Each sample's `web.rs` lists its own ten by name; **what they
+//! mean is here**, because a page's contract is one contract and not one per
+//! demo. A sample with controls of its own documents those beside its list.
+//!
+//! | Symbol | Signature (wasm) | Meaning |
+//! | --- | --- | --- |
+//! | `__crcbl_<sample>_prepare` | `() -> i32` | Install the log sink and the browser storage backends. **First call**, before any `__crcbl_web_fetch_*` or `__crcbl_web_opfs_*`. `1`, or `0` if it was already called. |
+//! | `__crcbl_<sample>_log_level` | `(i32) -> i32` | Set the log filter: `0` off … `5` trace. `1`/`0`. |
+//! | `__crcbl_<sample>_boot` | `() -> i32` | Open the shell on the canvas `__crcbl_web_canvas` announced, create the window, start the polled device request. `1`/`0`. |
+//! | `__crcbl_<sample>_frame` | `(f64) -> i32` | One `requestAnimationFrame`, given `performance.now()`. Returns the new status. |
+//! | `__crcbl_<sample>_status` | `() -> i32` | The status, without advancing anything. |
+//! | `__crcbl_<sample>_shutdown` | `() -> i32` | Tear the loop down. `1` if there was one. |
+//! | `__crcbl_<sample>_error_ptr` | `() -> i32` | Address of the last error message (UTF-8, not NUL-terminated), or `0`. |
+//! | `__crcbl_<sample>_error_len` | `() -> i32` | Its length in bytes. |
+//! | `__crcbl_<sample>_log_take` | `() -> i32` | Pop one log line into the scratch buffer and return its length; `0` when the queue is empty. |
+//! | `__crcbl_<sample>_log_ptr` | `() -> i32` | Address of that scratch buffer. Read it **after** `log_take`. |
+//!
+//! ## Status codes
+//!
+//! [`STATUS_IDLE`] `0`, [`STATUS_PREPARED`] `1`, [`STATUS_BOOTING`] `2`,
+//! [`STATUS_RUNNING`] `3`, [`STATUS_STOPPED`] `4`, [`STATUS_FAILED`] `5`,
+//! [`STATUS_PAUSED`] `6`.
+//!
+//! The shim drives `requestAnimationFrame` while the status is `BOOTING`,
+//! `RUNNING` **or** `PAUSED` and stops on anything else — a paused page is still
+//! drawing, and it is a keystroke away from ticking again. `FAILED` is the only
+//! one that sets an error message.
+//!
+//! ## Call ordering
+//!
+//! ```text
+//! __crcbl_<sample>_prepare()               // storage backends exist
+//!   → fetch pre-load       (__crcbl_web_fetch_*)
+//!   → OPFS restore + ready (__crcbl_web_opfs_*)
+//! __crcbl_web_canvas(id)                   // which canvas this instance drives
+//! __crcbl_<sample>_boot()                  // shell + window; no size yet
+//! rAF loop, every frame:
+//!   __crcbl_web_resize(id, w, h, dpr)      // from ResizeObserver, when it changes
+//!   __crcbl_web_frame(performance.now())   // the shell's clock reference
+//!   __crcbl_<sample>_frame(performance.now())  // boot poll, or a frame
+//!   __crcbl_<sample>_log_take() … while non-zero
+//!   __crcbl_web_opfs_take() …              // drain queued saves
+//! ```
+//!
+//! **The first `__crcbl_web_resize` is what starts the device request.** A
+//! canvas has no size until the document gives it one, and a swapchain needs
+//! one; a shim that never calls `resize` leaves the status at `BOOTING` forever.
 
 use core::cell::{Cell, RefCell};
 

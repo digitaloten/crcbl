@@ -1167,6 +1167,10 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Removed
 
+- Every demo's `pub use crcbl::web::{ASSET_BASE, STATUS_*}`. It existed only so
+  those modules' docs could link the names, and those docs now live in
+  `crcbl::web`. `apps/breach` and `apps/horde` import `STATUS_PREPARED`
+  directly, which is the one use of it in code.
 - **SMAA 1x, replaced by CMAA2 in the same change** — one morphological tier at
   a time, which `docs/plan/49-antialiasing.md`'s "What is refused" states as a
   refusal. `Antialiasing::Smaa`, `RenderEffects::SMAA` and `crcbl_render::smaa`
@@ -1342,6 +1346,11 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- `crcbl::web`'s module docs now carry the browser wire format once — the
+  ABI-prefix table, the ten exports and what each means, the status codes with
+  the rAF rule, and the call ordering. Every `apps/*/src/web.rs` keeps its own
+  "what is this sample's" paragraph and its own symbol list, and links to
+  `crcbl::web` for the rest.
 - `web/engine/knobs.js` is the knob-panel driver `web/demos/alcove/main.js` and
   `web/demos/sundial/main.js` each carried: `installKnobs`, `press` and
   `enumName`. Each page keeps its element ids and its `refresh` body.

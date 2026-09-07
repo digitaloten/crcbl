@@ -5081,17 +5081,6 @@ the same kind of hoist. Moving the widget ids down into `crcbl-ui` was
 considered and declined: their doc comments link `PAUSE_KEY` and
 `MenuAction::from_id`, which would become unresolvable and red `cargo doc`.
 
-### Seventeen `web.rs` module docs restate `crcbl::web`'s wire format (2026-09-07)
-
-Every `apps/*/src/web.rs` except viewer's carries the same four sections — the
-ABI-prefix table, the ten-row export table, the status codes with the
-rAF-while-`BOOTING`/`RUNNING`/`PAUSED` rule, and the twelve-line call-ordering
-block — about sixty doc lines each, in which only the symbol prefix is the
-sample's. A new status code means seventeen tables. **What it would take:** the
-prose moves to `crates/crcbl/src/web.rs`'s module docs; each demo keeps its
-"what is genuinely this sample's" paragraph, its symbol list and a link.
-`cargo doc` on wasm32 with `--document-private-items` is the gate.
-
 ### Nothing checks that a sample forwards its own `--headless` to `Record` (2026-09-07)
 
 `Record::for_app`'s headless rule is tested once, beside it. The four samples'

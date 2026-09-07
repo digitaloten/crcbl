@@ -57,14 +57,6 @@ use crcbl::store::web::FetchSource;
 use crate::app::{Loop, PendingLoop};
 use crate::args::Options;
 
-// The status codes and the asset base are the shim's wire format, so they have
-// exactly one definition; see [`crcbl::web`]. Re-exported rather than reached
-// through the path, because this module's own docs name them.
-pub use crcbl::web::{
-    ASSET_BASE, STATUS_BOOTING, STATUS_FAILED, STATUS_IDLE, STATUS_PAUSED, STATUS_PREPARED,
-    STATUS_RUNNING, STATUS_STOPPED,
-};
-
 // ---------------------------------------------------------------------------
 // This sample's half of the lifecycle
 // ---------------------------------------------------------------------------

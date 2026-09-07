@@ -8,7 +8,7 @@
 //!
 //! The state machine behind these exports, the log queue and the five-call
 //! protocol are [`crcbl::web`], and [`crcbl::web_exports!`] writes the ten symbols
-//! in the table below. That module is also where the reasons live: why start-up is
+//! listed below. That module is also where the reasons live: why start-up is
 //! polled rather than blocking, why the clock is the browser's, and why a sample's
 //! wasm module imports nothing of its own.
 //!
@@ -60,73 +60,21 @@
 //! backends are installed by `prepare` because the shared shim's boot sequence
 //! drives both ABIs before it boots the demo and both must answer.
 //!
-//! # The ABIs a page has to drive
+//! # The symbols this module exports
 //!
-//! | Prefix | Owner | What it is |
-//! | --- | --- | --- |
-//! | `__crcbl_web_` (input/frame) | [`crcbl::shell`]'s `web` backend | canvas size, focus, keys, pointer |
-//! | `__crcbl_web_audio_` | [`crcbl::audio::web`] | the AudioWorklet pull |
-//! | `__crcbl_web_fetch_` | [`crcbl::store::web::fetch`] | assets over `fetch()` |
-//! | `__crcbl_web_opfs_` | [`crcbl::store::web::opfs`] | saves in the Origin Private File System |
-//! | `__crcbl_shard_` | this module | boot, one rAF frame, teardown, logs |
+//! `__crcbl_shard_` is this module's prefix. **What each of the ten lifecycle
+//! symbols means, the four other ABI prefixes a page drives, the status codes
+//! and the order a page calls them all in are [`crcbl::web`]'s module docs**,
+//! written once rather than once a sample.
 //!
-//! ## Exports
-//!
-//! | Symbol | Signature (wasm) | Meaning |
-//! | --- | --- | --- |
-//! | [`__crcbl_shard_prepare`] | `() -> i32` | Install the log sink and the browser storage backends. **First call**, before any `__crcbl_web_fetch_*` or `__crcbl_web_opfs_*`. `1`, or `0` if it was already called. |
-//! | [`__crcbl_shard_log_level`] | `(i32) -> i32` | Set the log filter: `0` off … `5` trace. `1`/`0`. |
-//! | [`__crcbl_shard_boot`] | `() -> i32` | Open the shell on the canvas `__crcbl_web_canvas` announced, create the window, start the polled device request. `1`/`0`. |
-//! | [`__crcbl_shard_frame`] | `(f64) -> i32` | One `requestAnimationFrame`, given `performance.now()`. Returns the new status. |
-//! | [`__crcbl_shard_status`] | `() -> i32` | The status, without advancing anything. |
-//! | [`__crcbl_shard_shutdown`] | `() -> i32` | Tear the loop down. `1` if there was one. |
-//! | [`__crcbl_shard_error_ptr`] | `() -> i32` | Address of the last error message (UTF-8, not NUL-terminated), or `0`. |
-//! | [`__crcbl_shard_error_len`] | `() -> i32` | Its length in bytes. |
-//! | [`__crcbl_shard_log_take`] | `() -> i32` | Pop one log line into the scratch buffer and return its length; `0` when the queue is empty. |
-//! | [`__crcbl_shard_log_ptr`] | `() -> i32` | Address of that scratch buffer. Read it **after** `log_take`. |
-//!
-//! ## Status codes
-//!
-//! [`STATUS_IDLE`] `0`, [`STATUS_PREPARED`] `1`, [`STATUS_BOOTING`] `2`,
-//! [`STATUS_RUNNING`] `3`, [`STATUS_STOPPED`] `4`, [`STATUS_FAILED`] `5`,
-//! [`STATUS_PAUSED`] `6`.
-//!
-//! The shim drives `requestAnimationFrame` while the status is `BOOTING`,
-//! `RUNNING` **or** `PAUSED` and stops on anything else — a paused page is still
-//! drawing, and here that matters more than usual: `L` still works on a paused
-//! frame, so a visitor can stop the zone and switch its lighting while looking at
-//! one still picture of it. `FAILED` is the only one that sets an error message.
-//!
-//! ## Call ordering
-//!
-//! ```text
-//! __crcbl_shard_prepare()                   // storage backends exist
-//!   → fetch pre-load       (__crcbl_web_fetch_*)
-//!   → OPFS restore + ready (__crcbl_web_opfs_*)
-//! __crcbl_web_canvas(id)                     // which canvas this instance drives
-//! __crcbl_shard_boot()                      // shell + window; no size yet
-//! rAF loop, every frame:
-//!   __crcbl_web_resize(id, w, h, dpr)        // from ResizeObserver, when it changes
-//!   __crcbl_web_frame(performance.now())     // the shell's clock reference
-//!   __crcbl_shard_frame(performance.now())  // boot poll, or a frame
-//!   __crcbl_shard_log_take() … while non-zero
-//!   __crcbl_web_opfs_take() …                // drain queued saves
-//! ```
-//!
-//! **The first `__crcbl_web_resize` is what starts the device request.** A canvas
-//! has no size until the document gives it one, and a swapchain needs one; a shim
-//! that never calls `resize` leaves the status at `BOOTING` forever.
+//! [`__crcbl_shard_prepare`], [`__crcbl_shard_log_level`],
+//! [`__crcbl_shard_boot`], [`__crcbl_shard_frame`], [`__crcbl_shard_status`],
+//! [`__crcbl_shard_shutdown`], [`__crcbl_shard_error_ptr`],
+//! [`__crcbl_shard_error_len`], [`__crcbl_shard_log_take`],
+//! [`__crcbl_shard_log_ptr`].
 
 use crate::app::{Loop, PendingLoop};
 use crate::args::Options;
-
-// The status codes and the asset base are the shim's wire format, so they have
-// exactly one definition; see [`crcbl::web`]. Re-exported rather than reached
-// through the path, because this module's own docs name them.
-pub use crcbl::web::{
-    ASSET_BASE, STATUS_BOOTING, STATUS_FAILED, STATUS_IDLE, STATUS_PAUSED, STATUS_PREPARED,
-    STATUS_RUNNING, STATUS_STOPPED,
-};
 
 // ---------------------------------------------------------------------------
 // This sample's half of the lifecycle
