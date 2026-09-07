@@ -12,7 +12,7 @@
 //!  │ FAR   18 m    UP │        doing: PATROL, ONTO YOU, or DOWN.
 //!  └──────────────────┘
 //!
-//!        W/A/S/D walk   mouse or the arrows look   SPACE fires
+//!        W/A/S/D walk   mouse or the arrows look   SPACE fires   I the kit
 //! ```
 //!
 //! # The crosshair is the one thing on screen that is not optional
@@ -92,7 +92,7 @@ const BORDER_WIDTH: f32 = 1.0;
 const NATURAL_SCALE: f32 = 1.0;
 
 /// The control hint, which is the whole of what a first-time visitor needs.
-const HINT: &str = "W/A/S/D walk   mouse or the arrows look   SPACE fires";
+const HINT: &str = "W/A/S/D walk   mouse or the arrows look   SPACE fires   I the kit";
 
 /// What the page drew, for the loop's own tests and its summary line.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

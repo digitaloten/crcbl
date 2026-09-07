@@ -110,7 +110,10 @@ small module, not forks of the game.
   deterministic — the same philosophy as the audio grammar), weapon
   inspect/reload/malfunction states via the anim state machine.
 - Inventory: grid inventory with drag-drop (the UI capability this sample drives
-  into topic 7).
+  into topic 7). **The container half of this is built at milestone 0** — see
+  "Where this stands" — and what is still ahead of it is the gunplay it holds:
+  magazines that empty, attachments on 1x1 filtered grids, armour with mounts
+  and coverage, and the buy menu that fills a rig between rounds.
 
 ## Scope (hard caps — it's a sample, not a product)
 
@@ -202,11 +205,28 @@ than breach's, so borrowing it here would be starting a subsystem out of order.
 naming first-person rendering (29) and the weapon kit (38) are **not** met:
 there is one hitscan pistol and no ballistics, penetration, armour, ADS, recoil,
 reload or viewmodel — so there is no viewmodel pass, no magnified optic and no
-1P/3P sync to speak of. No inventory, no rounds, no economy, and no networking
-past the in-memory loopback every sample has. The recorded browser budget and
-the golden frames per `GeometryPath` that milestone 0's exit criteria ask for
-are not taken either. Milestones 1 onward are all of that, and `docs/backlog.md`
-carries the list with what each would take.
+1P/3P sync to speak of. No rounds, no economy, and no networking past the
+in-memory loopback every sample has. The recorded browser budget and the golden
+frames per `GeometryPath` that milestone 0's exit criteria ask for are not taken
+either. Milestones 1 onward are all of that, and `docs/backlog.md` carries the
+list with what each would take.
+
+**The inventory is the exception, and it is why this sample is topic 34's second
+consumer.** What the player carries is a `crcbl-inventory` grid:
+`apps/breach/src/loadout.rs` is the content — the item table in
+`apps/breach/data/items.ron`, the size of the rig, what a player spawns holding
+— and `apps/breach/src/panel.rs` is the `I` panel it is dragged around in, which
+frees the pointer while it is open because a locked one reports no position to
+hit-test a cell with. **The grid is the loadout rather than a picture of one**:
+the trigger is gated on the rig holding something tagged as a weapon, so a rig
+with nothing in it fires nothing. Nothing else moved — the round loop, the bots
+and the wire behave exactly as they did, which is what says this adoption
+changed the container and not the game — and no line of the engine changed on
+its behalf, which is what `apps/shard` claimed of its own adoption and what a
+second consumer is for. What the kit is still missing is in `docs/backlog.md`
+under topic 34; what breach itself still owes it is a reload that empties a
+magazine, filtered grids for attachments and armour, and a drop verb, none of
+which milestone 0 has a weapon model to hang on.
 
 Two absences are visible in the picture rather than merely missing from the
 feature list, and both are deliberate. **The player is invisible**, because a
@@ -216,10 +236,14 @@ goes past cosmetics, since a player with no body is a player the bots walk
 through. And **the rooms are lit by lamps rather than by a sun**, because they
 have ceilings.
 
-**Rule 11 is owed, not exempted.** The Scope above asks for `.crpix` art and
-names what for — the grid inventory's item icons, the buy menu, the killfeed and
-the scoreboard. Milestone 0 has none of those things to draw, so it has no
-`build.rs` and no `assets/`; the obligation arrives with the UI that needs it.
+**Rule 11 is owed, and one of the four things it is owed for now exists.** The
+Scope above asks for `.crpix` art and names what for — the grid inventory's item
+icons, the buy menu, the killfeed and the scoreboard. The last three have
+nothing to draw yet. The grid inventory does, and it is drawn without icons: a
+cell is the item's letter on its colour, which is the placeholder
+`crcbl_inventory::ItemDef` carries until `crcbl icon bake` is a verb. So this
+sample still has no `build.rs` and no `assets/`, and the obligation now has a
+consumer waiting on it rather than no consumer at all.
 
 ## Exit criteria
 

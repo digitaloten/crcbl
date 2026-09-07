@@ -31,9 +31,9 @@ editor asset browser wants it); the kit is FPS-era with breach.
 > Also unbuilt: the first consumer named below. There is no editor asset browser
 > because there is no editor.
 >
-> **Part 2, the grid kit: built, and consumed.** `crates/crcbl-inventory` is the
-> model half — one `Grid` with an occupancy map and an optional tag filter,
-> footprints as `8×8` bitmasks in a `u64`, four rotations, deterministic
+> **Part 2, the grid kit: built, and consumed twice.** `crates/crcbl-inventory`
+> is the model half — one `Grid` with an occupancy map and an optional tag
+> filter, footprints as `8×8` bitmasks in a `u64`, four rotations, deterministic
 > first-fit placement, atomic moves, stacking with split and merge, and a RON
 > catalogue. `apps/shard` is its first consumer and the sample that forced it:
 > `src/loot.rs` (the item table, the carried grid, the drop roll),
@@ -41,7 +41,10 @@ editor asset browser wants it); the kit is FPS-era with breach.
 > wire, and the grid inside its save payload. **Not one line of the engine
 > changed on that sample's behalf**, which is `sample/15-shard.md`'s own exit
 > criterion; what shard wanted and did not get is in `docs/backlog.md` as topic
-> 34 findings.
+> 34 findings. `apps/breach` is the second consumer as of 2026-09-07 — the rig a
+> first-person player carries, with the trigger gated on it holding a weapon —
+> and it took no engine change either; see "Decided" below for what the second
+> consumer measured.
 >
 > What of this document is still unbuilt is the Delivery table below: nesting
 > and the rollup through it, mounts and coverage, items as entities, the command
@@ -297,7 +300,7 @@ UI just doesn't wait to look responsive.
 | Slice                                                                                                                                                                                                                  | Phase                                               |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
 | UI drag-drop capability (sources/targets/ghost/`:drop-ok`), pointer + pad/keyboard/touch paths                                                                                                                         | wave 1 (editor asset browser is the first consumer) |
-| ✅ Uniform grid model (+ filters) + placement/rotation + stacking — `crcbl-inventory`, consumed by `apps/shard`                                                                                                        | shipped 2026-09-07                                  |
+| ✅ Uniform grid model (+ filters) + placement/rotation + stacking — `crcbl-inventory`, consumed by `apps/shard` and `apps/breach`                                                                                      | shipped 2026-09-07                                  |
 | Nesting: grids inside grids, depth cap and cycle rejection                                                                                                                                                             | FPS-era                                             |
 | Mounts and coverage; gear as the grids it provides                                                                                                                                                                     | FPS-era                                             |
 | Persistence: **server-side PlayerId stash store** and store-crossing transactions. A carried grid in a game's own save is shipped — `apps/shard/src/save.rs` writes placements, ids and rotations at payload version 2 | FPS-era                                             |
@@ -341,6 +344,15 @@ and `merge` exist and shard calls neither, because nothing it carries is worth
 splitting. Nesting is absent because a `4×4` pocket has nowhere to nest. The
 parts most likely to be shard-shaped are therefore the ones with **no** consumer
 yet, and breach is what will find them.
+
+**Breach adopted it on 2026-09-07**, as `apps/breach/src/loadout.rs` and
+`src/panel.rs`, with no engine change either. What the second consumer used that
+the first did not is the tag vocabulary — the trigger asks whether the rig holds
+anything tagged `weapon`. What neither has touched, after two consumers, is
+`Grid::filter`, `split`/`merge`, any rotation but `Deg0`, and nesting; those
+stay the parts with no consumer. The findings breach filed are in
+`docs/backlog.md` beside shard's: `ItemDef` has no room for a game's own
+numbers, and a tag question costs a slot scan.
 
 ## Correction (design review, 2026-07-27)
 

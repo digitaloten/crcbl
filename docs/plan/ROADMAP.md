@@ -183,8 +183,10 @@ browser's own gate and the demo site's deploy.
   moves, stacking with split and merge, and a RON item catalogue. Part 2 of
   [34-inventory.md](34-inventory.md); nesting, mounts and coverage, server
   authority and the stash are not in it. `apps/shard` is its first consumer —
-  loot, a carried grid, a pointer drag and the grid in its save — and took no
-  engine change to be one.
+  loot, a carried grid, a pointer drag and the grid in its save — and
+  `apps/breach` its second: the rig a first-person player carries, with the
+  trigger gated on the rig holding a weapon. Neither took an engine change to be
+  one.
 - **`crcbl-ui`** — the immediate-mode draw list with rect/text/outline commands,
   CPU triangulation into screen-space vertex and index buffers, a baked-in
   monospace glyph atlas, `FontAtlas` text layout, `Label`/`Button` widgets,

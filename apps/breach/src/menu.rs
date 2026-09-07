@@ -14,16 +14,18 @@
 //! `MenuAction` type is [`core::convert::Infallible`] because there is
 //! genuinely no value it could ever be handed.
 //!
-//! Slice 1 has nothing else to put on it. There is one weapon, one map and no
-//! loadout: everything a player can do here is walking, looking and shooting,
-//! and all three are keys rather than rows.
+//! Milestone 0 has nothing else to put on it. There is one weapon and one map,
+//! and the loadout the player carries opens on `I` rather than on a row —
+//! [`crate::panel`] is that panel, and everything else a player can do here is
+//! walking, looking and shooting.
 //!
 //! # Pausing is also what gives the pointer back
 //!
-//! The panel is the one state in which [`crate::app::Breach`] asks for
+//! This panel is one of the two states in which [`crate::app::Breach`] asks for
 //! [`PointerMode::Free`](crcbl::shell::PointerMode) — a first-person demo holds
 //! the pointer for as long as it is being played, and a player who cannot reach
-//! their own cursor cannot leave.
+//! their own cursor cannot leave. The open loadout is the other, and
+//! [`crate::panel`] says why.
 
 use crcbl::engine::{DEBUG_OVERLAY_ID, FULLSCREEN_ID, RESUME_ID};
 use crcbl::ui::menu::{Menu, MenuItem, MenuSet};

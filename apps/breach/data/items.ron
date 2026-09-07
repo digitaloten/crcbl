@@ -1,0 +1,67 @@
+// Breach's item table, in the form `crcbl_inventory::Catalog::from_ron` reads.
+//
+// What milestone 0's player actually carries: the hitscan pistol
+// `apps/breach/src/game.rs` fires, a magazine for it, and a grenade. Only the first is read by the simulation — `loadout::is_armed` looks
+// for the `weapon` tag, and a trigger pulled with no weapon in the grid is not
+// a shot. The other two are what the grid carries: a footprint that is taller
+// than it is wide and a stack with a count on it, which is what makes the
+// container a container rather than a slot with a pistol in it.
+//
+// The shapes are `docs/plan/34-inventory.md`'s container table read the other
+// way round: a pocket is 1x2, so a magazine is what fits one, and a grenade is
+// the 1x1 that stacks. The pistol lies flat across two cells and rotates onto
+// its side like anything else.
+//
+// **There is no damage, range or capacity here**, because `ItemDef` has no room
+// for one: it carries a name, a footprint, tags, a stack maximum, a weight and
+// the placeholder cell. `game::RANGE_M` is still a constant of this sample's,
+// and `docs/backlog.md` carries the finding.
+//
+// `letter` and `colour` are the placeholder cell `apps/breach/src/panel.rs`
+// draws. There is no icon atlas: `crcbl icon bake` is not a verb yet, and
+// `docs/plan/sample/11-breach.md`'s rule 11 is where the `.crpix` sheets that
+// replace them are owed.
+Catalog(
+    items: [
+        Item(
+            name: "sidearm",
+            shape: [
+                "##",
+            ],
+            tags: [
+                "weapon",
+            ],
+            stack_max: 1,
+            weight_g: 850,
+            letter: 'p',
+            colour: (0.55, 0.60, 0.70, 1.0),
+        ),
+        Item(
+            name: "magazine",
+            shape: [
+                "#",
+                "#",
+            ],
+            tags: [
+                "ammo",
+            ],
+            stack_max: 3,
+            weight_g: 240,
+            letter: 'm',
+            colour: (0.78, 0.66, 0.32, 1.0),
+        ),
+        Item(
+            name: "frag",
+            shape: [
+                "#",
+            ],
+            tags: [
+                "ordnance",
+            ],
+            stack_max: 2,
+            weight_g: 400,
+            letter: 'g',
+            colour: (0.42, 0.52, 0.34, 1.0),
+        ),
+    ],
+)

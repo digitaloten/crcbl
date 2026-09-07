@@ -54,10 +54,10 @@
 //! **What this sample does not add to the macro.** There is no `asset_source`
 //! accessor here, because breach has nothing to read out of it: the range is
 //! built in code, it keeps no score across runs and no save, and every byte it
-//! draws with (the geometry, the shaders, the glyph atlas) is compiled into the
-//! module. The two backends are still installed by the macro's `prepare`,
-//! because the shared shim's boot sequence drives both ABIs before it boots the
-//! demo and both must answer.
+//! draws with (the geometry, the shaders, the glyph atlas, and
+//! `crate::loadout`'s item table) is compiled into the module. The two backends
+//! are still installed by the macro's `prepare`, because the shared shim's boot
+//! sequence drives both ABIs before it boots the demo and both must answer.
 //!
 //! # The ABIs a page has to drive
 //!

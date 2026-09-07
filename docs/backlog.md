@@ -4878,9 +4878,18 @@ working grid drag on `UiState::interact`'s press capture alone: read
 frame the button comes up), hit-test each cell, and the drag is the captured
 cell plus the hovered one. So a game can have a drag today; what it cannot have
 is a **typed** one — no payload, no `can_accept`, no drop-state feedback — that
-a second panel reuses without copying that hit test and its bookkeeping. **Hoist
-it when breach adopts the kit**: two consumers of the same hand-rolled drag is
-the moment, and shard's `panel::draw` is the shape to hoist.
+a second panel reuses without copying that hit test and its bookkeeping.
+
+**The second consumer arrived 2026-09-07, so the moment is now.**
+`apps/breach/src/panel.rs` is that copy: the same `UiState::active()` read
+before the cells interact, the same per-cell rectangle hit test, the same
+`(captured, hovered)` pair filtered for a release that ended where it began —
+and `apps/breach/src/loadout.rs::dragged_origin` is a second copy of shard's
+grab-offset arithmetic (`apps/shard/src/loot.rs`). Neither sample could reuse
+the other's, and neither made an engine change to avoid copying it. What to
+hoist, from the two: a drag source over a cell grid answering `(from, to)`
+cells, a typed payload a target can `can_accept`, and drop-state feedback as
+widget state.
 
 ### `PointerUpdate` has no `pixels`, and `TouchUpdate` does (2026-09-07)
 
@@ -4892,6 +4901,13 @@ pointer therefore re-derives the conversion — `apps/shard/src/app.rs`'s
 loop's Y flip ever changes. The fix is one inherent method beside the one that
 exists; it was not made because it is an engine change with a single caller, and
 shard's exit criterion is that it made none.
+
+**Two callers now (2026-09-07):** `apps/breach/src/app.rs`'s `surface_pixels` is
+the same conversion as shard's, written for the same reason — the loadout panel
+hit-tests a cell against the pointer. The single-caller argument is spent; what
+remains is that both samples' exit criterion is an engine-change count of zero,
+so the inherent method wants landing as its own change rather than inside a
+sample's.
 
 ### A save's grid is rebuilt by placing, not by deserialising (2026-09-07)
 
@@ -4907,10 +4923,12 @@ a dozen lines and buys the validation.
 The record behind this — the argument, the options and the measurements — is in
 `docs/notes/simulation.md` under this heading.
 
-**Built 2026-09-07, and consumed.** `crates/crcbl-inventory` is the model half
-and `apps/shard` is its first consumer — `src/loot.rs`, `src/panel.rs`,
-`data/items.ron`, a pickup intent bit and the grid in its save payload — with no
-engine change made on its behalf.
+**Built 2026-09-07, and consumed twice.** `crates/crcbl-inventory` is the model
+half; `apps/shard` is its first consumer — `src/loot.rs`, `src/panel.rs`,
+`data/items.ron`, a pickup intent bit and the grid in its save payload — and
+`apps/breach` its second the same day — `src/loadout.rs`, `src/panel.rs`,
+`data/items.ron`, and a trigger gated on the rig holding a weapon — with no
+engine change made on behalf of either.
 
 **What is still owed**, each of it in the plan and none of it built: nesting
 (grids inside grids, the depth cap and cycle rejection) and the weight/volume
@@ -4922,23 +4940,26 @@ a container is open; the server-side PlayerId stash and store-crossing
 transactions; and client optimism with pending/rollback. The no-dupe _property_
 is unwritten because there is no server-side transaction to fuzz.
 
-**DECIDED 2026-09-06 —** option 1: `crcbl-inventory` is built from shard,
-data-driven — grid dimensions, item shapes as bitmasks, stacking and rotation,
-the Diablo and Tarkov grid — and breach adopts it later as the second consumer.
-Growing a kit from the consumer that needs it first, then proving it by a
-second, is how every engine's UI kit arrives. It schedules the crate, shard's
-use of it, and breach's adoption as the thing that validates it.
+**DECIDED 2026-09-06, executed in full 2026-09-07 —** option 1:
+`crcbl-inventory` was built from shard, data-driven — grid dimensions, item
+shapes as bitmasks, stacking and rotation, the Diablo and Tarkov grid — and
+`apps/breach` adopted it as the second consumer. Growing a kit from the consumer
+that needs it first, then proving it by a second, is how every engine's UI kit
+arrives. Nothing of this decision is outstanding.
 
 **The constraint that has now been discharged:** shard's save reserved no
 inventory field while the consumer question was open. It has one, at payload
 version 2, and the version bump was the whole cost — as predicted.
 
-**What it blocks:** breach's adoption, which is what turns a kit with one
-consumer into a kit. The shipped model is everything shard's loot loop needed
-and nothing it did not: filters exist and shard sets none, `split`/`merge` exist
-and shard calls neither, nesting is absent because a `4×4` pocket has nowhere to
-nest. The parts most likely to be shard-shaped are the ones with no consumer
-yet.
+**Breach's adoption landed 2026-09-07, and this is what it measured.** The
+second consumer used one thing the first did not: the **tag vocabulary** —
+`Catalog::tag` and `ItemDef::has_tag`, which shard writes into its file and
+never reads. Still unexercised after two consumers: `Grid::filter` (neither
+sample equips anything), `split` and `merge` (neither has a verb that divides a
+stack), `rotate` and every `Rotation` but `Deg0` (neither panel has a rotate
+key), and nesting. Those remain the parts most likely to be shard-shaped, and
+they are still the parts with no consumer. Breach did not hit the missing
+cross-grid move either, because it carries one grid.
 
 ### A loaded `Grid`'s occupancy map is not re-derived
 
@@ -4984,6 +5005,29 @@ from a server, a trade or a stash cannot re-derive one, so the kit will need
 either a per-instance payload on `crcbl_inventory::Stack` or an instance table
 the kit owns. Not built here: it is an engine change, and shard's exit criterion
 is that it made none.
+
+### `ItemDef` has no room for a game's own numbers (2026-09-07)
+
+**A topic 34 finding, from the second consumer.** `crcbl_inventory::ItemDef`
+carries a name, a footprint, tags, a stack maximum, a weight and the placeholder
+letter/colour — and nothing a game can define. `apps/breach`'s sidearm therefore
+cannot say what it does: `game::RANGE_M` is still a constant of the sample's,
+and a magazine's capacity, a round's damage or an optic's magnification would
+need a second table keyed by `Catalog::key`. This is the per-definition twin of
+the per-instance finding above (`Stack` carries no quality). Shapes worth
+deciding between: an opaque value per item the kit only round-trips, a generic
+parameter on `Catalog`, or leaving it to a game's own side table — the last is
+what both consumers do, and it is workable while the tables are three and five
+items long.
+
+### A tag question costs the consumer a slot scan (2026-09-07)
+
+`apps/breach/src/loadout.rs`'s `is_armed` answers "does this rig hold anything
+tagged `weapon`" by walking `Grid::slots` and asking the catalogue for each
+definition. Allocation-free and correct — but it is the first question a game
+asks a grid that the grid cannot answer, and "how many of tag X" would be a
+second copy of the walk. Worth a `Grid::holds_tag(&Catalog, Tag) -> bool` only
+if a third consumer wants it; noted so the third does not re-derive it silently.
 
 ## The sample plans — what they still owe
 
@@ -5363,13 +5407,37 @@ the rooms are lit by lamps rather than a sun because they have ceilings.
 blocks:** nothing downstream — milestone 1 onward is native and gated on arena
 proving prediction first.
 
+### breach's loadout is not saved, because breach has no save (2026-09-07)
+
+`apps/breach` has no save at all — no `Vault`, no `crcbl-store` record, no
+payload — so the rig a player rearranges is gone at the end of the run. Not a
+regression: milestone 0 keeps no score across runs either, and `src/web.rs` says
+so. `apps/shard/src/save.rs` is the shape if breach ever wants one (a payload
+version, placements written as item key / stack id / count / cell / rotation,
+replayed through `Grid::place` on the way back in). What it would take is the
+whole save, not just the grid; nothing blocks it and nothing asks for it before
+the buy menu at milestone 2.
+
+### The browser gate never opens breach's loadout (2026-09-07)
+
+`web/tools/browser-e2e.mjs`'s breach block presses `KeyW`, the arrows, `Space`
+and the mouse; it never presses `I`, so the panel and its pointer drag are
+covered by `cargo test` alone —
+`a_pointer_drag_moves_a_stack_between_two_cells_of_the_panel` scripts it through
+`HeadlessShell`. What a browser would add is the real lock release: breach asks
+for `PointerMode::Free` while the panel is open, and only a browser grants or
+declines a Pointer Lock for real. One step in the gate.
+
 ### Breach owes rule 11 and claims no exemption (2026-08-27)
 
 **Not built, and correctly so for now.** The Scope asks for `.crpix` art and
 names what for — the grid inventory's item icons above all, since topic 34's
-grid is item _shapes_, plus the buy menu, the killfeed and the scoreboard.
-Milestone 0 has none of those UI surfaces, so it has no `build.rs` and no
-`assets/`. The obligation arrives with the UI, not before.
+grid is item _shapes_, plus the buy menu, the killfeed and the scoreboard. Three
+of those four still have nothing to draw. The fourth arrived on 2026-09-07:
+`apps/breach/src/panel.rs` draws the rig, and draws each item as its `ItemDef`
+letter on its colour because there is no icon atlas and `crcbl icon bake` is not
+a verb. The sample still has no `build.rs` and no `assets/`, and the obligation
+now has a consumer waiting on it rather than none.
 
 ## lantern (`docs/plan/sample/13-lantern.md`)
 
@@ -6061,7 +6129,8 @@ deliberately absent, in the order that doc puts it:
 - **Rule 11's `.crpix` art.** `apps/breach/src/lib.rs` claims the exemption for
   milestone 0 and says why: the doc asks for pixel art for the grid inventory,
   the buy menu, the killfeed and the scoreboard, and milestone 0 has none of
-  those. The exemption expires the moment one arrives.
+  those. The exemption has expired: the grid inventory arrived on 2026-09-07 and
+  is drawn with letters on colours; `lib.rs` now says so.
 - **Sound.** Rule 8 asks for spatial audio through `crcbl-audio`, and a firing
   range is the easiest possible cue grammar — a shot, a hit on steel, a plate
   falling. Neither map plays anything at all. This is the cheapest of the

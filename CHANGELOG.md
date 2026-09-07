@@ -77,6 +77,26 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **`apps/breach` adopts the grid-inventory kit, as its second consumer.** What
+  the player carries is a `crcbl-inventory` `Grid` on the stage rather than a
+  field beside it: `src/loadout.rs` is the content — `data/items.ron`'s three
+  items (a `2×1` sidearm, a stacking `1×2` magazine, a stacking `1×1` frag), a
+  `4×3` rig and the kit a run spawns with — and `src/panel.rs` is the `I` panel
+  that draws it and moves a stack between cells on a pointer drag. **The grid is
+  the loadout**: the trigger is gated on the rig holding something tagged
+  `weapon`, so a rig with nothing in it fires nothing — the first thing in the
+  workspace to read a catalogue's tag vocabulary, which shard writes and never
+  asks about. Opening the panel is the second state that answers
+  `PointerMode::Free`, because a locked pointer reports no position to hit-test
+  a cell with, and while it is up the mouse neither turns the view nor pulls the
+  trigger. `Summary` gains the whole `Grid` rather than a count of one, so
+  `a_headless_run_is_deterministic` reddens on an inventory that diverges; the
+  debug panel gains a `carried` row, and the control hint and `--help` gain `I`.
+  The round loop, the bots and the wire are untouched and every existing test
+  passes unchanged, which is what says the adoption changed the container and
+  not the game — and not one line of the engine changed on its behalf. What
+  breach wanted from the kit and did not get is in `docs/backlog.md` as topic-34
+  findings.
 - `apps/shard` golden frames: `apps/shard/tests/golden.rs` draws the zone from
   all four bearings its camera rig can be in, once per `GeometryPath`, and
   compares each against a checked-in reference under `apps/shard/tests/golden/`.

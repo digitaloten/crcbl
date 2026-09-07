@@ -50,7 +50,10 @@ CONTROLS:
     Mouse                Look. A browser reports no raw pointer motion, so
                          there the arrows are the look instead.
     Arrows               Look: left/right turns, up/down tilts
-    SPACE                Fire. One pull is one shot.
+    SPACE                Fire. One pull is one shot, and only while the rig
+                         holds a weapon.
+    I                    Open the loadout: the grid the rig is, dragged with
+                         the pointer. It gives the cursor back while it is up.
     ESC                  Pause, F3 the debug panel, F11 fullscreen
 
 OPTIONS:

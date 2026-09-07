@@ -60,15 +60,19 @@ use crcbl::engine::{
     Booted, Clock, FrameInfo, HostedGame, PointerUpdate, RunSummary, wait_for_configure,
 };
 use crcbl::input::{ActionDecl, ActionKind, ActionMap, Binding};
-use crcbl::math::Vec3;
+use crcbl::inventory::Grid;
+use crcbl::math::{Vec2, Vec3};
 use crcbl::prelude::*;
 use crcbl::shell::{DisplayMode, PointerMode, WindowId};
+use crcbl::ui::widget::{PointerInput, UiState};
 
 use crate::camera::Eye;
 use crate::game::{ArenaStats, Controls, Game, RenderState, Scene, Stats};
 use crate::gpu::{Gpu, Paths};
+use crate::loadout;
 use crate::menu::{MenuKind, Menus};
 use crate::page::PageStats;
+use crate::panel::PanelStats;
 
 pub use crate::args::Options;
 
@@ -104,6 +108,16 @@ const ACTION_LOOK_DOWN: &str = "look-down";
 /// mouse trigger on the same `at.is_none()` the look is gated on, so the two
 /// halves of the mouse are bound under one rule stated once.
 const ACTION_FIRE: &str = "fire";
+
+/// The key that opens and closes the loadout panel.
+///
+/// **Not in the [`ActionMap`]**: which panels are on screen is presentation,
+/// nothing about it crosses the wire, and it works on a paused frame — a player
+/// who has stopped the demo should still be able to look at what they are
+/// carrying. `I` was free; this sample's map binds `W/A/S/D`, the four arrows
+/// and `Space`, and the loop keeps `Escape`, `F3`, `F11` and the console key.
+/// [`crate::panel`] is what it opens, and it is closed until it does.
+const PANEL_KEY: KeyCode = KeyCode::KeyI;
 
 /// The keyboard and the mouse this sample is played with.
 ///
@@ -219,6 +233,14 @@ pub struct Summary {
     pub shots: u64,
     /// How many of them hit a standing plate.
     pub hits: u64,
+    /// The rig the player finished the run carrying.
+    ///
+    /// **The container itself and not a count of it**, because this struct is
+    /// what `a_headless_run_is_deterministic` compares two runs by: a count is
+    /// the same number for a run whose stacks ended up in different cells, at
+    /// different rotations or under different ids, so a summary carrying one
+    /// would let an inventory diverge and still call the two runs equal.
+    pub loadout: Grid,
     /// Which selectors the frames were drawn through — rule 12's "says which it
     /// took", in the summary line as well as in the panel.
     pub paths: Paths,
@@ -271,6 +293,26 @@ pub struct Breach {
     /// Cleared by the tick that spends it, so one click stays one shot however
     /// many ticks the frame runs.
     pending_fire: bool,
+    /// Whether the loadout panel is open. **Closed on arrival**, which
+    /// [`crate::panel`] argues: the browser gate looks at a canvas with nothing
+    /// on it but the room.
+    panel_open: bool,
+    /// Which cell of that panel owns the pointer press, across frames. The one
+    /// piece of state an immediate-mode drag cannot do without.
+    ui: UiState,
+    /// Where the pointer was last seen, normalised to the surface.
+    ///
+    /// Kept because [`PointerUpdate::at`] is `Some` only on the frames it
+    /// moved, and a drag needs a position on the frame the button comes *up*.
+    pointer_at: Vec2,
+    /// Whether the primary button is down, and whether it came up since the
+    /// last frame was drawn. The second is consumed by the draw that reads it,
+    /// because a release is an edge and a panel that saw it twice would finish
+    /// the same drag twice.
+    pointer_down: bool,
+    pointer_released: bool,
+    /// What the last frame's loadout panel drew.
+    panel: PanelStats,
     /// The first-person view. **Presentation**: it never crosses the wire, and
     /// the only thing the simulation is told about it is its two angles.
     eye: Eye,
@@ -393,6 +435,36 @@ impl Breach {
     pub const fn page(&self) -> &PageStats {
         &self.page
     }
+
+    /// Whether the loadout panel is open, for this crate's own tests.
+    pub const fn panel_open(&self) -> bool {
+        self.panel_open
+    }
+
+    /// What the last frame's loadout panel drew, for this crate's own tests.
+    pub const fn panel(&self) -> &PanelStats {
+        &self.panel
+    }
+}
+
+/// The −1…1 [`PointerUpdate`] reports back to framebuffer pixels, Y down from
+/// the top-left.
+///
+/// The inverse of the normalisation the loop applied, and it is here rather
+/// than in the engine because the engine's own copy — the one
+/// [`crcbl::engine::TouchUpdate::pixels`] is written on — is private and has no
+/// pointer-side twin. `apps/shard/src/app.rs` has the same conversion, and the
+/// two of them are the measurement `docs/backlog.md`'s finding was waiting for:
+/// a second caller is what earns the inherent method, and adding it is an
+/// engine change this sample's adoption is worth more for not making.
+fn surface_pixels(at: Vec2, extent: (u32, u32)) -> Vec2 {
+    let width = extent.0.max(1) as f32;
+    let height = extent.1.max(1) as f32;
+    Vec2::new(
+        (at.x + 1.0) * 0.5 * width,
+        // The Y flip the loop applied, undone.
+        (1.0 - at.y) * 0.5 * height,
+    )
 }
 
 /// The loop breach runs in.
@@ -505,6 +577,12 @@ fn assemble<S: Shell + ?Sized>(
             pending_keys: Vec::new(),
             captured: false,
             pending_fire: false,
+            panel_open: false,
+            ui: UiState::new(),
+            pointer_at: Vec2::ZERO,
+            pointer_down: false,
+            pointer_released: false,
+            panel: PanelStats::default(),
             eye: Eye::default(),
             render_state: RenderState::default(),
             stats: Stats::default(),
@@ -580,6 +658,24 @@ impl HostedGame for Breach {
     }
 
     fn key_event(&mut self, key: KeyCode, pressed: bool) {
+        if key == PANEL_KEY {
+            if pressed {
+                self.panel_open = !self.panel_open;
+                // A panel torn down mid-press is what `UiState::clear` is for:
+                // without it the capture outlives the panel and the next drag
+                // starts already holding a cell.
+                self.ui.clear();
+                // Opening it gives the pointer back and closing it takes it
+                // again — see [`Breach::pointer_mode`] — so whatever the mouse
+                // was doing a frame ago, it is not doing it now. Dropping the
+                // button state with the capture is what stops a press made on
+                // one side of the toggle finishing on the other.
+                self.captured = false;
+                self.pointer_down = false;
+                self.pointer_released = false;
+            }
+            return;
+        }
         // Queued rather than fed straight in: the map's edges belong to the
         // tick, not to the frame. See [`Breach::pending_keys`].
         self.pending_keys.push((key, pressed));
@@ -614,6 +710,31 @@ impl HostedGame for Breach {
     /// is a shot. So the frame that grabs the pointer does not also fire, and
     /// every click after it does.
     fn pointer_event(&mut self, pointer: PointerUpdate) {
+        // Kept whatever the mode is, because the panel hit-tests against the
+        // last place the pointer was seen and a frame that did not move carries
+        // no position at all. The conversion to pixels happens in
+        // [`HostedGame::draw`], where the extent is known — it is the same
+        // arithmetic `crcbl::engine::TouchUpdate::pixels` does on the finger's
+        // side of the same struct pair, and `docs/backlog.md` carries that
+        // `PointerUpdate` has no twin of it.
+        if let Some(at) = pointer.at {
+            self.pointer_at = at;
+        }
+        // **While the panel is open the pointer belongs to it**: the view does
+        // not turn and the trigger is not pulled, because a click on a rig is a
+        // click on a rig. [`Breach::pointer_mode`] is what asked for the cursor
+        // back, and [`Breach::key_event`] is what dropped the capture the
+        // moment the panel opened.
+        if self.panel_open {
+            if pointer.pressed {
+                self.pointer_down = true;
+            }
+            if pointer.released {
+                self.pointer_down = false;
+                self.pointer_released = true;
+            }
+            return;
+        }
         // Only a frame that carries a motion can say whether the pointer is
         // held, and it says it by whether a position came with it. A frame with
         // neither — a click from a mouse that has not moved — says nothing, and
@@ -635,12 +756,15 @@ impl HostedGame for Breach {
     }
 
     /// [`PointerMode::Locked`] while the range is being shot, free while the
-    /// pause panel is up.
+    /// pause panel or the loadout is up.
     ///
     /// A player who cannot reach their own cursor cannot leave, and the pause
-    /// panel is the one place this demo has to be left from.
+    /// panel is the one place this demo has to be left from. The loadout is the
+    /// second: a locked pointer reports no position at all, so a rig whose
+    /// cells are dragged by one needs the cursor back to be dragged with. See
+    /// [`crate::panel`].
     fn pointer_mode(&self) -> PointerMode {
-        if self.paused {
+        if self.paused || self.panel_open {
             PointerMode::Free
         } else {
             PointerMode::Locked
@@ -717,6 +841,32 @@ impl HostedGame for Breach {
         gpu.set_camera(self.eye.camera(eye));
 
         self.page = crate::page::draw(draw_list, gpu.atlas(), gpu.extent(), &self.render_state);
+
+        // **Drawn last, so it is in front of the readout**, and drawn at all
+        // only while it is open — [`crate::panel`] is where that matters.
+        if self.panel_open {
+            let extent = gpu.extent();
+            let grid = self.game.loadout();
+            self.panel = crate::panel::draw(
+                draw_list,
+                gpu.atlas(),
+                extent,
+                &grid,
+                &mut self.ui,
+                PointerInput {
+                    pos: surface_pixels(self.pointer_at, extent),
+                    down: self.pointer_down,
+                    // Taken rather than read: a release is an edge, and a panel
+                    // handed it twice would finish one drag twice.
+                    released: std::mem::take(&mut self.pointer_released),
+                },
+            );
+            if let Some((from, to)) = self.panel.dragged {
+                self.game.drag(from, to);
+            }
+        } else {
+            self.panel = PanelStats::default();
+        }
     }
 
     /// **Breach's two modules, and no third.**
@@ -742,6 +892,7 @@ impl HostedGame for Breach {
             ],
             shots: self.stats.shots,
             hits: self.stats.hits,
+            loadout: self.game.loadout(),
             paths: self.paths,
             commands: self.page.commands,
         }
@@ -750,7 +901,7 @@ impl HostedGame for Breach {
     fn log_summary(summary: &Summary) {
         crcbl::log::info!(
             "breach: {} frames, {} ticks on the {} map, feet at {:.2} {:.2} {:.2}, \
-             {} shot(s) and {} hit(s), {} overlay commands, \
+             {} shot(s) and {} hit(s), carrying {}, {} overlay commands, \
              geometry {:?}, binding {:?}, lighting {:?} ({:?})",
             summary.run.frames,
             summary.run.ticks,
@@ -760,6 +911,7 @@ impl HostedGame for Breach {
             summary.feet[2],
             summary.shots,
             summary.hits,
+            loadout::summary(summary.loadout.len(), loadout::weight_g(&summary.loadout)),
             summary.commands,
             summary.paths.geometry,
             summary.paths.binding,
@@ -837,8 +989,12 @@ impl<S: Shell + ?Sized> PendingLoop<S> {
 mod tests {
     use super::*;
     use crcbl::args::Common;
+    use crcbl::core::input::PointerButton;
     use crcbl::engine::{CONSOLE_KEY, ExitReason, PAUSE_KEY};
-    use crcbl::shell::{HeadlessShell, ShellBackend as Backend};
+    use crcbl::inventory::Cell;
+    use crcbl::shell::{
+        ButtonState as PointerState, HeadlessShell, PhysicalPoint, ShellBackend as Backend,
+    };
 
     fn scripted(options: &Options) -> Loop<HeadlessShell> {
         with_shell(Box::new(HeadlessShell::new()), options).expect("headless always starts")
@@ -1328,6 +1484,207 @@ mod tests {
         assert!(
             drawn.iter().any(|t| t == "ACCURACY"),
             "the overlay is drawn behind the panel: {drawn:?}",
+        );
+        engine.finish(ExitReason::FrameBudget).expect("teardown");
+    }
+
+    /// Where the pointer is, and what the button is doing.
+    fn pointer(engine: &mut Loop<HeadlessShell>, at: Vec2, button: Option<PointerState>) {
+        let window = engine.window();
+        let point = PhysicalPoint {
+            x: f64::from(at.x),
+            y: f64::from(at.y),
+        };
+        engine
+            .shell_mut()
+            .move_pointer(window, point, (0.0, 0.0))
+            .expect("the window is live");
+        if let Some(state) = button {
+            engine
+                .shell_mut()
+                .button(window, PointerButton::Left, state, Some(point))
+                .expect("the window is live");
+        }
+        engine.frame().expect("a frame");
+    }
+
+    /// The middle of `cell`, in framebuffer pixels.
+    fn cell_centre(engine: &Loop<HeadlessShell>, cell: Cell) -> Vec2 {
+        let (at, to) = crate::panel::cell_bounds(engine.gpu().extent(), cell);
+        (at + to) * 0.5
+    }
+
+    /// **The loadout panel is closed until `I` opens it, it opens on a paused
+    /// frame, and while it is open the pointer is the player's again.**
+    ///
+    /// Three claims. The closed half is what every check
+    /// `web/tools/browser-e2e.mjs` makes of this demo's canvas rests on. The
+    /// paused half says the panel is presentation — a player who has stopped
+    /// the demo can still look at what they are carrying. The pointer half is
+    /// this sample's own: breach holds the pointer while it is being played, and
+    /// a rig whose cells are dragged by a pointer that reports no position
+    /// could not be dragged at all.
+    #[test]
+    fn the_loadout_panel_is_closed_until_it_is_asked_for() {
+        let mut engine = scripted(&headless(200));
+        let window = engine.window();
+        frames(&mut engine, 4);
+        assert!(!engine.game().panel_open(), "the panel opened itself");
+        assert!(
+            !ui_text(&engine).iter().any(|t| t == "LOADOUT"),
+            "a closed panel drew itself: {:?}",
+            ui_text(&engine),
+        );
+        assert_eq!(engine.game().panel().commands, 0);
+        assert_eq!(
+            engine.game().pointer_mode(),
+            PointerMode::Locked,
+            "the range is being shot with the cursor loose",
+        );
+
+        // **Opened on a running frame**, so the pointer claim below is the
+        // panel's own rather than the pause's: a paused demo frees the cursor
+        // anyway, and a check made there would pass on a build whose panel did
+        // nothing about it.
+        engine
+            .shell_mut()
+            .key_press(window, PANEL_KEY)
+            .expect("the window is live");
+        frames(&mut engine, 2);
+        assert!(engine.game().panel_open(), "I did not open the panel");
+        assert!(
+            !engine.is_paused(),
+            "the demo stopped when the panel opened"
+        );
+        assert!(
+            ui_text(&engine).iter().any(|t| t == "LOADOUT"),
+            "an open panel drew nothing: {:?}",
+            ui_text(&engine),
+        );
+        assert!(engine.game().panel().commands > 0);
+        assert_eq!(
+            engine.game().pointer_mode(),
+            PointerMode::Free,
+            "the panel is open on a running frame and the cursor is still held",
+        );
+
+        // …and a second press closes it, which is what makes it a switch — and
+        // the pointer goes back to the pistol with it.
+        engine
+            .shell_mut()
+            .key_release(window, PANEL_KEY)
+            .expect("the window is live");
+        engine
+            .shell_mut()
+            .key_press(window, PANEL_KEY)
+            .expect("the window is live");
+        frames(&mut engine, 2);
+        assert!(!engine.game().panel_open(), "it would not close again");
+        assert_eq!(
+            engine.game().pointer_mode(),
+            PointerMode::Locked,
+            "the closed panel kept the cursor",
+        );
+
+        // And it opens on a **paused** frame, which is what says it is
+        // presentation: a player who has stopped the demo can still look at
+        // what they are carrying, and looking runs no tick.
+        engine
+            .shell_mut()
+            .key_release(window, PANEL_KEY)
+            .expect("the window is live");
+        engine
+            .shell_mut()
+            .key_press(window, PAUSE_KEY)
+            .expect("the window is live");
+        frames(&mut engine, 2);
+        let stalled = engine.game().game().ticks_run();
+        engine
+            .shell_mut()
+            .key_press(window, PANEL_KEY)
+            .expect("the window is live");
+        frames(&mut engine, 2);
+        assert!(engine.game().panel_open(), "I did not reach a paused frame");
+        assert_eq!(
+            engine.game().game().ticks_run(),
+            stalled,
+            "opening the panel ran a tick, so it is not presentation",
+        );
+        engine.finish(ExitReason::FrameBudget).expect("teardown");
+    }
+
+    /// **A pointer drag moves a stack between two cells of the panel, and the
+    /// same clicks do not fire the pistol.**
+    ///
+    /// The claim `docs/plan/34-inventory.md`'s part 1 is about, made with the
+    /// press capture `crcbl-ui` already has and made a second time — the first
+    /// is `apps/shard`'s. The whole path: shell button → `PointerUpdate` →
+    /// [`surface_pixels`] → `crate::panel`'s hit test → `Game::drag` →
+    /// `Grid::move_within`.
+    ///
+    /// Two controls. The cell the stack left must be empty, because a panel
+    /// that drew the item under the pointer without moving the placement would
+    /// pass "it is there now" and fail "it is not there any more". And the shot
+    /// counter must not move, because breach's primary button is a trigger
+    /// everywhere else — a click on a rig that also fired would be this
+    /// sample's own trap rather than the kit's.
+    ///
+    /// Driven on the practice map because it fires nothing by itself, so every
+    /// shot on the counter would be this test's.
+    #[test]
+    fn a_pointer_drag_moves_a_stack_between_two_cells_of_the_panel() {
+        let mut engine = scripted(&on(crate::map::MapChoice::Practice, 400));
+        let window = engine.window();
+        frames(&mut engine, 4);
+        let shots = engine.game().game().stats().shots;
+
+        engine
+            .shell_mut()
+            .key_press(window, PANEL_KEY)
+            .expect("the window is live");
+        frames(&mut engine, 2);
+        assert!(engine.game().panel_open());
+
+        let grid = engine.game().game().loadout();
+        let (slot, placement) = grid.slots().next().expect("the starting kit");
+        let from = placement.at();
+        // The bottom row, which the kit's first-fit leaves free — the rig is
+        // wider than the kit is tall.
+        let to = Cell::new(from.x, loadout::GRID_H - 1);
+        assert_ne!(from, to, "the stack already sits on the bottom row");
+
+        let took_hold = cell_centre(&engine, from);
+        let let_go = cell_centre(&engine, to);
+        pointer(&mut engine, took_hold, None);
+        pointer(&mut engine, took_hold, Some(PointerState::Pressed));
+        pointer(&mut engine, let_go, None);
+        pointer(&mut engine, let_go, Some(PointerState::Released));
+
+        let moved = engine.game().game().loadout();
+        assert_eq!(
+            moved.slot(slot).expect("the stack is still held").at(),
+            to,
+            "the drag left the stack at {from:?}",
+        );
+        assert_eq!(
+            moved.at(from),
+            None,
+            "the stack is in both cells, which is the shape of a duplicate",
+        );
+        assert_eq!(
+            moved.len(),
+            grid.len(),
+            "the drag changed what the rig holds"
+        );
+        assert_eq!(
+            moved.slot(slot).expect("the stack").stack(),
+            placement.stack(),
+            "the drag replaced the stack rather than moving it",
+        );
+        assert_eq!(
+            engine.game().game().stats().shots,
+            shots,
+            "a click on the rig pulled the trigger",
         );
         engine.finish(ExitReason::FrameBudget).expect("teardown");
     }

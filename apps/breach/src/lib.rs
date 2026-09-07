@@ -100,10 +100,25 @@
 //!
 //! **Milestone 0 is two maps and nothing else.** No weapon but the one hitscan
 //! pistol — no ballistics, no penetration, no armour, no ADS, no recoil, no
-//! reload and no viewmodel; no inventory, no rounds, no economy and no
-//! networking beyond the in-memory loopback every sample has. Those are
-//! milestones 1 onward, and `docs/backlog.md` carries the list with what each
-//! would take.
+//! reload and no viewmodel; no rounds, no economy and no networking beyond the
+//! in-memory loopback every sample has. Those are milestones 1 onward, and
+//! `docs/backlog.md` carries the list with what each would take.
+//!
+//! # The one thing off that list that is here: what the player carries
+//!
+//! The loadout is a [`crcbl::inventory`] grid — `docs/plan/34-inventory.md`'s
+//! part 2, of which this sample is the **second** consumer after `apps/shard`,
+//! and a kit with one consumer is that consumer's shape wearing a kit's name.
+//! [`loadout`] is the content — the item table, the size of the rig, what a
+//! player spawns with — and [`panel`] is the `I` panel it is dragged around in.
+//!
+//! **The grid is the loadout and not a picture of one**: the trigger is gated
+//! on the rig holding something tagged as a weapon, so a rig with nothing in it
+//! fires nothing. Nothing else about the sample moved — the round loop, the
+//! bots and the wire behave exactly as they did — because the point of a second
+//! consumer is to prove the kit, not to change the game around it. Not one line
+//! of the engine changed on this sample's behalf; what breach wanted and did
+//! not get is in `docs/backlog.md` as topic-34 findings.
 //!
 //! Two things are absent from the picture rather than merely from the feature
 //! list, and both are deliberate: **the player is invisible**, because a
@@ -114,14 +129,17 @@
 //! than by a sun**, because they have ceilings — [`map::house_light`] says so
 //! where the light is built.
 //!
-//! # Rule 11 does not apply
+//! # Rule 11 is owed by exactly one thing
 //!
 //! No `.crpix` art. The subject of this sample is a 3D room seen from inside
 //! it, and its overlay is a crosshair and the readout a reviewer checks the
 //! picture against — pixel art in front of it would be showing the wrong
 //! system. `docs/plan/sample/11-breach.md` does ask for it, and names what for:
 //! the grid inventory's item icons, the buy menu, the killfeed and the
-//! scoreboard. Milestone 0 has none of those.
+//! scoreboard. Three of those four do not exist here. The fourth now does, and
+//! it is drawn without icons: a cell is the item's letter on its colour, which
+//! is what a [`crcbl::inventory::ItemDef`] carries until `crcbl icon bake` is a
+//! verb. That is where the obligation sits.
 //!
 //! # One library, two front ends
 //!
@@ -136,9 +154,11 @@ pub mod bots;
 pub mod camera;
 pub mod game;
 mod gpu;
+pub mod loadout;
 pub mod map;
 pub mod menu;
 pub mod page;
+pub mod panel;
 
 #[cfg(target_arch = "wasm32")]
 pub mod web;
@@ -154,3 +174,4 @@ pub use gpu::{Gpu, Paths};
 pub use map::MapChoice;
 pub use menu::{MenuKind, Menus};
 pub use page::PageStats;
+pub use panel::PanelStats;
