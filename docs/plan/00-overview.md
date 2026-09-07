@@ -152,6 +152,7 @@ Cross-cutting topic docs (identity, no ordering implied):
 | 51    | [51-volumetrics.md](51-volumetrics.md)             | Volumetrics: height fog and the froxel column                             |
 | 52    | [52-debug-console.md](52-debug-console.md)         | The debug console: variables and commands declared beside the code        |
 | 53    | [53-transparency.md](53-transparency.md)           | Blended transparency: the sorted pass, its keys, and what it blocks       |
+| 54    | [54-android.md](54-android.md)                     | Android: the shell backend the platform is missing, and its device floor  |
 
 Sequencing is the [ROADMAP](ROADMAP.md)'s job: phases P0–P4A build the full
 engine base (window → render → sim → physics slice → UI slice → audio) before
