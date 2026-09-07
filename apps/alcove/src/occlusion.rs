@@ -20,10 +20,11 @@
 //!
 //! # Ranges are the variable's, not this sample's
 //!
-//! Every nudge below clamps against [`ConVar::kind`] rather than against a
-//! bound written here. `crcbl_render::ssao` is where the radius's and the
-//! intensity's limits are argued, and a second copy of them in a sample is a
-//! copy that goes stale the day one moves — which is what
+//! Every nudge below clamps against the range the variable itself declares —
+//! [`Knob::set_float`] — rather than against a bound written here.
+//! `crcbl_render::ssao` is where the radius's and the intensity's limits are
+//! argued, and a second copy of them in a sample is a copy that goes stale the
+//! day one moves — which is what
 //! `every_knob_this_sample_drives_is_declared_by_the_engine` and
 //! `a_nudge_stops_at_the_variables_own_bound` are for.
 //!
@@ -33,7 +34,8 @@
 //! frame for the panel and the summary; the values live in the console's cells
 //! and in nothing else.
 
-use crcbl::console::{ConVar, Kind, Value};
+use crcbl::console::{ConVar, Value};
+use crcbl::knob::Knob;
 use crcbl::render::DebugView;
 
 /// The gather the near side of the seam runs.
@@ -78,7 +80,11 @@ const RADIUS_STEP: f32 = 1.25;
 /// How far one press moves the intensity, for [`RADIUS_STEP`]'s reason.
 const INTENSITY_STEP: f32 = 1.15;
 
-/// The variable `name` names, out of `crcbl-render`'s own console table.
+/// The knob `name` names, out of `crcbl-render`'s own console table.
+///
+/// [`crcbl::knob`] is where the driving lives — find-or-panic, the declared name
+/// set, the clamp into the declared range, the reset to the declared default —
+/// and this is the one line that says which table those names are in.
 ///
 /// # Panics
 ///
@@ -87,69 +93,43 @@ const INTENSITY_STEP: f32 = 1.15;
 /// `every_knob_this_sample_drives_is_declared_by_the_engine` is what catches it
 /// with no GPU and no window.
 #[must_use]
+pub fn knob(name: &str) -> Knob {
+    Knob::named(crcbl::render::console_table(), name)
+}
+
+/// The variable `name` names, for the readings the panel and the page take off
+/// it.
+#[must_use]
 pub fn var(name: &str) -> &'static ConVar {
-    crcbl::render::console_table()
-        .vars()
-        .iter()
-        .copied()
-        .find(|var| var.name() == name)
-        .unwrap_or_else(|| panic!("crcbl-render declares no `{name}` variable"))
+    knob(name).var()
 }
 
-/// Writes `value` into `name`, and says so in the log if the console refused.
-///
-/// **Refusal is reported rather than dropped.** Every caller below clamps into
-/// the variable's own [`Kind`] first, so a refusal here means the two disagree —
-/// which is worth a line rather than a knob that silently did not move.
-fn set(name: &str, value: &Value) {
-    if let Err(fault) = var(name).set(value) {
-        crcbl::log::error!("alcove: the console refused {name} = {value}: {fault}");
-    }
-}
-
-/// The names a [`Kind::Enum`] variable accepts, in the order it declares them.
+/// The names a [`Kind::Enum`](crcbl::console::Kind::Enum) variable accepts, in
+/// the order it declares them.
 ///
 /// Empty for any other kind, which no caller here has: [`TECHNIQUE`] is the one
 /// enum this sample drives and `the_technique_row_cycles_the_engines_own_set` is
 /// what holds that.
 #[must_use]
 pub fn names(name: &str) -> &'static [&'static str] {
-    match var(name).kind() {
-        Kind::Enum(names) => names,
-        _ => &[],
-    }
+    knob(name).names()
 }
 
 /// Moves an enum variable on to the next name it declares, wrapping.
 pub fn cycle(name: &str) {
-    let names = names(name);
-    if names.is_empty() {
-        return;
-    }
-    let current = var(name).get_enum();
-    let at = names
-        .iter()
-        .position(|entry| *entry == current)
-        .unwrap_or(0);
-    set(name, &Value::Enum(names[(at + 1) % names.len()]));
+    knob(name).cycle();
 }
 
 /// The inclusive float range `name` accepts, or `None` for another kind.
 fn float_range(name: &str) -> Option<(f32, f32)> {
-    match var(name).kind() {
-        Kind::Float { min, max } => Some((min, max)),
-        _ => None,
-    }
+    knob(name).range()
 }
 
 /// Multiplies a float variable by `factor` — or divides by it — and clamps the
 /// result into the variable's own range.
 fn scale(name: &str, factor: f32) {
-    let Some((min, max)) = float_range(name) else {
-        return;
-    };
-    let moved = (var(name).get_f32() * factor).clamp(min, max);
-    set(name, &Value::Float(moved));
+    let knob = knob(name);
+    knob.set_float(knob.var().get_f32() * factor);
 }
 
 /// Widens or narrows the occlusion radius by one press.
@@ -172,7 +152,7 @@ pub fn nudge_intensity(up: bool) {
 /// Puts the seam at [`SEAM_CENTRE`], or takes it away if it is already up.
 pub fn toggle_seam() {
     let at = if seam().is_some() { 0.0 } else { SEAM_CENTRE };
-    set(SPLIT, &Value::Float(at));
+    knob(SPLIT).set_float(at);
 }
 
 /// Moves the seam one step left or right, within the variable's own range.
@@ -183,11 +163,8 @@ pub fn nudge_seam(right: bool) {
     let Some(at) = seam() else {
         return;
     };
-    let Some((min, max)) = float_range(SPLIT) else {
-        return;
-    };
     let step = if right { SEAM_STEP } else { -SEAM_STEP };
-    set(SPLIT, &Value::Float((at + step).clamp(min, max)));
+    knob(SPLIT).set_float(at + step);
 }
 
 /// Puts the seam at `at`, the same fraction of the frame's width the variable
@@ -203,10 +180,7 @@ pub fn nudge_seam(right: bool) {
 /// exists: `,` and `.` walk the seam a step at a time, and a page — a phone
 /// especially — has no key to hold.
 pub fn set_seam(at: f32) -> Option<f32> {
-    let Some((min, max)) = float_range(SPLIT) else {
-        return seam();
-    };
-    set(SPLIT, &Value::Float(at.clamp(min, max)));
+    knob(SPLIT).set_float(at);
     seam()
 }
 
@@ -245,14 +219,12 @@ pub fn set_dial(name: &str, at: f32) -> f32 {
     let Some((min, max)) = dial_range(name) else {
         return var(name).get_f32();
     };
-    let moved = (min * (max / min).powf(at.clamp(0.0, 1.0))).clamp(min, max);
-    set(name, &Value::Float(moved));
-    var(name).get_f32()
+    knob(name).set_float(min * (max / min).powf(at.clamp(0.0, 1.0)))
 }
 
 /// Flips the bent-direction switch.
 pub fn toggle_bent_normals() {
-    set(BENT_NORMALS, &Value::Bool(!var(BENT_NORMALS).get_bool()));
+    knob(BENT_NORMALS).set(&Value::Bool(!var(BENT_NORMALS).get_bool()));
 }
 
 /// Where the seam stands, or `None` for a frame comparing nothing.
@@ -274,11 +246,7 @@ pub fn seam() -> Option<f32> {
 /// binary does on its way out so a console left mid-experiment does not reach
 /// the next process through a settings file.
 pub fn reset() {
-    for name in KNOBS {
-        let var = var(name);
-        let default = var.default().clone();
-        set(name, &default);
-    }
+    crcbl::knob::reset_all(crcbl::render::console_table(), &KNOBS);
 }
 
 /// Whether the frame draws the occlusion channel as grey instead of shading.
@@ -437,6 +405,7 @@ impl crcbl::ui::DebugModule for Knobs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crcbl::console::Kind;
 
     /// Serialises every check that moves a knob, and puts them all back.
     ///

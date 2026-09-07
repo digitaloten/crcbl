@@ -1342,6 +1342,11 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- `crcbl::knob::Knob` drives a console variable by name — find-or-panic against
+  a `Table`, the declared name set, `cycle`, a float clamped into the declared
+  range, `reset` — with `reset_all` beside it. `apps/alcove/src/occlusion.rs`
+  and `apps/sundial/src/filter.rs` are written over it and keep their own knob
+  names, per-sample steps and `DebugModule` rows.
 - `crcbl_ui::readout::ReadoutPanel` is the readout panel
   `apps/{breach,puppet,shard,sparks,towers}` each drew for themselves — the
   inset box, the label/right-aligned-reading row loop and the centred hint. Each

@@ -30,7 +30,8 @@
 //! and in nothing else. The one thing this fixture does keep is its clock, and
 //! that lives in [`crate::sun::Clock`] because a tick is not a setting.
 
-use crcbl::console::{ConVar, Kind, Value};
+use crcbl::console::ConVar;
+use crcbl::knob::Knob;
 use crcbl::render::shadow::{self, Filter};
 
 /// Which filter the near side of the seam runs.
@@ -131,7 +132,11 @@ impl Step {
     }
 }
 
-/// The variable `name` names, out of `crcbl-render`'s own console table.
+/// The knob `name` names, out of `crcbl-render`'s own console table.
+///
+/// [`crcbl::knob`] is where the driving lives — find-or-panic, the declared name
+/// set, the clamp into the declared range, the reset to the declared default —
+/// and this is the one line that says which table those names are in.
 ///
 /// # Panics
 ///
@@ -140,65 +145,42 @@ impl Step {
 /// `every_knob_this_sample_drives_is_declared_by_the_engine` is what catches it
 /// with no GPU and no window.
 #[must_use]
+pub fn knob(name: &str) -> Knob {
+    Knob::named(crcbl::render::console_table(), name)
+}
+
+/// The variable `name` names, for the readings the panel and the page take off
+/// it.
+#[must_use]
 pub fn var(name: &str) -> &'static ConVar {
-    crcbl::render::console_table()
-        .vars()
-        .iter()
-        .copied()
-        .find(|var| var.name() == name)
-        .unwrap_or_else(|| panic!("crcbl-render declares no `{name}` variable"))
+    knob(name).var()
 }
 
-/// Writes `value` into `name`, and says so in the log if the console refused.
-///
-/// **Refusal is reported rather than dropped.** Every caller below clamps into
-/// the variable's own [`Kind`] first, so a refusal here means the two disagree —
-/// which is worth a line rather than a knob that silently did not move.
-fn set(name: &str, value: &Value) {
-    if let Err(fault) = var(name).set(value) {
-        crcbl::log::error!("sundial: the console refused {name} = {value}: {fault}");
-    }
-}
-
-/// The names a [`Kind::Enum`] variable accepts, in the order it declares them.
+/// The names a [`Kind::Enum`](crcbl::console::Kind::Enum) variable accepts, in
+/// the order it declares them.
 ///
 /// Empty for any other kind, which no caller here has: [`FILTER`] is the one
 /// enum this sample drives and `the_filter_row_cycles_the_engines_own_set` is
 /// what holds that.
 #[must_use]
 pub fn names(name: &str) -> &'static [&'static str] {
-    match var(name).kind() {
-        Kind::Enum(names) => names,
-        _ => &[],
-    }
+    knob(name).names()
 }
 
 /// Moves an enum variable on to the next name it declares, wrapping.
 pub fn cycle(name: &str) {
-    let names = names(name);
-    if names.is_empty() {
-        return;
-    }
-    let current = var(name).get_enum();
-    let at = names
-        .iter()
-        .position(|entry| *entry == current)
-        .unwrap_or(0);
-    set(name, &Value::Enum(names[(at + 1) % names.len()]));
+    knob(name).cycle();
 }
 
 /// The inclusive float range `name` accepts, or `None` for another kind.
 fn float_range(name: &str) -> Option<(f32, f32)> {
-    match var(name).kind() {
-        Kind::Float { min, max } => Some((min, max)),
-        _ => None,
-    }
+    knob(name).range()
 }
 
 /// Puts the seam at [`SEAM_CENTRE`], or takes it away if it is already up.
 pub fn toggle_seam() {
     let at = if seam().is_some() { 0.0 } else { SEAM_CENTRE };
-    set(SPLIT, &Value::Float(at));
+    knob(SPLIT).set_float(at);
 }
 
 /// Moves the seam one step left or right, within the variable's own range.
@@ -209,11 +191,8 @@ pub fn nudge_seam(right: bool) {
     let Some(at) = seam() else {
         return;
     };
-    let Some((min, max)) = float_range(SPLIT) else {
-        return;
-    };
     let step = if right { SEAM_STEP } else { -SEAM_STEP };
-    set(SPLIT, &Value::Float((at + step).clamp(min, max)));
+    knob(SPLIT).set_float(at + step);
 }
 
 /// Moves one bias count a [`Step`] up or down, inside its own range.
@@ -239,10 +218,7 @@ pub fn nudge_bias(name: &str, up: bool, step: Step) {
 /// would otherwise leave the count where it was and read as a control wired to
 /// nothing. The keys and the page both come through here.
 pub fn set_bias(name: &str, texels: f32) -> f32 {
-    if let Some((min, max)) = float_range(name) {
-        set(name, &Value::Float(texels.clamp(min, max)));
-    }
-    var(name).get_f32()
+    knob(name).set_float(texels)
 }
 
 /// The top of one bias count's declared range, which is what a page's slider
@@ -261,10 +237,7 @@ pub fn ceiling(name: &str) -> f32 {
 /// number from outside it moves the seam to the nearest edge rather than being
 /// refused by the console.
 pub fn set_seam(at: f32) -> Option<f32> {
-    let Some((min, max)) = float_range(SPLIT) else {
-        return seam();
-    };
-    set(SPLIT, &Value::Float(at.clamp(min, max)));
+    knob(SPLIT).set_float(at);
     seam()
 }
 
@@ -287,11 +260,7 @@ pub fn seam() -> Option<f32> {
 /// does on its way out so a console left mid-experiment does not reach the next
 /// process through a settings file.
 pub fn reset() {
-    for name in KNOBS {
-        let var = var(name);
-        let default = var.default().clone();
-        set(name, &default);
-    }
+    crcbl::knob::reset_all(crcbl::render::console_table(), &KNOBS);
 }
 
 /// What every knob reads right now.
@@ -466,10 +435,8 @@ pub fn filter_from_name(name: &str) -> Option<&'static str> {
 #[must_use]
 pub fn seam_from_name(name: &str) -> Option<f32> {
     let at: f32 = name.parse().ok()?;
-    match var(SPLIT).kind() {
-        Kind::Float { min, max } => (at >= min && at <= max).then_some(at),
-        _ => None,
-    }
+    let (min, max) = float_range(SPLIT)?;
+    (at >= min && at <= max).then_some(at)
 }
 
 /// Serialises every check that moves a knob, and puts them all back.
@@ -513,6 +480,7 @@ pub(crate) fn held() -> Held {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crcbl::console::{Kind, Value};
 
     /// **Every name this sample drives is one the engine declares**, and each is
     /// the kind the code above assumes.
@@ -600,7 +568,7 @@ mod tests {
     fn every_declared_name_is_a_filter_that_labels_itself_the_same_way() {
         let _held = held();
         for name in names(FILTER) {
-            set(FILTER, &Value::Enum(name));
+            knob(FILTER).set(&Value::Enum(name));
             let read = Knobs::read();
             assert_eq!(
                 read.filter.label(),

@@ -5081,20 +5081,6 @@ the same kind of hoist. Moving the widget ids down into `crcbl-ui` was
 considered and declined: their doc comments link `PAUSE_KEY` and
 `MenuAction::from_id`, which would become unresolvable and red `cargo doc`.
 
-### `occlusion.rs` and `filter.rs` are the same console-variable driver (2026-09-07)
-
-`apps/alcove/src/occlusion.rs` and `apps/sundial/src/filter.rs` share nine
-identical functions — `var`, `names`, `cycle`, `toggle_seam`, `nudge_seam`,
-`set_seam`, `reset`, `set`, `float_range` — every one a fact about
-`crcbl::render::console_table()` and `ConVar` (find-or-panic, enum names, cycle,
-clamp to the declared float range, restore defaults). `quarry` and `lantern`
-drive console variables too. **What it would take:** a `Knob(&'static ConVar)`
-with `named`, `cycle`, `set_float`, `range`, `reset` and a `reset_all` beside
-`console_table()` (or in `crcbl-console`); the knob names, the `DebugModule`
-rows and the per-sample steps stay. Sundial's `KNOB_SWITCH`/`Held` guard exists
-because console rows race under `cargo test` and must stay local. The alcove and
-sundial browser rows re-run.
-
 ### `installKnobs` is one knob-panel driver written twice (2026-09-07)
 
 `web/demos/alcove/main.js` and `web/demos/sundial/main.js` carry the same
@@ -5178,6 +5164,25 @@ browser rows for shard, sparks and towers are covered by construction rather
 than by a run; breach's and puppet's rows were run by the parent after the
 hoist, and alcove's and sundial's because their knob wiring changed. Stated as a
 gap, not a worry.
+
+### `crcbl::knob::Knob` lives in the umbrella, and why not lower (2026-09-07)
+
+The 2026-09-07 seam review proposed the knob beside
+`crcbl::render::console_table()` or in `crcbl-console`. Neither works.
+`crcbl-console`'s Cargo.toml charter is "**No dependencies at all**, on purpose"
+(plan decision 1), so it cannot log a refused write — and reporting the refusal
+rather than dropping it is the one behaviour both samples' `set` had.
+`crcbl-render` is wrong the other way: the knowledge is about `ConVar` and
+`Table`, not rendering, and there are three console tables (`crcbl`,
+`crcbl_core`, `crcbl_render`), so `Knob::named` takes the table as an argument
+and a knob in render could not name the other two. It landed in
+`crates/crcbl/src/knob.rs`, the same place the pause menu and `PageBundle` went
+for the same kind of reason.
+
+Its tests are `crates/crcbl/tests/knob.rs` and not a `mod tests`:
+`crcbl_console::guard::declared_names` holds `crcbl::console_table` to every
+`convar!` under `crates/crcbl/src`, so fixture variables declared beside the
+code would be ones the engine's own table is then required to publish.
 
 ### Smaller seam findings, stated but not worked up (2026-09-07)
 

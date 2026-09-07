@@ -343,6 +343,8 @@ pub mod debug_view;
 
 pub mod engine;
 
+pub mod knob;
+
 pub mod perf;
 
 pub mod session;
