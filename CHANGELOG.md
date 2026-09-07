@@ -77,6 +77,28 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **`apps/towers` is built, and milestone 1's first slice is a playable solo
+  loop.** The flagship sample's first cut: a hardcoded greybox map whose creeps
+  walk `map::PATH`'s waypoints as kinematic spheres, one single-target tower
+  that acquires with `overlap_sphere` and shoots a bolt swept with
+  `sweep_sphere`, a kill that pays gold, a leak that costs a shared life, and a
+  `const` table of three waves that is won when it runs out and lost at zero
+  lives. **Solo is already the co-op game**: `PlaceTower`, `StartWave` and
+  `Restart` are two-byte commands the client seals and the server validates over
+  `InMemoryTransport` — is the plot free, is there gold, is a wave already
+  running — and a refusal is a `refused` row on the debug panel rather than
+  something the client swallows. The exit is a `set_trigger` volume, which is
+  the pair of behaviours that flag exists for: sweeps and rays pass through it
+  and only `overlap_sphere` reports it, so `creep::has_reached_the_exit` asks
+  the physics world rather than measuring a distance. The bolt is where CCD
+  earns its place —
+  `a_bolt_hits_a_creep_that_a_test_at_either_end_of_the_tick_would_miss` takes a
+  static overlap at both ends of the tick beside the sweep, and neither finds
+  the creep the sweep hit, against a creep that moved earlier in the same tick.
+  Not one line of the engine changed on the sample's behalf. It is not on the
+  demo site yet, there is no `.crpix` art and no audio, and
+  `docs/plan/sample/07-towers.md` carries the slice table for what the rest of
+  milestone 1 costs.
 - **`apps/breach` adopts the grid-inventory kit, as its second consumer.** What
   the player carries is a `crcbl-inventory` `Grid` on the stage rather than a
   field beside it: `src/loadout.rs` is the content — `data/items.ron`'s three

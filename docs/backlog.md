@@ -4409,19 +4409,20 @@ the file rather than of the run that wrote it.
 None of the remaining three is blocked on a reader or on a writer. What each
 still needs is its own schema.
 
-### towers and arena do not exist, and exit criteria all over the plan name them (2026-08-27)
+### arena and mirrors do not exist, and towers' co-op exit criteria still cannot be met (2026-09-07)
 
-**Not built.** Every `docs/plan/sample/` document has a matching `apps/`
-directory but three: towers, arena and mirrors. `docs/backlog.md` already
-records towers and arena as blocked on `apps/editor`.
+**Two samples with no crate, down from three.** `apps/towers` was built
+2026-09-07 (milestone 1's solo slice); `arena` and `mirrors` still have a
+`docs/plan/sample/` document and no `apps/` directory.
 
-**Why it belongs here too:** exit criteria in `13-audio.md` ("towers plays
-creep/tower audio spatially in co-op") and `14-persistence.md` ("towers: save
-mid-wave, quit, resume — solo and dedicated-server co-op") are stated as MVP
-gates and cannot be met, so those documents' MVP bars are unreachable rather
-than merely unmet. Anyone reading them for "are we done" needs that stated.
-
-## Audio (`docs/plan/13-audio.md`)
+**Why it belongs here too:** the exit criteria that name towers are the co-op
+ones, and those are milestone 3's. `13-audio.md`'s "towers plays creep/tower
+audio spatially in co-op" is unmet on both halves — the sample ships silent and
+there is no co-op — and `14-persistence.md`'s "towers: save mid-wave, quit,
+resume — solo and dedicated-server co-op" is unmet on both too, since slice 1
+has no save. Those documents' MVP bars are still unreachable rather than merely
+unmet, and a reader checking "are we done" against a built `apps/towers` needs
+that stated.
 
 ### The mixer limiter (2026-08-27)
 
@@ -4768,7 +4769,8 @@ reconnect-with-hash-continuity test and the bandwidth measurement actually exist
 as tests. I read the modules, not the test list.
 
 **Certain:** the bandwidth row cannot exist — it is measured from a towers
-4-player session and there is no towers.
+4-player session, and `apps/towers` (built 2026-09-07) is solo over
+`InMemoryTransport` with no wire under it.
 
 ## Auth (`docs/plan/27-auth.md`)
 
@@ -5219,41 +5221,50 @@ that the ladder has no untextured-quad holdouts left.
 
 ## towers (`docs/plan/sample/07-towers.md`)
 
-### There is no towers crate, and the dependency chain has three separate links (2026-08-27)
+### towers milestone 1 is built; milestones 2 and 3 are each blocked on a phase (2026-09-07)
 
-**Not built at all.** There is no towers directory under `apps/` and no `towers`
-row in `web/build.sh`'s `DEMOS`. Nothing in the doc has been tested against
-code. The three links are independent and only one of them is the editor:
+**Slice 1 shipped 2026-09-07.** `apps/towers` is the solo loop on a hardcoded
+map: `map::PATH`'s polyline, one creep archetype, one single-target tower, three
+scripted waves, shared gold and lives, and `PlaceTower`/`StartWave`/ `Restart`
+validated server-side over `InMemoryTransport`. The slice table in
+`docs/plan/sample/07-towers.md` is the record of what the rest of milestone 1
+costs; slice 2 is the browser demo and slice 3 is the content (splash and slow
+towers, upgrade tiers, the other creep types, all ten waves, `.crpix` art,
+spatial audio, world-space health bars).
+
+**The one engine gap the slice found is a spline type.** Nothing in `crcbl-phys`
+or `crcbl-scene` offers a curve a body can be put on — the only splines in the
+workspace are `crcbl-anim`'s clip interpolation and the glTF importer's — so
+`crcbl_towers::path` measures straight legs between waypoints and a creep turns
+a corner in a single tick. That is visible: a fast creep pivots instantly at a
+bend. **What it would take:** a Catmull-Rom or cubic Bézier path type with
+arc-length reparameterisation, so `point_at(s)` stays a constant-speed reading.
+**What it blocks:** nothing today; it is a fidelity gap, and every consumer of
+it would be sample code.
+
+**Two links are unchanged and neither is this sample's to clear.**
 
 1. **Milestone 2 waits on the editor.** There is no `apps/editor`; the workspace
    `Cargo.toml` records the absence as deliberate until the editor phase. The
-   scene directory is no longer part of this link: `crcbl_scene::scn` landed
-   2026-09-07 and `apps/breakout` reads its board out of one
-   (`apps/breakout/assets/scenes/board.scn/`). Every "editor-built" and
-   "authored in the editor" line inherits the editor's absence, including the
-   exit criterion "map authored 100% in the editor, zero hand-edited scene
-   text".
+   scene half is no longer part of this link — `crcbl_scene::scn` landed
+   2026-09-07 and `apps/breakout` reads its board out of one — but every
+   "editor-built" and "authored in the editor" line still inherits P12,
+   including the exit criterion "map authored 100% in the editor, zero
+   hand-edited scene text". Slice 1's map is a table in `apps/towers/src/map.rs`
+   for exactly that reason.
 2. **Milestone 3 waits on a wire.** `crates/crcbl-net` ships `InMemoryTransport`
    and nothing else — no UDP transport, no LAN host discovery, no lobby browser
    — so "co-op over real transport" and the 4-player LAN exit criterion have
-   nothing to run on.
-3. **Milestone 1 waits on neither.** A solo loop on a hardcoded map needs tower
-   acquisition by sphere overlap, a swept projectile against moving creeps, a
-   trigger volume for creep-reaches-exit, and a dev fly/walk controller.
-   `crcbl-phys` has all four: `PhysicsWorld` carries a per-collider trigger flag
-   (`is_trigger`) whose colliders are non-solid and skipped by the sweeps,
-   `sweep_sphere` and `overlap_sphere` are what breakout, asteroids and horde
-   already run on, and `CharacterController` is driven from three different
-   cameras by `apps/puppet`, `apps/breach` and `apps/shard`. The one genuine
-   absence is a **spline type**: nothing in `crcbl-phys` or `crcbl-scene` offers
-   one (the only splines in the workspace are `crcbl-anim`'s clip interpolation
-   and `crcbl-scene`'s glTF importer), so a path follower would be sample code
-   over kinematic bodies.
+   nothing to run on. The commands are already shaped for it, which is the one
+   thing slice 1 could do about it.
 
-**What it would take:** milestone 1 is buildable today. Milestones 2 and 3 are
-each blocked on a phase, not on this sample. **What it blocks:** the MVP-era
-flagship, the editor's own dogfood measurement, and the only planned consumer of
-the debug panel's network module that has more than one client.
+**Rules owed rather than exempted, stated so the next slice does not read them
+as decisions:** rule 11 (no `.crpix` art anywhere — the tower and creep icons,
+the wave banner and the build menu are untextured rectangles and the built-in
+font), rule 8 (the sample ships silent), rule 7 (no `DEMOS` row, no demo
+directory), and rule 12's third selector (the three paths are reported on the
+panel, the `[HUD]` line and the summary, but there is no flag to hold one below
+what the device offers).
 
 ## arena (`docs/plan/sample/08-arena.md`)
 
