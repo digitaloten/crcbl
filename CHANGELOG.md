@@ -1333,6 +1333,12 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- The nine samples' golden harnesses (`apps/*/tests/run-<sample>-golden.sh`) are
+  thin wrappers over a new `tools/run-sample-golden.sh`; the paths CI and the
+  plan docs name are unchanged. Every run now echoes `CRCBL_ADAPTER` and reads
+  the adapter back one way — the five older scripts claimed "there is no
+  `CRCBL_ADAPTER` here", which was false: a golden run is a `--screenshot` run
+  and `crcbl::screenshot`'s `start_device` pins the adapter.
 - `UiRenderer::MAX_PASSES` is 2, which moves `MAX_TIMED_PASSES` with it, and
   `UiRenderer::counters` now reports one draw per half actually drawn. The new
   pass label `ui-overlay` appears in graph dumps and pass timings on any frame

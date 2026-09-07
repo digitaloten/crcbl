@@ -5042,29 +5042,6 @@ read are recorded in `docs/notes/samples.md` under "The demo seam review of
 over comment-stripped bodies, and the four the parent re-ran are marked. The
 rest are the review's reading, not re-verified — re-count before cutting.
 
-### The nine golden harness scripts are one script, and five carry a wrong comment (2026-09-07)
-
-`apps/{alcove,asteroids,breakout,flappy,horde,hud,lantern,shard,sundial}/tests/run-<sample>-golden.sh`
-share, byte for byte once the sample's name is normalised: the
-`crcbl_pin_vk_icd` sourcing, the `CRCBL_GPU`-unset refusal, the
-`CRCBL_VK_VALIDATION=1` forcing, the `mktemp`/`trap` pair, the
-`cargo nextest run … --features golden-e2e --test golden --run-ignored all --no-tests fail`
-invocation, `crcbl_nextest_plain`, the `crcbl_validation_saw_nothing` and
-`crcbl_nextest_summary` gates and the "never named the adapter" refusal.
-**Re-verified by the parent**: asteroids vs shard differ only by the name and
-shard's own extra "no frame was compared" block. **They have drifted**: the four
-newest (`alcove`, `lantern`, `shard`, `sundial`) echo `CRCBL_ADAPTER` and grep
-`device on adapter `; the five older ones grep `device on ` and say "There is no
-`CRCBL_ADAPTER` here" — which is false, because a golden run is a `--screenshot`
-run and `crates/crcbl/src/screenshot.rs`'s `start_device` is the caller of
-`crcbl::adapter::pin()`, so an inherited `CRCBL_ADAPTER` steers those five runs
-and they neither say so nor print it. **What it would take:** a shared a
-`run-sample-golden.sh` under `tools/` beside `tools/nextest-summary.sh` taking
-the package, the label and the success line, with the nine files reduced to thin
-wrappers that keep their paths (CI's nine `run:` lines,
-`docs/plan/sample/04-hud.md` and this file cite them). Shard's extra block and
-alcove's views variant stay in their wrappers.
-
 ### Four demos carry the same menu-and-UI-only `gpu.rs` (2026-09-07)
 
 `apps/{hud,orbit,bracket,options}/src/gpu.rs`. **Re-verified by the parent**:
