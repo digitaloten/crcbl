@@ -756,7 +756,7 @@ impl Game {
     ///   reaches [`crate::map::LOW_STEP_TOP`] and never [`crate::map::HIGH_STEP_TOP`].
     fn log_heartbeat(&self) {
         let stage = lock(&self.shared);
-        if !stage.ticks.is_multiple_of(HEARTBEAT_TICKS) {
+        if !crcbl::engine::heartbeat_due(stage.ticks, HEARTBEAT_TICKS) {
             return;
         }
         let position = stage.character.position();

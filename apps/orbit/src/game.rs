@@ -1082,7 +1082,7 @@ impl Game {
     fn log_heartbeat(&mut self) {
         let flight = lock(&self.shared);
         let changed = self.logged_phase != Some(flight.phase);
-        if !changed && !flight.ticks.is_multiple_of(HEARTBEAT_TICKS) {
+        if !changed && !crcbl::engine::heartbeat_due(flight.ticks, HEARTBEAT_TICKS) {
             return;
         }
         let orbit = flight.orbit();

@@ -305,7 +305,7 @@ impl Quarry {
     /// which opens on [`CameraMode::Dolly`] — it is the thing a visitor is
     /// actually watching.
     fn log_heartbeat(&self) {
-        if !self.ticks.is_multiple_of(HEARTBEAT_TICKS) {
+        if !crcbl::engine::heartbeat_due(self.ticks, HEARTBEAT_TICKS) {
             return;
         }
         crcbl::log::info!(
@@ -1094,6 +1094,52 @@ mod tests {
         assert_eq!(first.run.frames, 16);
         assert_eq!(first.run.exit, ExitReason::FrameBudget);
         assert_eq!(first.camera, CameraMode::Fixed);
+    }
+
+    /// **The heartbeat beats once a cadence, not once a tick.**
+    ///
+    /// [`crcbl::engine::heartbeat_due`] is the gate every sample's heartbeat
+    /// shares, and what it is for is not that a `[HUD]` line exists but that
+    /// there is **one per [`HEARTBEAT_TICKS`]**: `web/tools/browser-e2e.mjs`
+    /// reads a page's liveness by watching a field advance *between* beats, and
+    /// a gate that fired every tick would answer every one of those waits off
+    /// the frame it started on while every "the line is there" check still
+    /// passed. Counted over two cadences, so the answer is a rate rather than a
+    /// single hit.
+    #[test]
+    fn the_heartbeat_beats_once_a_cadence_of_ticks() {
+        use crcbl::hal::{BindingModel, GeometryPath, LightingPath};
+
+        let _view = crcbl::debug_view::for_test();
+        let mut quarry = Quarry::new(
+            CameraMode::Dolly,
+            Paths {
+                geometry: GeometryPath::MeshShader,
+                binding: BindingModel::Bindless,
+                lighting: LightingPath::Rasterised,
+                forced: crcbl::engine::ForcedPaths::default(),
+                effects: crcbl::render::RenderEffects::DEFAULT_STACK,
+            },
+            1000,
+            1.0,
+        );
+
+        let logs = crcbl::core::log::capture();
+        for _ in 0..HEARTBEAT_TICKS * 2 {
+            quarry.log_heartbeat();
+            quarry.ticks += 1;
+        }
+        let beats = logs
+            .records()
+            .into_iter()
+            .filter(|record| record.message.contains("[HUD]"))
+            .count();
+        assert_eq!(
+            beats,
+            2,
+            "{} tick(s) at a cadence of {HEARTBEAT_TICKS} must log two heartbeats, not {beats}",
+            HEARTBEAT_TICKS * 2
+        );
     }
 
     /// **The summary names the paths the frames were drawn through**, and the

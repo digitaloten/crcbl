@@ -217,6 +217,34 @@ pub enum GpuError {
     Screenshot(String),
 }
 
+impl GpuError {
+    /// A sample's own pools refusing the content it was built around.
+    ///
+    /// `subject` names what did not fit — "shard's zone", "towers' field" — and
+    /// `error` is what the pool said, which carries the capacity and the number
+    /// asked for. Every 3D sample was assembling that sentence by hand after
+    /// its `place()` call, so the next one would have had to guess the wording.
+    ///
+    /// A constructor rather than a `From` impl, for two reasons. The subject is
+    /// half the message and no `From` can carry it: "the instance pool is full"
+    /// on its own does not say which sample's content overflowed, and this
+    /// error is only ever read out of a run that failed to start. And the
+    /// callers do not share an error type — `apps/puppet` hands over its own
+    /// `PlaceError`, which folds the vertex pool's refusal in beside the
+    /// instance pool's — so the argument is anything that can say what went
+    /// wrong.
+    ///
+    /// [`HalError::InvalidDescriptor`] because that is what it is: the pool
+    /// capacities are a descriptor the sample wrote, and the device never saw
+    /// the frame.
+    #[must_use]
+    pub fn pools(subject: &str, error: &impl std::fmt::Display) -> Self {
+        Self::Hal(HalError::InvalidDescriptor(format!(
+            "{subject} does not fit its own pools: {error}"
+        )))
+    }
+}
+
 impl std::fmt::Display for GpuError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -3606,6 +3634,27 @@ pub fn run_ticks(clock: &mut crcbl_core::FrameClock, paused: bool, mut tick: imp
         tick();
     }
     ran
+}
+
+/// Whether a heartbeat that beats every `every` ticks beats on tick `ticks`.
+///
+/// The cadence gate every sample's heartbeat had spelled for itself, and it is
+/// one rule rather than one per sample: the **value** stays each sample's own
+/// `HEARTBEAT_TICKS` — a second of simulated time at the default rate for most
+/// of them, faster in `apps/sparks` and `apps/shard` because what they report
+/// moves faster — and so does the line, which is the whole of what a sample's
+/// heartbeat is about.
+///
+/// **Tick zero is a beat.** A fixture that has ticked nowhere logs its opening
+/// reading, which is what a browser gate reads to tell a page that booted from
+/// one that did not — `apps/alcove`'s `the_heartbeat_names_the_view_the_frame_draws`
+/// rests on it. The samples whose counter reaches the heartbeat as a
+/// `Stats` snapshot pair this with a `ticks == 0` guard of their own, because
+/// for them a zero means the snapshot has not been taken yet rather than that
+/// the run has just started.
+#[must_use]
+pub const fn heartbeat_due(ticks: u64, every: u64) -> bool {
+    ticks.is_multiple_of(every)
 }
 
 /// The loop's fullscreen request, and whether the window system agreed.
@@ -7699,6 +7748,48 @@ mod tests {
     }
 
     impl std::error::Error for GameError {}
+
+    /// **The pool overflow says both halves: whose content it was, and what
+    /// the pool refused.**
+    ///
+    /// Every 3D sample had written this sentence out for itself, and the
+    /// failure it reports only ever arrives out of a run that never drew a
+    /// frame: a message that named the sample and not the capacity — or the
+    /// capacity and not the sample — sends whoever reads it to the wrong file.
+    #[test]
+    fn a_pool_overflow_names_the_sample_and_what_the_pool_said() {
+        let error = GpuError::pools(
+            "shard's zone",
+            &"the instance pool holds 512 and the zone asked for 513",
+        );
+        let text = error.to_string();
+        assert!(
+            text.contains("shard's zone does not fit its own pools"),
+            "the subject is missing: {text}"
+        );
+        assert!(
+            text.contains("the zone asked for 513"),
+            "the pool's own message is missing: {text}"
+        );
+    }
+
+    /// **The heartbeat beats once a cadence, and tick zero is a beat.**
+    ///
+    /// Both halves matter and each is one sample's behaviour: a gate that fired
+    /// every tick would flood a CI log and make every "the reading moved
+    /// between beats" claim in `web/tools/browser-e2e.mjs` meaningless, and a
+    /// gate that skipped zero would leave a fixture that has ticked nowhere
+    /// logging nothing at all.
+    #[test]
+    fn the_heartbeat_beats_once_a_cadence_and_zero_is_a_beat() {
+        let beats: Vec<u64> = (0..121).filter(|tick| heartbeat_due(*tick, 60)).collect();
+        assert_eq!(beats, [0, 60, 120]);
+        assert_eq!(
+            (0..30).filter(|tick| heartbeat_due(*tick, 15)).count(),
+            2,
+            "a faster cadence beats more often"
+        );
+    }
 
     /// **A game's error reaches the report, it is not swallowed by the wrapper.**
     ///

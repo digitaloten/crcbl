@@ -176,7 +176,7 @@ impl Sundial {
     /// console's own cells, so `crate::web::__crcbl_sundial_bias`'s effect is a
     /// reading here rather than an inference from the picture.
     fn log_heartbeat(&self) {
-        if !self.ticks.is_multiple_of(HEARTBEAT_TICKS) {
+        if !crcbl::engine::heartbeat_due(self.ticks, HEARTBEAT_TICKS) {
             return;
         }
         crcbl::log::info!(

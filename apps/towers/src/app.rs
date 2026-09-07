@@ -201,10 +201,7 @@ impl Towers {
     /// It also names the three selectors — see the module docs.
     fn log_heartbeat(&self) {
         if self.stats.ticks == 0
-            || !self
-                .stats
-                .ticks
-                .is_multiple_of(crate::game::HEARTBEAT_TICKS)
+            || !crcbl::engine::heartbeat_due(self.stats.ticks, crate::game::HEARTBEAT_TICKS)
         {
             return;
         }

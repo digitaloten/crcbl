@@ -192,9 +192,7 @@ impl Gpu {
             Ok(character) => character,
             Err(error) => {
                 renderer.destroy(ctx.device());
-                return Err(GpuError::Hal(HalError::InvalidDescriptor(format!(
-                    "puppet's map does not fit its own pools: {error}"
-                ))));
+                return Err(GpuError::pools("puppet's map", &error));
             }
         };
         let (ranges, joints, bindings) = character.skinning_capacities();

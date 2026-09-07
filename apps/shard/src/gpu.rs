@@ -56,9 +56,7 @@ use crate::foe::FoeView;
 use crcbl::engine::{
     DevicePathRows, ForcedPaths, FrameOutcome, GpuContext, GpuContextDesc, GpuError, GpuOptions,
 };
-use crcbl::hal::{
-    BindingModel, CommandEncoderDesc, DeviceCaps, GeometryPath, HalError, LightingPath,
-};
+use crcbl::hal::{BindingModel, CommandEncoderDesc, DeviceCaps, GeometryPath, LightingPath};
 use crcbl::math::DVec3;
 use crcbl::render::{
     Camera, EffectRequest, ForwardRenderer, MAX_TIMED_PASSES, MenuRenderer, PassTimers,
@@ -261,9 +259,7 @@ impl Gpu {
             Ok(placed) => placed,
             Err(error) => {
                 renderer.destroy(ctx.device());
-                return Err(GpuError::Hal(HalError::InvalidDescriptor(format!(
-                    "shard's zone does not fit its own pools: {error}"
-                ))));
+                return Err(GpuError::pools("shard's zone", &error));
             }
         };
         let timers = PassTimers::new(ctx.device(), FRAMES_IN_FLIGHT, MAX_TIMED_PASSES);

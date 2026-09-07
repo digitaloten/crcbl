@@ -278,7 +278,7 @@ impl Bracket {
     /// the first standing still; one that matched without learning would leave
     /// the second.
     fn log_heartbeat(&self) {
-        if !self.sim.tick_count().is_multiple_of(HEARTBEAT_TICKS) {
+        if !crcbl::engine::heartbeat_due(self.sim.tick_count(), HEARTBEAT_TICKS) {
             return;
         }
         crcbl::log::info!(

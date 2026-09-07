@@ -611,7 +611,7 @@ impl Game {
     fn log_heartbeat(&mut self) {
         let ticker = lock(&self.shared);
         let wave_changed = ticker.wave != self.logged_wave;
-        if !wave_changed && !ticker.ticks.is_multiple_of(HEARTBEAT_TICKS) {
+        if !wave_changed && !crcbl::engine::heartbeat_due(ticker.ticks, HEARTBEAT_TICKS) {
             return;
         }
         crcbl::log::info!(

@@ -45,9 +45,7 @@ use crcbl::engine::{
     DevicePathRows, ForcedPaths, FrameOutcome, GpuContext, GpuContextDesc, GpuError, GpuOptions,
     PendingGpuContext,
 };
-use crcbl::hal::{
-    BindingModel, CommandEncoderDesc, DeviceCaps, GeometryPath, HalError, LightingPath,
-};
+use crcbl::hal::{BindingModel, CommandEncoderDesc, DeviceCaps, GeometryPath, LightingPath};
 use crcbl::render::{
     Camera, ForwardRenderer, MAX_TIMED_PASSES, MenuRenderer, PassTimers, RenderGraph,
     TransientPool, UiRenderer,
@@ -264,10 +262,10 @@ impl Gpu {
             Ok(movers) => movers,
             Err(error) => {
                 renderer.destroy(ctx.device());
-                return Err(GpuError::Hal(HalError::InvalidDescriptor(format!(
-                    "breach's {} map does not fit its own pools: {error}",
-                    map.name(),
-                ))));
+                return Err(GpuError::pools(
+                    &format!("breach's {} map", map.name()),
+                    &error,
+                ));
             }
         };
         let timers = PassTimers::new(ctx.device(), FRAMES_IN_FLIGHT, MAX_TIMED_PASSES);

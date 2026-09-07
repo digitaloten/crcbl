@@ -274,7 +274,7 @@ impl Sparks {
     /// happens to ask for exactly that many; a refusal counter climbing while
     /// the count holds still cannot be anything but a clamp.
     fn log_heartbeat(&self) {
-        if !self.show.tick_count().is_multiple_of(HEARTBEAT_TICKS) {
+        if !crcbl::engine::heartbeat_due(self.show.tick_count(), HEARTBEAT_TICKS) {
             return;
         }
         let reading = self.show.reading();

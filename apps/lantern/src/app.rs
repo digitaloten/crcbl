@@ -172,7 +172,7 @@ impl Lantern {
     /// the tick — so a frame loop that was presenting without ticking would
     /// leave it standing still.
     fn log_heartbeat(&self, gpu: &Gpu) {
-        if !self.ticks.is_multiple_of(HEARTBEAT_TICKS) {
+        if !crcbl::engine::heartbeat_due(self.ticks, HEARTBEAT_TICKS) {
             return;
         }
         let crcbl::render::Light::Point(lamp) = room::lamp(gpu.elapsed()) else {

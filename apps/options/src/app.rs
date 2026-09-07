@@ -532,7 +532,7 @@ impl Screen {
     /// arithmetic silently disagree with the key.
     fn log_heartbeat(&mut self) {
         let edited = self.edits != self.logged_edits;
-        if !edited && !self.ticks.is_multiple_of(HEARTBEAT_TICKS) {
+        if !edited && !crcbl::engine::heartbeat_due(self.ticks, HEARTBEAT_TICKS) {
             return;
         }
         crcbl::log::info!(

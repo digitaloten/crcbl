@@ -25,7 +25,7 @@
 //! of the words it exists to frame.
 
 use crcbl::engine::{FrameOutcome, GpuContext, GpuContextDesc, GpuError, GpuOptions};
-use crcbl::hal::{CommandEncoderDesc, HalError};
+use crcbl::hal::CommandEncoderDesc;
 use crcbl::render::{
     Camera, ForwardRenderer, MAX_TIMED_PASSES, MenuRenderer, PassTimers, RenderGraph,
     TransientPool, UiRenderer,
@@ -135,9 +135,7 @@ impl Gpu {
             Ok(drawn) => drawn,
             Err(error) => {
                 renderer.destroy(ctx.device());
-                return Err(GpuError::Hal(HalError::InvalidDescriptor(format!(
-                    "sparks' stage does not fit its own pools: {error}"
-                ))));
+                return Err(GpuError::pools("sparks' stage", &error));
             }
         };
         let timers = PassTimers::new(ctx.device(), FRAMES_IN_FLIGHT, MAX_TIMED_PASSES);

@@ -28,9 +28,7 @@
 use crcbl::engine::{
     DevicePathRows, ForcedPaths, FrameOutcome, GpuContext, GpuContextDesc, GpuError, GpuOptions,
 };
-use crcbl::hal::{
-    BindingModel, CommandEncoderDesc, DeviceCaps, GeometryPath, HalError, LightingPath,
-};
+use crcbl::hal::{BindingModel, CommandEncoderDesc, DeviceCaps, GeometryPath, LightingPath};
 use crcbl::render::{
     Camera, ForwardRenderer, MAX_TIMED_PASSES, MenuRenderer, PassTimers, RenderGraph,
     TransientPool, UiRenderer,
@@ -151,9 +149,7 @@ impl Gpu {
             Ok(field) => field,
             Err(error) => {
                 renderer.destroy(ctx.device());
-                return Err(GpuError::Hal(HalError::InvalidDescriptor(format!(
-                    "towers' field does not fit its own pools: {error}",
-                ))));
+                return Err(GpuError::pools("towers' field", &error));
             }
         };
         let timers = PassTimers::new(ctx.device(), FRAMES_IN_FLIGHT, MAX_TIMED_PASSES);

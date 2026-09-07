@@ -168,7 +168,7 @@ impl Alcove {
     /// `web/pages/alcove.html` offers has an effect that can be read off a
     /// heartbeat instead of inferred from a picture.
     fn log_heartbeat(&self) {
-        if !self.ticks.is_multiple_of(HEARTBEAT_TICKS) {
+        if !crcbl::engine::heartbeat_due(self.ticks, HEARTBEAT_TICKS) {
             return;
         }
         crcbl::log::info!(

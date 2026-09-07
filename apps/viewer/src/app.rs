@@ -1574,7 +1574,7 @@ impl Viewer {
     /// that it stops for good once a visitor takes hold — which is correct for
     /// the tool and is why the gate reads it before it touches the canvas.
     fn log_heartbeat(&self) {
-        if !self.ticks.is_multiple_of(HEARTBEAT_TICKS) {
+        if !crcbl::engine::heartbeat_due(self.ticks, HEARTBEAT_TICKS) {
             return;
         }
         crcbl::log::info!(
