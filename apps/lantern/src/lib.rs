@@ -102,10 +102,7 @@ pub mod room;
 pub mod web;
 
 pub use app::{Lantern, LanternError, Loop, PendingLoop, Summary, run, start, with_shell};
-pub use args::{
-    DEFAULT_TICK_HZ, Invocation, Options, USAGE, binding_from_name, built_in_stack,
-    geometry_from_name, parse,
-};
+pub use args::{DEFAULT_TICK_HZ, Invocation, Options, USAGE, built_in_stack, parse};
 /// Re-exported rather than defined here: the free-fly camera moved into
 /// `crcbl-render` so a second sample could fly the same one, and this keeps
 /// `crcbl_lantern::Flyer` resolving for anything that already named it.

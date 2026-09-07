@@ -5163,18 +5163,6 @@ and a `hint` helper, extracted **byte-for-byte** — shard's goldens and the
 shard/breach/puppet/sparks/towers browser rows read this panel's pixels, so diff
 the draw lists before and after rather than redesign.
 
-### `--force-geometry` / `--force-binding` parsing, in four demos (2026-09-07)
-
-`geometry_from_name` and `binding_from_name` in
-`apps/{alcove,lantern,quarry,sundial}/src/args.rs`, identical down to the doc
-comment, plus the two parse arms and the help block: the command line's
-spellings for `GeometryPath` and `BindingModel`. A new path needs four tables
-edited. **What it would take:** the two functions and a `FORCED_PATH_HELP` in
-`crcbl::args` beside `positive`/`number`/`size` and `SCREENSHOT_HELP`; quarry's
-extra help sentence stays its own. The accepted spellings must not change:
-`apps/quarry/tests/run-quarry-e2e.sh` and the alcove/lantern/sundial golden
-scripts pass them on the command line.
-
 ### `occlusion.rs` and `filter.rs` are the same console-variable driver (2026-09-07)
 
 `apps/alcove/src/occlusion.rs` and `apps/sundial/src/filter.rs` share nine

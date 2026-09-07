@@ -37,6 +37,7 @@ use std::process::ExitCode;
 
 use crate::backend::GpuBackend;
 use crate::engine::{FrameLimit, GpuOptions, LoopConfig, Pacing};
+use crate::hal::{BindingModel, GeometryPath};
 
 /// The shared `OPTIONS:` block, so the samples' help texts cannot drift.
 ///
@@ -80,6 +81,28 @@ pub const SCREENSHOT_HELP: &str = "\
                          Turns --headless on: the frame is read back off the
                          offscreen ring, which is the only surface every backend
                          can copy a presented image out of.";
+
+/// The `--force-geometry` and `--force-binding` pair, for the samples that
+/// hold a device down to a path.
+///
+/// **Separate from [`COMMON_OPTIONS_HELP`] because the flags are separate**:
+/// only a sample built around the geometry and binding axes offers them, and a
+/// help text listing a flag the same binary answers with exit 2 would be worse
+/// than not listing it. Spliced in where a game's own flags go, so the ordering
+/// is the one every other flag already has.
+///
+/// The spellings in this prose are [`geometry_from_name`]'s and
+/// [`binding_from_name`]'s, which is why the two live here beside it: a sample
+/// that offered a name the parser did not take would be advertising a flag
+/// value that is rejected.
+pub const FORCED_PATH_HELP: &str = "\
+    --force-geometry <P> Hold the geometry path at 'mesh-shader',
+                         'indirect-count' or 'indirect-per-batch' by opening a
+                         device without the features that select a better one.
+                         Default: whatever this device selects.
+    --force-binding <B>  Hold the binding model at 'bindless' or 'array-pages',
+                         on --force-geometry's terms. 'array-pages' is what
+                         every browser and every Apple device runs.";
 
 /// The tail of the shared block: the debug overlay pair and `--help`.
 ///
@@ -551,6 +574,34 @@ pub fn number(
     value
         .parse::<u64>()
         .map_err(|_| format!("not a {noun}: {value}"))
+}
+
+/// A [`GeometryPath`] by the name `--force-geometry` takes.
+///
+/// Written here rather than on the enum because it is a *command line's*
+/// vocabulary: `crcbl-hal` has no argument parsing in it and should not grow
+/// any for a sample's flag. Written here rather than in a sample because four
+/// of them offer the flag, and four tables of the command line's spellings are
+/// four chances for a new path to reach three of them.
+#[must_use]
+pub fn geometry_from_name(name: &str) -> Option<GeometryPath> {
+    match name {
+        "mesh-shader" | "mesh" => Some(GeometryPath::MeshShader),
+        "indirect-count" | "count" => Some(GeometryPath::IndirectCount),
+        "indirect-per-batch" | "per-batch" => Some(GeometryPath::IndirectPerBatch),
+        _ => None,
+    }
+}
+
+/// A [`BindingModel`] by the name `--force-binding` takes, on
+/// [`geometry_from_name`]'s terms.
+#[must_use]
+pub fn binding_from_name(name: &str) -> Option<BindingModel> {
+    match name {
+        "bindless" => Some(BindingModel::Bindless),
+        "array-pages" | "pages" => Some(BindingModel::ArrayPages),
+        _ => None,
+    }
 }
 
 /// The value after `--size`, parsed as `WxH`.
@@ -1066,6 +1117,73 @@ mod tests {
             Consumed::No,
             "--screenshot is documented and not implemented"
         );
+    }
+
+    /// **Every path and model the seam declares has a name the command line
+    /// takes, and [`FORCED_PATH_HELP`] offers it.**
+    ///
+    /// The names are derived from the enums' own debug spellings rather than
+    /// listed, so a variant added to [`GeometryPath`] or [`BindingModel`]
+    /// reddens this until both tables have it. That is the whole reason these
+    /// two functions are here rather than in the four samples that offer the
+    /// flags: a new path used to mean four tables, and missing one of them
+    /// forced the wrong path and reported it as forced.
+    #[test]
+    fn every_path_the_seam_declares_can_be_asked_for_by_name() {
+        /// The canonical spelling: the debug name in kebab case, which is what
+        /// the help text prints.
+        fn kebab(name: &str) -> String {
+            name.chars()
+                .enumerate()
+                .flat_map(|(at, ch)| {
+                    if ch.is_uppercase() && at > 0 {
+                        vec!['-', ch.to_ascii_lowercase()]
+                    } else {
+                        vec![ch.to_ascii_lowercase()]
+                    }
+                })
+                .collect()
+        }
+
+        for path in [
+            GeometryPath::MeshShader,
+            GeometryPath::IndirectCount,
+            GeometryPath::IndirectPerBatch,
+        ] {
+            let name = kebab(&format!("{path:?}"));
+            assert_eq!(geometry_from_name(&name), Some(path), "{name}");
+            assert!(
+                FORCED_PATH_HELP.contains(&name),
+                "the help does not offer {name}"
+            );
+        }
+        for model in [BindingModel::Bindless, BindingModel::ArrayPages] {
+            let name = kebab(&format!("{model:?}"));
+            assert_eq!(binding_from_name(&name), Some(model), "{name}");
+            assert!(
+                FORCED_PATH_HELP.contains(&name),
+                "the help does not offer {name}"
+            );
+        }
+
+        // The short spellings, which the help does not print and the samples'
+        // harnesses do type. They are part of the vocabulary either way.
+        assert_eq!(geometry_from_name("mesh"), Some(GeometryPath::MeshShader));
+        assert_eq!(
+            geometry_from_name("count"),
+            Some(GeometryPath::IndirectCount)
+        );
+        assert_eq!(
+            geometry_from_name("per-batch"),
+            Some(GeometryPath::IndirectPerBatch)
+        );
+        assert_eq!(binding_from_name("pages"), Some(BindingModel::ArrayPages));
+
+        // And a name neither table has is refused rather than defaulted: a
+        // typo that quietly opened the device's own best path would report a
+        // run as forced onto a path it never took.
+        assert_eq!(geometry_from_name("bindless"), None);
+        assert_eq!(binding_from_name("mesh-shader"), None);
     }
 
     /// The front end's contract is "argv in, exit code out", and the four

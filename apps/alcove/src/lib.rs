@@ -77,8 +77,7 @@ pub mod web;
 
 pub use app::{Alcove, AlcoveError, Loop, PendingLoop, Summary, run, start, with_shell};
 pub use args::{
-    DEFAULT_TICK_HZ, Invocation, Options, USAGE, binding_from_name, geometry_from_name, parse,
-    seam_from_name, technique_from_name,
+    DEFAULT_TICK_HZ, Invocation, Options, USAGE, parse, seam_from_name, technique_from_name,
 };
 /// Re-exported rather than defined here: the free-fly camera lives in
 /// `crcbl-render` so every sample flies the same one.

@@ -1333,6 +1333,11 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- `crcbl::args` gained `geometry_from_name`, `binding_from_name` and
+  `FORCED_PATH_HELP`, moved out of `apps/{alcove,lantern,quarry,sundial}`'s
+  `args.rs`. The spellings `--force-geometry` and `--force-binding` accept are
+  unchanged, and one engine test now derives them from `GeometryPath` and
+  `BindingModel` so a new path cannot reach three tables out of four.
 - The nine samples' golden harnesses (`apps/*/tests/run-<sample>-golden.sh`) are
   thin wrappers over a new `tools/run-sample-golden.sh`; the paths CI and the
   plan docs name are unchanged. Every run now echoes `CRCBL_ADAPTER` and reads

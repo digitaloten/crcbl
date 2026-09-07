@@ -5,8 +5,7 @@
 //! `--frames`, `--backend`, `--size` and the rest — so the flags this sample
 //! adds are the ones a *lighting fixture* has and nothing else.
 
-use crcbl::args::{Common, Consumed};
-use crcbl::hal::{BindingModel, GeometryPath};
+use crcbl::args::{Common, Consumed, binding_from_name, geometry_from_name};
 use crcbl::render::{CameraStack, RenderEffects};
 
 use crate::gpu::Forced;
@@ -236,34 +235,10 @@ fn read_stack(path: &str) -> Result<CameraStack, String> {
     CameraStack::from_ron(&text).map_err(|error| format!("{path}: {error}"))
 }
 
-/// A [`GeometryPath`] by the name `--force-geometry` takes.
-///
-/// Written here rather than on the enum because it is a *command line's*
-/// vocabulary: `crcbl-hal` has no argument parsing in it and should not grow
-/// any for one sample's flag.
-#[must_use]
-pub fn geometry_from_name(name: &str) -> Option<GeometryPath> {
-    match name {
-        "mesh-shader" | "mesh" => Some(GeometryPath::MeshShader),
-        "indirect-count" | "count" => Some(GeometryPath::IndirectCount),
-        "indirect-per-batch" | "per-batch" => Some(GeometryPath::IndirectPerBatch),
-        _ => None,
-    }
-}
-
-/// A [`BindingModel`] by the name `--force-binding` takes, on
-/// [`geometry_from_name`]'s terms.
-#[must_use]
-pub fn binding_from_name(name: &str) -> Option<BindingModel> {
-    match name {
-        "bindless" => Some(BindingModel::Bindless),
-        "array-pages" | "pages" => Some(BindingModel::ArrayPages),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use crcbl::hal::{BindingModel, GeometryPath};
+
     use super::*;
 
     fn run(argv: &[&str]) -> Invocation {
@@ -445,56 +420,6 @@ mod tests {
         assert!(matches!(run(&["--help"]), Invocation::Help));
     }
 
-    /// Both name tables round-trip through the paths they name, so a spelling
-    /// added to one is a spelling the other can produce.
-    #[test]
-    fn every_path_this_sample_can_force_has_a_name() {
-        for path in [
-            GeometryPath::MeshShader,
-            GeometryPath::IndirectCount,
-            GeometryPath::IndirectPerBatch,
-        ] {
-            let name = format!("{path:?}");
-            // The canonical spelling is the debug name in kebab case, which is
-            // what the usage text prints.
-            let kebab = name
-                .chars()
-                .enumerate()
-                .flat_map(|(at, ch)| {
-                    if ch.is_uppercase() && at > 0 {
-                        vec!['-', ch.to_ascii_lowercase()]
-                    } else {
-                        vec![ch.to_ascii_lowercase()]
-                    }
-                })
-                .collect::<String>();
-            assert_eq!(geometry_from_name(&kebab), Some(path), "{kebab}");
-            assert!(
-                USAGE.contains(&kebab),
-                "the usage text does not offer {kebab}"
-            );
-        }
-        for model in [BindingModel::Bindless, BindingModel::ArrayPages] {
-            let name = format!("{model:?}");
-            let kebab = name
-                .chars()
-                .enumerate()
-                .flat_map(|(at, ch)| {
-                    if ch.is_uppercase() && at > 0 {
-                        vec!['-', ch.to_ascii_lowercase()]
-                    } else {
-                        vec![ch.to_ascii_lowercase()]
-                    }
-                })
-                .collect::<String>();
-            assert_eq!(binding_from_name(&kebab), Some(model), "{kebab}");
-            assert!(
-                USAGE.contains(&kebab),
-                "the usage text does not offer {kebab}"
-            );
-        }
-    }
-
     /// **The help names the pause-menu rows, and it names the ones that exist.**
     ///
     /// The three effect flags used to describe themselves and stop there, so a
@@ -522,6 +447,10 @@ mod tests {
         assert!(
             USAGE.contains(crcbl::args::SCREENSHOT_HELP),
             "the --screenshot block has drifted from crcbl::args"
+        );
+        assert!(
+            USAGE.contains(crcbl::args::FORCED_PATH_HELP),
+            "the --force-geometry/--force-binding block has drifted from crcbl::args"
         );
     }
 

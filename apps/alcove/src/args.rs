@@ -14,8 +14,7 @@
 //! value. A flag that kept its own field would be one more writer that none of
 //! the others could see.
 
-use crcbl::args::{Common, Consumed};
-use crcbl::hal::{BindingModel, GeometryPath};
+use crcbl::args::{Common, Consumed, binding_from_name, geometry_from_name};
 use crcbl::render::{DebugView, RenderEffects};
 
 use crate::gpu::Forced;
@@ -282,32 +281,6 @@ pub fn parse(args: impl Iterator<Item = String>) -> Invocation {
     Invocation::Run(options)
 }
 
-/// A [`GeometryPath`] by the name `--force-geometry` takes.
-///
-/// Written here rather than on the enum because it is a *command line's*
-/// vocabulary: `crcbl-hal` has no argument parsing in it and should not grow
-/// any for one sample's flag.
-#[must_use]
-pub fn geometry_from_name(name: &str) -> Option<GeometryPath> {
-    match name {
-        "mesh-shader" | "mesh" => Some(GeometryPath::MeshShader),
-        "indirect-count" | "count" => Some(GeometryPath::IndirectCount),
-        "indirect-per-batch" | "per-batch" => Some(GeometryPath::IndirectPerBatch),
-        _ => None,
-    }
-}
-
-/// A [`BindingModel`] by the name `--force-binding` takes, on
-/// [`geometry_from_name`]'s terms.
-#[must_use]
-pub fn binding_from_name(name: &str) -> Option<BindingModel> {
-    match name {
-        "bindless" => Some(BindingModel::Bindless),
-        "array-pages" | "pages" => Some(BindingModel::ArrayPages),
-        _ => None,
-    }
-}
-
 /// The technique `name` names, **as the engine spells it**.
 ///
 /// Matched against `r_ssao_technique`'s own declared set rather than against a
@@ -334,6 +307,8 @@ pub fn seam_from_name(name: &str) -> Option<f32> {
 
 #[cfg(test)]
 mod tests {
+    use crcbl::hal::{BindingModel, GeometryPath};
+
     use super::*;
 
     fn run(argv: &[&str]) -> Invocation {
@@ -528,44 +503,6 @@ mod tests {
         assert!(matches!(run(&["--help"]), Invocation::Help));
     }
 
-    /// Both path name tables round-trip, so a spelling added to one is a
-    /// spelling the other can produce, and the usage text offers it.
-    #[test]
-    fn every_path_this_sample_can_force_has_a_name() {
-        let kebab = |name: &str| {
-            name.chars()
-                .enumerate()
-                .flat_map(|(at, ch)| {
-                    if ch.is_uppercase() && at > 0 {
-                        vec!['-', ch.to_ascii_lowercase()]
-                    } else {
-                        vec![ch.to_ascii_lowercase()]
-                    }
-                })
-                .collect::<String>()
-        };
-        for path in [
-            GeometryPath::MeshShader,
-            GeometryPath::IndirectCount,
-            GeometryPath::IndirectPerBatch,
-        ] {
-            let name = kebab(&format!("{path:?}"));
-            assert_eq!(geometry_from_name(&name), Some(path), "{name}");
-            assert!(
-                USAGE.contains(&name),
-                "the usage text does not offer {name}"
-            );
-        }
-        for model in [BindingModel::Bindless, BindingModel::ArrayPages] {
-            let name = kebab(&format!("{model:?}"));
-            assert_eq!(binding_from_name(&name), Some(model), "{name}");
-            assert!(
-                USAGE.contains(&name),
-                "the usage text does not offer {name}"
-            );
-        }
-    }
-
     /// **The help offers every technique the engine declares**, and takes each
     /// of them.
     ///
@@ -593,6 +530,10 @@ mod tests {
         assert!(
             USAGE.contains(crcbl::args::SCREENSHOT_HELP),
             "the --screenshot block has drifted from crcbl::args"
+        );
+        assert!(
+            USAGE.contains(crcbl::args::FORCED_PATH_HELP),
+            "the --force-geometry/--force-binding block has drifted from crcbl::args"
         );
     }
 

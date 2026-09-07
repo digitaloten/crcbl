@@ -85,9 +85,7 @@ pub mod sun;
 pub mod web;
 
 pub use app::{Loop, PendingLoop, Summary, Sundial, SundialError, run, start, with_shell};
-pub use args::{
-    DEFAULT_TICK_HZ, Invocation, Options, USAGE, binding_from_name, geometry_from_name, parse,
-};
+pub use args::{DEFAULT_TICK_HZ, Invocation, Options, USAGE, parse};
 /// Re-exported rather than defined here: the free-fly camera lives in
 /// `crcbl-render` so every sample flies the same one.
 pub use crcbl::render::{Flyer, SPEED, TURN};

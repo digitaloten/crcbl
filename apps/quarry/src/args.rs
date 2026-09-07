@@ -5,8 +5,7 @@
 //! `--frames`, `--backend`, `--size` and the rest — so the flags this sample
 //! adds are the ones a *geometry* fixture has and nothing else.
 
-use crcbl::args::{Common, Consumed};
-use crcbl::hal::{BindingModel, GeometryPath};
+use crcbl::args::{Common, Consumed, binding_from_name, geometry_from_name};
 use crcbl::render::{DebugView, ForwardRenderer};
 
 use crate::gpu::Forced;
@@ -114,12 +113,13 @@ OPTIONS:
     --force-geometry <P> Hold the geometry path at 'mesh-shader',
                          'indirect-count' or 'indirect-per-batch' by opening a
                          device without the features that select a better one.
-                         Default: whatever this device selects. This is the
-                         sample the flag exists for: the mesh path selects a
-                         level per cluster and the other two per instance.
+                         Default: whatever this device selects.
     --force-binding <B>  Hold the binding model at 'bindless' or 'array-pages',
                          on --force-geometry's terms. 'array-pages' is what
                          every browser and every Apple device runs.
+                         quarry is the sample those two flags exist for: the
+                         mesh path selects a level per cluster and the other two
+                         per instance.
     --lod-budget <PX>    Screen-space error budget in pixels (default 1). Larger
                          is coarser: a group projecting over the budget is
                          expanded and its children drawn, so raising this stops
@@ -260,34 +260,10 @@ fn budget_from_str(value: &str) -> Result<f32, String> {
     Ok(budget)
 }
 
-/// A [`GeometryPath`] by the name `--force-geometry` takes.
-///
-/// Written here rather than on the enum because it is a *command line's*
-/// vocabulary: `crcbl-hal` has no argument parsing in it and should not grow
-/// any for one sample's flag.
-#[must_use]
-pub fn geometry_from_name(name: &str) -> Option<GeometryPath> {
-    match name {
-        "mesh-shader" | "mesh" => Some(GeometryPath::MeshShader),
-        "indirect-count" | "count" => Some(GeometryPath::IndirectCount),
-        "indirect-per-batch" | "per-batch" => Some(GeometryPath::IndirectPerBatch),
-        _ => None,
-    }
-}
-
-/// A [`BindingModel`] by the name `--force-binding` takes, on
-/// [`geometry_from_name`]'s terms.
-#[must_use]
-pub fn binding_from_name(name: &str) -> Option<BindingModel> {
-    match name {
-        "bindless" => Some(BindingModel::Bindless),
-        "array-pages" | "pages" => Some(BindingModel::ArrayPages),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use crcbl::hal::{BindingModel, GeometryPath};
+
     use super::*;
 
     fn run(argv: &[&str]) -> Invocation {
@@ -485,48 +461,6 @@ mod tests {
         assert!(matches!(run(&["--help"]), Invocation::Help));
     }
 
-    /// Both name tables round-trip through the paths they name, so a spelling
-    /// added to one is a spelling the other can produce — and the usage text
-    /// offers every one of them.
-    #[test]
-    fn every_path_this_sample_can_force_has_a_name() {
-        /// The canonical spelling: the debug name in kebab case, which is what
-        /// the usage text prints.
-        fn kebab(name: &str) -> String {
-            name.chars()
-                .enumerate()
-                .flat_map(|(at, ch)| {
-                    if ch.is_uppercase() && at > 0 {
-                        vec!['-', ch.to_ascii_lowercase()]
-                    } else {
-                        vec![ch.to_ascii_lowercase()]
-                    }
-                })
-                .collect()
-        }
-
-        for path in [
-            GeometryPath::MeshShader,
-            GeometryPath::IndirectCount,
-            GeometryPath::IndirectPerBatch,
-        ] {
-            let name = kebab(&format!("{path:?}"));
-            assert_eq!(geometry_from_name(&name), Some(path), "{name}");
-            assert!(
-                USAGE.contains(&name),
-                "the usage text does not offer {name}"
-            );
-        }
-        for model in [BindingModel::Bindless, BindingModel::ArrayPages] {
-            let name = kebab(&format!("{model:?}"));
-            assert_eq!(binding_from_name(&name), Some(model), "{name}");
-            assert!(
-                USAGE.contains(&name),
-                "the usage text does not offer {name}"
-            );
-        }
-    }
-
     /// **Every flag this sample adds appears in its own usage text.**
     ///
     /// A flag the parser accepts and the help never mentions is a flag nobody
@@ -551,5 +485,9 @@ mod tests {
     fn the_shared_half_of_the_usage_text_is_the_engines_verbatim() {
         assert!(USAGE.contains(crcbl::args::COMMON_OPTIONS_HELP));
         assert!(USAGE.contains(crcbl::args::COMMON_TAIL_HELP));
+        assert!(
+            USAGE.contains(crcbl::args::FORCED_PATH_HELP),
+            "the --force-geometry/--force-binding block has drifted from crcbl::args"
+        );
     }
 }
