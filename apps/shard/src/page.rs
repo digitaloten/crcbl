@@ -73,10 +73,9 @@
 //! at, so the page is correct in a resized window and in the headless offscreen
 //! ring at whatever `--size` asked for.
 
-use crcbl::math::Vec2;
 use crcbl::ui::draw_list::DrawList;
+use crcbl::ui::readout::{ReadoutPanel, ReadoutRow};
 use crcbl::ui::text::FontAtlas;
-use crcbl::ui::widget::NATURAL_FONT_SIZE;
 
 use crate::game::RenderState;
 use crate::level;
@@ -97,24 +96,21 @@ const HURT: [f32; 4] = [0.92, 0.36, 0.30, 1.0];
 /// What the progress row reads once there is no level left to reach.
 const AT_THE_TOP: &str = "max";
 
-/// The panel's inset from the top-left corner, in pixels.
-const PANEL_INSET: f32 = 16.0;
-/// The height of one row, in pixels.
-const ROW_HEIGHT: f32 = 18.0;
-/// The panel's padding inside its own border, in pixels.
-const PANEL_PAD: f32 = 8.0;
-/// How wide the panel is, in pixels. Wide enough for the longest label and a
-/// right-aligned reading beside it —
-/// `every_reading_is_laid_out_where_it_can_actually_be_seen` is what holds this
-/// number to the widest reading rather than to this sentence.
-const PANEL_WIDTH: f32 = 190.0;
-/// How thick the panel's border is, in pixels.
-const BORDER_WIDTH: f32 = 1.0;
-
-/// The scale [`FontAtlas::text_width`] is measured at, which is a multiplier on
-/// the baked glyph size rather than a size in pixels. The page draws at the
-/// font's natural size, so it measures at the natural scale.
-const NATURAL_SCALE: f32 = 1.0;
+/// The panel the readings are drawn in: this page's geometry and palette, over
+/// [`crcbl::ui::readout`]'s layout.
+///
+/// `every_reading_is_laid_out_where_it_can_actually_be_seen` is what holds the
+/// width to the widest reading rather than to a sentence about it.
+const PANEL: ReadoutPanel = ReadoutPanel {
+    inset: 16.0,
+    width: 190.0,
+    row_height: 18.0,
+    pad: 8.0,
+    border_width: 1.0,
+    background: PANEL_BG,
+    border: BORDER,
+    label: LABEL,
+};
 
 /// The control hint, which is the whole of what a first-time visitor needs.
 const HINT: &str = "W/A/S/D walk   Q/E turn   SPACE strikes   F loots   I the pack   \
@@ -131,7 +127,7 @@ pub struct PageStats {
 ///
 /// `atlas` is only measured against — the glyphs themselves are the UI pass's
 /// business — and it is what right-aligns the readings against a proportional
-/// font rather than against a guess.
+/// font rather than against a guess; see [`ReadoutPanel::draw_at`].
 pub fn draw(
     list: &mut DrawList,
     atlas: &FontAtlas,
@@ -139,31 +135,27 @@ pub fn draw(
     state: &RenderState,
     torches_lit: bool,
 ) -> PageStats {
-    let width = extent.0 as f32;
-    let height = extent.1 as f32;
-
     // Both off the one number the simulation carries, so the panel cannot draw
     // a level that disagrees with the pool beside it — see `crate::level`.
     let level = level::level_for(state.experience);
     let pool = level::health_max(level);
 
-    let rows: Vec<(&str, String, [f32; 4])> = vec![
-        (
+    let rows: Vec<ReadoutRow> = vec![
+        ReadoutRow::new(
             "POSITION",
             format!("{:.0} {:.0}", state.feet.x, state.feet.z),
             VALUE,
         ),
-        (
+        ReadoutRow::new(
             "FOOTING",
             if state.grounded {
                 if state.feet.y > 0.05 { "dais" } else { "floor" }
             } else {
                 "falling"
-            }
-            .to_string(),
+            },
             VALUE,
         ),
-        (
+        ReadoutRow::new(
             "HEALTH",
             format!("{}/{}", state.health, pool),
             if state.health * 2 <= pool {
@@ -172,8 +164,8 @@ pub fn draw(
                 VALUE
             },
         ),
-        ("LEVEL", format!("{level}"), VALUE),
-        (
+        ReadoutRow::new("LEVEL", format!("{level}"), VALUE),
+        ReadoutRow::new(
             "NEXT",
             level::level_span(state.experience).map_or_else(
                 || AT_THE_TOP.to_string(),
@@ -181,12 +173,12 @@ pub fn draw(
             ),
             VALUE,
         ),
-        (
+        ReadoutRow::new(
             "FOES",
             format!("{}", state.alive),
             if state.alive > 0 { HURT } else { VALUE },
         ),
-        (
+        ReadoutRow::new(
             "LOOT",
             format!("{}", state.floor),
             // Lit while something is close enough to take, which is the whole
@@ -194,47 +186,16 @@ pub fn draw(
             // a second row, because the panel is small on purpose.
             if state.in_reach { LIT } else { VALUE },
         ),
-        ("CARRIED", format!("{}", state.carried), VALUE),
-        (
+        ReadoutRow::new("CARRIED", format!("{}", state.carried), VALUE),
+        ReadoutRow::new(
             "TORCHES",
-            if torches_lit { "LIT" } else { "OUT" }.to_string(),
+            if torches_lit { "LIT" } else { "OUT" },
             if torches_lit { LIT } else { OUT },
         ),
     ];
 
-    let panel_height = 2.0f32.mul_add(PANEL_PAD, rows.len() as f32 * ROW_HEIGHT);
-    let min = Vec2::new(PANEL_INSET, PANEL_INSET);
-    let max = Vec2::new(PANEL_INSET + PANEL_WIDTH, PANEL_INSET + panel_height);
-    list.rect(min, max, PANEL_BG);
-    list.rect_outline(min, max, BORDER_WIDTH, BORDER);
-
-    for (index, (label, value, colour)) in rows.iter().enumerate() {
-        let y = min.y + PANEL_PAD + index as f32 * ROW_HEIGHT;
-        list.text(
-            Vec2::new(min.x + PANEL_PAD, y),
-            (*label).to_string(),
-            LABEL,
-            NATURAL_FONT_SIZE,
-        );
-        let reading_width = atlas.text_width(value, NATURAL_SCALE);
-        list.text(
-            Vec2::new(max.x - PANEL_PAD - reading_width, y),
-            value.clone(),
-            *colour,
-            NATURAL_FONT_SIZE,
-        );
-    }
-
-    let hint_width = atlas.text_width(HINT, NATURAL_SCALE);
-    list.text(
-        Vec2::new(
-            (width - hint_width) * 0.5,
-            height - PANEL_INSET - ROW_HEIGHT,
-        ),
-        HINT.to_string(),
-        LABEL,
-        NATURAL_FONT_SIZE,
-    );
+    PANEL.draw(list, atlas, &rows);
+    PANEL.hint(list, atlas, extent, HINT);
 
     PageStats {
         commands: list.len(),
@@ -244,8 +205,10 @@ pub fn draw(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crcbl::math::DVec3;
+    use crcbl::math::{DVec3, Vec2};
     use crcbl::ui::draw_list::DrawCommand;
+    use crcbl::ui::readout::NATURAL_SCALE;
+    use crcbl::ui::widget::NATURAL_FONT_SIZE;
 
     /// A character standing on the dais with the torches lit.
     fn on_the_dais() -> RenderState {
@@ -505,12 +468,13 @@ mod tests {
             );
         }
 
-        let panel_right = PANEL_INSET + PANEL_WIDTH;
+        let panel_right = PANEL.inset + PANEL.width;
         for (pos, text) in drawn.iter().filter(|(_, text)| *text != HINT) {
             assert!(
-                pos.x >= PANEL_INSET
+                pos.x >= PANEL.inset
                     && pos.x + atlas.text_width(text, NATURAL_SCALE) <= panel_right,
-                "{text:?} is outside the panel's {PANEL_INSET}..{panel_right} columns: {pos:?}",
+                "{text:?} is outside the panel's {}..{panel_right} columns: {pos:?}",
+                PANEL.inset,
             );
         }
     }

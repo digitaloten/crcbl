@@ -26,7 +26,9 @@
 //! always, and a section per system that has one to contribute. It names no
 //! system — see that module's docs. [`budget`] is the profiler row that sits
 //! beside it once there is anything to put in it: CPU against GPU frame time,
-//! and which of the two the frame is costing.
+//! and which of the two the frame is costing. [`readout`] is the panel the 3D
+//! samples put their own numbers in — a label and a right-aligned reading a
+//! row, sized and coloured by the page rather than by its contents.
 //!
 //! The draw list is the only interface between the UI and the renderer. The
 //! render backend takes a [`DrawList`] and emits GPU draw calls.
@@ -39,6 +41,7 @@ pub mod debug;
 pub mod draw_list;
 pub mod hud;
 pub mod menu;
+pub mod readout;
 pub mod text;
 pub mod touch;
 pub mod widget;
@@ -60,6 +63,7 @@ pub use menu::{
     BUTTON_INSETS, Cycler, FIT_FRACTION, Menu, MenuItem, MenuItemKind, MenuItemLayout, MenuLayout,
     MenuSet, MenuStyle, PANEL_INSETS, Slider,
 };
+pub use readout::{NATURAL_SCALE, ReadoutPanel, ReadoutRow};
 pub use text::{
     ASCENDER, ASCII_GLYPH_COUNT, FIRST_CHAR, FontAtlas, GLYPH_ADVANCE, GLYPH_COUNT, GLYPH_HEIGHT,
     GLYPH_WIDTH, GlyphMetrics, LAST_CHAR, LINE_HEIGHT, NOTDEF_INDEX, glyph_index,

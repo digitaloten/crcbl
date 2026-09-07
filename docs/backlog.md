@@ -5081,22 +5081,6 @@ the same kind of hoist. Moving the widget ids down into `crcbl-ui` was
 considered and declined: their doc comments link `PAUSE_KEY` and
 `MenuAction::from_id`, which would become unresolvable and red `cargo doc`.
 
-### Five 3D demos draw the same readout panel (2026-09-07)
-
-`page::draw` in `apps/{breach,puppet,shard,sparks,towers}/src/page.rs`: the same
-inset box, label/right-aligned-value row loop, centred hint measured with the
-atlas, and the same geometry constants (`PANEL_INSET` 16, `ROW_HEIGHT` 18,
-`PANEL_PAD` 8, `BORDER_WIDTH` 1); puppet and sparks are character-identical,
-towers has it inside `fn panel`, shard and towers re-tint the palette on
-purpose. Plus `PageStats { commands }` in six. **Not the declined
-`crcbl_ui::hud` adoption** (`docs/notes/samples.md`): the objections there —
-`Label` has no colour, `HudPanel` self-sizes — are designed out by a row tuple
-with a colour and an explicit width. **What it would take:** a `ReadoutPanel` in
-`crcbl::ui` beside `widget.rs` with `draw(list, atlas, extent, rows) -> usize`
-and a `hint` helper, extracted **byte-for-byte** — shard's goldens and the
-shard/breach/puppet/sparks/towers browser rows read this panel's pixels, so diff
-the draw lists before and after rather than redesign.
-
 ### `occlusion.rs` and `filter.rs` are the same console-variable driver (2026-09-07)
 
 `apps/alcove/src/occlusion.rs` and `apps/sundial/src/filter.rs` share nine
@@ -5171,6 +5155,29 @@ carries an `Rc<Model>` beside the options and its `request` takes a fourth
 argument, so a `carry:` clause would put one sample's exception into every other
 invocation. Recorded so it is not re-proposed; the same reasoning is written on
 the struct and in the macro's docs.
+
+### shard's goldens do not read the readout panel (2026-09-07)
+
+Measured while hoisting `crcbl_ui::readout::ReadoutPanel`: sabotaging the
+right-alignment arithmetic — dropping the reading's measured width from
+`ReadoutPanel::draw_at`'s x — leaves `apps/shard/tests/run-shard-golden.sh`
+passing all thirteen comparisons on radv. `apps/shard/tests/golden.rs` builds a
+`crcbl::screenshot::ForwardScene` offscreen and runs no UI pass at all, so the
+2026-09-07 seam review's claim that "shard's goldens read this panel's pixels"
+is wrong. What does guard the panel is each page's own
+`every_reading_is_laid_out_where_it_can_actually_be_seen` (both go red on that
+sabotage) and the five browser rows. **What it would take:** decide whether the
+five 3D demos want a golden that includes their overlay, or record that the unit
+tests plus the browser rows are the intended coverage.
+
+### The five readout demos' browser rows were not all re-run (2026-09-07)
+
+The `ReadoutPanel` hoist was verified by comparing each page's whole draw list
+before and after — all five byte-identical, every colour branch covered — so the
+browser rows for shard, sparks and towers are covered by construction rather
+than by a run; breach's and puppet's rows were run by the parent after the
+hoist, and alcove's and sundial's because their knob wiring changed. Stated as a
+gap, not a worry.
 
 ### Smaller seam findings, stated but not worked up (2026-09-07)
 

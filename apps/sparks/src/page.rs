@@ -29,10 +29,9 @@
 //! acquired at, so the page is correct in a resized window and in the headless
 //! offscreen ring at whatever `--size` asked for.
 
-use crcbl::math::Vec2;
 use crcbl::ui::draw_list::DrawList;
+use crcbl::ui::readout::{ReadoutPanel, ReadoutRow};
 use crcbl::ui::text::FontAtlas;
-use crcbl::ui::widget::NATURAL_FONT_SIZE;
 
 use crate::show::Reading;
 
@@ -45,22 +44,19 @@ const VALUE: [f32; 4] = [0.95, 0.96, 1.0, 1.0];
 /// colour.
 const CLAMPED: [f32; 4] = [0.95, 0.72, 0.30, 1.0];
 
-/// The panel's inset from the top-left corner, in pixels.
-const PANEL_INSET: f32 = 16.0;
-/// The height of one row, in pixels.
-const ROW_HEIGHT: f32 = 18.0;
-/// The panel's padding inside its own border, in pixels.
-const PANEL_PAD: f32 = 8.0;
-/// How wide the panel is, in pixels. Wide enough for the longest label and a
-/// right-aligned reading beside it.
-const PANEL_WIDTH: f32 = 196.0;
-/// How thick the panel's border is, in pixels.
-const BORDER_WIDTH: f32 = 1.0;
-
-/// The scale [`FontAtlas::text_width`] is measured at, which is a multiplier on
-/// the baked glyph size rather than a size in pixels. The page draws at the
-/// font's natural size, so it measures at the natural scale.
-const NATURAL_SCALE: f32 = 1.0;
+/// The panel the readings are drawn in: this page's geometry and palette, over
+/// [`crcbl::ui::readout`]'s layout.
+const PANEL: ReadoutPanel = ReadoutPanel {
+    inset: 16.0,
+    // Wide enough for the longest label and a right-aligned reading beside it.
+    width: 196.0,
+    row_height: 18.0,
+    pad: 8.0,
+    border_width: 1.0,
+    background: PANEL_BG,
+    border: BORDER,
+    label: LABEL,
+};
 
 /// What a first-time visitor needs, given there is nothing to press.
 const HINT: &str = "sparks off the anvil  ·  smoke at the vent  ·  the spam is clamped";
@@ -91,21 +87,18 @@ fn grouped(value: u64) -> String {
 ///
 /// `atlas` is only measured against — the glyphs themselves are the UI pass's
 /// business — and it is what right-aligns the readings against a proportional
-/// font rather than against a guess.
+/// font rather than against a guess; see [`ReadoutPanel::draw_at`].
 pub fn draw(
     list: &mut DrawList,
     atlas: &FontAtlas,
     extent: (u32, u32),
     reading: &Reading,
 ) -> PageStats {
-    let width = extent.0 as f32;
-    let height = extent.1 as f32;
-
     let at_share = reading.spam >= reading.spam_share;
-    let rows: [(&str, String, [f32; 4]); 6] = [
-        ("LIVE", grouped(u64::from(reading.live)), VALUE),
-        ("SPARKS", grouped(u64::from(reading.sparks)), VALUE),
-        (
+    let rows: [ReadoutRow; 6] = [
+        ReadoutRow::new("LIVE", grouped(u64::from(reading.live)), VALUE),
+        ReadoutRow::new("SPARKS", grouped(u64::from(reading.sparks)), VALUE),
+        ReadoutRow::new(
             "PUFF",
             format!(
                 "{} {}",
@@ -116,12 +109,12 @@ pub fn draw(
         ),
         // The budget claim, in one row: what the hostile effect holds against
         // what it is allowed.
-        (
+        ReadoutRow::new(
             "SPAM",
             format!("{}/{}", reading.spam, reading.spam_share),
             if at_share { CLAMPED } else { VALUE },
         ),
-        (
+        ReadoutRow::new(
             "CLAMPED",
             grouped(reading.spam_clamped),
             if reading.spam_clamped > 0 {
@@ -130,46 +123,15 @@ pub fn draw(
                 VALUE
             },
         ),
-        (
+        ReadoutRow::new(
             "POOL",
             format!("{}/{}", reading.reserved, reading.capacity),
             VALUE,
         ),
     ];
 
-    let panel_height = 2.0f32.mul_add(PANEL_PAD, rows.len() as f32 * ROW_HEIGHT);
-    let min = Vec2::new(PANEL_INSET, PANEL_INSET);
-    let max = Vec2::new(PANEL_INSET + PANEL_WIDTH, PANEL_INSET + panel_height);
-    list.rect(min, max, PANEL_BG);
-    list.rect_outline(min, max, BORDER_WIDTH, BORDER);
-
-    for (index, (label, value, colour)) in rows.iter().enumerate() {
-        let y = min.y + PANEL_PAD + index as f32 * ROW_HEIGHT;
-        list.text(
-            Vec2::new(min.x + PANEL_PAD, y),
-            (*label).to_string(),
-            LABEL,
-            NATURAL_FONT_SIZE,
-        );
-        let reading_width = atlas.text_width(value, NATURAL_SCALE);
-        list.text(
-            Vec2::new(max.x - PANEL_PAD - reading_width, y),
-            value.clone(),
-            *colour,
-            NATURAL_FONT_SIZE,
-        );
-    }
-
-    let hint_width = atlas.text_width(HINT, NATURAL_SCALE);
-    list.text(
-        Vec2::new(
-            (width - hint_width) * 0.5,
-            height - PANEL_INSET - ROW_HEIGHT,
-        ),
-        HINT.to_string(),
-        LABEL,
-        NATURAL_FONT_SIZE,
-    );
+    PANEL.draw(list, atlas, &rows);
+    PANEL.hint(list, atlas, extent, HINT);
 
     PageStats {
         commands: list.len(),
@@ -179,6 +141,9 @@ pub fn draw(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crcbl::math::Vec2;
+    use crcbl::ui::readout::NATURAL_SCALE;
+    use crcbl::ui::widget::NATURAL_FONT_SIZE;
 
     fn reading() -> Reading {
         Reading {
@@ -299,12 +264,13 @@ mod tests {
             );
         }
 
-        let panel_right = PANEL_INSET + PANEL_WIDTH;
+        let panel_right = PANEL.inset + PANEL.width;
         for (pos, text) in drawn.iter().filter(|(_, text)| text != HINT) {
             assert!(
-                pos.x >= PANEL_INSET
+                pos.x >= PANEL.inset
                     && pos.x + atlas.text_width(text, NATURAL_SCALE) <= panel_right,
-                "{text:?} is outside the panel's {PANEL_INSET}..{panel_right} columns: {pos:?}"
+                "{text:?} is outside the panel's {}..{panel_right} columns: {pos:?}",
+                PANEL.inset,
             );
         }
     }

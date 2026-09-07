@@ -1342,6 +1342,11 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- `crcbl_ui::readout::ReadoutPanel` is the readout panel
+  `apps/{breach,puppet,shard,sparks,towers}` each drew for themselves — the
+  inset box, the label/right-aligned-reading row loop and the centred hint. Each
+  page keeps its own width, palette and rows; the extraction is byte-for-byte,
+  with all five draw lists identical before and after.
 - `crcbl::engine::pause_menu()` builds the pause panel — `RESUME`/`FULLSCREEN`/
   `DEBUG PANEL` on `ESC`/`F11`/`F3`, the menu equivalents of the loop's three
   reserved keys — and `crcbl::engine::pause_only(none, paused)` wraps it in the

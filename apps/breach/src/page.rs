@@ -40,8 +40,8 @@
 
 use crcbl::math::Vec2;
 use crcbl::ui::draw_list::DrawList;
+use crcbl::ui::readout::{ReadoutPanel, ReadoutRow};
 use crcbl::ui::text::FontAtlas;
-use crcbl::ui::widget::NATURAL_FONT_SIZE;
 
 use crate::bots::HEALTH_MAX;
 use crate::game::{RenderState, Scene, accuracy};
@@ -74,22 +74,19 @@ const CROSSHAIR_ARM: f32 = 9.0;
 /// How thick each arm is, in pixels.
 const CROSSHAIR_WIDTH: f32 = 2.0;
 
-/// The panel's inset from the top-left corner, in pixels.
-const PANEL_INSET: f32 = 16.0;
-/// The height of one row, in pixels.
-const ROW_HEIGHT: f32 = 18.0;
-/// The panel's padding inside its own border, in pixels.
-const PANEL_PAD: f32 = 8.0;
-/// How wide the panel is, in pixels. Wide enough for the longest label and a
-/// right-aligned reading beside it.
-const PANEL_WIDTH: f32 = 180.0;
-/// How thick the panel's border is, in pixels.
-const BORDER_WIDTH: f32 = 1.0;
-
-/// The scale [`FontAtlas::text_width`] is measured at, which is a multiplier on
-/// the baked glyph size rather than a size in pixels. The page draws at the
-/// font's natural size, so it measures at the natural scale.
-const NATURAL_SCALE: f32 = 1.0;
+/// The panel the readings are drawn in: this page's geometry and palette, over
+/// [`crcbl::ui::readout`]'s layout.
+const PANEL: ReadoutPanel = ReadoutPanel {
+    inset: 16.0,
+    // Wide enough for the longest label and a right-aligned reading beside it.
+    width: 180.0,
+    row_height: 18.0,
+    pad: 8.0,
+    border_width: 1.0,
+    background: PANEL_BG,
+    border: BORDER,
+    label: LABEL,
+};
 
 /// The control hint, which is the whole of what a first-time visitor needs.
 const HINT: &str = "W/A/S/D walk   mouse or the arrows look   SPACE fires   I the kit";
@@ -105,22 +102,17 @@ pub struct PageStats {
 ///
 /// `atlas` is only measured against — the glyphs themselves are the UI pass's
 /// business — and it is what right-aligns the readings against a proportional
-/// font rather than against a guess. Its measurements take a scale relative to
-/// the baked glyph size, not a pixel size, so everything here is drawn at
-/// [`NATURAL_FONT_SIZE`] and measured at the natural scale of `1.0`.
+/// font rather than against a guess; see [`ReadoutPanel::draw_at`].
 pub fn draw(
     list: &mut DrawList,
     atlas: &FontAtlas,
     extent: (u32, u32),
     state: &RenderState,
 ) -> PageStats {
-    let width = extent.0 as f32;
-    let height = extent.1 as f32;
-
-    let mut rows: Vec<(&str, String, [f32; 4])> = Vec::with_capacity(8);
-    rows.push(("SHOTS", format!("{}", state.shots), VALUE));
-    rows.push(("HITS", format!("{}", state.hits), VALUE));
-    rows.push((
+    let mut rows: Vec<ReadoutRow> = Vec::with_capacity(8);
+    rows.push(ReadoutRow::new("SHOTS", format!("{}", state.shots), VALUE));
+    rows.push(ReadoutRow::new("HITS", format!("{}", state.hits), VALUE));
+    rows.push(ReadoutRow::new(
         "ACCURACY",
         match accuracy(state.shots, state.hits) {
             Some(percent) => format!("{percent:.0}%"),
@@ -128,9 +120,9 @@ pub fn draw(
         },
         VALUE,
     ));
-    rows.push((
+    rows.push(ReadoutRow::new(
         "AIM",
-        state.crosshair.label().to_string(),
+        state.crosshair.label(),
         if state.crosshair.scores() {
             CROSSHAIR_ON_TARGET
         } else {
@@ -141,7 +133,7 @@ pub fn draw(
         Scene::Range { plates_down, .. } => {
             for (lane, at) in LANE_LIST.iter().enumerate() {
                 let down = plates_down[lane];
-                rows.push((
+                rows.push(ReadoutRow::new(
                     at.label,
                     format!(
                         "{:.0} m  {}",
@@ -155,7 +147,7 @@ pub fn draw(
         Scene::Practice { bots, health } => {
             // The player's own state first, because on this map it is the one
             // reading that decides what happens next.
-            rows.push((
+            rows.push(ReadoutRow::new(
                 "HEALTH",
                 format!("{health}"),
                 if *health * 3 <= HEALTH_MAX {
@@ -165,12 +157,12 @@ pub fn draw(
                 },
             ));
             for (view, route) in bots.iter().zip(crate::map::practice::ROUTES) {
-                rows.push((
+                rows.push(ReadoutRow::new(
                     route.label,
                     if view.alive {
-                        if view.alerted { "ONTO YOU" } else { "PATROL" }.to_string()
+                        if view.alerted { "ONTO YOU" } else { "PATROL" }
                     } else {
-                        "DOWN".to_string()
+                        "DOWN"
                     },
                     if view.alive && !view.alerted {
                         VALUE
@@ -182,41 +174,9 @@ pub fn draw(
         }
     }
 
-    let panel_height = 2.0f32.mul_add(PANEL_PAD, rows.len() as f32 * ROW_HEIGHT);
-    let min = Vec2::new(PANEL_INSET, PANEL_INSET);
-    let max = Vec2::new(PANEL_INSET + PANEL_WIDTH, PANEL_INSET + panel_height);
-    list.rect(min, max, PANEL_BG);
-    list.rect_outline(min, max, BORDER_WIDTH, BORDER);
-
-    for (index, (label, value, colour)) in rows.iter().enumerate() {
-        let y = min.y + PANEL_PAD + index as f32 * ROW_HEIGHT;
-        list.text(
-            Vec2::new(min.x + PANEL_PAD, y),
-            (*label).to_string(),
-            LABEL,
-            NATURAL_FONT_SIZE,
-        );
-        let reading_width = atlas.text_width(value, NATURAL_SCALE);
-        list.text(
-            Vec2::new(max.x - PANEL_PAD - reading_width, y),
-            value.clone(),
-            *colour,
-            NATURAL_FONT_SIZE,
-        );
-    }
-
+    PANEL.draw(list, atlas, &rows);
     crosshair(list, extent, state.crosshair.scores());
-
-    let hint_width = atlas.text_width(HINT, NATURAL_SCALE);
-    list.text(
-        Vec2::new(
-            (width - hint_width) * 0.5,
-            height - PANEL_INSET - ROW_HEIGHT,
-        ),
-        HINT.to_string(),
-        LABEL,
-        NATURAL_FONT_SIZE,
-    );
+    PANEL.hint(list, atlas, extent, HINT);
 
     PageStats {
         commands: list.len(),
@@ -253,6 +213,8 @@ mod tests {
     use super::*;
     use crate::game::Aim;
     use crcbl::ui::draw_list::DrawCommand;
+    use crcbl::ui::readout::NATURAL_SCALE;
+    use crcbl::ui::widget::NATURAL_FONT_SIZE;
 
     /// The readings the practice map would show with a bot onto the player, one
     /// down and the player hurt — the longest strings this panel ever draws.
@@ -442,12 +404,13 @@ mod tests {
             );
         }
 
-        let panel_right = PANEL_INSET + PANEL_WIDTH;
+        let panel_right = PANEL.inset + PANEL.width;
         for (pos, text) in drawn.iter().filter(|(_, text)| *text != HINT) {
             assert!(
-                pos.x >= PANEL_INSET
+                pos.x >= PANEL.inset
                     && pos.x + atlas.text_width(text, NATURAL_SCALE) <= panel_right,
-                "{text:?} is outside the panel's {PANEL_INSET}..{panel_right} columns: {pos:?}",
+                "{text:?} is outside the panel's {}..{panel_right} columns: {pos:?}",
+                PANEL.inset,
             );
         }
     }
@@ -455,7 +418,7 @@ mod tests {
     /// **The practice map's panel carries what that map is about, and fits.**
     ///
     /// Its readings are words rather than numbers — `ONTO YOU` is the longest
-    /// string this panel ever right-aligns — so a [`PANEL_WIDTH`] that suits the
+    /// string this panel ever right-aligns — so a [`PANEL`] width that suits the
     /// range's `18 m  DOWN` can still push one of them off the panel, and
     /// nothing about the range's own layout test would see it.
     #[test]
@@ -494,11 +457,11 @@ mod tests {
             assert!(!words.contains(&lane.label), "the range's lanes are here");
         }
 
-        let panel_right = PANEL_INSET + PANEL_WIDTH;
+        let panel_right = PANEL.inset + PANEL.width;
         for (pos, text) in drawn.iter().filter(|(_, text)| *text != HINT) {
             let end = pos.x + atlas.text_width(text, NATURAL_SCALE);
             assert!(
-                pos.x >= PANEL_INSET && end <= panel_right,
+                pos.x >= PANEL.inset && end <= panel_right,
                 "{text:?} runs to {end} past the panel's {panel_right} columns",
             );
         }

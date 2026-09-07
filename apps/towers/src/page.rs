@@ -56,6 +56,7 @@
 
 use crcbl::math::Vec2;
 use crcbl::ui::draw_list::DrawList;
+use crcbl::ui::readout::{NATURAL_SCALE, ReadoutPanel, ReadoutRow};
 use crcbl::ui::text::FontAtlas;
 use crcbl::ui::widget::NATURAL_FONT_SIZE;
 
@@ -76,23 +77,25 @@ const PICKED: [f32; 4] = [0.55, 0.92, 0.62, 1.0];
 /// What a lost run is drawn in.
 const LOST: [f32; 4] = [0.95, 0.40, 0.36, 1.0];
 
-/// The panels' inset from the edges of the surface, in pixels.
-const INSET: f32 = 16.0;
-/// The height of one row, in pixels.
-const ROW_HEIGHT: f32 = 18.0;
-/// A panel's padding inside its own border, in pixels.
-const PAD: f32 = 8.0;
-/// How wide the readout panel is, in pixels.
-const READOUT_WIDTH: f32 = 176.0;
-/// How wide the build panel is, in pixels.
-const BUILD_WIDTH: f32 = 168.0;
-/// How thick a panel's border is, in pixels.
-const BORDER_WIDTH: f32 = 1.0;
+/// The readout panel: this page's geometry and palette, over
+/// [`crcbl::ui::readout`]'s layout.
+const READOUT: ReadoutPanel = ReadoutPanel {
+    inset: 16.0,
+    width: 176.0,
+    row_height: 18.0,
+    pad: 8.0,
+    border_width: 1.0,
+    background: PANEL_BG,
+    border: BORDER,
+    label: LABEL,
+};
 
-/// The scale [`FontAtlas::text_width`] is measured at, which is a multiplier on
-/// the baked glyph size rather than a size in pixels. The page draws at the
-/// font's natural size, so it measures at the natural scale.
-const NATURAL_SCALE: f32 = 1.0;
+/// The build panel, which stands under the readout and is narrower because its
+/// rows are a plot's name and a price rather than a reading.
+const BUILD: ReadoutPanel = ReadoutPanel {
+    width: 168.0,
+    ..READOUT
+};
 
 /// What marks the highlighted row of the build list.
 ///
@@ -111,47 +114,12 @@ pub struct PageStats {
     pub commands: usize,
 }
 
-/// How tall a panel of `rows` rows stands, in pixels — what the panel below it
-/// is offset by.
-fn panel_height(rows: usize) -> f32 {
-    2.0f32.mul_add(PAD, rows as f32 * ROW_HEIGHT)
-}
-
-/// One panel's worth of label-and-reading rows.
-fn panel(
-    list: &mut DrawList,
-    atlas: &FontAtlas,
-    origin: Vec2,
-    width: f32,
-    rows: &[(String, String, [f32; 4])],
-) {
-    let max = Vec2::new(origin.x + width, origin.y + panel_height(rows.len()));
-    list.rect(origin, max, PANEL_BG);
-    list.rect_outline(origin, max, BORDER_WIDTH, BORDER);
-    for (index, (label, value, colour)) in rows.iter().enumerate() {
-        let y = origin.y + PAD + index as f32 * ROW_HEIGHT;
-        list.text(
-            Vec2::new(origin.x + PAD, y),
-            label.clone(),
-            LABEL,
-            NATURAL_FONT_SIZE,
-        );
-        let reading = atlas.text_width(value, NATURAL_SCALE);
-        list.text(
-            Vec2::new(max.x - PAD - reading, y),
-            value.clone(),
-            *colour,
-            NATURAL_FONT_SIZE,
-        );
-    }
-}
-
 /// The readout panel's rows.
-fn readout(state: &RenderState) -> Vec<(String, String, [f32; 4])> {
+fn readout(state: &RenderState) -> Vec<ReadoutRow> {
     vec![
-        ("GOLD".into(), format!("{}", state.gold), VALUE),
-        (
-            "LIVES".into(),
+        ReadoutRow::new("GOLD", format!("{}", state.gold), VALUE),
+        ReadoutRow::new(
+            "LIVES",
             format!("{}/{STARTING_LIVES}", state.lives),
             if state.lives * 3 <= STARTING_LIVES {
                 WARN
@@ -159,23 +127,19 @@ fn readout(state: &RenderState) -> Vec<(String, String, [f32; 4])> {
                 VALUE
             },
         ),
-        (
-            "WAVE".into(),
-            format!("{}/{}", state.wave, WAVES.len()),
-            VALUE,
-        ),
-        (
-            "NEXT".into(),
+        ReadoutRow::new("WAVE", format!("{}/{}", state.wave, WAVES.len()), VALUE),
+        ReadoutRow::new(
+            "NEXT",
             match state.next_wave_in {
                 Some(seconds) => format!("{seconds:.1} s"),
                 None => "--".into(),
             },
             VALUE,
         ),
-        ("CREEPS".into(), format!("{}", state.creeps_alive), VALUE),
-        ("KILLS".into(), format!("{}", state.kills), VALUE),
-        (
-            "LEAKS".into(),
+        ReadoutRow::new("CREEPS", format!("{}", state.creeps_alive), VALUE),
+        ReadoutRow::new("KILLS", format!("{}", state.kills), VALUE),
+        ReadoutRow::new(
+            "LEAKS",
             format!("{}", state.leaks),
             if state.leaks > 0 { WARN } else { VALUE },
         ),
@@ -183,7 +147,7 @@ fn readout(state: &RenderState) -> Vec<(String, String, [f32; 4])> {
 }
 
 /// The build panel's rows: one per plot, the highlighted one marked.
-fn build_list(state: &RenderState, selected: u8) -> Vec<(String, String, [f32; 4])> {
+fn build_list(state: &RenderState, selected: u8) -> Vec<ReadoutRow> {
     PLOTS
         .iter()
         .enumerate()
@@ -201,7 +165,7 @@ fn build_list(state: &RenderState, selected: u8) -> Vec<(String, String, [f32; 4
             } else {
                 (format!("{COST}g"), VALUE)
             };
-            (label, reading, colour)
+            ReadoutRow::new(label, reading, colour)
         })
         .collect()
 }
@@ -210,7 +174,7 @@ fn build_list(state: &RenderState, selected: u8) -> Vec<(String, String, [f32; 4
 ///
 /// `atlas` is only measured against — the glyphs themselves are the UI pass's
 /// business — and it is what right-aligns the readings against a proportional
-/// font rather than against a guess.
+/// font rather than against a guess; see [`ReadoutPanel::draw_at`].
 pub fn draw(
     list: &mut DrawList,
     atlas: &FontAtlas,
@@ -223,18 +187,14 @@ pub fn draw(
 
     let readout = readout(state);
     let build = build_list(state, selected);
-    panel(
+    READOUT.draw(list, atlas, &readout);
+    BUILD.draw_at(
         list,
         atlas,
-        Vec2::new(INSET, INSET),
-        READOUT_WIDTH,
-        &readout,
-    );
-    panel(
-        list,
-        atlas,
-        Vec2::new(INSET, 2.0f32.mul_add(INSET, panel_height(readout.len()))),
-        BUILD_WIDTH,
+        Vec2::new(
+            READOUT.inset,
+            2.0f32.mul_add(READOUT.inset, READOUT.height(readout.len())),
+        ),
         &build,
     );
 
@@ -247,20 +207,14 @@ pub fn draw(
     } {
         let banner = atlas.text_width(text, NATURAL_SCALE);
         list.text(
-            Vec2::new((width - banner) * 0.5, height * 0.5 - ROW_HEIGHT),
+            Vec2::new((width - banner) * 0.5, height * 0.5 - READOUT.row_height),
             text.to_string(),
             colour,
             NATURAL_FONT_SIZE,
         );
     }
 
-    let hint = atlas.text_width(HINT, NATURAL_SCALE);
-    list.text(
-        Vec2::new((width - hint) * 0.5, height - INSET - ROW_HEIGHT),
-        HINT.to_string(),
-        LABEL,
-        NATURAL_FONT_SIZE,
-    );
+    READOUT.hint(list, atlas, extent, HINT);
 
     PageStats {
         commands: list.len(),
