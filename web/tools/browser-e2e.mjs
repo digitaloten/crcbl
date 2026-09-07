@@ -2018,6 +2018,16 @@ const EXPECTATIONS = {
       frameHeader: 52,
       magic: 'CRCBLSVE',
     },
+    // **THE PEAK WASM HEAP**, and the one row in this table that opts a demo
+    // into the reading group I takes of it. `web/demos/shard/main.js` prints a
+    // `[MEM]` line whenever the linear memory grows and once on the last frame,
+    // and that file argues why it is shard's page that prints it and not
+    // `web/engine/demo.js`: this is the sample
+    // `docs/plan/sample/15-shard.md`'s milestone 1 asks the address-space
+    // question of. A flag rather than a per-demo ceiling, because the ceiling
+    // is a property of wasm32 and of what the engine puts in it rather than of
+    // a page — `WASM_HEAP_CEILING` is where it is stated and argued.
+    wasmHeap: true,
   },
   orbit: {
     key: null,
@@ -2954,6 +2964,38 @@ const PROVOCATION_MS = 5_000;
  * it is a constant here rather than a phrase typed into a filter.
  */
 const TEARDOWN_LEAK = 'object(s) still alive at device teardown';
+
+/**
+ * How the page states its linear memory's high-water mark.
+ *
+ * `web/demos/shard/main.js` prints `[MEM] wasm heap: N bytes (M MiB) at …`
+ * whenever `WebAssembly.Memory` grows and once on the last frame. One pattern
+ * both selects the lines and reads the number out of them, so the check cannot
+ * end up filtering on a prefix it then fails to parse — and a page that stops
+ * printing them leaves it with nothing to read, which is a failure below rather
+ * than a filter quietly matching nothing.
+ */
+const HEAP_LINE = /\[MEM\] wasm heap: (\d+) bytes/;
+
+/**
+ * The most of the wasm32 address space a demo on this site may end a run in.
+ *
+ * **Measured, then trebled.** shard — the heaviest page here and the only one
+ * that opts in — peaked at 11 403 264 bytes, 10.9 MiB, on this machine's
+ * hardware adapter on 2026-09-07, and it peaked at exactly that on all four of
+ * the page loads that run makes: the linear memory holds game state, the CPU
+ * side of the zone's meshes and the two stream buffers, none of which is a
+ * function of the rasteriser underneath. So 32 MiB is close enough to have
+ * teeth against content that trebles and far enough that a page load with one
+ * more zone in it is not a red CI run.
+ *
+ * **And it is a budget rather than the limit.** A wasm32 module's address
+ * space ends at 4 GiB, which is 128 times this and therefore says nothing about
+ * a build that has quietly grown tenfold — which is the reading
+ * `docs/plan/sample/15-shard.md`'s milestone 1 asks for. A ceiling worth
+ * failing on is one the current build is within an order of magnitude of.
+ */
+const WASM_HEAP_CEILING = 32 * 1024 * 1024;
 
 /**
  * Whether a 404 is the *page* asking for an asset it did not get.
@@ -10084,6 +10126,21 @@ try {
   const countsOf = (held) =>
     new Map((held ?? []).map(({ kind, count }) => [kind, count]));
   const heldSamples = [heldRunning];
+  // **WHAT A FRAME OF THIS DEMO COSTS, ON THIS ADAPTER, IN WALL CLOCK.** A
+  // reading rather than a check: `docs/plan/sample/15-shard.md`'s milestone 1
+  // asks for a recorded browser budget, and the windows below are the only
+  // stretch of a run where the demo is doing nothing but drawing — the groups
+  // before them are dispatching input and waiting on the simulation, so their
+  // elapsed says more about the driver than about the frame.
+  //
+  // It is the page loop's wall clock and not the engine's own accounting: the
+  // per-pass `p50 / p95` table `crcbl::engine` prints at exit is the finer
+  // instrument and it is in this run's page log already. This one is the
+  // end-to-end figure that table cannot give — command replay, the browser's
+  // own scheduling and the rAF cadence included — and it is bounded above by
+  // `until`'s 16 ms poll on each window's last frame.
+  const watchedFrom = await replayedNow();
+  const watchedAt = Date.now();
   let watched = true;
   // What the window that ran out actually managed, for the message below. "The
   // demo drew fewer than 20" was true of every slow runner and told a reader
@@ -10107,6 +10164,22 @@ try {
       watched ? await evaluate(page, `crcbl.gpu.replayer.liveObjects()`) : null
     );
   }
+  const watchedFor = Date.now() - watchedAt;
+  const watchedFrames = await replayedNow();
+  const drewWatched =
+    typeof watchedFrames === 'number' && typeof watchedFrom === 'number'
+      ? watchedFrames - watchedFrom
+      : 0;
+  say(
+    drewWatched > 0
+      ? `web e2e: steady state: ${drewWatched} replayed frame(s) in ` +
+          `${(watchedFor / 1000).toFixed(1)} s — ` +
+          `${(watchedFor / drewWatched).toFixed(1)} ms/frame on the ` +
+          `"${chosen.mode}" adapter`
+      : `web e2e: steady state: no frame was replayed in ` +
+          `${(watchedFor / 1000).toFixed(1)} s, so this run records no ` +
+          'browser budget'
+  );
   const readSamples = heldSamples.every((held) => Array.isArray(held));
   // A kind counts as growing only if it rose across every window in turn.
   const grew = readSamples
@@ -10224,6 +10297,53 @@ try {
           'reported its own end, so the "still alive at device teardown" line ' +
           'web/run-browser-e2e.sh greps for could never have been written'
   );
+
+  // **HOW CLOSE THE BUILD CAME TO THE ADDRESS SPACE IT RUNS IN**, asked of the
+  // one demo whose plan asks it. `web/demos/shard/main.js` prints the peak on
+  // growth and once on its last frame; this reads the last such line back and
+  // holds it against `WASM_HEAP_CEILING`.
+  //
+  // Read off the page log rather than only off `crcbl.memory` because the log
+  // is what CI keeps: the `web-e2e-shard` artifact is this console, and a
+  // figure that exists only in a driver's memory is a figure no Pages run
+  // records. The live reading is taken as well, and the two are compared — a
+  // logged peak *above* the live `byteLength` is a page reporting a heap it
+  // does not have, and a line nobody cross-checks is how a reading drifts from
+  // the thing it names.
+  //
+  // Asked after the stop, deliberately: memory only ever grows, so the last
+  // frame's reading is the run's peak and every earlier moment would understate
+  // it.
+  if (EXPECTED.wasmHeap) {
+    const heapLines = consoleLines.filter((line) => HEAP_LINE.test(line));
+    const logged = Number(heapLines.at(-1)?.match(HEAP_LINE)?.[1] ?? NaN);
+    const live = await evaluate(page, `crcbl.memory.buffer.byteLength`);
+    const mib = (bytes) => `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+    const read = Number.isFinite(logged) && logged > 0;
+    const alive = typeof live === 'number' && live > 0;
+    check(
+      'I',
+      'the page reports the peak wasm heap it grew to',
+      read && alive && logged <= live && live < WASM_HEAP_CEILING,
+      !read
+        ? `${heapLines.length} page line(s) matched ${HEAP_LINE}, and none of ` +
+            'them states a byte count — the peak wasm heap this demo is ' +
+            'measured on is not being reported at all'
+        : !alive
+          ? `crcbl.memory.buffer.byteLength answered ${JSON.stringify(live)}, ` +
+            `so the logged ${mib(logged)} has nothing to be checked against`
+          : logged > live
+            ? `the page logged ${mib(logged)} but its memory holds ` +
+              `${mib(live)} — a linear memory cannot shrink, so one of the two ` +
+              'is not this page'
+            : live < WASM_HEAP_CEILING
+              ? `${logged} bytes (${mib(logged)}) at the last frame, against a ` +
+                `ceiling of ${mib(WASM_HEAP_CEILING)}, off ${heapLines.length} ` +
+                'reading(s) — every page this run opened, not only the last'
+              : `${mib(live)} against a ceiling of ${mib(WASM_HEAP_CEILING)} — ` +
+                'this build is closing on the address space a wasm32 module has'
+    );
+  }
 
   // Lifted out of the page log and onto this run's own output, because the
   // shell wrapper greps what it can see. The page log is written below and is

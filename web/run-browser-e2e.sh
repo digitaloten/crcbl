@@ -1039,6 +1039,29 @@ case "$DEMO" in
             echo "               passes for a demo that always opens in the same place" >&2
             exit 1
         fi
+        # And once more for the measurement, which is not a verb at all.
+        # `docs/plan/sample/15-shard.md`'s milestone 1 asks for the peak wasm
+        # memory figure as an exit criterion, and a figure is only taken for as
+        # long as something keeps taking it: the number in that doc came off a
+        # run, and the day the page stops printing `[MEM]` lines the doc goes on
+        # stating it while nothing measures it any more.
+        #
+        # One name, and it is the whole of that half of the criterion — every
+        # other check on this page is green whether or not the heap was read.
+        # The check is the only thing that reads `web/demos/shard/main.js`'s
+        # readings back, so a build whose page printed none would leave a
+        # recorded figure with nothing behind it.
+        #
+        # Renaming it in the driver is meant to fail here and be renamed here
+        # too.
+        HEAP="$(grep -F 'the page reports the peak wasm heap it grew to' "${OUTPUT}.plain" || true)"
+        if [ -z "$HEAP" ]; then
+            echo "crcbl web e2e: the driver never read $DEMO's peak wasm heap; the" >&2
+            echo "               address-space figure milestone 1 records is not being" >&2
+            echo "               taken by anything, and the number in the plan is a" >&2
+            echo "               claim about a run nobody repeats" >&2
+            exit 1
+        fi
         ;;
 esac
 

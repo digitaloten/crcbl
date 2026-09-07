@@ -5452,18 +5452,6 @@ milestone 4 asks for is also unrecorded, though the page exists
 
 ## shard (`docs/plan/sample/15-shard.md`)
 
-### Shard's milestone 1 measurements are all untaken (2026-08-27)
-
-**Not measured:** the recorded browser budget for real 3D content, and the peak
-wasm memory figure — which this doc says is the first sample whose content could
-plausibly approach the wasm32 address-space ceiling. The golden frames per
-`GeometryPath` are taken: `apps/shard/tests/golden.rs`, run by
-`apps/shard/tests/run-shard-golden.sh` and by CI's **Draw shard's zone on
-lavapipe** step.
-
-**What it blocks:** one of milestone 1's four exit criteria, and the "first 3D
-browser budget on the site" gap this sample exists to close.
-
 ### Shard's milestone 2 is unstarted and blocked outside the sample (2026-08-27)
 
 **Not built at all.** Sector streaming, interest-managed replication, a
@@ -5753,18 +5741,33 @@ left out:
   wants console, CLI, UI button and autosave timer to be one path; the path
   exists (`Shard::autosave` → `Vault::store`) but only the timer calls it.
 
-### `apps/shard` has two of milestone 1's exit-criteria figures still untaken (2026-08-26)
+### shard's peak wasm heap is measured on one adapter (2026-09-07)
 
-Two of that plan's exit criteria are recordings rather than features, and
-neither has been made:
+`web/demos/shard/main.js` prints a `[MEM] wasm heap:` line on every growth of
+the linear memory and once on its last frame, and `web/tools/browser-e2e.mjs`'s
+`wasmHeap` row holds the last of them against `WASM_HEAP_CEILING` — 32 MiB, set
+against a reading of 11 403 264 bytes (10.9 MiB) taken on this machine's
+hardware adapter and identical on all four page loads of that run.
 
-- **A recorded browser budget.** What _is_ measured, on this machine, is the
-  browser gate's wall clock: 82 s before the fight slice, 91–94 s after it, and
-  111 s after the save slice, on the `auto` adapter, which resolves to
-  SwiftShader here. That is a gate timing, not the sample's frame budget, and
-  the two should not be confused.
-- **Peak wasm memory.** Not measured at all. `web/engine/wasm-memory.js` exists
-  and other demos' pages read it; nothing here reads it or records a number.
+**Not taken on CI.** The page change is newer than the last Pages run, so no
+`web-e2e-shard` artifact carries a `[MEM]` line yet. The figure should be the
+same — the linear memory holds game state, the CPU side of the zone and the two
+stream buffers, none of it a function of the rasteriser — but that is an
+argument, not a reading. Confirm it off the next Pages run's
+`shard-swiftshader.log`; if it differs, `WASM_HEAP_CEILING` is what moves rather
+than the page.
+
+**`web/engine/wasm-memory.js` is not what does this**, contrary to the entry
+this one replaces. That module decodes the `env.memory` import's declared limits
+out of a `.wasm` binary; its only readers are `web/engine/jobs.js`,
+`web/tools/check-exports.mjs` and `web/tools/worker-gate.mjs`. No demo page
+reads it, and it cannot report a runtime high-water mark — the reading comes
+from `memory.buffer.byteLength` in the page.
+
+**Also unverified: the threaded build.** `web/build.sh --threads` was not run
+against this change, so the `[MEM]` line has only been printed from an artifact
+whose `memory.buffer` is an `ArrayBuffer` rather than a `SharedArrayBuffer`.
+`byteLength` is defined on both, so this is expected to be uneventful.
 
 ### shard's goldens are drawn with anisotropic filtering off (2026-09-07)
 

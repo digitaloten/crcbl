@@ -55,7 +55,9 @@ far comes from a 2D sample.
   adoption is what the original sentence was really asking for**.
 - **A real browser budget for real 3D content**, including how close the build
   comes to the wasm32 address-space ceiling — the first sample whose content
-  could plausibly approach it.
+  could plausibly approach it. Measured on 2026-09-07, and it does not: the
+  answer is 376 times under, because the content is in GPU objects rather than
+  in the linear memory. The exit criteria below carry the reading.
 
 ## Milestone 2 proves — the native world
 
@@ -145,8 +147,11 @@ paths, against four committed references — and it is also where the one record
 shortfall of this milestone's picture lives: the reference is drawn with
 anisotropic filtering off, because radv and llvmpipe do not agree about it on a
 floor this grazing and nothing else in the frame accounts for any of the
-difference. The browser budget and the peak wasm memory figure are still
-untaken.
+difference. The browser budget and the peak wasm memory figure are taken as of
+2026-09-07, and the exit criteria below record them: a frame of this zone costs
+0.983 ms of GPU p50 on a hardware adapter and 5.0 to 12.7 **seconds** under CI's
+SwiftShader, and the linear memory peaks at 10.9 MiB — a quarter of one percent
+of what a wasm32 module can address.
 
 **The zone is one authored table and everything else is read off it**: a floor
 slab per open tile, a solid block per wall tile, pillars, a dais, braziers, and
@@ -195,8 +200,8 @@ payload version 3, holding the experience and deriving the level from it.
 What a level is **not** yet is something to spend: there is no skill, no stat
 point and no equipment. There is no sector streaming and no networking of any
 kind — the plan says milestone 1 ships none, and the loopback here is sample
-rule 2 rather than a network. The recorded browser budget and the peak wasm
-memory figure are not taken; the golden frames are (see below).
+rule 2 rather than a network. The recorded browser budget, the peak wasm memory
+figure and the golden frames are all taken (see below).
 
 **One absence is in the picture rather than in the feature list: the character
 is a capsule.** It is the _same_ capsule `crcbl::phys::CharacterConfig` sweeps,
@@ -240,7 +245,52 @@ run over.
   budget, 0.0020% grossly wrong against 0.1%, and ssim 0.999142 against a 0.99
   floor. The suite's device withholds `SAMPLER_ANISOTROPY`, which is the whole
   of what the two rasterisers disagree about here — see that file's `BASE`.
-- Recorded browser budget for real 3D content, and the peak wasm memory figure.
+- ✅ Recorded browser budget for real 3D content, and the peak wasm memory
+  figure. Met 2026-09-07. Both come off the browser gate now rather than out of
+  this doc, so a later run re-takes them: the budget is the engine's own
+  `gpu passes (p50 / p95)` table, printed into the page log at exit, and the
+  heap is a `[MEM]` line `web/demos/shard/main.js` prints whenever the linear
+  memory grows and once on its last frame.
+
+  **The budget, from three runs of the same page at 959×463**, all three drawing
+  through `IndirectPerBatch`, `ArrayPages` and `Rasterised`:
+  - **A hardware adapter** — this machine, Chrome on WebGPU, adapter reported as
+    `amd rdna-3`: 26 labels, **0.983 ms of p50** for the whole frame, of which
+    `forward` is 0.213 / 0.214 ms (21.7%), `ssr` 0.196 ms (19.9%) and
+    `probe-gather` 0.114 ms (11.6%). Nothing here is the limit: the CPU clock
+    reads mean 16.666 ms (60.0 fps), and the gate's own steady-state reading —
+    82 replayed frames in 1.4 s, 16.6 ms a frame — is measuring the display's
+    cadence rather than the zone. Reproducible: a second run of the same gate
+    printed the same 0.983 ms of p50, with `forward` at 0.212 / 0.213 ms.
+  - **CI's SwiftShader, on a fast runner**: 26 labels, **5033.952 ms of p50**,
+    of which `forward` alone is 4250.733 / 4375.511 ms — **84.4%** of the frame.
+  - **CI's SwiftShader, on a slow one**: 26 labels, **12681.860 ms of p50**,
+    `forward` 11198.427 / 11461.437 ms — **88.3%**.
+
+  So the same frame costs a millisecond on a GPU and five to thirteen seconds on
+  a software rasteriser, and the whole of that spread is the forward pass — the
+  lit, clustered, many-light one this zone exists to load. Two runners on the
+  same image differ from each other by 2.5x, which is why every wait in
+  `web/tools/browser-e2e.mjs` is scaled by a slowdown it measures rather than
+  fixed. The CPU means those two runs print, 60.845 ms and 62.422 ms, are
+  **not** a frame time: the fixed-step clock caps a frame at 64 ms, and both are
+  sitting on that cap.
+
+  **The peak wasm heap is 11 403 264 bytes — 10.9 MiB**, on the hardware run,
+  and the same figure on each of the four page loads that run makes. That is
+  **0.27% of the 4 GiB a wasm32 module can address** — 376 times under it — so
+  the sample this doc expected to be the first to approach the ceiling is not
+  near it at all: the zone's meshes and textures live in GPU objects the page
+  holds, not in the linear memory, which carries game state, the CPU side of the
+  zone and the two stream buffers. `WASM_HEAP_CEILING` in
+  `web/tools/browser-e2e.mjs` is set at 32 MiB against that reading, and
+  `web/run-browser-e2e.sh` fails a shard run whose driver never took it.
+
+  **The heap on CI is untaken until the next Pages run.** The page change that
+  prints it is newer than the evidence above, so the SwiftShader logs quoted
+  here carry no `[MEM]` line; the figure will be in the next `web-e2e-shard`
+  artifact's `shard-swiftshader.log`, which is that run's browser console.
+
 - ✅ The inventory kit used without a single engine change made on its behalf;
   anything it needed filed as a topic 34 finding instead. Met 2026-09-07: the
   kit is consumed through `crcbl::inventory`, the drag is built inside the
