@@ -448,16 +448,9 @@ mod tests {
     /// The shared half of the usage text is the engine's, byte for byte.
     #[test]
     fn the_shared_half_of_the_usage_text_is_the_engines_verbatim() {
-        assert!(USAGE.contains(crcbl::args::COMMON_OPTIONS_HELP));
-        assert!(USAGE.contains(crcbl::args::COMMON_TAIL_HELP));
-        assert!(
-            USAGE.contains(crcbl::args::SCREENSHOT_HELP),
-            "the --screenshot block has drifted from crcbl::args"
-        );
-        assert!(
-            USAGE.contains(crcbl::args::FORCED_PATH_HELP),
-            "the --force-geometry/--force-binding block has drifted from crcbl::args"
-        );
+        crcbl::args::assert_shared_help(USAGE);
+        crcbl::args::assert_screenshot_help(USAGE);
+        crcbl::args::assert_forced_path_help(USAGE);
     }
 
     /// **`--screenshot` is a flag this binary answers**, and it forces headless.

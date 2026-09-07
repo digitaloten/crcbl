@@ -128,7 +128,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Invocation {
         }
 
         match arg.as_str() {
-            "--seed" => match crcbl::args::number("--seed", &mut args, "seed") {
+            "--seed" => match crcbl::args::seed_u64(&mut args) {
                 Ok(seed) => options.seed = seed,
                 Err(message) => return Invocation::BadUsage(message),
             },
@@ -272,18 +272,8 @@ mod tests {
     /// both.
     #[test]
     fn the_shared_half_of_the_usage_text_is_the_engines_verbatim() {
-        assert!(
-            USAGE.contains(crcbl::args::COMMON_OPTIONS_HELP),
-            "the shared OPTIONS block has drifted from crcbl::args"
-        );
-        assert!(
-            USAGE.contains(crcbl::args::COMMON_TAIL_HELP),
-            "the shared tail has drifted from crcbl::args"
-        );
-        assert!(
-            USAGE.contains(crcbl::args::SCREENSHOT_HELP),
-            "the --screenshot block has drifted from crcbl::args"
-        );
+        crcbl::args::assert_shared_help(USAGE);
+        crcbl::args::assert_screenshot_help(USAGE);
         assert!(USAGE.contains("asteroids — the engine's third game, and its churn sample"));
         assert!(USAGE.contains("--seed"), "this game's own flag is missing");
         assert!(

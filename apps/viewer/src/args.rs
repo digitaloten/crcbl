@@ -242,7 +242,6 @@ mod tests {
     /// The shared half of the usage text is the engine's, byte for byte.
     #[test]
     fn the_shared_half_of_the_usage_text_is_the_engines_verbatim() {
-        assert!(USAGE.contains(crcbl::args::COMMON_OPTIONS_HELP));
-        assert!(USAGE.contains(crcbl::args::COMMON_TAIL_HELP));
+        crcbl::args::assert_shared_help(USAGE);
     }
 }

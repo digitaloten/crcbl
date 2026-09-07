@@ -114,6 +114,60 @@ pub const COMMON_TAIL_HELP: &str = "\
                          debug build, hidden in a release build'
     -h, --help           Print this help";
 
+/// Refuses a sample's `USAGE` that no longer carries the shared `OPTIONS:`
+/// block and its tail verbatim.
+///
+/// The claim every sample's `the_shared_half_of_the_usage_text_is_the_engines_verbatim`
+/// makes, written once. A containment check on the whole block rather than a
+/// flag-by-flag one: a reworded description or a changed indent is exactly the
+/// drift this exists to catch, and a per-flag check would pass through it.
+///
+/// Split the way the constants are split — [`assert_screenshot_help`] and
+/// [`assert_forced_path_help`] are separate calls — because the flags are
+/// separate. `apps/quarry` offers the forced-path pair and no `--screenshot`,
+/// and `apps/bare` and `apps/viewer` offer neither, so the blocks are
+/// independent choices rather than one block with extensions.
+///
+/// # Panics
+///
+/// When either shared block has drifted, naming which.
+pub fn assert_shared_help(usage: &str) {
+    assert!(
+        usage.contains(COMMON_OPTIONS_HELP),
+        "the shared OPTIONS block has drifted from crcbl::args"
+    );
+    assert!(
+        usage.contains(COMMON_TAIL_HELP),
+        "the shared tail has drifted from crcbl::args"
+    );
+}
+
+/// Refuses a `USAGE` whose `--screenshot` block has drifted from
+/// [`SCREENSHOT_HELP`], for the samples that wired the flag up.
+///
+/// # Panics
+///
+/// When the block has drifted.
+pub fn assert_screenshot_help(usage: &str) {
+    assert!(
+        usage.contains(SCREENSHOT_HELP),
+        "the --screenshot block has drifted from crcbl::args"
+    );
+}
+
+/// Refuses a `USAGE` whose `--force-geometry`/`--force-binding` block has
+/// drifted from [`FORCED_PATH_HELP`], for the samples that offer the pair.
+///
+/// # Panics
+///
+/// When the block has drifted.
+pub fn assert_forced_path_help(usage: &str) {
+    assert!(
+        usage.contains(FORCED_PATH_HELP),
+        "the --force-geometry/--force-binding block has drifted from crcbl::args"
+    );
+}
+
 /// How many frames a headless run presents when `--frames` did not say.
 ///
 /// Enough to boot, simulate and present repeatedly; short enough that a CI job
@@ -574,6 +628,39 @@ pub fn number(
     value
         .parse::<u64>()
         .map_err(|_| format!("not a {noun}: {value}"))
+}
+
+/// The value after `--seed`, parsed.
+///
+/// [`number`] with the flag and the noun bound, because every sample offering
+/// the flag was spelling the same two out and the next would have had to guess
+/// them: a run rejected with a different word for a seed is a run whose message
+/// a script reading it does not recognise.
+///
+/// # Errors
+///
+/// The message to hand back as `BadUsage`, when the value is missing or does
+/// not parse.
+pub fn seed_u64(rest: &mut impl Iterator<Item = String>) -> Result<u64, String> {
+    number("--seed", rest, "seed")
+}
+
+/// The same, for a sample whose generator takes a 32-bit key.
+///
+/// **Narrowed rather than truncated**: a seed that is not the seed the run used
+/// names a replay that does not exist, so a wider number is refused. `taker`
+/// names the thing that takes the key — "the loot roll", "the per-particle
+/// hash" — because the rejection is about *that* generator's width rather than
+/// about a type.
+///
+/// # Errors
+///
+/// [`seed_u64`]'s message, or `not a seed the {taker} can take: {seed} does not
+/// fit 32 bits` when the value parses and does not fit.
+pub fn seed_u32(rest: &mut impl Iterator<Item = String>, taker: &str) -> Result<u32, String> {
+    let seed = seed_u64(rest)?;
+    u32::try_from(seed)
+        .map_err(|_| format!("not a seed the {taker} can take: {seed} does not fit 32 bits"))
 }
 
 /// A [`GeometryPath`] by the name `--force-geometry` takes.
@@ -1062,6 +1149,64 @@ mod tests {
                 .unwrap_err()
                 .contains("frame count"),
             "0 is not positive"
+        );
+    }
+
+    /// **A 32-bit sample's seed is refused when it does not fit, not
+    /// truncated**, and the rejection names the generator that could not take
+    /// it.
+    ///
+    /// The narrowing is the whole of what `seed_u32` adds over [`seed_u64`], so
+    /// a value one past the top is the case worth pinning: a truncating cast
+    /// would answer `0` here and the run would replay something nobody asked
+    /// for.
+    #[test]
+    fn a_seed_wider_than_the_generator_is_refused_rather_than_truncated() {
+        let mut fits = [u32::MAX.to_string()].into_iter();
+        assert_eq!(seed_u32(&mut fits, "loot roll"), Ok(u32::MAX));
+
+        let mut over = [(u64::from(u32::MAX) + 1).to_string()].into_iter();
+        assert_eq!(
+            seed_u32(&mut over, "loot roll"),
+            Err("not a seed the loot roll can take: 4294967296 does not fit 32 bits".to_string())
+        );
+
+        let mut bad = ["kittens".to_string()].into_iter();
+        assert!(
+            seed_u32(&mut bad, "per-particle hash")
+                .unwrap_err()
+                .contains("seed")
+        );
+
+        let mut one = ["17".to_string()].into_iter();
+        assert_eq!(seed_u64(&mut one), Ok(17));
+    }
+
+    /// The shared-help asserts are themselves a check, so they have to be able
+    /// to fail: a usage text with a block missing is refused, and the whole of
+    /// one is accepted.
+    #[test]
+    fn the_shared_help_asserts_refuse_a_usage_that_dropped_a_block() {
+        let whole = format!(
+            "sample — a tagline\n\n{COMMON_OPTIONS_HELP}\n{SCREENSHOT_HELP}\n\
+             {FORCED_PATH_HELP}\n{COMMON_TAIL_HELP}\n"
+        );
+        assert_shared_help(&whole);
+        assert_screenshot_help(&whole);
+        assert_forced_path_help(&whole);
+
+        let dropped = whole.replace(COMMON_TAIL_HELP, "    -h, --help    Print this help");
+        assert!(
+            std::panic::catch_unwind(|| assert_shared_help(&dropped)).is_err(),
+            "a usage that rewrote the shared tail was accepted"
+        );
+        assert!(
+            std::panic::catch_unwind(|| assert_screenshot_help(COMMON_OPTIONS_HELP)).is_err(),
+            "a usage with no --screenshot block was accepted"
+        );
+        assert!(
+            std::panic::catch_unwind(|| assert_forced_path_help(COMMON_OPTIONS_HELP)).is_err(),
+            "a usage with no forced-path block was accepted"
         );
     }
 
