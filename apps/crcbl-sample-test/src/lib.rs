@@ -182,6 +182,65 @@ pub fn adapter_line(stderr: &str) -> String {
         .unwrap_or_else(|| panic!("the run never said which adapter it opened:\n{stderr}"))
 }
 
+/// `web/tools/browser-e2e.mjs` — the browser gate's driver, pulled in whole so
+/// a sample can hold the game constants it writes out against its own.
+///
+/// `include_str!` resolves against this file, so the crate is coupled to the
+/// repository's layout on purpose: move the driver and this stops compiling,
+/// which is a failure nobody can read as a pass. The same argument
+/// `crates/crcbl-webgpu/src/js_mirror.rs` makes about `web/engine`.
+const BROWSER_E2E_MJS: &str = include_str!("../../../web/tools/browser-e2e.mjs");
+
+/// What the browser gate's `EXPECTATIONS` writes for `field` inside `block`,
+/// as the JavaScript spells it.
+///
+/// **The gate carries game constants nothing enforces.** Its `EXPECTATIONS`
+/// tree writes numbers beside a comment naming the Rust symbol they came from —
+/// how much experience a kind of foe is worth, how far a pickup reaches, how
+/// many bots a map posts — and a changed constant on the Rust side reddens a
+/// browser row with "the number is not the one the rules give" rather than a
+/// compile error. Worse, a changed *control* (a count, a starting health) makes
+/// the gate's own baseline wrong while it still passes. This is what lets a
+/// sample's unit test read the driver's copy and say so without a browser.
+///
+/// `block` is an `EXPECTATIONS` sub-block — `loot`, `save`, `practice` — and
+/// `field` one of its keys. The value comes back as the rest of that line with
+/// a trailing comma removed, so `reach: 2.5,` answers `2.5` and
+/// `kill: { husk: 20, adept: 35, warden: 60 },` answers the braces and all: a
+/// caller compares against a string it formats from its own constants, which
+/// pins the spelling and the order as well as the numbers.
+///
+/// Trimmed rather than folded for CRLF: `.gitattributes` leaves `*.mjs` on
+/// `text=auto`, so a Windows checkout hands this file `\r\n` and an untrimmed
+/// value would carry the `\r` into every comparison.
+///
+/// # Panics
+///
+/// When the driver has no such block, has more than one, or the block has no
+/// such field — each of which means the gate was restructured and the mirror
+/// this reads for is no longer where it was.
+#[must_use]
+pub fn browser_gate_expectation(block: &str, field: &str) -> String {
+    let opening = format!("\n    {block}: {{");
+    let mut blocks = BROWSER_E2E_MJS.match_indices(&opening).map(|(at, _)| at);
+    let at = blocks
+        .next()
+        .unwrap_or_else(|| panic!("web/tools/browser-e2e.mjs has no {block} block"));
+    assert!(
+        blocks.next().is_none(),
+        "web/tools/browser-e2e.mjs has more than one {block} block, so this reads whichever \
+         comes first"
+    );
+    let key = format!("\n      {field}: ");
+    let rest = &BROWSER_E2E_MJS[at..];
+    let value = rest
+        .find(&key)
+        .map(|found| &rest[found + key.len()..])
+        .unwrap_or_else(|| panic!("the {block} block has no {field}"));
+    let line = value.lines().next().unwrap_or_default().trim();
+    line.strip_suffix(',').unwrap_or(line).to_string()
+}
+
 /// A frame, read in blocks of a fixed half-extent.
 ///
 /// A block rather than a pixel, because a single pixel is a sample of the

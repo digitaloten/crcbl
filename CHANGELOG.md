@@ -84,6 +84,12 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- `crcbl_sample_test::browser_gate_expectation(block, field)` reads one
+  expectation out of the tracked `web/tools/browser-e2e.mjs`, and shard's and
+  breach's tests pin the eight game constants the gate mirrors to the Rust that
+  owns them, so a changed threshold or bot count fails `cargo test` rather than
+  reddening a browser row or leaving its control wrong.
+
 - `DrawList::begin_overlay` marks where a frame stops drawing the game and
   starts drawing what must stay on top of a menu; `DrawList::base_commands` and
   `DrawList::overlay_commands` read the two halves, and
@@ -1345,6 +1351,18 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
   was the one job holding the demo site's deploy.
 
 ### Changed
+
+- `crcbl::args::seed_u64` and `seed_u32` parse `--seed` for the five demos that
+  take one; a seed too wide for a 32-bit generator is refused with the taker's
+  name rather than truncated. Each demo keeps its own help prose.
+- `crcbl::engine::heartbeat_due(ticks, every)` is the cadence gate every demo's
+  `[HUD]` heartbeat shares; each demo keeps its own `HEARTBEAT_TICKS` and its
+  own line.
+- `GpuError::pools(subject, error)` is the instance-pool overflow wrap breach,
+  puppet, shard, sparks and towers each wrote by hand; the message is unchanged.
+- `crcbl::args::assert_shared_help`, `assert_screenshot_help` and
+  `assert_forced_path_help` are the drift asserts every demo's `args` test
+  carried against the shared help blocks.
 
 - `crcbl::web`'s module docs now carry the browser wire format once — the
   ABI-prefix table, the ten exports and what each means, the status codes with

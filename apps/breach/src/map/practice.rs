@@ -776,4 +776,21 @@ mod tests {
             assert!(block.height <= COVER[PILLAR].height);
         }
     }
+    /// **The bot count `web/tools/browser-e2e.mjs` writes out is [`BOTS`].**
+    ///
+    /// The gate's `practice` block reads the map's own bot count back off the
+    /// `[HUD]` line and compares it against a number written into the driver —
+    /// which is the control for its whole liveness claim, because a page that
+    /// opened this map with no bots on it would pass every "a number changed"
+    /// check going. A `BOTS` changed here and not there leaves that control
+    /// wrong while the row still passes, which is why the two are read together
+    /// rather than kept in step by hand.
+    #[test]
+    fn the_browser_gate_expects_the_bot_count_this_map_posts() {
+        assert_eq!(
+            crcbl_sample_test::browser_gate_expectation("practice", "count"),
+            BOTS.to_string(),
+            "the browser gate's practice block does not expect BOTS bots"
+        );
+    }
 }

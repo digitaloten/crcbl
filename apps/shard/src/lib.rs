@@ -170,3 +170,82 @@ pub use page::PageStats;
 pub use panel::PanelStats;
 pub use save::{Character, SaveStats, Vault};
 pub use zone::Cell;
+
+#[cfg(test)]
+mod tests {
+    use crcbl_sample_test::browser_gate_expectation as gate;
+
+    use crate::{foe, level, loot, zone};
+
+    /// **Every game constant `web/tools/browser-e2e.mjs` writes out is this
+    /// crate's, and drift is a red test rather than a red browser row.**
+    ///
+    /// The gate's `EXPECTATIONS` tree writes each one out beside a comment
+    /// naming the symbol it came from, and nothing until now read the two
+    /// halves together. The failures that leaves are two, and the second is the
+    /// bad one: a changed threshold or a changed drop value reddens the shard
+    /// row with "the number is not the one the rules give", which reads as a
+    /// broken game rather than a stale gate — and a changed [`foe::FOES`] or
+    /// [`foe::HEALTH_MAX`] makes the gate's own **control** wrong, so it goes on
+    /// passing while the thing it was controlling for is no longer true.
+    ///
+    /// Compared as the JavaScript spells it rather than as parsed numbers, so
+    /// the labels and their order are pinned too: a table that named the tiers
+    /// in another order would still add up and would answer a different find.
+    #[test]
+    fn the_browser_gates_game_constants_are_the_ones_this_crate_declares() {
+        let kill = [foe::Kind::Husk, foe::Kind::Adept, foe::Kind::Warden]
+            .map(|kind| format!("{}: {}", kind.label(), kind.experience()))
+            .join(", ");
+        assert_eq!(
+            gate("loot", "kill"),
+            format!("{{ {kill} }}"),
+            "the gate's kill table is not foe::Kind::experience"
+        );
+
+        let find = loot::Rarity::ALL
+            .map(|tier| format!("{}: {}", tier.label(), tier.experience()))
+            .join(", ");
+        assert_eq!(
+            gate("loot", "find"),
+            format!("{{ {find} }}"),
+            "the gate's find table is not loot::Rarity::experience"
+        );
+
+        let thresholds = level::THRESHOLDS.map(|total| total.to_string()).join(", ");
+        assert_eq!(
+            gate("loot", "thresholds"),
+            format!("[{thresholds}]"),
+            "the gate's level table is not level::THRESHOLDS"
+        );
+
+        // `{:?}` rather than a parse and a comparison: it is how Rust spells an
+        // `f64` that is a whole number — `6.0`, not `6` — which is the spelling
+        // the driver uses, and it keeps a float out of an equality test.
+        assert_eq!(
+            gate("loot", "reach"),
+            format!("{:?}", loot::LOOT_REACH_M),
+            "the gate's pickup radius is not loot::LOOT_REACH_M"
+        );
+        assert_eq!(
+            gate("save", "spawnAlong"),
+            format!("{:?}", zone::spawn().z),
+            "the gate's fresh-boot position is not zone::LAYOUT's spawn"
+        );
+
+        // Both blocks that carry a control, because a check that read one would
+        // pass on a driver where only the other had gone stale.
+        for block in ["fight", "save"] {
+            assert_eq!(
+                gate(block, "count"),
+                foe::FOES.to_string(),
+                "the gate's {block} block does not post foe::FOES foes"
+            );
+            assert_eq!(
+                gate(block, "full"),
+                foe::HEALTH_MAX.to_string(),
+                "the gate's {block} block does not start at foe::HEALTH_MAX"
+            );
+        }
+    }
+}

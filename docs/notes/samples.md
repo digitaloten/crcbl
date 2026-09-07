@@ -700,6 +700,13 @@ Verified present in the tree:
   eighteen shims. Also `web/engine/{wasm,log,storage,shell,audio}.js`.
 - **`web/engine/knobs.js`** — the knob-panel driver alcove's and sundial's pages
   share (hoisted 2026-09-07).
+- **`crcbl::args::{seed_u64, seed_u32, assert_shared_help, assert_screenshot_help, assert_forced_path_help}`**,
+  **`GpuError::pools`**, **`crcbl::engine::heartbeat_due`** and
+  **`crcbl_sample_test::browser_gate_expectation`** — the smaller seam findings
+  (hoisted 2026-09-07). A `Heartbeat::every(ticks)` type was considered and
+  declined: the `ticks` counter is each demo's own state and the line content is
+  each demo's own, so the shared part is the one-line cadence test and nothing
+  more.
 - **`crcbl::args`** — `Common`, `Consumed`, `Invocation`, `run_front_end`,
   `COMMON_OPTIONS_HELP`, `SCREENSHOT_HELP`, `COMMON_TAIL_HELP`, `positive`,
   `number`, `size`, `HEADLESS_FRAME_BUDGET`, `MAX_TICK_RATE`.

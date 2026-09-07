@@ -5169,40 +5169,26 @@ code would be ones the engine's own table is then required to publish.
 `__crcbl_alcove_technique` failed `web/build.sh` on breakout. Recorded so the
 next shared module does not trip it.
 
-### Smaller seam findings, stated but not worked up (2026-09-07)
+### The browser gate's mirrored constants are pinned, not emitted (2026-09-07)
 
-- The three
-  `assert!(USAGE.contains(crcbl::args::…_HELP), "… has drifted from crcbl::args")`
-  asserts in every demo's `args.rs` tests: a
-  `crcbl::args::assert_shared_help(usage)` beside the constants.
-- The instance-pool overflow wrap
-  `GpuError::Hal(HalError::InvalidDescriptor( format!("<sample>'s <thing> does not fit its own pools: {error}")))`
-  after `place()` in `apps/{breach,puppet,shard,sparks,towers}/src/gpu.rs`: a
-  `From<InstancePoolError> for GpuError` or a `GpuError::pools(subject, error)`.
-- The heartbeat cadence gate (`HEARTBEAT_TICKS` plus the `is_multiple_of` early
-  return and a `ticks` counter) in fourteen demos, with 60/30/15 as the
-  per-sample value: a `Heartbeat::every(ticks)` in `crcbl::engine`; the value
-  and the line content stay each demo's.
-- `--seed` parsing verbatim in five demos, with shard and sparks narrowing to
-  `u32` under different messages: a `seed_u64`/`seed_u32` pair in `crcbl::args`
-  only; the help prose is content.
-- `crcbl_audio::CueDeck` is already owed above and is not re-listed.
+`crcbl_sample_test::browser_gate_expectation` reads a block's field out of
+`web/tools/browser-e2e.mjs` as text, and shard's and breach's tests hold the
+eight constants the seam review named to the Rust that owns them. That is the
+cheap half. The gate still carries the literals, the reader is a text scan that
+breaks on a reformat of the `EXPECTATIONS` object, and the review only opened
+shard's and breach's blocks — other Rust ↔ JS mirrors in the rest of the driver
+are unsurveyed. **What it would take:** a constants file a demo emits and the
+gate imports, or a survey of the remaining blocks for symbols named in comments.
 
-### Eight Rust constants are mirrored into `browser-e2e.mjs` with nothing enforcing them (2026-09-07)
+### Three test-support asserts ship in `crcbl::args` (2026-09-07)
 
-`web/tools/browser-e2e.mjs`'s `EXPECTATIONS` writes game constants beside a
-comment naming the Rust symbol: shard's `foe::Kind::experience` (20/35/60),
-`loot::Rarity::experience` (5/15/40), `level::THRESHOLDS` (`[0, 30, 75, 130]`),
-`loot::LOOT_REACH_M` (2.5), `foe::FOES` (3), `foe::HEALTH_MAX` (100), the
-`zone::LAYOUT` spawn (6.0), and breach's `map::practice::BOTS` (3). The review
-confirmed five against the Rust. A change to a threshold reddens the shard
-browser row with "the number is not the one the rules give" rather than a
-compile error, and a changed `FOES`/`HEALTH_MAX` makes the gate's control wrong
-while it still passes. **What it would take:** the cheap step is a Rust test in
-`apps/shard` (and `apps/breach`) that reads the tracked gate file and asserts
-its literals; the real fix is a constants file the demo emits and the gate
-reads. Other Rust ↔ JS mirrors almost certainly exist in the parts of the driver
-the review did not open.
+`assert_shared_help`, `assert_screenshot_help` and `assert_forced_path_help` are
+only called from `#[cfg(test)]` modules, yet live in the shipped library beside
+the constants they check. `apps/crcbl-sample-test` is where test support went in
+the earlier slices, but alcove, options, sparks, sundial and `apps/bare` do not
+dev-depend on it, and `bare`'s charter is a plain-library consumer. **Decide:**
+leave them where they are, or move them and add the dev-dependency to every
+demo.
 
 ## The sample plans — what they still owe
 
