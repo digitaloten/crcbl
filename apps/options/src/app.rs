@@ -23,23 +23,21 @@
 //! The six `[engine.audio]` bus gains, which are the cheapest settings to make
 //! real: they need no renderer change and no restart to write, and three of them
 //! carry sound — see [`crate::audio`] — so a fader is audible while it moves.
-//! And the `[engine.video]` keys that have a reader: `frame_limit`, which is the
-//! cheapest of the video keys for the opposite reason — the loop reads it once,
-//! at start-up, so the row can write it honestly without a way to re-mode a
-//! live window — and `anisotropic_filtering`, `render_scale` and the effect
-//! switches of `crcbl::settings::VIDEO_KEYS`, which a `ForwardRenderer` takes
-//! and this sample has none to hand them to. Above all of those sits the
-//! quality row, which writes a whole column of
+//! And the `[engine.video]` keys that have a reader: `frame_limit`, which the
+//! loop applies whenever the row changes, and `anisotropic_filtering`,
+//! `render_scale` and the effect switches of `crcbl::settings::VIDEO_KEYS`,
+//! which a `ForwardRenderer` takes and this sample has none to hand them to.
+//! Above all of those sits the quality row, which writes a whole column of
 //! `docs/plan/39-capabilities.md`'s tier table into the rows below it — see
 //! `Screen::set_quality`. The rest of
 //! `docs/plan/sample/20-options.md`'s video half — display mode, resolution,
 //! present mode — is not here yet, and `docs/backlog.md` says what each of
 //! them is waiting on.
 //!
-//! **The video rows do not apply as they move.** Everything else here reaches
-//! its stage in the same call that writes its key; the ceiling reaches the loop
-//! only when a loop is built, and the anisotropy, the scale and the switches
-//! reach a renderer only where a scene is drawn. The mark `Screen`'s frame
+//! **Only the frame ceiling applies as it moves.** Menu reconciliation queues
+//! its pending value during `draw_menu`, after that frame's pending-limit drain;
+//! the loop applies it before the next frame advances. Anisotropy, the scale and
+//! the switches reach a renderer only where a scene is drawn. The mark `Screen`
 //! writes on those rows is what stops any of them being a silent lie.
 //!
 //! **Nothing in this process listens to these gains.** A settings file belongs
@@ -239,14 +237,8 @@ pub struct Screen {
     audio: Audio,
     /// `[engine.video] frame_limit` as the screen currently holds it.
     cap: FrameLimit,
-    /// The ceiling this run **started** on.
-    ///
-    /// The loop takes its limit once, when `Loop::new` holds the game's own
-    /// `--fps` under the file's — so a cap changed on the screen is a cap the
-    /// next start will use and this one will not. Keeping what the run opened
-    /// with is the only way the row can say so; comparing against the stack
-    /// would compare the setting with itself.
-    opened_cap: FrameLimit,
+    /// A cap the screen asked the loop to apply since it last read one.
+    pending_limit: Option<FrameLimit>,
     /// The ceiling the **game** asked for — its `--fps`, or the default it was
     /// built with — which the file's ceiling is held against in `Loop::new`.
     ///
@@ -255,9 +247,9 @@ pub struct Screen {
     asked: FrameLimit,
     /// `[engine.video] anisotropic_filtering` as the screen currently holds it.
     anisotropy: f32,
-    /// The anisotropy this run **started** on, for `opened_cap`'s reason: a
-    /// renderer takes the key when it opens, and this sample opens none, so the
-    /// value the run came up with is the only one it can claim to be under.
+    /// The anisotropy this run **started** on: a renderer takes the key when it
+    /// opens, and this sample opens none, so the value the run came up with is
+    /// the only one it can claim to be under.
     opened_anisotropy: f32,
     /// `[engine.video] render_scale` as the screen currently holds it.
     scale: f32,
@@ -444,7 +436,7 @@ impl Screen {
             ticks: 0,
             logged_edits: 0,
             cap,
-            opened_cap: cap,
+            pending_limit: None,
             asked,
             anisotropy,
             opened_anisotropy: anisotropy,
@@ -698,15 +690,17 @@ impl Screen {
         crcbl::settings::presets::label(&self.stack.stack())
     }
 
-    /// Moves the frame ceiling, writing the key and marking the file unsaved.
+    /// Moves the frame ceiling, writes its key and queues it for the running
+    /// loop when it changed.
     ///
     /// [`Screen::set`]'s rule for the other half of the screen: one place a
     /// value changes, so the key and the unsaved marker cannot come apart.
-    /// Nothing is applied to the running loop — the loop took its limit when it
-    /// was built — which is why this is the one setting here whose row has
-    /// something to say beyond its value.
     fn set_cap(&mut self, cap: FrameLimit) {
+        let changed = self.cap != cap;
         self.cap = cap;
+        if changed {
+            self.pending_limit = Some(self.asked.clamped_to(cap));
+        }
         self.edited();
         self.write(
             &Self::video_key(crcbl::settings::FRAME_LIMIT_KEY),
@@ -714,12 +708,11 @@ impl Screen {
         );
     }
 
-    /// What the row says: the ceiling; the rate the game's own limit holds it
-    /// to, where that is lower; and whether this run is running under it.
+    /// What the row says: the selected ceiling and the rate the game's own
+    /// limit holds it to, where that is lower.
     ///
-    /// The held-to rate is computed against the ceiling the row *shows*, so a
-    /// stepped ceiling says what the next start would resolve to — the game's
-    /// own limit is a fact about the binary, not about this run.
+    /// The held-to rate is computed against the selected ceiling, so the row
+    /// reports the game's own `asked` ceiling clamping it.
     fn cap_hint(&self) -> String {
         let mut hint = crate::menu::frame_cap_label(self.cap);
         let resolved = self.asked.clamped_to(self.cap);
@@ -729,9 +722,6 @@ impl Screen {
                 crate::menu::HELD_MARK,
                 crate::menu::frame_cap_label(resolved)
             );
-        }
-        if self.cap != self.opened_cap {
-            hint = format!("{hint} {}", crate::menu::NEXT_START_MARK);
         }
         hint
     }
@@ -1188,6 +1178,10 @@ impl HostedGame for Screen {
             self.placed = true;
         }
         MenuKind::Settings
+    }
+
+    fn take_pending_frame_limit(&mut self) -> Option<FrameLimit> {
+        self.pending_limit.take()
     }
 
     /// The screen is a menu, so there is nothing for this sample to put in the
@@ -1718,6 +1712,16 @@ mod tests {
         );
         assert_eq!(screen.edits(), 1);
         assert_eq!(screen.saved(), &SaveState::Unsaved);
+        assert_eq!(
+            HostedGame::take_pending_frame_limit(&mut screen),
+            Some(stepped),
+            "the persisted cap was not handed to the running loop",
+        );
+        assert_eq!(
+            HostedGame::take_pending_frame_limit(&mut screen),
+            None,
+            "the persisted cap edit was handed over twice",
+        );
 
         screen.save_to(SettingsSource::Source(&storage));
         assert_eq!(screen.saved(), &SaveState::Saved);
@@ -1735,52 +1739,58 @@ mod tests {
         );
     }
 
-    /// **The row says when the ceiling is not the one this run is under.**
+    /// **Every cap edit reaches the loop once, held to the game's limit, and a
+    /// live cap needs no restart mark.**
     ///
-    /// The loop takes its limit once, so a cap chosen on the screen is one the
-    /// next start will use — and a screen that showed the new number with
-    /// nothing beside it would be claiming an effect it has not had. Stepping
-    /// all the way round the ladder brings the mark back off again, which is
-    /// what tells a mark from a flag that is only ever set.
+    /// `HostedGame::take_pending_frame_limit` is a drain: after each menu edit it
+    /// hands the loop the game's requested limit held to the selected cap, then
+    /// returns `None` until another edit. The selected cap remains in the screen
+    /// and file, so the row can show both values. Taking the ladder all the way
+    /// round proves lower selected caps pass through unchanged while `72` and
+    /// unlimited remain held to `60`.
     #[test]
-    fn a_cap_this_run_is_not_under_says_so_and_stops_saying_it() {
-        let (mut screen, mut menus) = screen("");
+    fn cap_edits_hand_off_live_once_and_the_ladder_wraps() {
+        let asked = FrameLimit::fps(60);
+        let storage = settings_file("");
+        let mut screen = Screen::over(SettingsStack::from_storage(&storage), Store::None, asked);
+        let mut menus = Screen::menus();
         reconcile(&mut screen, &mut menus);
         let hint = |menus: &mut Menus| hint(menus, crate::menu::FRAME_CAP_ID);
         assert_eq!(
             hint(&mut menus),
-            crate::menu::frame_cap_label(FrameLimit::unlimited()),
-            "a run opened on its own ceiling has nothing to add",
+            format!(
+                "{}, {} {}",
+                crate::menu::frame_cap_label(FrameLimit::unlimited()),
+                crate::menu::HELD_MARK,
+                crate::menu::frame_cap_label(asked),
+            ),
+            "the row did not show the game's requested limit holding unlimited",
         );
 
-        press(&mut menus, crate::menu::FRAME_CAP_ID);
-        reconcile(&mut screen, &mut menus);
-        let marked = hint(&mut menus);
-        assert!(
-            marked.contains(crate::menu::NEXT_START_MARK),
-            "the row reads {marked:?} for a ceiling this run is not under",
-        );
-        assert!(
-            marked.contains(&crate::menu::frame_cap_label(screen.cap())),
-            "the row reads {marked:?} rather than the ceiling that was chosen",
-        );
-
-        // All the way round: `ENTER` wraps, so a rung's worth of presses from
-        // anywhere is back where it started — and one of them has already
-        // been taken above.
-        for _ in 1..crate::menu::FRAME_CAPS.len() {
+        for _ in 0..crate::menu::FRAME_CAPS.len() {
             press(&mut menus, crate::menu::FRAME_CAP_ID);
             reconcile(&mut screen, &mut menus);
+            let selected = screen.cap();
+            assert_eq!(
+                HostedGame::take_pending_frame_limit(&mut screen),
+                Some(asked.clamped_to(selected)),
+                "the selected {selected:?} was not held to the game's requested {asked:?} limit",
+            );
+            assert_eq!(
+                HostedGame::take_pending_frame_limit(&mut screen),
+                None,
+                "the same edit was handed over twice",
+            );
+            assert!(
+                !hint(&mut menus).contains(crate::menu::NEXT_START_MARK),
+                "a live cap still says it waits for the next start",
+            );
         }
+
         assert_eq!(
             screen.cap(),
             FrameLimit::unlimited(),
-            "the ladder did not wrap"
-        );
-        assert_eq!(
-            hint(&mut menus),
-            crate::menu::frame_cap_label(FrameLimit::unlimited()),
-            "the mark stayed on a ceiling the run is under",
+            "the ladder did not wrap",
         );
     }
 
@@ -1790,8 +1800,7 @@ mod tests {
     /// A file saying 240 in a binary launched at 60 runs at 60, and a file
     /// saying nothing runs at 60 too — both rows say so. A file saying 30 is
     /// the ceiling that wins, and the row has nothing to add. Stepping the
-    /// ceiling recomputes the held-to rate against the new ceiling and marks
-    /// the row for the next start.
+    /// ceiling recomputes the held-to rate against the new ceiling.
     #[test]
     fn the_row_shows_the_rate_the_games_own_limit_holds_the_ceiling_to() {
         let asked = FrameLimit::fps(60);
@@ -1832,7 +1841,7 @@ mod tests {
             "a ceiling under the game's limit is the rate, and says nothing more",
         );
 
-        // Two steps up from 30 is 72, above the game's 60: held, and next start.
+        // Two steps up from 30 is 72, above the game's 60: held.
         for _ in 0..2 {
             assert!(step(&mut menus, crate::menu::FRAME_CAP_ID, true));
             reconcile(&mut screen, &mut menus);
@@ -1840,11 +1849,7 @@ mod tests {
         assert_eq!(screen.cap(), FrameLimit::fps(72));
         assert_eq!(
             hint(&mut menus, crate::menu::FRAME_CAP_ID),
-            format!(
-                "{} {}",
-                held(FrameLimit::fps(72)),
-                crate::menu::NEXT_START_MARK
-            ),
+            held(FrameLimit::fps(72)),
         );
     }
 
@@ -1857,6 +1862,16 @@ mod tests {
 
         screen.apply(Action::Reset);
         assert_eq!(screen.cap(), FrameLimit::unlimited());
+        assert_eq!(
+            HostedGame::take_pending_frame_limit(&mut screen),
+            Some(FrameLimit::unlimited()),
+            "reset did not hand its cap to the running loop",
+        );
+        assert_eq!(
+            HostedGame::take_pending_frame_limit(&mut screen),
+            None,
+            "reset handed the same cap over twice",
+        );
         assert_eq!(
             crcbl::settings::frame_limit(&screen.stack()),
             FrameLimit::unlimited(),

@@ -448,13 +448,12 @@ pub fn fader_hint(gain: f32, audible: bool) -> String {
 /// What [`fader_hint`] writes after the gain of a bus with nothing on it.
 pub const SILENT_MARK: &str = "(silent)";
 
-/// What a row writes after a value this run is not running under.
+/// What a row writes after a renderer-bound setting differs from the value this
+/// run opened with.
 ///
-/// The loop takes its frame limit when it is built, so a cap chosen here is
-/// one the **next** start will use; and this sample draws no scene, so there is
-/// nothing here for an anisotropy, a render scale or an effect switch to reach
-/// until a renderer opens over the key. The faders apply as they move, which is
-/// exactly why the video rows have to say that they do not.
+/// This applies to anisotropy, render scale and effect settings, which need a
+/// renderer to consume them. Frame limits instead reach the loop live and never
+/// use this mark.
 pub const NEXT_START_MARK: &str = "(next start)";
 
 /// What the frame-cap row writes between the file's ceiling and the rate this

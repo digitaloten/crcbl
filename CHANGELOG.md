@@ -84,6 +84,10 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- The Options frame-cap row now hands each edited limit to the running loop
+  before the next frame advances; its hint keeps the game's own held-rate
+  ceiling without claiming the change waits for the next start.
+
 - `PointerUpdate::pixels(extent)` returns an absolute pointer position as
   framebuffer pixels, and breach and shard now use it for their panel hit tests.
 

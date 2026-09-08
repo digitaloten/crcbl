@@ -11089,19 +11089,6 @@ it is not re-derived or filed as a bug.
   and `spin_until` are no-ops that no test executes — a real clock on that
   target panics in `Instant::now` before reaching either.
 
-## `apps/options`'s `frame_limit` row applies at the next start, not live (2026-08-30)
-
-`Screen::set_cap` in `apps/options/src/app.rs` writes the key and marks the file
-unsaved; the loop took its limit when `Loop::new` built it, and the row's hint
-says so (`opened_cap`, `HELD_MARK`). On the desktop that is a restart; in the
-browser it is a reload, with the value coming back out of OPFS. The user noticed
-it on the deployed options demo while the browser also had no limiter at all;
-that half has since landed, so the next-start rule is what remains. Applying it
-live is one slice: the panel hands the new cap through
-`HostedGame::take_pending_frame_limit`, which `Loop` already polls once a frame
-before advancing the clock, and the row's "held" hint loses its next-start
-clause. Not blocked on anything; not started.
-
 ## Windows opened on the live display during a session (2026-08-30)
 
 The user saw `apps/sandbox` appear on their screen, repeatedly, while work was
