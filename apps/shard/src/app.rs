@@ -769,7 +769,7 @@ impl HostedGame for Shard {
     /// the panel is laid out in pixels, so the conversion happens in
     /// [`HostedGame::draw`] where the extent is known. [`PointerUpdate::pixels`]
     /// owns the conversion, alongside the touch path's
-    /// [`TouchUpdate::pixels`].
+    /// [`TouchUpdate::pixels`](crcbl::engine::TouchUpdate::pixels).
     fn pointer_event(&mut self, pointer: PointerUpdate) {
         // Keep only an absolute position: a frame without one must retain the
         // panel's last known point. Pixels are resolved at draw time, once the

@@ -3943,8 +3943,8 @@ impl PointerUpdate {
     /// Where this pointer is in **framebuffer pixels**, Y down from the top-left,
     /// or `None` when this update carries no absolute position.
     ///
-    /// The conversion is the loop's inverse normalisation, so it goes through
-    /// [`surface_pixels`] with the same Y flip as [`TouchUpdate::pixels`].
+    /// The conversion is the loop's inverse normalisation, with the same Y flip
+    /// as [`TouchUpdate::pixels`].
     /// [`motion`](Self::motion) is unrelated: it measures relative travel in
     /// pixels and can arrive while a locked pointer has no absolute position.
     #[must_use]
