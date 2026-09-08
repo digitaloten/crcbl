@@ -69,6 +69,21 @@ fn a_headless_run_exits_zero_with_a_summary() {
     assert!(summary.contains("1280x720"), "{summary}");
 }
 
+/// `--size` reaches the delivered binary's window request, so a harness can
+/// give the sandbox the extent it asserts.
+#[test]
+fn a_headless_run_honors_the_requested_size() {
+    let output = sandbox_null(&["--frames", "24", "--size", "960x540"]);
+    assert_eq!(
+        code(&output),
+        0,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let summary = stdout(&output);
+    assert!(summary.contains("960x540"), "{summary}");
+}
+
 /// Determinism is the property that makes this assertable in CI at all. Two
 /// runs of the same binary with the same arguments must not merely both
 /// succeed — they must agree on the tick count, which is what would drift if

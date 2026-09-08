@@ -16755,26 +16755,6 @@ leaves:
   human running `cargo run -p options` twice is currently the only check that
   the native path writes where it reads.
 
-## sandbox is not in the windowed gate (2026-08-24)
-
-`tools/run-samples-windowed.sh` is the only check that a sample brings up a real
-surface rather than the headless offscreen ring. Its list was hand-written and
-had fallen behind: `orbit` and `sandbox` both open windows and neither had ever
-been added, so their windowed paths had never been gated. `orbit` is in now, and
-`tools/check-windowed-samples.sh` holds the list to `apps/*/src/main.rs` so it
-cannot drift again.
-
-`sandbox` is exempted there rather than fixed, and this is why: the harness
-hands every sample an extent, and `sandbox` has no `--size` flag — it opens at
-its own default, so the extent assertion fails on a run that otherwise presented
-120 frames cleanly. Verified locally under Xvfb with openbox: the summary line
-reads `sandbox: 120 frames, 87 ticks, 4 events on the x11 shell at 1280x720`.
-
-Closing it means giving `sandbox` a `--size` flag of the shape every other
-sample already takes. That was out of scope for the change that found it — a new
-demo — and it touches a crate no demo depends on. Small, and worth doing the
-next time anything else goes near `apps/sandbox`.
-
 ## bracket does not yet drive the transport (2026-08-24)
 
 The demo runs `bracket::sim::Sim` directly. That matches the decision already

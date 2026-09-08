@@ -34,14 +34,7 @@ fi
 # Samples that build a binary and still have no window to open. Each needs a
 # reason, because "it was failing" is not one — a sample that cannot open a
 # window is a bug in the sample, not an exemption.
-declare -A EXEMPT=(
-  # `sandbox` opens a window and this gate still cannot run it: the harness
-  # gives every sample an extent, and `sandbox` has no `--size` flag, so it
-  # opens at its own default and fails the extent assertion. Giving it one
-  # would close this, and is a change to a crate no demo depends on — see
-  # `docs/backlog.md`, "sandbox is not in the windowed gate".
-  ["sandbox"]="takes no --size, so the harness cannot ask it for an extent"
-)
+declare -A EXEMPT=()
 
 listed=()
 while IFS= read -r name; do

@@ -4,7 +4,7 @@
 //! which makes the same argument at the length it deserves and is the one that
 //! had a real choice to make.
 
-use crcbl::args::MAX_TICK_RATE;
+use crcbl::args::{MAX_TICK_RATE, size};
 use crcbl::backend::GpuBackend;
 use crcbl::engine::{FrameLimit, Pacing};
 
@@ -33,6 +33,9 @@ OPTIONS:
                           Default: unlimited windowed, 120 headless.
         --tick-hz <N>     Simulation rate. Default: 60.
         --title <TITLE>   Window title. Default: \"Crucible sandbox\".
+        --size <WxH>      Window size in pixels, WxH. Default: 1280x720.
+                           The headless offscreen ring renders at exactly this
+                           extent, which makes the windowed gate reproducible.
         --fullscreen      Open borderless instead of windowed. F11 still
                           toggles, and a window system may refuse both; the
                           summary reports what it actually did.
@@ -158,6 +161,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Invocation {
                 Some(title) => options.title = title,
                 None => return Invocation::BadUsage("--title needs a value".to_string()),
             },
+            "--size" => match size("--size", &mut args) {
+                Ok(size) => options.size = size,
+                Err(message) => return Invocation::BadUsage(message),
+            },
             other => {
                 return Invocation::BadUsage(format!("unrecognized argument `{other}`"));
             }
@@ -196,6 +203,7 @@ mod tests {
         assert!(!options.headless);
         assert_eq!(options.frames, None);
         assert_eq!(options.tick_hz, 60);
+        assert_eq!(options.size, crcbl::shell::PhysicalSize::new(1280, 720));
     }
 
     /// Switching the debug overlay on is one flag, and the default follows the
@@ -251,6 +259,8 @@ mod tests {
             "30",
             "--title",
             "a b",
+            "--size",
+            "960x540",
             "--backend",
             "null",
             "--fullscreen",
@@ -272,6 +282,7 @@ mod tests {
             crcbl::shell::DisplayMode::Borderless { monitor: None },
         );
         assert_eq!(options.title, "a b");
+        assert_eq!(options.size, crcbl::shell::PhysicalSize::new(960, 540));
         assert_eq!(options.backend, Some(GpuBackend::Null));
         assert_eq!(options.camera, CameraMode::Perspective);
     }
@@ -362,6 +373,12 @@ mod tests {
             vec!["--tick-hz", "1000000001"],
             vec!["--tick-hz", "5000000000"],
             vec!["--title"],
+            // `crcbl::args::size` owns these malformed cases; the sandbox must
+            // pass its errors through rather than inventing a second parser.
+            vec!["--size"],
+            vec!["--size", "960"],
+            vec!["--size", "0x540"],
+            vec!["--size", "960x0"],
             vec!["--backend"],
             vec!["--backend", "opengl"],
             vec!["--camera"],

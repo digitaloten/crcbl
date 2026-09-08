@@ -84,6 +84,10 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- `sandbox --size <WxH>` controls the window and headless render extent while
+  preserving the existing `1280x720` default; the private-Xvfb sample gate now
+  includes sandbox and passes every sample its asserted size.
+
 - The Options frame-cap row now hands each edited limit to the running loop
   before the next frame advances; its hint keeps the game's own held-rate
   ceiling without claiming the change waits for the next start.

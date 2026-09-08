@@ -68,7 +68,7 @@ use crcbl::engine::{
 };
 use crcbl::prelude::*;
 use crcbl::render::RenderEffects;
-use crcbl::shell::{DisplayMode, LogicalSize, ShellBackend as Backend, open, open_backend};
+use crcbl::shell::{DisplayMode, PhysicalSize, ShellBackend as Backend, open, open_backend};
 use crcbl::ui::draw_list::DrawList;
 
 use crate::gpu::Gpu;
@@ -142,6 +142,12 @@ pub struct Options {
     pub tick_hz: u32,
     /// Window title.
     pub title: String,
+    /// Requested window extent in physical pixels.
+    ///
+    /// The sandbox's 1280x720 default predates the shared 960x720 sample
+    /// default, so this is a value rather than an `Option` that would fall back
+    /// through [`crcbl::engine::requested_window_size`].
+    pub size: PhysicalSize,
     /// Which projection the camera uses — milestone 5.
     pub camera: CameraMode,
     /// Whether to open the window borderless rather than windowed.
@@ -183,6 +189,7 @@ impl Default for Options {
             frames: None,
             tick_hz: 60,
             title: "Crucible sandbox".to_string(),
+            size: PhysicalSize::new(1280, 720),
             camera: CameraMode::default(),
             fullscreen: false,
             debug_overlay: None,
@@ -396,7 +403,7 @@ pub fn with_shell<S: Shell + ?Sized>(
     let window = shell.create_window(&WindowDesc {
         title: &options.title,
         app_id: "sh.kryptic.crcbl.sandbox",
-        size: LogicalSize::new(1280.0, 720.0),
+        size: options.size.to_logical(1.0),
         // Asked for at creation rather than switched to afterwards, so
         // `--fullscreen` does not show a decorated window first.
         mode: options.display_mode(),
@@ -666,6 +673,7 @@ mod tests {
             frames: Some(frames),
             tick_hz: 60,
             title: "test".to_string(),
+            size: PhysicalSize::new(1280, 720),
             camera: CameraMode::Perspective,
             fullscreen: false,
             debug_overlay: None,

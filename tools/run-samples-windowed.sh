@@ -93,10 +93,9 @@ VIEWER_MODEL="${RUNTIME_DIR}/triangle.glb"
 # off the `--size` help text — writing this list is what caught `bare` opening
 # at 640x480 while the shared `--size` line in its own help said 960x720.
 #
-# Every binary in `apps/` that opens a window, less one: `sandbox`, which
-# `run-x11-e2e.sh` already drives windowed and asserts far more of.
-# `render-harness` is a library and `sim` is a headless determinism harness, so
-# neither has a window to open.
+# Every binary in `apps/` that opens a window is listed here. `render-harness`
+# is a library and `sim` is a headless determinism harness, so neither has a
+# window to open.
 #
 # Anything after the extent is handed to the sample itself. `viewer` is the only
 # entry that needs it — it takes the model as a positional argument — so the
@@ -117,6 +116,7 @@ SAMPLES=(
     "orbit 960x720"
     "puppet 960x720"
     "quarry 960x720"
+    "sandbox 1280x720"
     "shard 960x720"
     "sparks 960x720"
     "sundial 960x720"
@@ -163,7 +163,7 @@ run_sample() {
     CRCBL_VK_VALIDATION=1 \
     CRCBL_LOG="${CRCBL_E2E_SAMPLE_LOG:-info}" \
         cargo run --locked --quiet --package "$sample" -- "$@" \
-        --backend vk --frames "$SAMPLE_FRAMES" 2>&1 | tee "$log"
+        --backend vk --frames "$SAMPLE_FRAMES" --size "$want_extent" 2>&1 | tee "$log"
     local status=${PIPESTATUS[0]}
     set -e
     if [ "$status" -ne 0 ]; then
