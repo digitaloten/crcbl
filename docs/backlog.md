@@ -537,13 +537,6 @@ out of `FrameUniforms::shadow_filter`. What that change did **not** do:
   drift guard is the piece to design first — it is the only thing keeping the
   two atlas walks one body.
 
-**DECIDED 2026-09-06 —** the shadow filter is chosen per quality tier: low
-`box`, medium `disc`, high `pcss`, and `volumetric.slang` keeps its fixed disc.
-Unreal ladders `sg.ShadowQuality` hardware PCF → PCF disc → PCSS and Unity
-HDRP's is Low PCF / Medium tent / High PCSS. It schedules an
-`[engine.video] shadow_filter` key driving `r_shadow_filter`, and the row for it
-in plan 39's tier table.
-
 ## What sundial still owes (2026-09-04)
 
 The record behind this — the argument, the options and the measurements — is in
@@ -1554,13 +1547,13 @@ What the rung did leave behind:
   need `ForwardRenderer::shadow_lights` the day a scene they cover demotes a
   light. None does.
 
-## The tier table is silent about six knobs a preset could write (2026-08-31)
+## The tier table is silent about five knobs a preset could write (2026-08-31)
 
-`crcbl::settings::presets::QualityPreset::values` writes three keys because
-those are the three rows of `docs/plan/39-capabilities.md`'s tier table this
-tree has an `[engine.video]` key for. The table says nothing at all about the
-knobs that already exist beside them, and each needs a **number per tier**
-before a preset can spend it:
+`crcbl::settings::presets::QualityPreset::values` writes four keys because those
+are the four rows of `docs/plan/39-capabilities.md`'s tier table this tree has
+an `[engine.video]` key for. The table says nothing at all about the knobs that
+already exist beside them, and each needs a **number per tier** before a preset
+can spend it:
 
 - `crcbl_render::shadow::cadence::r_shadow_cadence` and `r_shadow_faces` — the
   entry below on the cadence default is the same question. The table has no
@@ -1630,26 +1623,18 @@ rows for `render_scale` and `frame_limit`, so a catalogue key adds no row on its
 own. Only a new `VIDEO_KEYS` entry, or a hand-added options row, moves that
 groove.
 
-## `medium` and `high` are the same preset today (2026-08-31)
+## Quality presets still owe their remaining rows (2026-08-31)
 
-Every tier-table row that separates those two columns — the shadow atlas's size
-and light budget (2048²/4096²/8192², 4/8/16 lights), the probe volume's levels
-(2/3/4), SSR's resolution and the ray-traced rung — is a knob with no
-`[engine.video]` key and mostly no renderer half. So
-`QualityPreset::Medium.values()` and `QualityPreset::High.values()` are one arm,
-and `medium_and_high_hold_the_same_values_until_a_key_separates_them` is the
-tripwire that reddens on the day one of those grows a key. `presets::label`
-prints `medium, high` for a file either of them wrote, so a run that selected
-`high` is not told it is on `medium`; that second name disappears on its own
-when the columns separate. Not a defect; recorded so the resemblance is not read
-as a copy-paste slip.
+The shadow atlas's size and light budget (2048²/4096²/8192²), the probe volume's
+levels (2/3/4), SSR's resolution and the ray-traced rung still have no
+`[engine.video]` key and mostly no renderer half.
 
-**A concrete candidate to separate them arrived on 2026-09-02: the AO tangential
-rung.** It shipped as the default on 2026-09-03 — four slices with two blurs
-costs less than the un-runged pair did before AO was halved, and it undoes the
-smoothness that halving cost — so what a lower tier would spend here is the
-_saving_ of stepping back down to the clamp floor, which "What the AO default
-change of 2026-09-03 did not cover" prices. `r_ssao_slices` and
+**A concrete candidate for another tier split arrived on 2026-09-02: the AO
+tangential rung.** It shipped as the default on 2026-09-03 — four slices with
+two blurs costs less than the un-runged pair did before AO was halved, and it
+undoes the smoothness that halving cost — so what a lower tier would spend here
+is the _saving_ of stepping back down to the clamp floor, which "What the AO
+default change of 2026-09-03 did not cover" prices. `r_ssao_slices` and
 `r_ssao_blur_passes` are console variables with no `[engine.video]` key and no
 tier row, which is exactly the two-step road the entry above this one describes:
 a catalogue key whose reader drives the variable, then a tier-table row saying
@@ -1662,8 +1647,7 @@ user's call" below. The browser tier is no longer the second gate; it was
 measured 2026-09-02 and did not refuse the extra slices, and both defaults moved
 to the higher counts on 2026-09-03.
 
-**DECIDED 2026-09-06 —** the columns are separated by rows plan 39's tier table
-gains, each a settings key and a cvar: `shadow_filter` box/disc/pcss,
+**DECIDED 2026-09-06 —** the columns gain settings keys and cvars for
 `ssao_slices` 2/4/4, `ssao_blur_passes` 1/2/2, `ssao_bent_normals` off/on/on,
 `shadow_cadence` on/off/off with a budget of half the tiles per frame on low,
 and atlas 2048/4096/8192 once the atlas key lands. Frostbite budgets shadow

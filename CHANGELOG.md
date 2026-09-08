@@ -84,6 +84,10 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- `[engine.video] shadow_filter` persists `box`, `disc` or `pcss`, applies the
+  selection to `r_shadow_filter` at startup and live, and gives quality presets
+  those filters for low, medium and high respectively.
+
 - `crcbl_sample_test::browser_gate_expectation(block, field)` reads one
   expectation out of the tracked `web/tools/browser-e2e.mjs`, and shard's and
   breach's tests pin the eight game constants the gate mirrors to the Rust that

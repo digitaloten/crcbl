@@ -129,13 +129,14 @@ the half-resolution passes, the shadow atlas budget and cadence, the froxel
 sample count, the AA tier, anisotropy — spelled in `crcbl::settings` beside
 `VIDEO_KEYS` so a preset is a layer of keys and not a second mechanism. **Built
 2026-08-31, covering three of those knobs** — the render scale, the AA tier and
-the fog switch. The shadow atlas budget and cadence, the froxel sample count and
+fog switch. The shadow atlas budget and cadence, the froxel sample count and
 anisotropy have no cell in the tier table, so a tier says nothing about them
-yet; `docs/backlog.md` carries the gap. It is a command rather than a key — see
-"The preset is a command, not a key" below. The software and browser tiers ship
-on `low` deterministically, and `40-profiling.md`'s baseline measures each
-preset, which is what turns "priced on three tiers" into three numbers a rung
-can be held to.
+yet; `docs/backlog.md` carries the gap. **The shadow-filter key joined the
+preset on 2026-09-09, making four covered knobs.** It is a command rather than a
+key — see "The preset is a command, not a key" below. The software and browser
+tiers ship on `low` deterministically, and `40-profiling.md`'s baseline measures
+each preset, which is what turns "priced on three tiers" into three numbers a
+rung can be held to.
 
 The per-camera layer exists because it is genuinely per view: a
 render-to-texture camera feeding a security monitor or a planar reflection does
@@ -258,7 +259,7 @@ number is a **starting budget to sweep on that tier's hardware**, not a constant
 | Antialiasing            | FXAA                                         | CMAA2                             | CMAA2; MSAA opt-in                         |
 | Render scale            | 0.75                                         | 1.0                               | 1.0                                        |
 | Shadow atlas            | 2048², 4 shadowed local lights               | 4096², 8                          | 8192², 16                                  |
-| Sun shadows             | 2 cascades, rotated PCF                      | 3 cascades, PCSS                  | 3 cascades, PCSS                           |
+| Sun shadows             | 2 cascades, box                              | 3 cascades, disc                  | 3 cascades, PCSS                           |
 | Contact shadows         | off                                          | on                                | on                                         |
 | Ambient occlusion       | scalar + multi-bounce tint                   | bent normals + specular occlusion | bent normals + specular occlusion          |
 | Area lights (LTC)       | on                                           | on                                | on                                         |
@@ -307,14 +308,14 @@ The alternative — a preset that is consulted at resolve time for keys the file
 does not mention — was considered and declined: it makes an absent key mean
 something, which is the one thing rule 1 forbids.
 
-**What a tier covers is three keys, and the table is why.** `render_scale`, the
-`antialiasing` rung and the `volumetric_fog` switch are the only rows of the
-tier table above that this tree has an `[engine.video]` key for; the rest name
-an amount of something (the shadow atlas's size and light budget, the probe
-volume's levels, SSR's resolution, contact shadows, ray tracing) with no key and
-usually no renderer half. `medium` and `high` therefore write the same three
-values, because every row that separates those two columns is one of the ones
-with no key.
+**What a tier covers is four keys, and the table is why.** `render_scale`, the
+`antialiasing` rung, `shadow_filter` and the `volumetric_fog` switch are the
+only rows of the tier table above that this tree has an `[engine.video]` key
+for; the rest name an amount of something (the shadow atlas's size and light
+budget, the probe volume's levels, SSR's resolution, contact shadows, ray
+tracing) with no key and usually no renderer half. `shadow_filter` makes every
+tier distinct: `low` writes `box`, `medium` writes `disc`, and `high` writes
+`pcss`.
 
 The medium and high AA cells say **CMAA2**, and CMAA2 is what
 `QualityPreset::values` writes: [49-antialiasing.md](49-antialiasing.md)'s
@@ -330,10 +331,11 @@ half.
 
 | Key                     | Domain (lowest rung first)             | Today                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | ----------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `quality`               | `low` \| `medium` \| `high`            | **Built 2026-08-31, as a command rather than a key** — `crcbl::settings::presets` and the `quality` console command; see the section above for why it is not a catalogue key and why `ultra` is gone. It covers three of the tier table's rows. `apps/options` still offers no row for it — `docs/backlog.md`.                                                                                                                                                                                                                                                                       |
+| `quality`               | `low` \| `medium` \| `high`            | **Built 2026-08-31, as a command rather than a key** — `crcbl::settings::presets` and the `quality` console command; see the section above for why it is not a catalogue key and why `ultra` is gone. It covers four of the tier table's rows. `apps/options` still offers no row for it — `docs/backlog.md`.                                                                                                                                                                                                                                                                        |
 | `anti_aliasing`         | `off` \| `fxaa` \| `cmaa2`             | **Built, as one enum key (2026-08-30)**, spelled `antialiasing` and holding `crcbl_render::Antialiasing`'s `"none"`, `"fxaa"` or `"cmaa2"` — the third rung was `"smaa"` until the CMAA2 slice replaced that tier on 2026-09-06. It was two booleans for a day; they shared one resolve slot, so a panel could switch both on and the frame picked between them out of sight. `EffectRequest::antialiasing` carries the rung and `resolve` **replaces** the slot with it rather than clamping, which is the first non-clamping video key — [49-antialiasing.md](49-antialiasing.md). |
 | `ambient_occlusion`     | `off` \| `ssao` \| `gtao`              | **Built as a boolean.** `RenderEffects::AMBIENT_OCCLUSION` and the `ambient_occlusion` key are `off` versus on; GTAO **replaced** the hemisphere on 2026-08-28 rather than joining it as a rung, so the `ssao` tier has no code until a quality seam asks for it — [46-ambient-occlusion.md](46-ambient-occlusion.md).                                                                                                                                                                                                                                                               |
 | `shadow_quality`        | `off` \| `low` \| `medium` \| `high`   | **Built as a boolean.** `RenderEffects::SHADOWS` and the `shadows` key are `off` versus everything else; the atlas has no quality rungs.                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `shadow_filter`         | `box` \| `disc` \| `pcss`              | **Built 2026-09-09** as an enum key backed by `crcbl_render::shadow::Filter`. An absent or invalid value uses shipped PCSS, and the setting writes `r_shadow_filter` at start-up and live.                                                                                                                                                                                                                                                                                                                                                                                           |
 | `shadow_distance`       | metres, a scalar                       | **Nothing.** Distinct from `shadow_quality` because it trades range for resolution rather than buying either.                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `reflections`           | `off` \| `ssr`                         | **Built as a boolean**, and the domain is honestly two rungs — a ray-traced rung arrives with `LightingPath::RayTraced`, not before.                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `texture_quality`       | `low` \| `medium` \| `high`            | **Nothing.** [43-render-standards.md](43-render-standards.md)'s filtering subsection gives it a cheap first form — a `lod_min` clamp on the page sampler once the page has mips — before the residency mechanism topic 25 owns.                                                                                                                                                                                                                                                                                                                                                      |

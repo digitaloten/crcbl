@@ -125,7 +125,10 @@ use std::rc::Rc;
 
 use crcbl_audio::mixer::Bus;
 use crcbl_console::{Binding, Fault, Flags, Kind, Value};
-use crcbl_render::{Antialiasing, DEFAULT_ANISOTROPY, MIN_RENDER_SCALE, RenderEffects};
+use crcbl_render::{
+    Antialiasing, DEFAULT_ANISOTROPY, MIN_RENDER_SCALE, RenderEffects,
+    shadow::{Filter, r_shadow_filter, shipped_filter},
+};
 
 use crate::engine::FrameLimit;
 use crcbl_store::StorageError;
@@ -248,6 +251,21 @@ pub const ANTIALIASING_NAMES: [&str; Antialiasing::ALL.len()] = {
     names
 };
 
+/// The `[engine.video]` key that picks the shadow filter.
+pub const SHADOW_FILTER_KEY: &str = "shadow_filter";
+
+/// Every rung [`shadow_filter`] reads, as the words a file and a console line
+/// spell them with.
+pub const SHADOW_FILTER_NAMES: [&str; Filter::ALL.len()] = {
+    let mut names = [""; Filter::ALL.len()];
+    let mut i = 0;
+    while i < Filter::ALL.len() {
+        names[i] = Filter::ALL[i].label();
+        i += 1;
+    }
+    names
+};
+
 /// The `[engine.video]` key that sets the base-colour page's anisotropy.
 ///
 /// Spelled here for [`RENDER_SCALE_KEY`]'s reason, and read by
@@ -280,6 +298,8 @@ pub struct VideoSettings {
     /// **Not a bit in [`effects`](Self::effects)**, because it replaces the
     /// resolve slot rather than clamping it — see the [module docs](self).
     pub antialiasing: Option<Antialiasing>,
+    /// Which shadow filter the player picked; see [`shadow_filter`].
+    pub shadow_filter: Filter,
     /// What fraction of the caller's extent the renderer draws at; see
     /// [`render_scale`].
     pub render_scale: f32,
@@ -310,6 +330,7 @@ impl VideoSettings {
         Self {
             effects: RenderEffects::all(),
             antialiasing: None,
+            shadow_filter: shipped_filter(),
             render_scale: 1.0,
             anisotropic_filtering: DEFAULT_ANISOTROPY,
             frame_limit: FrameLimit::unlimited(),
@@ -323,6 +344,7 @@ pub fn video(stack: &SettingsStack) -> VideoSettings {
     VideoSettings {
         effects: video_effects(stack),
         antialiasing: antialiasing(stack),
+        shadow_filter: shadow_filter(stack),
         render_scale: render_scale(stack),
         anisotropic_filtering: anisotropic_filtering(stack),
         frame_limit: frame_limit(stack),
@@ -378,6 +400,31 @@ pub fn antialiasing(stack: &SettingsStack) -> Option<Antialiasing> {
         );
     }
     tier
+}
+
+/// Which shadow filter the player picked.
+///
+/// The shipped filter for a stack that says nothing, and otherwise the filter
+/// the key names. A present value outside the domain or of the wrong type falls
+/// back to the shipped filter and warns once, naming the key.
+#[must_use]
+pub fn shadow_filter(stack: &SettingsStack) -> Filter {
+    let dotted = format!("{VIDEO_NAMESPACE}.{SHADOW_FILTER_KEY}");
+    let unreadable = || {
+        crcbl_core::log::warn!(
+            "settings: `{dotted}` names no shadow filter, so it does nothing; \
+             the frame uses the shipped filter"
+        );
+        shipped_filter()
+    };
+    match stack.get::<String>(&dotted) {
+        Some(name) if SHADOW_FILTER_NAMES.contains(&name.as_str()) => {
+            Filter::from_name(&name).expect("the settings domain is derived from `Filter::ALL`")
+        }
+        Some(_) => unreadable(),
+        None if stack.contains(&dotted) => unreadable(),
+        None => shipped_filter(),
+    }
 }
 
 /// What fraction of the caller's extent the player wants drawn, for
@@ -547,6 +594,7 @@ pub fn set_video(stack: &mut SettingsStack, video: VideoSettings) -> Result<(), 
     if let Some(tier) = video.antialiasing {
         set_antialiasing(stack, tier)?;
     }
+    set_shadow_filter(stack, video.shadow_filter)?;
     set_render_scale(stack, video.render_scale)?;
     set_anisotropic_filtering(stack, video.anisotropic_filtering)?;
     set_frame_limit(stack, video.frame_limit)
@@ -568,6 +616,14 @@ pub fn set_antialiasing(stack: &mut SettingsStack, tier: Antialiasing) -> Result
     stack.set(
         &format!("{VIDEO_NAMESPACE}.{ANTIALIASING_KEY}"),
         &tier.name(),
+    )
+}
+
+/// Write `[engine.video] shadow_filter`, as the rung [`shadow_filter`] reads back.
+pub fn set_shadow_filter(stack: &mut SettingsStack, filter: Filter) -> Result<(), StorageError> {
+    stack.set(
+        &format!("{VIDEO_NAMESPACE}.{SHADOW_FILTER_KEY}"),
+        &filter.label(),
     )
 }
 
@@ -795,6 +851,10 @@ const EFFECT_HELP: &str = "whether the player allows this effect; absent allows 
 /// [`ANTIALIASING_KEY`]'s help line, for [`catalogue`] and its [`Binding`].
 const ANTIALIASING_HELP: &str = "which resolve the frame gets; absent leaves the game's own tier";
 
+/// [`SHADOW_FILTER_KEY`]'s help line, for [`catalogue`] and its [`Binding`].
+const SHADOW_FILTER_HELP: &str =
+    "which shadow filter the frame uses; absent uses the shipped filter";
+
 /// [`RENDER_SCALE_KEY`]'s help line, for [`catalogue`] and its [`Binding`].
 const RENDER_SCALE_HELP: &str = "fraction of the surface extent the frame is drawn at";
 
@@ -937,6 +997,12 @@ pub fn catalogue() -> Vec<CatalogueKey> {
         ANTIALIASING_KEY,
         Kind::Enum(&ANTIALIASING_NAMES),
         ANTIALIASING_HELP,
+    ));
+    keys.push(read(
+        VIDEO_NAMESPACE,
+        SHADOW_FILTER_KEY,
+        Kind::Enum(&SHADOW_FILTER_NAMES),
+        SHADOW_FILTER_HELP,
     ));
     keys.push(read(
         VIDEO_NAMESPACE,
@@ -1248,6 +1314,15 @@ pub fn apply(
             set_antialiasing(stack, tier).map_err(storage)?;
             Ok(reached(stage.apply_video(&video(stack))))
         }
+        SHADOW_FILTER_KEY => {
+            let Value::Enum(name) = *value else {
+                unreachable!("the filter is an enum kind, which `check` has held it to")
+            };
+            let filter = Filter::from_name(name)
+                .expect("`check` has already held the value to `SHADOW_FILTER_NAMES`");
+            set_shadow_filter(stack, filter).map_err(storage)?;
+            Ok(reached(stage.apply_video(&video(stack))))
+        }
         RENDER_SCALE_KEY => {
             let Value::Float(scale) = *value else {
                 unreachable!("the scale is a float kind, which `check` has held it to")
@@ -1292,6 +1367,17 @@ const fn reached(outcome: Result<(), Unsupported>) -> Applied {
 
 // ── The renderer half of a `GameGpu` forward ────────────────────────────────
 
+/// Put the process-global video knobs into force.
+///
+/// Called when a context reads its startup settings and when a live write hands
+/// the whole section to a renderer. `r_shadow_filter` is process-global, so it
+/// has to move before the renderer records its first frame.
+pub(crate) fn apply_process_video(video: &VideoSettings) {
+    r_shadow_filter
+        .set(&Value::Enum(video.shadow_filter.label()))
+        .expect("`VideoSettings` holds a `Filter`, so its label is in `r_shadow_filter`'s domain");
+}
+
 /// Put `video` into force on `renderer`, through the `device` that built it.
 ///
 /// **The body every bundle's
@@ -1301,7 +1387,7 @@ const fn reached(outcome: Result<(), Unsupported>) -> Applied {
 /// and a copy each is a chance each to forget the effect request or to hand the
 /// scale to the anisotropy; there is one copy here and a line each there.
 ///
-/// It writes all three of the renderer's player-facing knobs rather than the one
+/// It writes all four of the renderer's player-facing knobs rather than the one
 /// that moved, because [`VideoSettings`] is the section and a caller holding one
 /// does not know which key produced it. Setting a knob to the value it already
 /// holds costs nothing —
@@ -1326,6 +1412,7 @@ pub fn apply_video_to(
     video: &VideoSettings,
 ) -> Result<(), Unsupported> {
     renderer.set_render_scale(video.render_scale);
+    apply_process_video(video);
     let mut request = renderer.effect_request();
     request.video = video.effects;
     request.antialiasing = video.antialiasing;
@@ -1649,6 +1736,7 @@ fn read(host: &dyn Any, namespace: &str, name: &str, kind: Kind) -> Value {
         // `set_video`'s docs — so an absent key reads back as the rung it leaves
         // the game on, which is what `apps/options`' row shows for it too.
         ANTIALIASING_KEY => Value::Enum(antialiasing_or_default(stack).name()),
+        SHADOW_FILTER_KEY => Value::Enum(shadow_filter(stack).label()),
         RENDER_SCALE_KEY => Value::Float(render_scale(stack)),
         ANISOTROPIC_FILTERING_KEY => Value::Float(anisotropic_filtering(stack)),
         _ => match VIDEO_KEYS
@@ -1754,6 +1842,8 @@ settings_bindings! {
 
     ANTIALIASING: VIDEO_NAMESPACE, ANTIALIASING_KEY, Kind::Enum(&ANTIALIASING_NAMES),
         Flags::ARCHIVE, ANTIALIASING_HELP;
+    SHADOW_FILTER: VIDEO_NAMESPACE, SHADOW_FILTER_KEY, Kind::Enum(&SHADOW_FILTER_NAMES),
+        Flags::ARCHIVE, SHADOW_FILTER_HELP;
     RENDER_SCALE: VIDEO_NAMESPACE, RENDER_SCALE_KEY,
         Kind::Float { min: MIN_RENDER_SCALE, max: 1.0 }, Flags::ARCHIVE, RENDER_SCALE_HELP;
     ANISOTROPIC_FILTERING: VIDEO_NAMESPACE, ANISOTROPIC_FILTERING_KEY,
@@ -1830,6 +1920,7 @@ mod tests {
         let wanted = VideoSettings {
             effects: RenderEffects::all() - RenderEffects::BLOOM - RenderEffects::SHADOWS,
             antialiasing: Some(Antialiasing::Cmaa2),
+            shadow_filter: Filter::Disc,
             render_scale: 0.5,
             anisotropic_filtering: 4.0,
             frame_limit: FrameLimit::fps(60),
@@ -1965,6 +2056,7 @@ mod tests {
             .map(|(key, _)| format!("{VIDEO_NAMESPACE}.{key}"))
             .collect();
         wanted.push(format!("{VIDEO_NAMESPACE}.{ANTIALIASING_KEY}"));
+        wanted.push(format!("{VIDEO_NAMESPACE}.{SHADOW_FILTER_KEY}"));
         wanted.push(format!("{VIDEO_NAMESPACE}.{RENDER_SCALE_KEY}"));
         wanted.push(format!("{VIDEO_NAMESPACE}.{ANISOTROPIC_FILTERING_KEY}"));
         wanted.push(format!("{VIDEO_NAMESPACE}.{FRAME_LIMIT_KEY}"));
@@ -2722,6 +2814,68 @@ mod tests {
         );
     }
 
+    /// **Every shadow-filter rung round trips through a file**, under the one
+    /// spelling [`Filter::label`] gives it.
+    #[test]
+    fn every_shadow_filter_rung_round_trips_through_a_file() {
+        for filter in Filter::ALL {
+            let (reloaded, written) = round_trip(|stack| {
+                set_shadow_filter(stack, filter).expect("a fresh user layer takes the key");
+            });
+            assert_eq!(shadow_filter(&reloaded), filter);
+            assert!(
+                written.contains(&format!("{SHADOW_FILTER_KEY} = \"{}\"", filter.label())),
+                "{filter:?} left no row behind:\n{written}"
+            );
+        }
+    }
+
+    /// **A shadow-filter value outside its domain or of the wrong type falls
+    /// back to shipped PCSS and warns once.**
+    #[test]
+    fn an_invalid_shadow_filter_warns_and_uses_shipped_pcss() {
+        for value in ["\"soft\"", "true", "4"] {
+            let capture = crcbl_core::log::capture();
+            let toml = format!("[{VIDEO_NAMESPACE}]\n{SHADOW_FILTER_KEY} = {value}\n");
+            assert_eq!(shadow_filter(&stack_from(&toml)), Filter::Pcss);
+            let warned: Vec<_> = capture
+                .records()
+                .into_iter()
+                .filter(|record| {
+                    record
+                        .message
+                        .contains(&format!("{VIDEO_NAMESPACE}.{SHADOW_FILTER_KEY}"))
+                })
+                .collect();
+            assert_eq!(warned.len(), 1, "`{value}`: {:?}", capture.records());
+            assert_eq!(warned[0].level, crcbl_core::log::Level::Warn);
+        }
+    }
+
+    /// **The catalogue names the shadow-filter key once, with every filter the
+    /// reader takes.**
+    #[test]
+    fn the_shadow_filter_domain_names_every_filter_the_reader_takes() {
+        let key = format!("{VIDEO_NAMESPACE}.{SHADOW_FILTER_KEY}");
+        let entry = catalogued(&key).expect("the filter is catalogued");
+        assert_eq!(entry.status, KeyStatus::Read);
+        let Kind::Enum(values) = entry.kind else {
+            panic!("the filter is an enum, not {:?}", entry.kind)
+        };
+        assert_eq!(values.len(), Filter::ALL.len());
+        for filter in Filter::ALL {
+            assert!(
+                values.contains(&filter.label()),
+                "{filter:?} is missing from {values:?}"
+            );
+            assert_eq!(
+                entry.kind.parse(filter.label()),
+                Ok(Value::Enum(filter.label()))
+            );
+        }
+        assert_eq!(catalogue().iter().filter(|row| row.key == key).count(), 1);
+    }
+
     /// The ceiling `toml` puts on the frame rate.
     fn ceiling_of(toml: &str) -> FrameLimit {
         frame_limit(&stack_from(toml))
@@ -2926,9 +3080,9 @@ mod tests {
                 checked += 1;
             }
         }
-        // Six switches, four video rows and six gains, two ends each bar the
+        // Six switches, five video rows and six gains, two ends each bar the
         // tier's three rungs.
-        assert_eq!(checked, 33, "the sweep did not cover the read catalogue");
+        assert_eq!(checked, 36, "the sweep did not cover the read catalogue");
     }
 
     /// **A value outside a key's kind is refused before it reaches the file.**
@@ -3031,6 +3185,20 @@ mod tests {
             Some(Antialiasing::Cmaa2)
         );
 
+        let key = format!("{VIDEO_NAMESPACE}.{SHADOW_FILTER_KEY}");
+        assert_eq!(
+            apply(&mut stack, &key, &Value::Enum("disc"), &mut stage),
+            Ok(Applied::Live)
+        );
+        assert_eq!(
+            stage
+                .video
+                .last()
+                .expect("the renderer was told")
+                .shadow_filter,
+            Filter::Disc
+        );
+
         let key = format!("{VIDEO_NAMESPACE}.{}", VIDEO_KEYS[3].0);
         assert_eq!(
             apply(&mut stack, &key, &Value::Bool(false), &mut stage),
@@ -3045,6 +3213,7 @@ mod tests {
         // The tier survived the second write, which is what proves the stage is
         // handed the section rather than the key.
         assert_eq!(video.antialiasing, Some(Antialiasing::Cmaa2));
+        assert_eq!(video.shadow_filter, Filter::Disc);
 
         let key = format!("{VIDEO_NAMESPACE}.{FRAME_LIMIT_KEY}");
         assert_eq!(
@@ -3124,6 +3293,16 @@ mod tests {
             .expect("inside the range");
         let taken = host.pending_mut().take_video().expect("the frame has work");
         assert!((taken.render_scale - 0.5).abs() < f32::EPSILON);
+        binding_for(SHADOW_FILTER_KEY)
+            .set(&mut host, &Value::Enum(Filter::Box.label()))
+            .expect("the filter is in the catalogue domain");
+        assert_eq!(
+            host.pending_mut()
+                .take_video()
+                .expect("the frame has the filter write")
+                .shadow_filter,
+            Filter::Box
+        );
         assert!(
             host.pending_mut().is_empty(),
             "the drain left the ask behind, so the next frame would apply it again"

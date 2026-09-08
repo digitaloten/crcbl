@@ -844,9 +844,12 @@ impl SettingsSource<'_> {
     /// opened once, and a caller that wants the effects wants the render scale
     /// in the same breath.
     fn video(self, app_name: &str) -> VideoSettings {
-        self.open(app_name)
+        let video = self
+            .open(app_name)
             .as_ref()
-            .map_or_else(VideoSettings::unrestricted, crate::settings::video)
+            .map_or_else(VideoSettings::unrestricted, crate::settings::video);
+        crate::settings::apply_process_video(&video);
+        video
     }
 
     /// The bus gains the player has set, read now.
@@ -14596,8 +14599,8 @@ mod tests {
     }
 
     /// **A settings source carries the whole `[engine.video]` section** — the
-    /// effect bits, the antialiasing tier and the render scale — and
-    /// [`SettingsSource::None`] is unrestricted.
+    /// effect bits, antialiasing tier, shadow filter, render scale and
+    /// anisotropy — and [`SettingsSource::None`] is unrestricted.
     ///
     /// One file setting all of them, because they are read through one stack and
     /// a reader that opened it twice — or that let the scale's warning path
@@ -14612,7 +14615,7 @@ mod tests {
             .write(
                 std::path::Path::new(SETTINGS_FILE),
                 b"[engine.video]\nshadows = false\nantialiasing = \"cmaa2\"\n\
-                  render_scale = 0.5\nanisotropic_filtering = 4\n",
+                  shadow_filter = \"box\"\nrender_scale = 0.5\nanisotropic_filtering = 4\n",
             )
             .expect("memory storage accepts every write");
 
@@ -14622,6 +14625,12 @@ mod tests {
             RenderEffects::all().difference(RenderEffects::SHADOWS)
         );
         assert_eq!(read.antialiasing, Some(crcbl_render::Antialiasing::Cmaa2));
+        assert_eq!(read.shadow_filter, crcbl_render::shadow::Filter::Box);
+        assert_eq!(
+            crcbl_render::shadow::filter(),
+            crcbl_render::shadow::Filter::Box,
+            "the persisted filter did not reach the process before a renderer could draw"
+        );
         assert!((read.render_scale - 0.5).abs() < f32::EPSILON);
         assert!((read.anisotropic_filtering - 4.0).abs() < f32::EPSILON);
 

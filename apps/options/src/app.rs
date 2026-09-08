@@ -643,9 +643,11 @@ impl Screen {
     /// something no other caller does.
     ///
     /// **The re-read is the point of the row.** Every other setter moves one
-    /// value this screen already holds; this one writes three keys behind the
-    /// screen's back — the render scale, the antialiasing rung and the fog
-    /// switch — and the rows those belong to are drawn from [`Screen`]'s own
+    /// value this screen already holds; this one writes the whole preset behind
+    /// the screen's back. It re-reads the render scale, antialiasing rung and fog
+    /// switch into the rows this app draws; the shadow filter has no row here
+    /// and remains persisted for the next scene-bearing app. The visible rows
+    /// are drawn from [`Screen`]'s own
     /// `scale`, `antialiasing` and `effects` rather than from the stack.
     /// Leaving them stale would not merely show the wrong number: the next
     /// switch a player flipped would go through [`Screen::set_effects`], which
@@ -2370,7 +2372,7 @@ mod tests {
     fn the_tier_row_is_placed_from_the_file_without_writing_a_thing() {
         let held = QualityPreset::Medium;
         let (mut screen, mut menus) = screen(
-            "[engine.video]\nrender_scale = 1.0\nantialiasing = \"cmaa2\"\nvolumetric_fog = true\n",
+            "[engine.video]\nrender_scale = 1.0\nantialiasing = \"cmaa2\"\nshadow_filter = \"disc\"\nvolumetric_fog = true\n",
         );
         assert_eq!(
             crcbl::settings::presets::selected(&screen.stack()),
@@ -2402,18 +2404,15 @@ mod tests {
     ///
     /// A file on no tier parks the row on the bottom rung, and the first press
     /// steps to the one above it — the same place a press from an off-ladder
-    /// anisotropy lands. What matters is that all three columns are reachable:
-    /// `medium` and `high` hold the same values today, so a row that re-derived
-    /// its rung from [`selected`](crcbl::settings::presets::selected) every
-    /// frame would be pulled back onto `medium` after every press and could
-    /// never reach `low` again.
+    /// anisotropy lands. What matters is that all three columns are reachable;
+    /// each now has distinct values, so re-deriving the rung after every press
+    /// must leave the walk on the column it selected.
     ///
     /// **A scale off every column is what makes the fixture custom**, rather
-    /// than an empty file: the engine's own defaults are `medium`'s values —
-    /// see `crcbl::settings::presets`'
+    /// than an empty file: the engine's own defaults are `high`'s values — see
+    /// `crcbl::settings::presets`'
     /// `a_run_that_selects_nothing_writes_nothing_and_asks_for_nothing` — so a
-    /// file saying nothing opens the row on `medium` and the walk would start
-    /// from the middle of the table.
+    /// file saying nothing opens the row on `high`.
     #[test]
     fn entering_the_tier_row_walks_every_column_of_the_table_and_comes_back() {
         let (mut screen, mut menus) = screen("[engine.video]\nrender_scale = 0.6\n");
@@ -2456,10 +2455,11 @@ mod tests {
     /// **The rows a tier writes show its values on the frame it was chosen**,
     /// not a frame later and not the values they held before.
     ///
-    /// This is the whole point of the row: a tier writes the render scale, the
-    /// antialiasing rung and the fog switch behind the screen's back, and those
-    /// three rows are drawn from `Screen`'s own fields rather than from the
-    /// stack. A row left stale would not merely read wrong — the next switch a
+    /// This is the whole point of the row: a tier writes its covered keys behind
+    /// the screen's back. The render scale, antialiasing rung and fog switch have
+    /// rows drawn from `Screen`'s own fields rather than from the stack; the
+    /// shadow filter is persisted without a row in this scene-free app. A
+    /// visible row left stale would not merely read wrong — the next switch a
     /// player flipped goes through `Screen::set_effects`, which writes every
     /// effect key from the set it holds, and would put the fog switch back.
     #[test]

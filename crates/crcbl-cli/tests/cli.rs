@@ -2801,11 +2801,11 @@ fn a_word_that_is_not_a_tier_is_refused_and_offers_the_ones_that_are() {
 /// the label rather than storing it — `set` is right there, and a file edited
 /// by hand is the ordinary case.
 ///
-/// **A machine that selected nothing reads `medium, high`, not `custom`**: the
-/// engine's own defaults are that column's values — render scale 1, no clamp on
-/// the froxel pass and the resolve tier `RenderEffects::DEFAULT_STACK` carries
-/// — so a derived label has nothing left to tell them apart. `custom` is the
-/// third answer below, where a key has actually moved off the tier.
+/// **A machine that selected nothing reads `high`, not `custom`**: the engine's
+/// own defaults are that column's values — render scale 1, no clamp on the
+/// froxel pass, the resolve tier `RenderEffects::DEFAULT_STACK` carries and the
+/// shipped shadow filter. `custom` is the third answer below, where a key has
+/// actually moved off the tier.
 #[test]
 fn bare_preset_reports_the_tier_the_keys_are_on() {
     use crcbl::settings::presets::CUSTOM;
@@ -2816,7 +2816,7 @@ fn bare_preset_reports_the_tier_the_keys_are_on() {
     let fresh = settings(home, &["preset"]);
     assert_eq!(code(&fresh), 0, "{}", stderr(&fresh));
     assert!(
-        stdout(&fresh).contains("quality = medium, high"),
+        stdout(&fresh).contains("quality = high"),
         "a file that selected nothing reads as the column the defaults are: {}",
         stdout(&fresh)
     );

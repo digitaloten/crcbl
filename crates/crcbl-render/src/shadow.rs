@@ -174,6 +174,9 @@ pub enum Filter {
 }
 
 impl Filter {
+    /// Every shadow filter, from cheapest to highest quality.
+    pub const ALL: [Self; 3] = [Self::Box, Self::Disc, Self::Pcss];
+
     /// The name [`r_shadow_filter`] holds for this one.
     ///
     /// The `convar!` needs literals, so the names are written twice — three
@@ -208,32 +211,24 @@ impl Filter {
         u32::try_from(at).unwrap_or(0)
     }
 
-    /// The filter `name` names.
-    ///
-    /// **[`Filter::Pcss`] for a name outside the set**, which the console cannot
-    /// deliver — an enum variable refuses a value it does not declare — so this
-    /// is what a caller reaching past the console would get, and it is what
-    /// ships rather than an arbitrary arm. `crate::ssao`'s `Technique::of` is
-    /// the same rule on the same shape.
-    fn of(name: &str) -> Self {
-        FILTERS
-            .into_iter()
-            .find(|filter| filter.label() == name)
-            .unwrap_or(Self::Pcss)
+    /// The filter `name` names, or [`None`] for a name outside the set.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        FILTERS.into_iter().find(|filter| filter.label() == name)
     }
 }
 
 /// The order [`r_shadow_filter`] declares its names in.
 ///
 /// `crate::ssao`'s `TECHNIQUES` has the same shape for the same reason: the
-/// macro takes literals, so the names exist twice, and [`Filter::of`] searches
-/// this copy.
+/// macro takes literals, so the names exist twice. The test below holds this
+/// order to the convar and shader orders.
 const FILTERS: [Filter; 3] = [Filter::Pcss, Filter::Disc, Filter::Box];
 
 /// [`r_shadow_filter`] as the near side of the seam wants it.
 #[must_use]
 pub fn filter() -> Filter {
-    Filter::of(r_shadow_filter.get_enum())
+    Filter::from_name(r_shadow_filter.get_enum()).unwrap_or(Filter::Pcss)
 }
 
 /// The filter the engine ships, for the other side of the seam.
@@ -244,7 +239,7 @@ pub fn filter() -> Filter {
 #[must_use]
 pub fn shipped_filter() -> Filter {
     match r_shadow_filter.default() {
-        crcbl_console::Value::Enum(name) => Filter::of(name),
+        crcbl_console::Value::Enum(name) => Filter::from_name(name).unwrap_or(Filter::Pcss),
         // Unreachable by construction: `convar!` builds an enum cell and its
         // default together. This is what a `match` needs.
         _ => Filter::Pcss,
@@ -3069,6 +3064,10 @@ mod tests {
             "the shader numbers its `SHADOW_FILTER_*` constants by position in its own list, \
              so a set that differs here is a mode the fragment reads as another filter"
         );
+        for filter in Filter::ALL {
+            assert_eq!(Filter::from_name(filter.label()), Some(filter));
+        }
+        assert_eq!(Filter::from_name("soft"), None);
         // And the numbering itself, which is the half a set comparison cannot
         // see: `Filter::mode` searches by label, so a list in the right order
         // with the wrong lookup would still pass above.

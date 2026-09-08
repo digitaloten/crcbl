@@ -25,12 +25,12 @@
 //! # What a tier covers, and what it is silent about
 //!
 //! What a tier writes is [`QualityValues`]: the render scale, the antialiasing
-//! tier and the volumetric fog switch. Those are the table's rows this tree has
-//! an `[engine.video]` key for; every other row names an amount of something
-//! with no key and often no renderer half — the shadow atlas's size and light
-//! budget, the probe volume's levels, SSR's resolution, contact shadows, ray
-//! tracing. A preset writes what it can and is silent about the rest;
-//! `docs/backlog.md` carries the list.
+//! tier, the shadow filter and the volumetric fog switch. Those are the table's
+//! rows this tree has an `[engine.video]` key for; every other row names an
+//! amount of something with no key and often no renderer half — the shadow
+//! atlas's size and light budget, the probe volume's levels, SSR's resolution,
+//! contact shadows and ray tracing. A preset writes what it can and is silent
+//! about the rest; `docs/backlog.md` carries the list.
 //!
 //! **A knob that is a console variable and not a settings key is not something
 //! a tier can reach**, and that is the shape of the road rather than a gap in
@@ -46,11 +46,8 @@
 //! naming what each column spends. Neither exists, and the second is the one
 //! that needs a measurement rather than code.
 //!
-//! One consequence is worth stating rather than hiding: **`medium` and `high`
-//! write the same values**, because every row that separates those two columns
-//! is one of the keys this tree does not have.
-//! `medium_and_high_hold_the_same_values_until_a_key_separates_them` is the
-//! tripwire that goes red on the day one lands.
+//! `shadow_filter` is the exception that landed: its settings reader drives
+//! `r_shadow_filter`, so low, medium and high now write distinct values.
 //!
 //! # A device that cannot meet a tier
 //!
@@ -77,12 +74,12 @@
 //! assertion.
 
 use crcbl_console::{Fault, Value};
-use crcbl_render::{Antialiasing, RenderEffects};
+use crcbl_render::{Antialiasing, RenderEffects, shadow::Filter};
 use crcbl_store::settings::SettingsStack;
 
 use super::{
-    ANTIALIASING_KEY, Applied, ConsoleHost, RENDER_SCALE_KEY, Stage, VIDEO_KEYS, VIDEO_NAMESPACE,
-    antialiasing_or_default, apply, render_scale, video_effects,
+    ANTIALIASING_KEY, Applied, ConsoleHost, RENDER_SCALE_KEY, SHADOW_FILTER_KEY, Stage, VIDEO_KEYS,
+    VIDEO_NAMESPACE, antialiasing_or_default, apply, render_scale, shadow_filter, video_effects,
 };
 
 /// The word [`selected`] has no tier for.
@@ -157,6 +154,7 @@ impl QualityPreset {
             Self::Low => QualityValues {
                 render_scale: 0.75,
                 antialiasing: Antialiasing::Fxaa,
+                shadow_filter: Filter::Box,
                 volumetric_fog: false,
             },
             // "Render scale 1.0 | Volumetric fog on, half-res froxels" — the
@@ -165,9 +163,16 @@ impl QualityPreset {
             // gets: `docs/plan/49-antialiasing.md`'s eighth decision put it and
             // SMAA 1x in one tier, and the slice that built it retired SMAA in
             // the same change.
-            Self::Medium | Self::High => QualityValues {
+            Self::Medium => QualityValues {
                 render_scale: 1.0,
                 antialiasing: Antialiasing::Cmaa2,
+                shadow_filter: Filter::Disc,
+                volumetric_fog: true,
+            },
+            Self::High => QualityValues {
+                render_scale: 1.0,
+                antialiasing: Antialiasing::Cmaa2,
+                shadow_filter: Filter::Pcss,
                 volumetric_fog: true,
             },
         }
@@ -187,6 +192,8 @@ pub struct QualityValues {
     pub render_scale: f32,
     /// [`super::ANTIALIASING_KEY`], as the rung rather than the word.
     pub antialiasing: Antialiasing,
+    /// [`super::SHADOW_FILTER_KEY`], as the filter rather than the word.
+    pub shadow_filter: Filter,
     /// The [`VIDEO_KEYS`] fog switch: whether the player allows the froxel pass.
     pub volumetric_fog: bool,
 }
@@ -202,16 +209,15 @@ pub fn current_values(stack: &SettingsStack) -> QualityValues {
     QualityValues {
         render_scale: render_scale(stack),
         antialiasing: antialiasing_or_default(stack),
+        shadow_filter: shadow_filter(stack),
         volumetric_fog: video_effects(stack).contains(RenderEffects::VOLUMETRIC_FOG),
     }
 }
 
 /// The tier `stack`'s covered keys hold, or [`None`] for [`CUSTOM`].
 ///
-/// Derived rather than stored — see the [module docs](self). [`QualityPreset::ALL`]
-/// is searched cheapest first, so the answer for two tiers holding one set of
-/// values is the cheaper of them; today that is `medium` for a stack `high`
-/// wrote, and the two mean the same values.
+/// Derived rather than stored — see the [module docs](self). Every current tier
+/// has distinct values, so the first matching tier is its label.
 #[must_use]
 pub fn selected(stack: &SettingsStack) -> Option<QualityPreset> {
     let held = current_values(stack);
@@ -223,11 +229,9 @@ pub fn selected(stack: &SettingsStack) -> Option<QualityPreset> {
 /// What [`quality`] prints for `stack`: every tier whose values it holds, or
 /// [`CUSTOM`].
 ///
-/// **Every tier and not just [`selected`]'s**, because two columns of the table
-/// can say the same thing — `medium` and `high` do today — and a run that
-/// selected `high` would otherwise be told it is on `medium`, which reads as a
-/// write that went somewhere else. Naming both says what actually happened, and
-/// the second name disappears on its own the day a key separates the columns.
+/// **Every tier has a distinct column today**, so this prints the one matching
+/// label. The collection remains the derived form: a future table with matching
+/// columns describes that fact rather than silently choosing one.
 #[must_use]
 pub fn label(stack: &SettingsStack) -> String {
     let held = current_values(stack);
@@ -270,6 +274,7 @@ pub fn select(
     for (name, value) in [
         (RENDER_SCALE_KEY, Value::Float(values.render_scale)),
         (ANTIALIASING_KEY, Value::Enum(values.antialiasing.name())),
+        (SHADOW_FILTER_KEY, Value::Enum(values.shadow_filter.label())),
         (FOG_KEY, Value::Bool(values.volumetric_fog)),
     ] {
         let key = format!("{VIDEO_NAMESPACE}.{name}");
@@ -283,9 +288,10 @@ pub fn select(
 /// One line describing what the covered keys hold.
 fn values_line(values: QualityValues) -> String {
     format!(
-        "{RENDER_SCALE_KEY} = {}, {ANTIALIASING_KEY} = {}, {FOG_KEY} = {}",
+        "{RENDER_SCALE_KEY} = {}, {ANTIALIASING_KEY} = {}, {SHADOW_FILTER_KEY} = {}, {FOG_KEY} = {}",
         values.render_scale,
         values.antialiasing.name(),
+        values.shadow_filter.label(),
         values.volumetric_fog,
     )
 }
@@ -400,24 +406,12 @@ mod tests {
         );
     }
 
-    /// **`medium` and `high` hold the same values**, and this is the tripwire
-    /// for the day they stop.
-    ///
-    /// Every tier-table row that separates those two columns — the shadow
-    /// atlas's size and light budget, the probe volume's levels, SSR's
-    /// resolution, ray tracing — is a knob with no `[engine.video]` key, so
-    /// there is nothing for the two columns to disagree about yet. A key that
-    /// lands and separates them reddens this, which is when
-    /// `docs/plan/43-render-standards.md`'s row and this module's header both
-    /// want editing.
+    /// **Every tier has the exact shadow-filter rung the table assigns it.**
     #[test]
-    fn medium_and_high_hold_the_same_values_until_a_key_separates_them() {
-        assert_eq!(
-            QualityPreset::Medium.values(),
-            QualityPreset::High.values(),
-            "the two columns now differ in a key a tier writes: give `high` its \
-             own arm and delete this test",
-        );
+    fn every_tier_has_its_exact_shadow_filter() {
+        assert_eq!(QualityPreset::Low.values().shadow_filter, Filter::Box);
+        assert_eq!(QualityPreset::Medium.values().shadow_filter, Filter::Disc);
+        assert_eq!(QualityPreset::High.values().shadow_filter, Filter::Pcss);
     }
 
     /// **Selecting a tier moves what the engine's own readers answer**, for
@@ -443,6 +437,7 @@ mod tests {
                 wanted.antialiasing,
                 "{tier:?}"
             );
+            assert_eq!(shadow_filter(&stack), wanted.shadow_filter, "{tier:?}",);
             assert_eq!(
                 video_effects(&stack).contains(RenderEffects::VOLUMETRIC_FOG),
                 wanted.volumetric_fog,
@@ -457,17 +452,21 @@ mod tests {
     /// Both halves: the stack holds none of the covered keys, and the whole
     /// section reads back as the unrestricted one every golden was blessed at.
     ///
-    /// **The label is not the third half, and it says `medium, high` here.**
+    /// **The label names the high tier here.**
     /// The engine's own defaults are that column's values — render scale 1, no
-    /// clamp on the froxel pass, and the resolve tier
-    /// `RenderEffects::DEFAULT_STACK` carries — so a derived label has nothing
-    /// left to distinguish them by, and saying `custom` would be the drift a
-    /// stored label has. That the keys are *unwritten* is the opt-in claim, and
-    /// it is the loop below.
+    /// clamp on the froxel pass, the resolve tier
+    /// `RenderEffects::DEFAULT_STACK` carries and the shipped shadow filter — so
+    /// a derived label has nothing left to distinguish. That the keys are
+    /// *unwritten* is the opt-in claim, and it is the loop below.
     #[test]
     fn a_run_that_selects_nothing_writes_nothing_and_asks_for_nothing() {
         let stack = stack_from("");
-        for name in [RENDER_SCALE_KEY, ANTIALIASING_KEY, FOG_KEY] {
+        for name in [
+            RENDER_SCALE_KEY,
+            ANTIALIASING_KEY,
+            SHADOW_FILTER_KEY,
+            FOG_KEY,
+        ] {
             assert!(
                 !stack.contains(&format!("{VIDEO_NAMESPACE}.{name}")),
                 "`{name}` was written by nobody selecting anything",
@@ -476,10 +475,10 @@ mod tests {
         assert_eq!(video(&stack), VideoSettings::unrestricted());
         assert_eq!(
             current_values(&stack),
-            QualityPreset::Medium.values(),
+            QualityPreset::High.values(),
             "the defaults are a column of the table, and the label below is derived from that",
         );
-        assert_eq!(label(&stack), "medium, high");
+        assert_eq!(label(&stack), "high");
     }
 
     /// **The label is derived, so it is a tier only while every covered key
@@ -490,9 +489,10 @@ mod tests {
     /// label has and this one does not.
     #[test]
     fn moving_any_covered_key_takes_the_label_off_its_tier() {
-        let moves: [(&str, Value); 3] = [
+        let moves: [(&str, Value); 4] = [
             (RENDER_SCALE_KEY, Value::Float(0.5)),
             (ANTIALIASING_KEY, Value::Enum(Antialiasing::None.name())),
+            (SHADOW_FILTER_KEY, Value::Enum(Filter::Box.label())),
             (FOG_KEY, Value::Bool(false)),
         ];
         for (name, value) in moves {
@@ -519,25 +519,13 @@ mod tests {
         }
     }
 
-    /// **A set of values two columns share is printed as both of them.**
-    ///
-    /// `medium` and `high` are one set today, so a run that selected `high`
-    /// must not be told it is on `medium` — which is what a single-answer label
-    /// would say, since `selected` takes the cheapest match. The day a key
-    /// separates the columns this reads as one name again, with nothing to
-    /// change here.
+    /// **A selected tier prints only its own label.**
     #[test]
-    fn a_set_of_values_two_columns_share_is_printed_as_both() {
-        let (mut stack, mut stage) = empty();
-        select(&mut stack, QualityPreset::High, &mut stage)
-            .expect("a memory stack accepts a write");
-        let printed = label(&stack);
+    fn a_selected_tier_prints_its_own_label() {
         for tier in QualityPreset::ALL {
-            assert_eq!(
-                printed.contains(tier.name()),
-                tier.values() == QualityPreset::High.values(),
-                "`{printed}` disagrees with which columns hold these values about {tier:?}",
-            );
+            let (mut stack, mut stage) = empty();
+            select(&mut stack, tier, &mut stage).expect("a memory stack accepts a write");
+            assert_eq!(label(&stack), tier.name());
         }
     }
 
@@ -549,13 +537,10 @@ mod tests {
             let (mut stack, mut stage) = empty();
             select(&mut stack, tier, &mut stage).expect("a memory stack accepts a write");
             assert_eq!(current_values(&stack), tier.values(), "{tier:?}");
-            // `medium` and `high` are one set of values today, so the label is
-            // the cheaper of the two rather than the one that was selected —
-            // `selected`'s own documented order.
             assert_eq!(
-                selected(&stack).map(QualityPreset::values),
-                Some(tier.values()),
-                "{tier:?}",
+                selected(&stack),
+                Some(tier),
+                "{tier:?} did not survive its settings round trip",
             );
         }
     }
