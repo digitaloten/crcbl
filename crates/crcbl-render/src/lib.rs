@@ -254,6 +254,7 @@ pub use sprite_pass::{
     CONSTANTS_SIZE, INSTANCE_STRIDE, SAMPLE_PIXEL, SAMPLE_SMOOTH, SheetDesc, SheetId, Sprite,
     SpriteConstants, SpriteInstance, SpriteRenderer, sheet_lane,
 };
+pub use ssao::{r_ssao_bent_normals, r_ssao_blur_passes, r_ssao_slices};
 pub use stack::{
     AmbientOcclusionPass, AntialiasingPass, AutoExposurePass, BloomPass, CameraStack,
     ContactShadowsPass, ReflectionsPass, ShadowsPass, StackError, VolumetricFogPass,

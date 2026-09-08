@@ -46,8 +46,10 @@
 //! naming what each column spends. Neither exists, and the second is the one
 //! that needs a measurement rather than code.
 //!
-//! `shadow_filter` is the exception that landed: its settings reader drives
-//! `r_shadow_filter`, so low, medium and high now write distinct values.
+//! `shadow_filter` and the three SSAO keys are the exceptions that landed: their
+//! settings readers drive `r_shadow_filter`, `r_ssao_slices`,
+//! `r_ssao_blur_passes` and `r_ssao_bent_normals`, so tiers write their complete
+//! shadow and AO bundles.
 //!
 //! # A device that cannot meet a tier
 //!
@@ -78,8 +80,10 @@ use crcbl_render::{Antialiasing, RenderEffects, shadow::Filter};
 use crcbl_store::settings::SettingsStack;
 
 use super::{
-    ANTIALIASING_KEY, Applied, ConsoleHost, RENDER_SCALE_KEY, SHADOW_FILTER_KEY, Stage, VIDEO_KEYS,
-    VIDEO_NAMESPACE, antialiasing_or_default, apply, render_scale, shadow_filter, video_effects,
+    ANTIALIASING_KEY, Applied, ConsoleHost, RENDER_SCALE_KEY, SHADOW_FILTER_KEY,
+    SSAO_BENT_NORMALS_KEY, SSAO_BLUR_PASSES_KEY, SSAO_SLICES_KEY, Stage, VIDEO_KEYS,
+    VIDEO_NAMESPACE, antialiasing_or_default, apply, render_scale, shadow_filter,
+    ssao_bent_normals, ssao_blur_passes, ssao_slices, video_effects,
 };
 
 /// The word [`selected`] has no tier for.
@@ -156,6 +160,9 @@ impl QualityPreset {
                 antialiasing: Antialiasing::Fxaa,
                 shadow_filter: Filter::Box,
                 volumetric_fog: false,
+                ssao_slices: 2,
+                ssao_blur_passes: 1,
+                ssao_bent_normals: false,
             },
             // "Render scale 1.0 | Volumetric fog on, half-res froxels" — the
             // half-res froxel grid is its own unbuilt rung, so the switch is all
@@ -168,12 +175,18 @@ impl QualityPreset {
                 antialiasing: Antialiasing::Cmaa2,
                 shadow_filter: Filter::Disc,
                 volumetric_fog: true,
+                ssao_slices: 4,
+                ssao_blur_passes: 2,
+                ssao_bent_normals: true,
             },
             Self::High => QualityValues {
                 render_scale: 1.0,
                 antialiasing: Antialiasing::Cmaa2,
                 shadow_filter: Filter::Pcss,
                 volumetric_fog: true,
+                ssao_slices: 4,
+                ssao_blur_passes: 2,
+                ssao_bent_normals: true,
             },
         }
     }
@@ -196,6 +209,12 @@ pub struct QualityValues {
     pub shadow_filter: Filter,
     /// The [`VIDEO_KEYS`] fog switch: whether the player allows the froxel pass.
     pub volumetric_fog: bool,
+    /// [`super::SSAO_SLICES_KEY`].
+    pub ssao_slices: i64,
+    /// [`super::SSAO_BLUR_PASSES_KEY`].
+    pub ssao_blur_passes: i64,
+    /// [`super::SSAO_BENT_NORMALS_KEY`].
+    pub ssao_bent_normals: bool,
 }
 
 /// What the engine's own readers answer for the keys a tier covers.
@@ -211,6 +230,9 @@ pub fn current_values(stack: &SettingsStack) -> QualityValues {
         antialiasing: antialiasing_or_default(stack),
         shadow_filter: shadow_filter(stack),
         volumetric_fog: video_effects(stack).contains(RenderEffects::VOLUMETRIC_FOG),
+        ssao_slices: ssao_slices(stack),
+        ssao_blur_passes: ssao_blur_passes(stack),
+        ssao_bent_normals: ssao_bent_normals(stack),
     }
 }
 
@@ -276,6 +298,9 @@ pub fn select(
         (ANTIALIASING_KEY, Value::Enum(values.antialiasing.name())),
         (SHADOW_FILTER_KEY, Value::Enum(values.shadow_filter.label())),
         (FOG_KEY, Value::Bool(values.volumetric_fog)),
+        (SSAO_SLICES_KEY, Value::Int(values.ssao_slices)),
+        (SSAO_BLUR_PASSES_KEY, Value::Int(values.ssao_blur_passes)),
+        (SSAO_BENT_NORMALS_KEY, Value::Bool(values.ssao_bent_normals)),
     ] {
         let key = format!("{VIDEO_NAMESPACE}.{name}");
         if apply(stack, &key, &value, stage)? == Applied::NextStart {
@@ -288,11 +313,14 @@ pub fn select(
 /// One line describing what the covered keys hold.
 fn values_line(values: QualityValues) -> String {
     format!(
-        "{RENDER_SCALE_KEY} = {}, {ANTIALIASING_KEY} = {}, {SHADOW_FILTER_KEY} = {}, {FOG_KEY} = {}",
+        "{RENDER_SCALE_KEY} = {}, {ANTIALIASING_KEY} = {}, {SHADOW_FILTER_KEY} = {}, {FOG_KEY} = {}, {SSAO_SLICES_KEY} = {}, {SSAO_BLUR_PASSES_KEY} = {}, {SSAO_BENT_NORMALS_KEY} = {}",
         values.render_scale,
         values.antialiasing.name(),
         values.shadow_filter.label(),
         values.volumetric_fog,
+        values.ssao_slices,
+        values.ssao_blur_passes,
+        values.ssao_bent_normals,
     )
 }
 
@@ -406,12 +434,36 @@ mod tests {
         );
     }
 
-    /// **Every tier has the exact shadow-filter rung the table assigns it.**
+    /// **Every tier has the exact shadow-filter and SSAO bundle the table assigns it.**
     #[test]
-    fn every_tier_has_its_exact_shadow_filter() {
+    fn every_tier_has_its_exact_shadow_filter_and_ssao_bundle() {
         assert_eq!(QualityPreset::Low.values().shadow_filter, Filter::Box);
         assert_eq!(QualityPreset::Medium.values().shadow_filter, Filter::Disc);
         assert_eq!(QualityPreset::High.values().shadow_filter, Filter::Pcss);
+        assert_eq!(
+            (
+                QualityPreset::Low.values().ssao_slices,
+                QualityPreset::Low.values().ssao_blur_passes,
+                QualityPreset::Low.values().ssao_bent_normals
+            ),
+            (2, 1, false),
+        );
+        assert_eq!(
+            (
+                QualityPreset::Medium.values().ssao_slices,
+                QualityPreset::Medium.values().ssao_blur_passes,
+                QualityPreset::Medium.values().ssao_bent_normals
+            ),
+            (4, 2, true),
+        );
+        assert_eq!(
+            (
+                QualityPreset::High.values().ssao_slices,
+                QualityPreset::High.values().ssao_blur_passes,
+                QualityPreset::High.values().ssao_bent_normals
+            ),
+            (4, 2, true),
+        );
     }
 
     /// **Selecting a tier moves what the engine's own readers answer**, for
@@ -438,6 +490,17 @@ mod tests {
                 "{tier:?}"
             );
             assert_eq!(shadow_filter(&stack), wanted.shadow_filter, "{tier:?}",);
+            assert_eq!(ssao_slices(&stack), wanted.ssao_slices, "{tier:?}");
+            assert_eq!(
+                ssao_blur_passes(&stack),
+                wanted.ssao_blur_passes,
+                "{tier:?}"
+            );
+            assert_eq!(
+                ssao_bent_normals(&stack),
+                wanted.ssao_bent_normals,
+                "{tier:?}"
+            );
             assert_eq!(
                 video_effects(&stack).contains(RenderEffects::VOLUMETRIC_FOG),
                 wanted.volumetric_fog,
@@ -466,6 +529,9 @@ mod tests {
             ANTIALIASING_KEY,
             SHADOW_FILTER_KEY,
             FOG_KEY,
+            SSAO_SLICES_KEY,
+            SSAO_BLUR_PASSES_KEY,
+            SSAO_BENT_NORMALS_KEY,
         ] {
             assert!(
                 !stack.contains(&format!("{VIDEO_NAMESPACE}.{name}")),
@@ -489,11 +555,14 @@ mod tests {
     /// label has and this one does not.
     #[test]
     fn moving_any_covered_key_takes_the_label_off_its_tier() {
-        let moves: [(&str, Value); 4] = [
+        let moves: [(&str, Value); 7] = [
             (RENDER_SCALE_KEY, Value::Float(0.5)),
             (ANTIALIASING_KEY, Value::Enum(Antialiasing::None.name())),
             (SHADOW_FILTER_KEY, Value::Enum(Filter::Box.label())),
             (FOG_KEY, Value::Bool(false)),
+            (SSAO_SLICES_KEY, Value::Int(2)),
+            (SSAO_BLUR_PASSES_KEY, Value::Int(1)),
+            (SSAO_BENT_NORMALS_KEY, Value::Bool(false)),
         ];
         for (name, value) in moves {
             let (mut stack, mut stage) = empty();

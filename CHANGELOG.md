@@ -84,6 +84,10 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- `[engine.video] ssao_slices`, `ssao_blur_passes` and `ssao_bent_normals`
+  persist and apply the Ambient Occlusion quality bundle at startup and live;
+  quality presets write low as 2/1/off and medium/high as 4/2/on.
+
 - `[engine.video] shadow_filter` persists `box`, `disc` or `pcss`, applies the
   selection to `r_shadow_filter` at startup and live, and gives quality presets
   those filters for low, medium and high respectively.

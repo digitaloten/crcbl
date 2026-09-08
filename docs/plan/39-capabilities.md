@@ -254,21 +254,21 @@ number is a **starting budget to sweep on that tier's hardware**, not a constant
 — the constant is spelled where the code reads it, and the sweep
 (`docs/backlog.md`'s standing practice) fixes it there.
 
-| Item                    | Low (browser, lavapipe, integrated)          | Medium                            | High (desktop, RT where present)           |
-| ----------------------- | -------------------------------------------- | --------------------------------- | ------------------------------------------ |
-| Antialiasing            | FXAA                                         | CMAA2                             | CMAA2; MSAA opt-in                         |
-| Render scale            | 0.75                                         | 1.0                               | 1.0                                        |
-| Shadow atlas            | 2048², 4 shadowed local lights               | 4096², 8                          | 8192², 16                                  |
-| Sun shadows             | 2 cascades, box                              | 3 cascades, disc                  | 3 cascades, PCSS                           |
-| Contact shadows         | off                                          | on                                | on                                         |
-| Ambient occlusion       | scalar + multi-bounce tint                   | bent normals + specular occlusion | bent normals + specular occlusion          |
-| Area lights (LTC)       | on                                           | on                                | on                                         |
-| Probe volume            | 2 levels, 16³ probes each, capture amortised | 3 levels, 24³                     | 4 levels, 32³; traced updater on RT        |
-| Atmosphere              | on (one LUT fetch)                           | on                                | on                                         |
-| Reflections             | SSR half-res, sky + probe fallback           | SSR full-res, Hi-Z                | SSR + cone trace; RT reflections on RT     |
-| Volumetric fog          | off                                          | on, half-res froxels              | on                                         |
-| Bloom, auto-exposure    | on                                           | on                                | on                                         |
-| Ray-traced shadows / GI | —                                            | —                                 | on where the device reports the capability |
+| Item                    | Low (browser, lavapipe, integrated)          | Medium                             | High (desktop, RT where present)           |
+| ----------------------- | -------------------------------------------- | ---------------------------------- | ------------------------------------------ |
+| Antialiasing            | FXAA                                         | CMAA2                              | CMAA2; MSAA opt-in                         |
+| Render scale            | 0.75                                         | 1.0                                | 1.0                                        |
+| Shadow atlas            | 2048², 4 shadowed local lights               | 4096², 8                           | 8192², 16                                  |
+| Sun shadows             | 2 cascades, box                              | 3 cascades, disc                   | 3 cascades, PCSS                           |
+| Contact shadows         | off                                          | on                                 | on                                         |
+| Ambient occlusion       | 2 slices, 1 blur, bent normals off           | 4 slices, 2 blurs, bent normals on | 4 slices, 2 blurs, bent normals on         |
+| Area lights (LTC)       | on                                           | on                                 | on                                         |
+| Probe volume            | 2 levels, 16³ probes each, capture amortised | 3 levels, 24³                      | 4 levels, 32³; traced updater on RT        |
+| Atmosphere              | on (one LUT fetch)                           | on                                 | on                                         |
+| Reflections             | SSR half-res, sky + probe fallback           | SSR full-res, Hi-Z                 | SSR + cone trace; RT reflections on RT     |
+| Volumetric fog          | off                                          | on, half-res froxels               | on                                         |
+| Bloom, auto-exposure    | on                                           | on                                 | on                                         |
+| Ray-traced shadows / GI | —                                            | —                                  | on where the device reports the capability |
 
 Each row's Low cell is what a frame must fit on the browser tier at 60 Hz; the
 Medium column is the default the settings screen shows on a device that reports
@@ -308,14 +308,20 @@ The alternative — a preset that is consulted at resolve time for keys the file
 does not mention — was considered and declined: it makes an absent key mean
 something, which is the one thing rule 1 forbids.
 
-**What a tier covers is four keys, and the table is why.** `render_scale`, the
-`antialiasing` rung, `shadow_filter` and the `volumetric_fog` switch are the
-only rows of the tier table above that this tree has an `[engine.video]` key
-for; the rest name an amount of something (the shadow atlas's size and light
-budget, the probe volume's levels, SSR's resolution, contact shadows, ray
-tracing) with no key and usually no renderer half. `shadow_filter` makes every
-tier distinct: `low` writes `box`, `medium` writes `disc`, and `high` writes
-`pcss`.
+**The history is deliberately dated.** On 2026-08-31 the command covered
+`render_scale`, `antialiasing` and `volumetric_fog`; `shadow_filter` made that
+four keys on 2026-09-09. The separate 2026-09-09 AO expansion added
+`ssao_slices`, `ssao_blur_passes` and `ssao_bent_normals`, bringing the current
+bundle to seven keys.
+
+**What a tier covers is seven keys, and the table is why.** `render_scale`, the
+`antialiasing` rung, `shadow_filter`, the `volumetric_fog` switch, and
+`ssao_slices`, `ssao_blur_passes` and `ssao_bent_normals` are the rows of the
+tier table above that this tree has an `[engine.video]` key for; the rest name
+an amount of something (the shadow atlas's size and light budget, the probe
+volume's levels, SSR's resolution, contact shadows, ray tracing) with no key and
+usually no renderer half. `shadow_filter` makes every tier distinct: `low`
+writes `box`, `medium` writes `disc`, and `high` writes `pcss`.
 
 The medium and high AA cells say **CMAA2**, and CMAA2 is what
 `QualityPreset::values` writes: [49-antialiasing.md](49-antialiasing.md)'s
@@ -331,11 +337,14 @@ half.
 
 | Key                     | Domain (lowest rung first)             | Today                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | ----------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `quality`               | `low` \| `medium` \| `high`            | **Built 2026-08-31, as a command rather than a key** — `crcbl::settings::presets` and the `quality` console command; see the section above for why it is not a catalogue key and why `ultra` is gone. It covers four of the tier table's rows. `apps/options` still offers no row for it — `docs/backlog.md`.                                                                                                                                                                                                                                                                        |
+| `quality`               | `low` \| `medium` \| `high`            | **Built 2026-08-31, as a command rather than a key** — `crcbl::settings::presets` and the `quality` console command; see the section above for why it is not a catalogue key and why `ultra` is gone. It originally covered three rows; `shadow_filter` made four on 2026-09-09, and the separate AO expansion made the current seven. `apps/options` still offers no row for it — `docs/backlog.md`.                                                                                                                                                                                |
 | `anti_aliasing`         | `off` \| `fxaa` \| `cmaa2`             | **Built, as one enum key (2026-08-30)**, spelled `antialiasing` and holding `crcbl_render::Antialiasing`'s `"none"`, `"fxaa"` or `"cmaa2"` — the third rung was `"smaa"` until the CMAA2 slice replaced that tier on 2026-09-06. It was two booleans for a day; they shared one resolve slot, so a panel could switch both on and the frame picked between them out of sight. `EffectRequest::antialiasing` carries the rung and `resolve` **replaces** the slot with it rather than clamping, which is the first non-clamping video key — [49-antialiasing.md](49-antialiasing.md). |
-| `ambient_occlusion`     | `off` \| `ssao` \| `gtao`              | **Built as a boolean.** `RenderEffects::AMBIENT_OCCLUSION` and the `ambient_occlusion` key are `off` versus on; GTAO **replaced** the hemisphere on 2026-08-28 rather than joining it as a rung, so the `ssao` tier has no code until a quality seam asks for it — [46-ambient-occlusion.md](46-ambient-occlusion.md).                                                                                                                                                                                                                                                               |
+| `ambient_occlusion`     | `off` \| `ssao` \| `gtao`              | **Built as a boolean plus the 2026-09-09 SSAO quality bundle.** `RenderEffects::AMBIENT_OCCLUSION` and `ambient_occlusion` select off versus on; `ssao_slices`, `ssao_blur_passes` and `ssao_bent_normals` select the GTAO budget and bent-normal output — [46-ambient-occlusion.md](46-ambient-occlusion.md).                                                                                                                                                                                                                                                                       |
 | `shadow_quality`        | `off` \| `low` \| `medium` \| `high`   | **Built as a boolean.** `RenderEffects::SHADOWS` and the `shadows` key are `off` versus everything else; the atlas has no quality rungs.                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `shadow_filter`         | `box` \| `disc` \| `pcss`              | **Built 2026-09-09** as an enum key backed by `crcbl_render::shadow::Filter`. An absent or invalid value uses shipped PCSS, and the setting writes `r_shadow_filter` at start-up and live.                                                                                                                                                                                                                                                                                                                                                                                           |
+| `ssao_slices`           | `2` \| `4`                             | **Built 2026-09-09** as the bounded `r_ssao_slices` setting; absent or invalid values use its declared default.                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `ssao_blur_passes`      | `1` \| `2`                             | **Built 2026-09-09** as the bounded `r_ssao_blur_passes` setting; absent or invalid values use its declared default.                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `ssao_bent_normals`     | `off` \| `on`                          | **Built 2026-09-09** as the `r_ssao_bent_normals` setting; absent or invalid values use its declared default.                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `shadow_distance`       | metres, a scalar                       | **Nothing.** Distinct from `shadow_quality` because it trades range for resolution rather than buying either.                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `reflections`           | `off` \| `ssr`                         | **Built as a boolean**, and the domain is honestly two rungs — a ray-traced rung arrives with `LightingPath::RayTraced`, not before.                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `texture_quality`       | `low` \| `medium` \| `high`            | **Nothing.** [43-render-standards.md](43-render-standards.md)'s filtering subsection gives it a cheap first form — a `lod_min` clamp on the page sampler once the page has mips — before the residency mechanism topic 25 owns.                                                                                                                                                                                                                                                                                                                                                      |
@@ -544,7 +553,7 @@ contributing the target upstream is a legitimate option if it stalls.
 ## Delivery
 
 What is not built is the **width** of the settings layer and the engine's own
-screen in front of it. Sixteen read keys is the entire settings surface today;
+screen in front of it. Nineteen read keys is the entire settings surface today;
 the catalogue above names the rest and marks each one unimplemented.
 `apps/options` reaches the keys that have readers and is a sample, so the
 engine-provided screen is still P10 work.

@@ -2372,7 +2372,7 @@ mod tests {
     fn the_tier_row_is_placed_from_the_file_without_writing_a_thing() {
         let held = QualityPreset::Medium;
         let (mut screen, mut menus) = screen(
-            "[engine.video]\nrender_scale = 1.0\nantialiasing = \"cmaa2\"\nshadow_filter = \"disc\"\nvolumetric_fog = true\n",
+            "[engine.video]\nrender_scale = 1.0\nantialiasing = \"cmaa2\"\nshadow_filter = \"disc\"\nvolumetric_fog = true\nssao_slices = 4\nssao_blur_passes = 2\nssao_bent_normals = true\n",
         );
         assert_eq!(
             crcbl::settings::presets::selected(&screen.stack()),

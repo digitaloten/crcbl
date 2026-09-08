@@ -1547,113 +1547,23 @@ What the rung did leave behind:
   need `ForwardRenderer::shadow_lights` the day a scene they cover demotes a
   light. None does.
 
-## The tier table is silent about five knobs a preset could write (2026-08-31)
+## Remaining preset knobs need measured tier budgets (2026-08-31)
 
-`crcbl::settings::presets::QualityPreset::values` writes four keys because those
-are the four rows of `docs/plan/39-capabilities.md`'s tier table this tree has
-an `[engine.video]` key for. The table says nothing at all about the knobs that
-already exist beside them, and each needs a **number per tier** before a preset
-can spend it:
+The settings and renderer knobs exist, but the tier table still lacks the
+hardware measurements that would make these preset values rather than guesses:
 
-- `crcbl_render::shadow::cadence::r_shadow_cadence` and `r_shadow_faces` — the
-  entry below on the cadence default is the same question. The table has no
-  cadence row.
-- `crcbl_render::ssao::r_ssao_slices` and `r_ssao_blur_passes` — the tier
-  table's "Ambient occlusion" row is written in terms of bent normals and
-  specular occlusion, neither of which is built, and says nothing about slices
-  or blur passes.
-- `anisotropic_filtering` — named as a preset knob in that document's "Quality
-  presets are a foundation rung" paragraph, with no row in the table.
+- `crcbl_render::shadow::cadence::r_shadow_cadence` and `r_shadow_faces` need
+  the visible lag measured per tier; the entry below owns that work.
+- `anisotropic_filtering` is named as a preset knob in
+  `docs/plan/39-capabilities.md`, but the tier table assigns it no values.
 
-Each is a sweep on that tier's hardware, which is the table's own preamble ("a
-starting budget to sweep on that tier's hardware, not a constant"). Until the
-numbers exist, a preset leaving them alone is the honest answer: a tier that
-wrote a guessed cadence would move every golden with a moving light.
-
-**And each needs a settings key before a tier could write it even with the
-numbers in hand.** All four are `convar!` process globals; a preset writes the
-player's file, which `docs/plan/39-capabilities.md` fixes as "a layer of keys
-and not a second mechanism".
-
-**This entry used to call the first step "ordinary work" and point at
-`RENDER_SCALE_KEY` as the road. Read before starting, 2026-09-02: it is not that
-road, and it is a decision rather than a chore.** Two things in the tree decide
-it:
-
-- **A catalogue key generates a console variable named after the key.**
-  `settings::console_bindings` makes one `ARCHIVE` binding per catalogue entry,
-  and `crates/crcbl/tests/console_table.rs` asserts every key has one. So adding
-  `ssao_slices` would put a second console name beside the existing
-  `r_ssao_slices`, both steering one value. `RENDER_SCALE_KEY` is not the same
-  case: it has **no** competing `convar!`, so it never had to answer this.
-- **`crcbl-render` cannot read the settings stack.** Its manifest takes
-  `crcbl-console` and `crcbl-core` and neither `crcbl` nor `crcbl-store`, which
-  is _why_ these knobs are convars. So a settings value has to be written into
-  the convar from the umbrella crate at boot; the renderer cannot pull it.
-
-And `#[flags(ARCHIVE)]` on a `convar!` does **not** persist it — the flag is
-real and the macro takes it, but the only non-test code that reads it is
-`crcbl-console`'s `reset`, which skips archived variables. Everything that
-actually reaches `settings.toml` goes through the catalogue bindings.
-
-**So the routes are three, and the choice is the user's.**
-
-1. **A catalogue key that drives the convar.** Cheapest, and what this entry
-   assumed. The price is two console names for one value and a precedence rule
-   to write down — settings at boot, then `autoexec.cfg`, then whatever is
-   typed.
-2. **Make the convar the only name and teach the engine to persist `ARCHIVE`
-   ones** — a writer that walks the registry's archived variables into the stack
-   on `save`, and a boot-time reader. One name, it is what `FCVAR_ARCHIVE` means
-   in the console this was modelled on, `docs/plan/52-debug-console.md` names
-   that model in its opening lines, and **it solves all six knobs in this entry
-   at once** rather than two. Bigger, and it needs a namespace decision.
-3. **Settings-only, no console name**, with the value reaching the renderer
-   through an API call the way `render_scale` does. No duplication at all — and
-   it gives up the live tuning these knobs were added for, and costs a wiring
-   line in every sample, which is what `render_scale` pays today.
-
-Route 2 looks like the one that pays for itself; route 1 is defensible if only
-the AO pair ever matters. Nothing is built either way.
-
-**One correction to a cost recorded elsewhere in this file:** a _scalar_
-catalogue key does not shift `toFader` in `web/tools/browser-e2e.mjs`.
-`apps/options` builds its effect rows from `VIDEO_KEYS` and carries hand-written
-rows for `render_scale` and `frame_limit`, so a catalogue key adds no row on its
-own. Only a new `VIDEO_KEYS` entry, or a hand-added options row, moves that
-groove.
+Until those measurements exist, presets must leave these knobs alone.
 
 ## Quality presets still owe their remaining rows (2026-08-31)
 
 The shadow atlas's size and light budget (2048²/4096²/8192²), the probe volume's
 levels (2/3/4), SSR's resolution and the ray-traced rung still have no
 `[engine.video]` key and mostly no renderer half.
-
-**A concrete candidate for another tier split arrived on 2026-09-02: the AO
-tangential rung.** It shipped as the default on 2026-09-03 — four slices with
-two blurs costs less than the un-runged pair did before AO was halved, and it
-undoes the smoothness that halving cost — so what a lower tier would spend here
-is the _saving_ of stepping back down to the clamp floor, which "What the AO
-default change of 2026-09-03 did not cover" prices. `r_ssao_slices` and
-`r_ssao_blur_passes` are console variables with no `[engine.video]` key and no
-tier row, which is exactly the two-step road the entry above this one describes:
-a catalogue key whose reader drives the variable, then a tier-table row saying
-what each column spends. Give them that and `high` would differ from `medium` by
-something measured rather than by a knob nobody has priced.
-
-One thing still gates it, and it is not work: **which tier gets which value is
-the user's call** — see "Whether any tier should be the default is still the
-user's call" below. The browser tier is no longer the second gate; it was
-measured 2026-09-02 and did not refuse the extra slices, and both defaults moved
-to the higher counts on 2026-09-03.
-
-**DECIDED 2026-09-06 —** the columns gain settings keys and cvars for
-`ssao_slices` 2/4/4, `ssao_blur_passes` 1/2/2, `ssao_bent_normals` off/on/on,
-`shadow_cadence` on/off/off with a budget of half the tiles per frame on low,
-and atlas 2048/4096/8192 once the atlas key lands. Frostbite budgets shadow
-updates and Unity HDRP's cached shadow atlas updates on demand the same way. The
-lag on low is measured in lantern before the cadence row is written, rather than
-guessed.
 
 ## The shadow cadence default still has no tier to live in (2026-08-31)
 
@@ -16898,21 +16808,12 @@ leaves:
   `web/demos/breach/main.js` reads `?map=`, since the gate already navigates
   with one to boot a second configuration.
 
-- **Every read key has a row, and the graphics tiers now do too.** `FRAME CAP`
-  landed on 2026-08-28; `ANISOTROPY`, `RENDER SCALE` and the `VIDEO_KEYS` effect
-  switches on 2026-08-29; `ANTIALIASING` and the `QUALITY` row that writes a
-  whole tier column followed. Display mode, resolution and present mode are
-  still absent, and each is harder than those for the same reason: the cap is a
-  number the loop reads once at start-up and the anisotropy, scale and effects
-  ones a renderer takes when it opens, so a row that writes the key and says
-  `(next start)` is the honest whole of any of them, while the other three are
-  applied to a **live window** and therefore need a seam this sample does not
-  have — something a screen can call to re-mode or re-size the window it is
-  drawn in, and something that reports what the window system actually did with
-  the request. `crcbl::settings::apply_video_to` applies the scale and the
-  anisotropy together, and lantern and quarry both call it — lantern on both of
-  its renderers. The scaffold template is the one that applies neither, because
-  it builds no `ForwardRenderer` at all.
+- **Display mode, resolution and present mode still have no settings rows.**
+  Unlike frame cap, anisotropy, render scale and effect keys, those three must
+  be applied to a live window. The sample has no seam a screen can call to
+  re-mode or resize its window, nor one that reports what the window system
+  actually did with the request. Adding rows before both exist would make the
+  controls claim a live result they cannot produce or observe.
 
 - **Coverage gap: nothing restarts.** The round trip is covered by the tests in
   `apps/options/src/app.rs` over `MemoryStorage`, which is what

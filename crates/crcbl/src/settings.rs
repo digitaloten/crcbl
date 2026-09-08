@@ -126,7 +126,8 @@ use std::rc::Rc;
 use crcbl_audio::mixer::Bus;
 use crcbl_console::{Binding, Fault, Flags, Kind, Value};
 use crcbl_render::{
-    Antialiasing, DEFAULT_ANISOTROPY, MIN_RENDER_SCALE, RenderEffects,
+    Antialiasing, DEFAULT_ANISOTROPY, MIN_RENDER_SCALE, RenderEffects, r_ssao_bent_normals,
+    r_ssao_blur_passes, r_ssao_slices,
     shadow::{Filter, r_shadow_filter, shipped_filter},
 };
 
@@ -254,6 +255,18 @@ pub const ANTIALIASING_NAMES: [&str; Antialiasing::ALL.len()] = {
 /// The `[engine.video]` key that picks the shadow filter.
 pub const SHADOW_FILTER_KEY: &str = "shadow_filter";
 
+/// The `[engine.video]` key that sets the SSAO slice count.
+pub const SSAO_SLICES_KEY: &str = "ssao_slices";
+/// The `[engine.video]` key that sets the SSAO blur-pass count.
+pub const SSAO_BLUR_PASSES_KEY: &str = "ssao_blur_passes";
+/// The `[engine.video]` key that controls SSAO bent-normal output.
+pub const SSAO_BENT_NORMALS_KEY: &str = "ssao_bent_normals";
+
+/// The SSAO convar domains, shared by the settings catalogue and writers.
+const SSAO_SLICES_KIND: Kind = Kind::Int { min: 2, max: 4 };
+const SSAO_BLUR_PASSES_KIND: Kind = Kind::Int { min: 1, max: 2 };
+const SSAO_BENT_NORMALS_KIND: Kind = Kind::Bool;
+
 /// Every rung [`shadow_filter`] reads, as the words a file and a console line
 /// spell them with.
 pub const SHADOW_FILTER_NAMES: [&str; Filter::ALL.len()] = {
@@ -314,6 +327,12 @@ pub struct VideoSettings {
     /// applies it with, and [`FrameLimit::unlimited`] is the ceiling that holds
     /// nothing down.
     pub frame_limit: FrameLimit,
+    /// The SSAO slice count; see [`ssao_slices`].
+    pub ssao_slices: i64,
+    /// The number of SSAO blur passes; see [`ssao_blur_passes`].
+    pub ssao_blur_passes: i64,
+    /// Whether SSAO writes bent normals; see [`ssao_bent_normals`].
+    pub ssao_bent_normals: bool,
 }
 
 impl VideoSettings {
@@ -334,6 +353,9 @@ impl VideoSettings {
             render_scale: 1.0,
             anisotropic_filtering: DEFAULT_ANISOTROPY,
             frame_limit: FrameLimit::unlimited(),
+            ssao_slices: ssao_slices_default(),
+            ssao_blur_passes: ssao_blur_passes_default(),
+            ssao_bent_normals: ssao_bent_normals_default(),
         }
     }
 }
@@ -348,6 +370,9 @@ pub fn video(stack: &SettingsStack) -> VideoSettings {
         render_scale: render_scale(stack),
         anisotropic_filtering: anisotropic_filtering(stack),
         frame_limit: frame_limit(stack),
+        ssao_slices: ssao_slices(stack),
+        ssao_blur_passes: ssao_blur_passes(stack),
+        ssao_bent_normals: ssao_bent_normals(stack),
     }
 }
 
@@ -424,6 +449,87 @@ pub fn shadow_filter(stack: &SettingsStack) -> Filter {
         Some(_) => unreadable(),
         None if stack.contains(&dotted) => unreadable(),
         None => shipped_filter(),
+    }
+}
+
+fn ssao_slices_default() -> i64 {
+    let Value::Int(default) = r_ssao_slices.default() else {
+        unreachable!("`r_ssao_slices` is declared as an integer")
+    };
+    *default
+}
+
+fn ssao_blur_passes_default() -> i64 {
+    let Value::Int(default) = r_ssao_blur_passes.default() else {
+        unreachable!("`r_ssao_blur_passes` is declared as an integer")
+    };
+    *default
+}
+
+fn ssao_bent_normals_default() -> bool {
+    let Value::Bool(default) = r_ssao_bent_normals.default() else {
+        unreachable!("`r_ssao_bent_normals` is declared as a bool")
+    };
+    *default
+}
+
+/// Read one bounded SSAO integer, falling back to its convar's declared default.
+fn ssao_integer(stack: &SettingsStack, key: &str, kind: Kind, default: i64) -> i64 {
+    let dotted = format!("{VIDEO_NAMESPACE}.{key}");
+    match stack.get::<i64>(&dotted) {
+        Some(value) if kind.check(&dotted, &Value::Int(value)).is_ok() => value,
+        Some(_) => {
+            crcbl_core::log::warn!(
+                "settings: `{dotted}` is outside its SSAO domain, so it does nothing; the frame uses the shipped value"
+            );
+            default
+        }
+        None if stack.contains(&dotted) => {
+            crcbl_core::log::warn!(
+                "settings: `{dotted}` is not a usable SSAO value, so it does nothing; the frame uses the shipped value"
+            );
+            default
+        }
+        None => default,
+    }
+}
+
+/// The SSAO slice count; absent or invalid values use the convar's declared default.
+#[must_use]
+pub fn ssao_slices(stack: &SettingsStack) -> i64 {
+    ssao_integer(
+        stack,
+        SSAO_SLICES_KEY,
+        SSAO_SLICES_KIND,
+        ssao_slices_default(),
+    )
+}
+
+/// The SSAO blur-pass count; absent or invalid values use the convar's declared default.
+#[must_use]
+pub fn ssao_blur_passes(stack: &SettingsStack) -> i64 {
+    ssao_integer(
+        stack,
+        SSAO_BLUR_PASSES_KEY,
+        SSAO_BLUR_PASSES_KIND,
+        ssao_blur_passes_default(),
+    )
+}
+
+/// Whether SSAO writes bent normals; absent or invalid values use the convar's declared default.
+#[must_use]
+pub fn ssao_bent_normals(stack: &SettingsStack) -> bool {
+    let default = ssao_bent_normals_default();
+    let dotted = format!("{VIDEO_NAMESPACE}.{SSAO_BENT_NORMALS_KEY}");
+    match stack.get::<bool>(&dotted) {
+        Some(value) => value,
+        None if stack.contains(&dotted) => {
+            crcbl_core::log::warn!(
+                "settings: `{dotted}` is not true or false, so it does nothing; the frame uses the shipped value"
+            );
+            default
+        }
+        None => default,
     }
 }
 
@@ -597,7 +703,10 @@ pub fn set_video(stack: &mut SettingsStack, video: VideoSettings) -> Result<(), 
     set_shadow_filter(stack, video.shadow_filter)?;
     set_render_scale(stack, video.render_scale)?;
     set_anisotropic_filtering(stack, video.anisotropic_filtering)?;
-    set_frame_limit(stack, video.frame_limit)
+    set_frame_limit(stack, video.frame_limit)?;
+    set_ssao_slices(stack, video.ssao_slices)?;
+    set_ssao_blur_passes(stack, video.ssao_blur_passes)?;
+    set_ssao_bent_normals(stack, video.ssao_bent_normals)
 }
 
 /// Write `[engine.video] antialiasing`, as the rung [`antialiasing`] reads back.
@@ -697,6 +806,45 @@ pub fn set_anisotropic_filtering(
     stack.set(
         &dotted,
         &f64::from(anisotropy.clamp(1.0, MAX_ANISOTROPIC_FILTERING)),
+    )
+}
+
+/// Write `[engine.video] ssao_slices`, rejecting values outside the convar's domain.
+pub fn set_ssao_slices(stack: &mut SettingsStack, slices: i64) -> Result<(), StorageError> {
+    let dotted = format!("{VIDEO_NAMESPACE}.{SSAO_SLICES_KEY}");
+    if SSAO_SLICES_KIND
+        .check(&dotted, &Value::Int(slices))
+        .is_err()
+    {
+        return Err(StorageError::Other(format!(
+            "settings: `{dotted}` cannot be written as {slices}"
+        )));
+    }
+    stack.set(&dotted, &slices)
+}
+
+/// Write `[engine.video] ssao_blur_passes`, rejecting values outside the convar's domain.
+pub fn set_ssao_blur_passes(stack: &mut SettingsStack, passes: i64) -> Result<(), StorageError> {
+    let dotted = format!("{VIDEO_NAMESPACE}.{SSAO_BLUR_PASSES_KEY}");
+    if SSAO_BLUR_PASSES_KIND
+        .check(&dotted, &Value::Int(passes))
+        .is_err()
+    {
+        return Err(StorageError::Other(format!(
+            "settings: `{dotted}` cannot be written as {passes}"
+        )));
+    }
+    stack.set(&dotted, &passes)
+}
+
+/// Write `[engine.video] ssao_bent_normals`.
+pub fn set_ssao_bent_normals(
+    stack: &mut SettingsStack,
+    bent_normals: bool,
+) -> Result<(), StorageError> {
+    stack.set(
+        &format!("{VIDEO_NAMESPACE}.{SSAO_BENT_NORMALS_KEY}"),
+        &bent_normals,
     )
 }
 
@@ -854,6 +1002,10 @@ const ANTIALIASING_HELP: &str = "which resolve the frame gets; absent leaves the
 /// [`SHADOW_FILTER_KEY`]'s help line, for [`catalogue`] and its [`Binding`].
 const SHADOW_FILTER_HELP: &str =
     "which shadow filter the frame uses; absent uses the shipped filter";
+const SSAO_SLICES_HELP: &str = "SSAO horizon slices; absent uses the shipped value";
+const SSAO_BLUR_PASSES_HELP: &str = "SSAO blur passes; absent uses the shipped value";
+const SSAO_BENT_NORMALS_HELP: &str =
+    "whether SSAO writes bent normals; absent uses the shipped value";
 
 /// [`RENDER_SCALE_KEY`]'s help line, for [`catalogue`] and its [`Binding`].
 const RENDER_SCALE_HELP: &str = "fraction of the surface extent the frame is drawn at";
@@ -1003,6 +1155,24 @@ pub fn catalogue() -> Vec<CatalogueKey> {
         SHADOW_FILTER_KEY,
         Kind::Enum(&SHADOW_FILTER_NAMES),
         SHADOW_FILTER_HELP,
+    ));
+    keys.push(read(
+        VIDEO_NAMESPACE,
+        SSAO_SLICES_KEY,
+        Kind::Int { min: 2, max: 4 },
+        SSAO_SLICES_HELP,
+    ));
+    keys.push(read(
+        VIDEO_NAMESPACE,
+        SSAO_BLUR_PASSES_KEY,
+        Kind::Int { min: 1, max: 2 },
+        SSAO_BLUR_PASSES_HELP,
+    ));
+    keys.push(read(
+        VIDEO_NAMESPACE,
+        SSAO_BENT_NORMALS_KEY,
+        Kind::Bool,
+        SSAO_BENT_NORMALS_HELP,
     ));
     keys.push(read(
         VIDEO_NAMESPACE,
@@ -1323,6 +1493,27 @@ pub fn apply(
             set_shadow_filter(stack, filter).map_err(storage)?;
             Ok(reached(stage.apply_video(&video(stack))))
         }
+        SSAO_SLICES_KEY => {
+            let Value::Int(slices) = *value else {
+                unreachable!()
+            };
+            set_ssao_slices(stack, slices).map_err(storage)?;
+            Ok(reached(stage.apply_video(&video(stack))))
+        }
+        SSAO_BLUR_PASSES_KEY => {
+            let Value::Int(passes) = *value else {
+                unreachable!()
+            };
+            set_ssao_blur_passes(stack, passes).map_err(storage)?;
+            Ok(reached(stage.apply_video(&video(stack))))
+        }
+        SSAO_BENT_NORMALS_KEY => {
+            let Value::Bool(bent_normals) = *value else {
+                unreachable!()
+            };
+            set_ssao_bent_normals(stack, bent_normals).map_err(storage)?;
+            Ok(reached(stage.apply_video(&video(stack))))
+        }
         RENDER_SCALE_KEY => {
             let Value::Float(scale) = *value else {
                 unreachable!("the scale is a float kind, which `check` has held it to")
@@ -1367,6 +1558,61 @@ const fn reached(outcome: Result<(), Unsupported>) -> Applied {
 
 // ── The renderer half of a `GameGpu` forward ────────────────────────────────
 
+#[cfg(test)]
+static PROCESS_VIDEO_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Serialises tests that move process-global video convars and restores them.
+#[cfg(test)]
+pub(crate) struct ProcessVideoTestGuard {
+    prior: [Value; 4],
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+pub(crate) fn process_video_test_guard() -> ProcessVideoTestGuard {
+    let lock = PROCESS_VIDEO_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ProcessVideoTestGuard {
+        prior: [
+            r_shadow_filter.get(),
+            r_ssao_slices.get(),
+            r_ssao_blur_passes.get(),
+            r_ssao_bent_normals.get(),
+        ],
+        _lock: lock,
+    }
+}
+
+#[cfg(test)]
+impl Drop for ProcessVideoTestGuard {
+    fn drop(&mut self) {
+        for (convar, value) in [
+            (&r_shadow_filter, &self.prior[0]),
+            (&r_ssao_slices, &self.prior[1]),
+            (&r_ssao_blur_passes, &self.prior[2]),
+            (&r_ssao_bent_normals, &self.prior[3]),
+        ] {
+            convar
+                .set(value)
+                .expect("restore the test's process-global video convar");
+        }
+    }
+}
+
+/// Keep a manually constructed [`VideoSettings`] value inside an SSAO convar's domain.
+fn applicable_ssao_integer(key: &str, kind: Kind, value: i64, default: i64) -> i64 {
+    let dotted = format!("{VIDEO_NAMESPACE}.{key}");
+    if kind.check(&dotted, &Value::Int(value)).is_ok() {
+        value
+    } else {
+        crcbl_core::log::warn!(
+            "settings: `{dotted}` cannot be applied as {value}; the frame uses the shipped value"
+        );
+        default
+    }
+}
+
 /// Put the process-global video knobs into force.
 ///
 /// Called when a context reads its startup settings and when a live write hands
@@ -1376,6 +1622,27 @@ pub(crate) fn apply_process_video(video: &VideoSettings) {
     r_shadow_filter
         .set(&Value::Enum(video.shadow_filter.label()))
         .expect("`VideoSettings` holds a `Filter`, so its label is in `r_shadow_filter`'s domain");
+    let slices = applicable_ssao_integer(
+        SSAO_SLICES_KEY,
+        SSAO_SLICES_KIND,
+        video.ssao_slices,
+        ssao_slices_default(),
+    );
+    r_ssao_slices
+        .set(&Value::Int(slices))
+        .expect("the settings and `r_ssao_slices` domains match");
+    let blur_passes = applicable_ssao_integer(
+        SSAO_BLUR_PASSES_KEY,
+        SSAO_BLUR_PASSES_KIND,
+        video.ssao_blur_passes,
+        ssao_blur_passes_default(),
+    );
+    r_ssao_blur_passes
+        .set(&Value::Int(blur_passes))
+        .expect("the settings and `r_ssao_blur_passes` domains match");
+    r_ssao_bent_normals
+        .set(&Value::Bool(video.ssao_bent_normals))
+        .expect("a bool is in `r_ssao_bent_normals`' domain");
 }
 
 /// Put `video` into force on `renderer`, through the `device` that built it.
@@ -1737,6 +2004,9 @@ fn read(host: &dyn Any, namespace: &str, name: &str, kind: Kind) -> Value {
         // the game on, which is what `apps/options`' row shows for it too.
         ANTIALIASING_KEY => Value::Enum(antialiasing_or_default(stack).name()),
         SHADOW_FILTER_KEY => Value::Enum(shadow_filter(stack).label()),
+        SSAO_SLICES_KEY => Value::Int(ssao_slices(stack)),
+        SSAO_BLUR_PASSES_KEY => Value::Int(ssao_blur_passes(stack)),
+        SSAO_BENT_NORMALS_KEY => Value::Bool(ssao_bent_normals(stack)),
         RENDER_SCALE_KEY => Value::Float(render_scale(stack)),
         ANISOTROPIC_FILTERING_KEY => Value::Float(anisotropic_filtering(stack)),
         _ => match VIDEO_KEYS
@@ -1844,6 +2114,12 @@ settings_bindings! {
         Flags::ARCHIVE, ANTIALIASING_HELP;
     SHADOW_FILTER: VIDEO_NAMESPACE, SHADOW_FILTER_KEY, Kind::Enum(&SHADOW_FILTER_NAMES),
         Flags::ARCHIVE, SHADOW_FILTER_HELP;
+    SSAO_SLICES: VIDEO_NAMESPACE, SSAO_SLICES_KEY, SSAO_SLICES_KIND,
+        Flags::ARCHIVE, SSAO_SLICES_HELP;
+    SSAO_BLUR_PASSES: VIDEO_NAMESPACE, SSAO_BLUR_PASSES_KEY, SSAO_BLUR_PASSES_KIND,
+        Flags::ARCHIVE, SSAO_BLUR_PASSES_HELP;
+    SSAO_BENT_NORMALS: VIDEO_NAMESPACE, SSAO_BENT_NORMALS_KEY, SSAO_BENT_NORMALS_KIND,
+        Flags::ARCHIVE, SSAO_BENT_NORMALS_HELP;
     RENDER_SCALE: VIDEO_NAMESPACE, RENDER_SCALE_KEY,
         Kind::Float { min: MIN_RENDER_SCALE, max: 1.0 }, Flags::ARCHIVE, RENDER_SCALE_HELP;
     ANISOTROPIC_FILTERING: VIDEO_NAMESPACE, ANISOTROPIC_FILTERING_KEY,
@@ -1924,11 +2200,109 @@ mod tests {
             render_scale: 0.5,
             anisotropic_filtering: 4.0,
             frame_limit: FrameLimit::fps(60),
+            ssao_slices: 2,
+            ssao_blur_passes: 1,
+            ssao_bent_normals: false,
         };
         let (reloaded, _) = round_trip(|stack| {
             set_video(stack, wanted).expect("a fresh user layer accepts every key");
         });
         assert_eq!(video(&reloaded), wanted);
+    }
+
+    /// The settings domains and fallbacks are the renderer convars' declarations.
+    #[test]
+    fn ssao_catalogue_kinds_and_defaults_match_the_renderer_convars() {
+        for (key, kind, convar) in [
+            (SSAO_SLICES_KEY, SSAO_SLICES_KIND, &r_ssao_slices),
+            (
+                SSAO_BLUR_PASSES_KEY,
+                SSAO_BLUR_PASSES_KIND,
+                &r_ssao_blur_passes,
+            ),
+            (
+                SSAO_BENT_NORMALS_KEY,
+                SSAO_BENT_NORMALS_KIND,
+                &r_ssao_bent_normals,
+            ),
+        ] {
+            assert_eq!(kind, convar.kind(), "{key}");
+            assert_eq!(
+                catalogued(&format!("{VIDEO_NAMESPACE}.{key}"))
+                    .expect("catalogued")
+                    .kind,
+                convar.kind(),
+                "{key}",
+            );
+        }
+        assert_eq!(ssao_slices(&stack_from("")), ssao_slices_default());
+        assert_eq!(
+            ssao_blur_passes(&stack_from("")),
+            ssao_blur_passes_default()
+        );
+        assert_eq!(
+            ssao_bent_normals(&stack_from("")),
+            ssao_bent_normals_default()
+        );
+    }
+
+    /// SSAO settings persist both integer ends and both boolean values.
+    #[test]
+    fn ssao_settings_round_trip_all_ends_and_bool() {
+        for slices in [2, 4] {
+            for passes in [1, 2] {
+                for bent_normals in [false, true] {
+                    let (reloaded, _) = round_trip(|stack| {
+                        set_ssao_slices(stack, slices).expect("valid slices");
+                        set_ssao_blur_passes(stack, passes).expect("valid passes");
+                        set_ssao_bent_normals(stack, bent_normals).expect("valid bool");
+                    });
+                    assert_eq!(ssao_slices(&reloaded), slices);
+                    assert_eq!(ssao_blur_passes(&reloaded), passes);
+                    assert_eq!(ssao_bent_normals(&reloaded), bent_normals);
+                }
+            }
+        }
+    }
+
+    /// Invalid and wrong-type SSAO settings warn once and use convar defaults.
+    #[test]
+    fn invalid_ssao_settings_warn_once_and_use_convar_defaults() {
+        for (key, value) in [
+            (SSAO_SLICES_KEY, "9"),
+            (SSAO_SLICES_KEY, "\"many\""),
+            (SSAO_BLUR_PASSES_KEY, "0"),
+            (SSAO_BLUR_PASSES_KEY, "false"),
+            (SSAO_BENT_NORMALS_KEY, "\"yes\""),
+        ] {
+            let capture = crcbl_core::log::capture();
+            let stack = stack_from(&format!("[{VIDEO_NAMESPACE}]\n{key} = {value}\n"));
+            assert_eq!(ssao_slices(&stack), ssao_slices_default());
+            assert_eq!(ssao_blur_passes(&stack), ssao_blur_passes_default());
+            assert_eq!(ssao_bent_normals(&stack), ssao_bent_normals_default());
+            let warned: Vec<_> = capture
+                .records()
+                .into_iter()
+                .filter(|record| record.message.contains(&format!("{VIDEO_NAMESPACE}.{key}")))
+                .collect();
+            assert_eq!(warned.len(), 1, "{key}: {:?}", capture.records());
+        }
+    }
+
+    /// Process application falls back rather than panicking on invalid public fields.
+    #[test]
+    fn process_application_rejects_invalid_ssao_counts_without_panicking() {
+        let _process_video = process_video_test_guard();
+        let video = VideoSettings {
+            ssao_slices: i64::MAX,
+            ssao_blur_passes: i64::MIN,
+            ..VideoSettings::unrestricted()
+        };
+
+        apply_process_video(&video);
+
+        assert_eq!(r_ssao_slices.get_i64(), ssao_slices_default());
+        assert_eq!(r_ssao_blur_passes.get_i64(), ssao_blur_passes_default());
     }
 
     /// **The anisotropy is clamped on the way in as well as on the way out**,
@@ -2057,6 +2431,9 @@ mod tests {
             .collect();
         wanted.push(format!("{VIDEO_NAMESPACE}.{ANTIALIASING_KEY}"));
         wanted.push(format!("{VIDEO_NAMESPACE}.{SHADOW_FILTER_KEY}"));
+        wanted.push(format!("{VIDEO_NAMESPACE}.{SSAO_SLICES_KEY}"));
+        wanted.push(format!("{VIDEO_NAMESPACE}.{SSAO_BLUR_PASSES_KEY}"));
+        wanted.push(format!("{VIDEO_NAMESPACE}.{SSAO_BENT_NORMALS_KEY}"));
         wanted.push(format!("{VIDEO_NAMESPACE}.{RENDER_SCALE_KEY}"));
         wanted.push(format!("{VIDEO_NAMESPACE}.{ANISOTROPIC_FILTERING_KEY}"));
         wanted.push(format!("{VIDEO_NAMESPACE}.{FRAME_LIMIT_KEY}"));
@@ -3080,9 +3457,9 @@ mod tests {
                 checked += 1;
             }
         }
-        // Six switches, five video rows and six gains, two ends each bar the
-        // tier's three rungs.
-        assert_eq!(checked, 36, "the sweep did not cover the read catalogue");
+        // Six switches, eight video rows and six gains, two ends each bar the
+        // antialiasing tier's three rungs.
+        assert_eq!(checked, 42, "the sweep did not cover the read catalogue");
     }
 
     /// **A value outside a key's kind is refused before it reaches the file.**
@@ -3241,6 +3618,31 @@ mod tests {
         assert!(
             (video.render_scale - 0.5).abs() < f32::EPSILON,
             "the scale did not survive the anisotropy write"
+        );
+
+        for (name, value) in [
+            (SSAO_SLICES_KEY, Value::Int(2)),
+            (SSAO_BLUR_PASSES_KEY, Value::Int(1)),
+            (SSAO_BENT_NORMALS_KEY, Value::Bool(false)),
+        ] {
+            assert_eq!(
+                apply(
+                    &mut stack,
+                    &format!("{VIDEO_NAMESPACE}.{name}"),
+                    &value,
+                    &mut stage,
+                ),
+                Ok(Applied::Live),
+            );
+        }
+        let video = *stage.video.last().expect("the renderer was told");
+        assert_eq!(
+            (
+                video.ssao_slices,
+                video.ssao_blur_passes,
+                video.ssao_bent_normals
+            ),
+            (2, 1, false),
         );
 
         let key = format!("{AUDIO_NAMESPACE}.{}", Bus::Music.settings_key());
@@ -3402,6 +3804,44 @@ mod tests {
                 "{view:?} is not at its precedence position"
             );
         }
+    }
+
+    /// A live renderer application moves the process-global SSAO bundle.
+    #[test]
+    fn applying_video_to_a_renderer_updates_ssao_convars() {
+        use crate::hal::null::NullInstance;
+        use crate::hal::{DeviceDesc, Format, Instance as _, QueueKind};
+
+        let _process_video = process_video_test_guard();
+        let instance = NullInstance::gpu_driven();
+        let adapter = instance.adapters().remove(0);
+        let device = instance
+            .create_device(&DeviceDesc::for_adapter(adapter.id))
+            .expect("the null backend always opens");
+        let queue = device.queue(QueueKind::Graphics).expect("always present");
+        let mut renderer =
+            crcbl_render::ForwardRenderer::new(device.as_ref(), queue, Format::Rgba8UnormSrgb)
+                .expect("the null backend accepts every descriptor");
+        let video = VideoSettings {
+            anisotropic_filtering: 1.0,
+            ssao_slices: 2,
+            ssao_blur_passes: 1,
+            ssao_bent_normals: false,
+            ..VideoSettings::unrestricted()
+        };
+
+        apply_video_to(&mut renderer, device.as_ref(), &video)
+            .expect("the null backend accepts disabled anisotropy");
+
+        assert_eq!(
+            (
+                r_ssao_slices.get_i64(),
+                r_ssao_blur_passes.get_i64(),
+                r_ssao_bent_normals.get_bool(),
+            ),
+            (2, 1, false),
+        );
+        renderer.destroy(device.as_ref());
     }
 
     /// **Every view `set_debug_view_on` is handed reaches the renderer**, which

@@ -14611,11 +14611,12 @@ mod tests {
         use crcbl_store::settings::SETTINGS_FILE;
 
         let storage = crcbl_store::MemoryStorage::new();
+        let _process_video = crate::settings::process_video_test_guard();
         storage
             .write(
                 std::path::Path::new(SETTINGS_FILE),
                 b"[engine.video]\nshadows = false\nantialiasing = \"cmaa2\"\n\
-                  shadow_filter = \"box\"\nrender_scale = 0.5\nanisotropic_filtering = 4\n",
+                  shadow_filter = \"box\"\nrender_scale = 0.5\nanisotropic_filtering = 4\nssao_slices = 2\nssao_blur_passes = 1\nssao_bent_normals = false\n",
             )
             .expect("memory storage accepts every write");
 
@@ -14633,6 +14634,23 @@ mod tests {
         );
         assert!((read.render_scale - 0.5).abs() < f32::EPSILON);
         assert!((read.anisotropic_filtering - 4.0).abs() < f32::EPSILON);
+        assert_eq!(
+            (
+                read.ssao_slices,
+                read.ssao_blur_passes,
+                read.ssao_bent_normals,
+            ),
+            (2, 1, false),
+        );
+        assert_eq!(
+            (
+                crcbl_render::r_ssao_slices.get_i64(),
+                crcbl_render::r_ssao_blur_passes.get_i64(),
+                crcbl_render::r_ssao_bent_normals.get_bool(),
+            ),
+            (2, 1, false),
+            "the settings must reach the convars before renderer use",
+        );
 
         assert_eq!(
             SettingsSource::None.video("test"),
@@ -14661,6 +14679,7 @@ mod tests {
 
         let storage = crcbl_store::MemoryStorage::new();
         let source = SettingsSource::Source(&storage);
+        let _process_video = crate::settings::process_video_test_guard();
 
         let mut stack = source.open("test").expect("a source resolves to a stack");
         crate::settings::set_render_scale(&mut stack, 0.5).expect("a fresh layer takes the key");
