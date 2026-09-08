@@ -4753,24 +4753,6 @@ hoist, from the two: a drag source over a cell grid answering `(from, to)`
 cells, a typed payload a target can `can_accept`, and drop-state feedback as
 widget state.
 
-### `PointerUpdate` has no `pixels`, and `TouchUpdate` does (2026-09-07)
-
-`crcbl::engine::TouchUpdate::pixels(extent)` converts a contact's normalised
-position back to framebuffer pixels; `PointerUpdate` has no such method, and the
-engine's own `surface_pixels` is private. A game hit-testing a panel against a
-pointer therefore re-derives the conversion — `apps/shard/src/app.rs`'s
-`surface_pixels` is that copy, and it is a copy that goes wrong silently if the
-loop's Y flip ever changes. The fix is one inherent method beside the one that
-exists; it was not made because it is an engine change with a single caller, and
-shard's exit criterion is that it made none.
-
-**Two callers now (2026-09-07):** `apps/breach/src/app.rs`'s `surface_pixels` is
-the same conversion as shard's, written for the same reason — the loadout panel
-hit-tests a cell against the pointer. The single-caller argument is spent; what
-remains is that both samples' exit criterion is an engine-change count of zero,
-so the inherent method wants landing as its own change rather than inside a
-sample's.
-
 ### A save's grid is rebuilt by placing, not by deserialising (2026-09-07)
 
 `apps/shard/src/save.rs` writes each placement's item key, stack id, count, cell
@@ -5286,10 +5268,7 @@ paths are reported on the panel, the `[HUD]` line and the summary, but there is
 no flag to hold one below what the device offers). There is still **no pointer
 or touch input**, in the window or on the page, and slice 2 shipped without
 adding any on purpose: the only tap target today is `page`'s untextured build
-list, which slice 3 replaces with the `.crpix` build menu. It is also blocked on
-the `PointerUpdate`-has-no-`pixels`-twin entry elsewhere in this file —
-`apps/breach` and `apps/shard` each carry a private `surface_pixels`, and towers
-would have been the third copy.
+list, which slice 3 replaces with the `.crpix` build menu.
 
 ## arena (`docs/plan/sample/08-arena.md`)
 

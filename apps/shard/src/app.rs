@@ -279,11 +279,13 @@ pub struct Shard {
     /// Which cell of that panel owns the pointer press, across frames. The one
     /// piece of state an immediate-mode drag cannot do without.
     ui: UiState,
-    /// Where the pointer was last seen, normalised to the surface.
+    /// The last pointer update carrying an absolute surface position.
     ///
     /// Kept because [`PointerUpdate::at`] is `Some` only on the frames it
     /// moved, and a drag needs a position on the frame the button comes *up*.
-    pointer_at: Vec2,
+    /// It starts at the surface centre, so [`PointerUpdate::pixels`] cannot be
+    /// `None` while the panel draws.
+    panel_pointer: PointerUpdate,
     /// Whether the primary button is down, and whether it came up since the
     /// last frame was drawn. The second is consumed by the draw that reads it,
     /// because a release is an edge and a panel that saw it twice would finish
@@ -527,26 +529,6 @@ impl Shard {
     }
 }
 
-/// The −1…1 [`PointerUpdate`] reports back to framebuffer pixels, Y down from
-/// the top-left.
-///
-/// The inverse of the normalisation the loop applied, and it is here rather
-/// than in the engine because the engine's own copy — the one
-/// [`crcbl::engine::TouchUpdate::pixels`] is written on — is private and has no
-/// pointer-side twin. That is the `crcbl-ui` finding
-/// `docs/plan/sample/15-shard.md`'s exit criterion asks for rather than an
-/// engine change made on shard's behalf: two multiplies in a sample beat a hook
-/// the engine grew for one caller.
-fn surface_pixels(at: Vec2, extent: (u32, u32)) -> Vec2 {
-    let width = extent.0.max(1) as f32;
-    let height = extent.1.max(1) as f32;
-    Vec2::new(
-        (at.x + 1.0) * 0.5 * width,
-        // The Y flip the loop applied, undone.
-        (1.0 - at.y) * 0.5 * height,
-    )
-}
-
 /// The loop shard runs in.
 ///
 /// A type alias, because the loop is the engine's. `S` is the shell type: the
@@ -662,7 +644,12 @@ fn assemble<S: Shell + ?Sized>(
             torches_lit: true,
             panel_open: false,
             ui: UiState::new(),
-            pointer_at: Vec2::ZERO,
+            panel_pointer: PointerUpdate {
+                at: Some(Vec2::ZERO),
+                motion: None,
+                pressed: false,
+                released: false,
+            },
             pointer_down: false,
             pointer_released: false,
             panel: PanelStats::default(),
@@ -780,13 +767,15 @@ impl HostedGame for Shard {
     ///
     /// The position is [`PointerUpdate`]'s normalised surface coordinates and
     /// the panel is laid out in pixels, so the conversion happens in
-    /// [`HostedGame::draw`] where the extent is known. It is arithmetic this
-    /// sample would rather not own — `TouchUpdate::pixels` is the same
-    /// conversion, on the finger's side of the same struct pair — and
-    /// `docs/backlog.md` carries it as the `crcbl-ui` finding it is.
+    /// [`HostedGame::draw`] where the extent is known. [`PointerUpdate::pixels`]
+    /// owns the conversion, alongside the touch path's
+    /// [`TouchUpdate::pixels`].
     fn pointer_event(&mut self, pointer: PointerUpdate) {
+        // Keep only an absolute position: a frame without one must retain the
+        // panel's last known point. Pixels are resolved at draw time, once the
+        // framebuffer extent is known.
         if let Some(at) = pointer.at {
-            self.pointer_at = at;
+            self.panel_pointer.at = Some(at);
         }
         if pointer.pressed {
             self.pointer_down = true;
@@ -869,7 +858,10 @@ impl HostedGame for Shard {
                 self.game.seed(),
                 &mut self.ui,
                 PointerInput {
-                    pos: surface_pixels(self.pointer_at, extent),
+                    pos: self
+                        .panel_pointer
+                        .pixels(extent)
+                        .expect("panel pointer starts at the surface centre"),
                     down: self.pointer_down,
                     // Taken rather than read: a release is an edge, and a panel
                     // handed it twice would finish one drag twice.

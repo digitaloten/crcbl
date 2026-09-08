@@ -300,11 +300,13 @@ pub struct Breach {
     /// Which cell of that panel owns the pointer press, across frames. The one
     /// piece of state an immediate-mode drag cannot do without.
     ui: UiState,
-    /// Where the pointer was last seen, normalised to the surface.
+    /// The last pointer update carrying an absolute surface position.
     ///
     /// Kept because [`PointerUpdate::at`] is `Some` only on the frames it
     /// moved, and a drag needs a position on the frame the button comes *up*.
-    pointer_at: Vec2,
+    /// It starts at the surface centre, so [`PointerUpdate::pixels`] cannot be
+    /// `None` while the panel draws.
+    panel_pointer: PointerUpdate,
     /// Whether the primary button is down, and whether it came up since the
     /// last frame was drawn. The second is consumed by the draw that reads it,
     /// because a release is an edge and a panel that saw it twice would finish
@@ -444,26 +446,6 @@ impl Breach {
     }
 }
 
-/// The −1…1 [`PointerUpdate`] reports back to framebuffer pixels, Y down from
-/// the top-left.
-///
-/// The inverse of the normalisation the loop applied, and it is here rather
-/// than in the engine because the engine's own copy — the one
-/// [`crcbl::engine::TouchUpdate::pixels`] is written on — is private and has no
-/// pointer-side twin. `apps/shard/src/app.rs` has the same conversion, and the
-/// two of them are the measurement `docs/backlog.md`'s finding was waiting for:
-/// a second caller is what earns the inherent method, and adding it is an
-/// engine change this sample's adoption is worth more for not making.
-fn surface_pixels(at: Vec2, extent: (u32, u32)) -> Vec2 {
-    let width = extent.0.max(1) as f32;
-    let height = extent.1.max(1) as f32;
-    Vec2::new(
-        (at.x + 1.0) * 0.5 * width,
-        // The Y flip the loop applied, undone.
-        (1.0 - at.y) * 0.5 * height,
-    )
-}
-
 /// The loop breach runs in.
 ///
 /// A type alias, because the loop is the engine's. `S` is the shell type: the
@@ -562,7 +544,12 @@ fn assemble<S: Shell + ?Sized>(
             pending_fire: false,
             panel_open: false,
             ui: UiState::new(),
-            pointer_at: Vec2::ZERO,
+            panel_pointer: PointerUpdate {
+                at: Some(Vec2::ZERO),
+                motion: None,
+                pressed: false,
+                released: false,
+            },
             pointer_down: false,
             pointer_released: false,
             panel: PanelStats::default(),
@@ -693,15 +680,11 @@ impl HostedGame for Breach {
     /// is a shot. So the frame that grabs the pointer does not also fire, and
     /// every click after it does.
     fn pointer_event(&mut self, pointer: PointerUpdate) {
-        // Kept whatever the mode is, because the panel hit-tests against the
-        // last place the pointer was seen and a frame that did not move carries
-        // no position at all. The conversion to pixels happens in
-        // [`HostedGame::draw`], where the extent is known — it is the same
-        // arithmetic `crcbl::engine::TouchUpdate::pixels` does on the finger's
-        // side of the same struct pair, and `docs/backlog.md` carries that
-        // `PointerUpdate` has no twin of it.
+        // Keep only an absolute position: a frame without one must retain the
+        // panel's last known point. Pixels are resolved at draw time, once the
+        // framebuffer extent is known.
         if let Some(at) = pointer.at {
-            self.pointer_at = at;
+            self.panel_pointer.at = Some(at);
         }
         // **While the panel is open the pointer belongs to it**: the view does
         // not turn and the trigger is not pulled, because a click on a rig is a
@@ -837,7 +820,10 @@ impl HostedGame for Breach {
                 &grid,
                 &mut self.ui,
                 PointerInput {
-                    pos: surface_pixels(self.pointer_at, extent),
+                    pos: self
+                        .panel_pointer
+                        .pixels(extent)
+                        .expect("panel pointer starts at the surface centre"),
                     down: self.pointer_down,
                     // Taken rather than read: a release is an edge, and a panel
                     // handed it twice would finish one drag twice.
@@ -1536,7 +1522,7 @@ mod tests {
     /// The claim `docs/plan/34-inventory.md`'s part 1 is about, made with the
     /// press capture `crcbl-ui` already has and made a second time — the first
     /// is `apps/shard`'s. The whole path: shell button → `PointerUpdate` →
-    /// [`surface_pixels`] → `crate::panel`'s hit test → `Game::drag` →
+    /// [`PointerUpdate::pixels`] → `crate::panel`'s hit test → `Game::drag` →
     /// `Grid::move_within`.
     ///
     /// Two controls. The cell the stack left must be empty, because a panel

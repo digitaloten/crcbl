@@ -3939,6 +3939,20 @@ pub struct PointerUpdate {
     pub released: bool,
 }
 
+impl PointerUpdate {
+    /// Where this pointer is in **framebuffer pixels**, Y down from the top-left,
+    /// or `None` when this update carries no absolute position.
+    ///
+    /// The conversion is the loop's inverse normalisation, so it goes through
+    /// [`surface_pixels`] with the same Y flip as [`TouchUpdate::pixels`].
+    /// [`motion`](Self::motion) is unrelated: it measures relative travel in
+    /// pixels and can arrive while a locked pointer has no absolute position.
+    #[must_use]
+    pub fn pixels(&self, extent: (u32, u32)) -> Option<glam::Vec2> {
+        self.at.map(|at| surface_pixels(at, extent))
+    }
+}
+
 /// One contact, as the *game* sees it.
 ///
 /// [`PointerUpdate`]'s counterpart for a finger, in the same normalised surface
@@ -3991,8 +4005,8 @@ impl TouchUpdate {
     /// a surface that is not square. So the conversion back lives here, beside
     /// the one that got us here, rather than in each game that grows a control —
     /// two halves of one convention, and
-    /// `a_contact_survives_the_round_trip_through_the_surface` holds them
-    /// together.
+    /// `contacts_and_pointers_survive_the_round_trip_through_the_surface` holds
+    /// them together.
     ///
     /// [`DrawList`]: crcbl_ui::draw_list::DrawList
     #[must_use]
@@ -13883,15 +13897,15 @@ mod tests {
         );
     }
 
-    /// **A contact survives the round trip through the surface**, so a widget
-    /// hit-testing pixels and the loop normalising them agree.
+    /// **Contacts and pointers survive the round trip through the surface**, so a
+    /// widget hit-testing pixels and the loop normalising them agree.
     ///
     /// The pair is one convention with two halves, and the failure it guards is
     /// silent: a `pixels` that dropped the Y flip would put every on-screen
     /// control's hit rect in the mirror image of where it was drawn, and every
     /// existing test would still pass.
     #[test]
-    fn a_contact_survives_the_round_trip_through_the_surface() {
+    fn contacts_and_pointers_survive_the_round_trip_through_the_surface() {
         use crcbl_core::input::{ContactId, TouchPhase};
         const EXTENT: (u32, u32) = (960, 720);
 
@@ -13905,14 +13919,37 @@ mod tests {
         ] {
             let at = normalised(pixels, EXTENT);
             assert_eq!(at, want, "{pixels} normalised wrong");
-            let back = TouchUpdate {
+            let touch = TouchUpdate {
                 contact: ContactId(1),
                 phase: TouchPhase::Moved,
                 at,
             }
             .pixels(EXTENT);
-            assert_eq!(back, pixels, "{at} did not come back as {pixels}");
+            assert_eq!(touch, pixels, "touch {at} did not come back as {pixels}");
+            let pointer = PointerUpdate {
+                at: Some(at),
+                motion: None,
+                pressed: false,
+                released: false,
+            }
+            .pixels(EXTENT);
+            assert_eq!(
+                pointer,
+                Some(pixels),
+                "pointer {at} did not come back as {pixels}"
+            );
         }
+        assert_eq!(
+            PointerUpdate {
+                at: None,
+                motion: Some(glam::Vec2::X),
+                pressed: false,
+                released: false,
+            }
+            .pixels(EXTENT),
+            None,
+            "relative motion does not create an absolute position",
+        );
     }
 
     /// **An on-screen control pauses the loop, and un-pauses it again.**

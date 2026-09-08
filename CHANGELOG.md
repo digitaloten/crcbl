@@ -84,6 +84,9 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- `PointerUpdate::pixels(extent)` returns an absolute pointer position as
+  framebuffer pixels, and breach and shard now use it for their panel hit tests.
+
 - `[engine.video] ssao_slices`, `ssao_blur_passes` and `ssao_bent_normals`
   persist and apply the Ambient Occlusion quality bundle at startup and live;
   quality presets write low as 2/1/off and medium/high as 4/2/on.
