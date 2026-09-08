@@ -19,8 +19,8 @@
 //! fallback still named one — is a disagreement between them, and there is no
 //! way to satisfy this by restating either side.
 //!
-//! **`render_scale` and the effect switches have the same gap and this does not
-//! close it**; `docs/backlog.md` carries what is left.
+//! **`render_scale` is held below; the effect switches have the same gap and
+//! remain in `docs/backlog.md`.**
 
 use crcbl::hal::{CommandEncoderDesc, PresentInfo, SubmitInfo};
 use crcbl::render::{Antialiasing, EffectRequest, ForwardRenderer, RenderGraph, TransientPool};
@@ -191,4 +191,145 @@ fn an_unconfigured_run_draws_the_rung_its_settings_resolve() {
     renderer.destroy(device);
     pool.destroy(device);
     headless.finish();
+}
+
+/// The core scene passes' extents, read from a graph the device executed.
+fn frame_extents(stack: &SettingsStack, label: &str) -> Vec<(String, (u32, u32))> {
+    let video = crcbl::settings::video(stack);
+    let headless = Headless::open_for_mesh();
+    let device = headless.device.as_ref();
+    let mut pool = TransientPool::new();
+    let mut renderer = ForwardRenderer::new(device, headless.queue, headless.format)
+        .expect("the forward renderer builds");
+    crcbl::settings::apply_video_to(&mut renderer, device, &video)
+        .expect("the settings video section applies to this device");
+    place_cube(&mut renderer);
+
+    let acquired = device
+        .acquire_next_frame(headless.swapchain)
+        .expect("the ring always has an image");
+    let camera = mesh_camera(crcbl::render::Projection::default());
+    renderer
+        .begin_frame(
+            device,
+            &camera,
+            &crcbl::render::DirectionalLight::default(),
+            MESH_EXTENT,
+        )
+        .expect("the uniform buffer is writable");
+
+    let mut encoder = device.create_command_encoder(&CommandEncoderDesc {
+        label: Some(label),
+        queue: headless.queue,
+    });
+    let compiled = {
+        let mut graph = RenderGraph::new(headless.queue);
+        let target = graph.import_image(
+            "swapchain",
+            ForwardRenderer::present_target(
+                acquired.image,
+                acquired.view,
+                headless.format,
+                MESH_EXTENT,
+            ),
+        );
+        let _ = renderer.add_passes(&mut graph, &pool, target, MESH_EXTENT);
+        graph.compile(&pool).expect("a legal frame")
+    };
+    let extents = compiled
+        .passes()
+        .iter()
+        .filter(|pass| {
+            matches!(
+                pass.label(),
+                "depth-prepass" | "forward" | "tonemap" | "upscale"
+            )
+        })
+        .map(|pass| {
+            (
+                pass.label().to_owned(),
+                (pass.render_area().width, pass.render_area().height),
+            )
+        })
+        .collect();
+
+    compiled
+        .execute(device, &mut pool, encoder.as_mut(), None)
+        .expect("the graph executed");
+    let commands = encoder.finish().expect("recording succeeded");
+    device
+        .submit(headless.queue, &SubmitInfo::new(&[commands]))
+        .expect("submit");
+    device
+        .present(
+            headless.queue,
+            &PresentInfo {
+                swapchain: headless.swapchain,
+                waits: acquired.present_semaphore.as_slice(),
+                present_id: None,
+            },
+        )
+        .expect("present");
+    device.wait_idle().expect("idle");
+
+    device.destroy_command_buffer(commands);
+    renderer.destroy(device);
+    pool.destroy(device);
+    headless.finish();
+    extents
+}
+
+/// **The settings video section sizes the frame it opens.**
+#[test]
+#[ignore = "needs a real GPU and a backend pin; run tests/run-forward-e2e.sh"]
+fn settings_render_scale_reaches_the_graph_extents() {
+    // No file is the documented unrestricted default: the internal target is
+    // the caller's extent and an upscale pass would be incorrect.
+    let storage = MemoryStorage::new();
+    let untouched = SettingsStack::from_storage(&storage);
+    let default_video = crcbl::settings::video(&untouched);
+    assert_eq!(
+        default_video.render_scale, 1.0,
+        "an untouched stack must resolve the documented full-scale default"
+    );
+    let full = frame_extents(&untouched, "default render scale frame");
+    assert_eq!(
+        full,
+        vec![
+            ("depth-prepass".to_owned(), MESH_EXTENT),
+            ("forward".to_owned(), MESH_EXTENT),
+            ("tonemap".to_owned(), MESH_EXTENT),
+        ],
+        "the full-scale default must record the frame's core passes at its full internal extent"
+    );
+
+    // Low's documented, persisted scale. It must enter through the public
+    // settings writer and application seam rather than the renderer setter.
+    const LOW_RENDER_SCALE: f32 = 0.75;
+    let mut written = SettingsStack::from_storage(&storage);
+    crcbl::settings::set_render_scale(&mut written, LOW_RENDER_SCALE)
+        .expect("the supported low scale enters the user layer");
+    written
+        .save(
+            &storage,
+            std::path::Path::new(crcbl::store::settings::SETTINGS_FILE),
+        )
+        .expect("the supported low scale persists");
+    let persisted = SettingsStack::from_storage(&storage);
+    let scaled_video = crcbl::settings::video(&persisted);
+    assert_eq!(
+        scaled_video.render_scale, LOW_RENDER_SCALE,
+        "the persisted low scale must be what start-up reads"
+    );
+    let scaled = frame_extents(&persisted, "persisted render scale frame");
+    assert_eq!(
+        scaled,
+        vec![
+            ("depth-prepass".to_owned(), (192, 144)),
+            ("forward".to_owned(), (192, 144)),
+            ("tonemap".to_owned(), (192, 144)),
+            ("upscale".to_owned(), MESH_EXTENT),
+        ],
+        "the persisted low scale must shrink the graph's internal passes and reconstruct to the target"
+    );
 }

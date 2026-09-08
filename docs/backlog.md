@@ -1583,23 +1583,19 @@ are the precedent. It schedules the `shadow_cadence` key in plan 39's tier
 table, and the lantern measurement that fixes the budget before the row is
 written.
 
-## Whether any tier should be the default is still the user's call (2026-08-31)
+## Automatic first-launch quality selection needs lifecycle design (2026-08-31)
 
-Nothing selects a preset at start-up, deliberately: `low` alone would move every
-golden (it writes `render_scale = 0.75` and clears the fog switch).
-`docs/plan/39-capabilities.md` says the software and browser tiers "ship on
-`low` deterministically" and that the Medium column "is the default the settings
-screen shows" — neither is implemented, and both are a re-bless. What a default
-would need: a decision about which tier each of the four backends and the
-browser opens on, and a golden re-bless for the ones that move.
+The policy was decided on 2026-09-06: `DeviceType::Cpu` selects `low`, every
+other adapter selects `medium`, and `high` stays opt-in. It remains
+unimplemented because `SettingsStack` alone cannot distinguish a true first
+launch from a legacy or custom settings file, while asynchronous adapter
+selection happens after the borrowed `SettingsSource` has been discarded.
+Persisting the choice therefore needs an ownership or lifetime design that
+preserves the source until the adapter is known.
 
-**DECIDED 2026-09-06 —** the default tier is auto-detected at first launch and
-persisted: a software rasteriser — lavapipe, WARP, SwiftShader, anything the
-adapter reports as `DeviceType::Cpu` — selects `low`, any GPU selects `medium`,
-and `high` stays opt-in. Unreal runs `Scalability` auto-detection on first
-launch and Unity and Godot pick per platform. Every harness pins its preset
-explicitly, as tests do in every engine, so no golden moves: the goldens pin
-what `medium` writes, which is today's values.
+The old no-rebless premise is also no longer true: medium now uses the `disc`
+shadow filter while unrestricted settings use PCSS. Pinning harnesses to medium
+would move their frames and requires a deliberate golden re-bless.
 
 ## What the `apps/options` quality row did not cover (2026-09-01)
 
@@ -1611,9 +1607,7 @@ walks past the new row to the MUSIC fader. What was not done:
 
 - **Nothing looked at the row.** No windowed run and no GPU; every check is over
   `Screen::menu_kind` and the menu set it reconciles. Whether the caption fits
-  the panel's column is unverified, and this row's is the only hint on the
-  screen that can name two tiers at once — `medium, high`, which
-  `presets::label` writes while those two columns hold the same values.
+  the panel's column is unverified.
 - **The row cannot reach `low` in one press from `custom`.** A stack on no tier
   parks the cycler on the bottom rung, so `ArrowLeft` there does nothing and the
   first press forward lands on `medium`; `low` is one wrap away. That is exactly
@@ -1652,24 +1646,14 @@ stack nobody has touched and holds the rung
 the frame actually recorded, so a fallback that answered `Antialiasing::None` is
 a red suite instead of a silent frame with no resolve in it.
 
-**The same route is unguarded for the other `[engine.video]` keys.** Nothing
-draws a frame from an untouched stack and asserts what
-`crcbl::settings::render_scale` or the `VIDEO_KEYS` switches resolved to.
-`crates/crcbl/tests/mesh_e2e/render_scale.rs` covers the renderer's own knob —
-it calls `ForwardRenderer::set_render_scale` itself — and never reads a settings
-stack, so the settings-to-frame seam is the part with no check on it. Verified
-by searching `crates/crcbl/tests/` for readers of `crcbl::settings`: the new
-antialiasing module is the only frame test among them.
-
-What would close it is the same shape as the antialiasing one, in the same
-module: resolve the key off an untouched stack through the public reader a
+**The same route is unguarded for the effect switches.** Nothing draws a frame
+from an untouched stack and asserts what the `VIDEO_KEYS` switches resolved to.
+What would close it is the same shape as the antialiasing and render-scale
+checks: resolve a switch off an untouched stack through the public reader a
 start-up uses, hand the section to the renderer the way
-`GpuContext::effect_request` does, and assert against something the frame
-records rather than against the constant the reader is written in terms of — the
-render pass extents for the scale, the presence or absence of a pass for each
-switch. The reason it is not done here is scope: each key needs its own
-observable named and shown to go red, which is a slice rather than a rider on
-this one.
+`GpuContext::effect_request` does, and assert the presence or absence of the
+pass the frame records. Each key needs its own observable named and shown to go
+red.
 
 ## Whether any tier should ship the shadow cadence switched on (2026-08-31)
 
