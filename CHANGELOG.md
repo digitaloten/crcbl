@@ -1200,6 +1200,9 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Fixed
 
+- Contact shadows now allocate their visibility mask as `R8Unorm`, matching the
+  contact-shadow graphics pipeline. Enabling the effect no longer records a draw
+  with an `Rgba8Unorm` attachment against an `R8Unorm` pipeline target.
 - `crcbl new`'s scaffold asked for
   `GPU_DRIVEN | TIMESTAMP_QUERY | DEBUG_MARKERS | PUSH_CONSTANTS | SAMPLER_ANISOTROPY`,
   so every scaffolded game opened its device without `MESH_SHADER`,

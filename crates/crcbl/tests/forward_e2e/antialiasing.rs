@@ -19,11 +19,12 @@
 //! fallback still named one — is a disagreement between them, and there is no
 //! way to satisfy this by restating either side.
 //!
-//! **`render_scale` is held below; the effect switches have the same gap and
-//! remain in `docs/backlog.md`.**
+//! **`render_scale` and every public `VIDEO_KEYS` switch are held below.**
 
 use crcbl::hal::{CommandEncoderDesc, PresentInfo, SubmitInfo};
-use crcbl::render::{Antialiasing, EffectRequest, ForwardRenderer, RenderGraph, TransientPool};
+use crcbl::render::{
+    Antialiasing, EffectRequest, ForwardRenderer, RenderEffects, RenderGraph, TransientPool,
+};
 use crcbl::store::MemoryStorage;
 use crcbl::store::settings::SettingsStack;
 
@@ -193,14 +194,20 @@ fn an_unconfigured_run_draws_the_rung_its_settings_resolve() {
     headless.finish();
 }
 
-/// The core scene passes' extents, read from a graph the device executed.
-fn frame_extents(stack: &SettingsStack, label: &str) -> Vec<(String, (u32, u32))> {
+/// The passes a settings-derived frame executes, with their render extents.
+fn frame_passes(stack: &SettingsStack, label: &str) -> Vec<(String, (u32, u32))> {
     let video = crcbl::settings::video(stack);
     let headless = Headless::open_for_mesh();
     let device = headless.device.as_ref();
     let mut pool = TransientPool::new();
     let mut renderer = ForwardRenderer::new(device, headless.queue, headless.format)
         .expect("the forward renderer builds");
+    // The default camera stack deliberately excludes lens effects. This frame is
+    // the all-on control for the player's clamps, so it must ask for every
+    // switch before `apply_video_to` intersects that request with `video`.
+    let mut request = renderer.effect_request();
+    request.camera = RenderEffects::all();
+    renderer.set_effect_request(request);
     crcbl::settings::apply_video_to(&mut renderer, device, &video)
         .expect("the settings video section applies to this device");
     place_cube(&mut renderer);
@@ -236,15 +243,9 @@ fn frame_extents(stack: &SettingsStack, label: &str) -> Vec<(String, (u32, u32))
         let _ = renderer.add_passes(&mut graph, &pool, target, MESH_EXTENT);
         graph.compile(&pool).expect("a legal frame")
     };
-    let extents = compiled
+    let passes = compiled
         .passes()
         .iter()
-        .filter(|pass| {
-            matches!(
-                pass.label(),
-                "depth-prepass" | "forward" | "tonemap" | "upscale"
-            )
-        })
         .map(|pass| {
             (
                 pass.label().to_owned(),
@@ -276,7 +277,28 @@ fn frame_extents(stack: &SettingsStack, label: &str) -> Vec<(String, (u32, u32))
     renderer.destroy(device);
     pool.destroy(device);
     headless.finish();
-    extents
+    passes
+}
+
+/// The core scene passes' extents, read from a graph the device executed.
+fn frame_extents(stack: &SettingsStack, label: &str) -> Vec<(String, (u32, u32))> {
+    frame_passes(stack, label)
+        .into_iter()
+        .filter(|(label, _)| {
+            matches!(
+                label.as_str(),
+                "depth-prepass" | "forward" | "tonemap" | "upscale"
+            )
+        })
+        .collect()
+}
+
+/// The labels a persisted video-effect clamp leaves in the executed frame.
+fn frame_labels(stack: &SettingsStack, label: &str) -> Vec<String> {
+    frame_passes(stack, label)
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect()
 }
 
 /// **The settings video section sizes the frame it opens.**
@@ -332,4 +354,153 @@ fn settings_render_scale_reaches_the_graph_extents() {
         ],
         "the persisted low scale must shrink the graph's internal passes and reconstruct to the target"
     );
+}
+
+/// **Every persisted `VIDEO_KEYS` clamp reaches the frame and removes only its effect.**
+#[test]
+#[ignore = "needs a real GPU and a backend pin; run tests/run-forward-e2e.sh"]
+fn each_persisted_video_effect_switch_reaches_the_frame() {
+    // An untouched stack is the all-on control. `frame_passes` explicitly asks
+    // for `RenderEffects::all()` in the camera layer before applying this video
+    // section, because the default stack excludes lens effects.
+    let control_storage = MemoryStorage::new();
+    let control = SettingsStack::from_storage(&control_storage);
+    let control_video = crcbl::settings::video(&control);
+    assert_eq!(
+        control_video.effects,
+        RenderEffects::all(),
+        "an untouched settings stack must allow every public video effect"
+    );
+    let full = frame_labels(&control, "all video effects frame");
+
+    // These labels are independently transcribed from the graph producers. They
+    // make the control prove it asks for every lens effect before an off arm can
+    // prove that it removed one.
+    for label in [
+        "ssao",
+        "ssao-blur",
+        "ssao-upsample",
+        "hiz-1",
+        "hiz-2",
+        "ssr",
+        "ssr-blur",
+        "bloom-down-1",
+        "bloom-down-2",
+        "bloom-up-1",
+        "bloom-composite",
+        "volumetric-scatter",
+        "volumetric-integrate",
+        "volumetric-composite",
+        "exposure-clear",
+        "exposure-histogram",
+        "exposure-reduce",
+    ] {
+        assert!(
+            full.iter().any(|recorded| recorded == label),
+            "the all-on control recorded no `{label}` pass: {full:?}"
+        );
+    }
+
+    for (key, effect) in crcbl::settings::VIDEO_KEYS {
+        let witness_labels: &[&str] = match key {
+            "shadows" => &[],
+            "ambient_occlusion" => &["ssao", "ssao-blur", "ssao-upsample"],
+            "reflections" => &["hiz-1", "hiz-2", "ssr", "ssr-blur"],
+            "bloom" => &[
+                "bloom-down-1",
+                "bloom-down-2",
+                "bloom-up-1",
+                "bloom-composite",
+            ],
+            "volumetric_fog" => &[
+                "volumetric-scatter",
+                "volumetric-integrate",
+                "volumetric-composite",
+            ],
+            "auto_exposure" => &["exposure-clear", "exposure-histogram", "exposure-reduce"],
+            unknown => panic!("VIDEO_KEYS gained an untested effect switch `{unknown}`"),
+        };
+        let storage = MemoryStorage::new();
+        let mut written = SettingsStack::from_storage(&storage);
+        let expected_effects = RenderEffects::all().difference(effect);
+        crcbl::settings::set_video_effects(&mut written, expected_effects)
+            .expect("every public video switch writes to the user layer");
+        written
+            .save(
+                &storage,
+                std::path::Path::new(crcbl::store::settings::SETTINGS_FILE),
+            )
+            .expect("the video-effect switches persist");
+        let reopened = SettingsStack::from_storage(&storage);
+        let video = crcbl::settings::video(&reopened);
+        assert_eq!(
+            video.effects, expected_effects,
+            "reopening the saved `{key}` arm must resolve exactly all effects but its bit"
+        );
+        let off = frame_labels(&reopened, &format!("{key} disabled frame"));
+
+        if effect == RenderEffects::SHADOWS {
+            let shadow = full
+                .iter()
+                .position(|label| label == "shadow")
+                .expect("the all-on control records the shadow atlas pass");
+            assert!(
+                shadow > 0,
+                "the all-on frame must have shadow culls before `shadow`: {full:?}"
+            );
+            let off_shadow = off
+                .iter()
+                .position(|label| label == "shadow")
+                .expect("the shadow atlas pass remains when its rendering is disabled");
+            assert_eq!(
+                shadow.checked_sub(off_shadow),
+                Some(crcbl::render::DrawGen::MAX_PASSES as usize * crcbl::render::shadow::CASCADES,),
+                "disabling persisted shadows must remove every cascade's cull passes: \
+                 full {full:?}, off {off:?}"
+            );
+            assert!(
+                off[..off_shadow].iter().any(|label| label == "cull"),
+                "the shadow-off frame must retain camera culls before `shadow`: {off:?}"
+            );
+            assert_eq!(
+                &off[off_shadow..],
+                &full[shadow..],
+                "the full suffix beginning at `shadow` must be unchanged when persisted shadows are disabled"
+            );
+        } else {
+            let expected: Vec<String> = full
+                .iter()
+                .filter(|label| {
+                    let label = label.as_str();
+                    let removed = match key {
+                        "ambient_occlusion" => {
+                            label == "ssao"
+                                || label.starts_with("ssao-blur")
+                                || label == "ssao-upsample"
+                        }
+                        "reflections" => {
+                            label.starts_with("hiz-") || label == "ssr" || label == "ssr-blur"
+                        }
+                        "bloom" => {
+                            label.starts_with("bloom-down-")
+                                || label.starts_with("bloom-up-")
+                                || label == "bloom-composite"
+                        }
+                        "volumetric_fog" => witness_labels.contains(&label),
+                        "auto_exposure" => witness_labels.contains(&label),
+                        "shadows" => false,
+                        unknown => {
+                            panic!("VIDEO_KEYS gained an untested effect switch `{unknown}`")
+                        }
+                    };
+                    !removed
+                })
+                .cloned()
+                .collect();
+            assert_eq!(
+                off, expected,
+                "disabling persisted `{key}` must remove only its pass family; the control witnesses {witness_labels:?}"
+            );
+        }
+    }
 }

@@ -1637,24 +1637,6 @@ walks past the new row to the MUSIC fader. What was not done:
   `settings_cmd`'s `NoEngine`, which has no seam at all, and prints the clause
   `applied_names` gives it.
 
-## The unpicked render scale and effect switches are not guarded by any frame (2026-08-31)
-
-The antialiasing half of this is closed:
-`crates/crcbl/tests/forward_e2e/antialiasing.rs` draws a frame from a settings
-stack nobody has touched and holds the rung
-`crcbl::settings::presets::current_values` resolves against the resolve passes
-the frame actually recorded, so a fallback that answered `Antialiasing::None` is
-a red suite instead of a silent frame with no resolve in it.
-
-**The same route is unguarded for the effect switches.** Nothing draws a frame
-from an untouched stack and asserts what the `VIDEO_KEYS` switches resolved to.
-What would close it is the same shape as the antialiasing and render-scale
-checks: resolve a switch off an untouched stack through the public reader a
-start-up uses, hand the section to the renderer the way
-`GpuContext::effect_request` does, and assert the presence or absence of the
-pass the frame records. Each key needs its own observable named and shown to go
-red.
-
 ## Whether any tier should ship the shadow cadence switched on (2026-08-31)
 
 `crcbl_render::shadow::r_shadow_cadence` and `r_shadow_faces` both default to

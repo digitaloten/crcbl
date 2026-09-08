@@ -3126,6 +3126,21 @@ impl TransientImageDesc {
         }
     }
 
+    /// A screen-space contact-shadow visibility mask: `R8Unorm`, rendered into
+    /// and fetched by the forward pass.
+    ///
+    /// Separate from [`ambient_occlusion`](Self::ambient_occlusion), whose extra
+    /// channels carry a bent normal and therefore cannot back the `R8Unorm`
+    /// contact-shadow pipeline.
+    #[must_use]
+    pub const fn contact_shadows(extent: (u32, u32)) -> Self {
+        Self::new(
+            extent,
+            Format::R8Unorm,
+            ImageUsage::COLOR_ATTACHMENT.union(ImageUsage::SAMPLED),
+        )
+    }
+
     /// The reflectivity channel: `Rgba8Unorm`, `rgb` the surface's `F0` and `a`
     /// its roughness, written by the forward pass beside its colour target.
     ///

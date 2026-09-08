@@ -9008,12 +9008,7 @@ impl ForwardRenderer {
         let contact_mask = effects.contains(RenderEffects::CONTACT_SHADOWS).then(|| {
             graph.create_image(
                 "contact-shadows",
-                // The occlusion channel's description, and reused rather than
-                // copied: it is the same `R8Unorm` colour attachment at the
-                // same extent, and two descriptions of one shape are two
-                // things to keep in step. `TransientImageDesc`'s constructor
-                // says what the shape is for.
-                TransientImageDesc::ambient_occlusion(extent),
+                TransientImageDesc::contact_shadows(extent),
             )
         });
         // **Created whatever the reflections are doing**, unlike the pair above.
