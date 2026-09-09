@@ -514,14 +514,10 @@ make this and every other "bound the wrong buffer" fault visible to the
 reference backend rather than to a picture. Wider than this entry and worth its
 own decision.
 
-## The shadow filter selector leaves three things owed (2026-09-04)
+## The shadow filter selector leaves one thing owed (2026-09-04)
 
 The record behind this — the argument, the options and the measurements — is in
 `docs/notes/rendering.md` under this heading.
-
-`crcbl_render::shadow::r_shadow_filter` and `r_shadow_split` landed with topic
-45's fifteenth decision — three filters in `mesh.slang`, selected per fragment
-out of `FrameUniforms::shadow_filter`. What that change did **not** do:
 
 - **`volumetric.slang` does not honour the selector.** Its copy of `tile_pcf` is
   held letter-for-letter against `mesh.slang`'s by `crcbl_shaders::volumetric`'s
@@ -1621,10 +1617,11 @@ walks past the new row to the MUSIC fader. What was not done:
 
 ## What the preset slice did not verify (2026-08-31)
 
-- **No GPU ran.** Every check is over `SettingsStack`, the readers and the
-  console command; nothing drew a frame at a tier. That a `render_scale` of 0.75
-  draws a smaller target is `ForwardRenderer::set_render_scale`'s own existing
-  coverage, not this slice's.
+- **No complete quality preset drew a frame.** GPU E2E now proves a persisted
+  `render_scale` changes graph extents and each persisted `VIDEO_KEYS` switch
+  changes its pass family, but those tests write individual settings rather than
+  call `crcbl::settings::presets::select`. The whole tier bundle reaching one
+  frame is still unverified.
 - **No device clamp was exercised.** The claim that a tier meets the same device
   clamp every other write meets is a structural one — `select` calls
   `crcbl::settings::apply` and opens no second path to a renderer — and is not
