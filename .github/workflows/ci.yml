@@ -16,25 +16,22 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.140
-      - name: Declare legacy sample texture residency
+      - name: Sample a texture through raw Metal
         shell: bash
         run: |
           set -euo pipefail
           mkdir probe-logs
           set +e
-          CRCBL_GPU=mtl MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert \
+          MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert \
             MTL_DEBUG_LAYER_WARNING_MODE=assert MTL_SHADER_VALIDATION=1 \
             MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING=1 \
             MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1 \
-            cargo nextest run --locked -p crcbl --features render-e2e --test render_e2e \
-            --run-ignored all --no-tests fail --no-fail-fast --test-threads=1 \
-            --success-output immediate \
-            -E 'test(the_ui_scene_draws_through_the_ui_renderer_and_matches_its_golden)' \
-            > probe-logs/ui-read-sample-residency.log 2>&1
+            xcrun swift .github/scripts/metal-texture-probe.swift \
+            > probe-logs/raw-metal-texture.log 2>&1
           result=$?
           set -e
-          echo "ui-read-sample-residency exit=$result" | tee probe-logs/results.txt
-          tail -240 probe-logs/ui-read-sample-residency.log
+          echo "raw-metal-texture exit=$result" | tee probe-logs/results.txt
+          cat probe-logs/raw-metal-texture.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:

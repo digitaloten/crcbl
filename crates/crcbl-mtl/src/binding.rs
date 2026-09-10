@@ -1067,14 +1067,6 @@ pub(crate) fn apply(
             }
             BoundResource::Texture(raw) => {
                 let id = identity(raw);
-                let stages = render_stages(binding.visibility);
-                if !stages.is_empty() {
-                    encoder.useResource_usage_stages(
-                        ProtocolObject::from_ref(&**raw),
-                        MTLResourceUsage::Read.union(MTLResourceUsage(1 << 2)),
-                        stages,
-                    );
-                }
                 // SAFETY: as above, minus the offset — the index was bounded by
                 // the texture table's capacity at layout planning and the
                 // texture is kept alive by the group.
