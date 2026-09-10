@@ -16,22 +16,22 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.140
-      - name: Sample a texture through raw Metal
+      - name: Sample a texture without shader validation
         shell: bash
         run: |
           set -euo pipefail
           mkdir probe-logs
           set +e
           MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert \
-            MTL_DEBUG_LAYER_WARNING_MODE=assert MTL_SHADER_VALIDATION=1 \
+            MTL_DEBUG_LAYER_WARNING_MODE=assert MTL_SHADER_VALIDATION=0 \
             MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING=1 \
             MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1 \
             xcrun swift .github/scripts/metal-texture-probe.swift \
-            > probe-logs/raw-metal-texture.log 2>&1
+            > probe-logs/raw-metal-texture-validation-off.log 2>&1
           result=$?
           set -e
-          echo "raw-metal-texture exit=$result" | tee probe-logs/results.txt
-          cat probe-logs/raw-metal-texture.log
+          echo "raw-metal-texture-validation-off exit=$result" | tee probe-logs/results.txt
+          cat probe-logs/raw-metal-texture-validation-off.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:
