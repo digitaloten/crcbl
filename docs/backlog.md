@@ -4909,15 +4909,6 @@ settings screen's menu is up on every frame, so the assertion itself is one line
 once a frame can be driven. Worth doing with the `scripted`/`headless` decision
 above rather than on its own.
 
-### Nothing checks that a sample forwards its own `--headless` to `Record` (2026-09-07)
-
-`Record::for_app`'s headless rule is tested once, beside it. The four samples'
-copies of that test were deleted with the hoist, so a `best.rs` that passed a
-literal `false` would write into the runner's config directory and no test would
-say so. `apps/horde` is incidentally covered (its truncation test would read a
-stale record on the second run); the other three are not. Judged not worth four
-one-line tests, recorded so the trade-off is not re-derived.
-
 ### The browser gate's mirrored constants are pinned, not emitted (2026-09-07)
 
 `crcbl_sample_test::browser_gate_expectation` reads a block's field out of

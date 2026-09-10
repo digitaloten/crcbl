@@ -35,3 +35,25 @@ const BEST_FILE: &str = "best.bin";
 pub fn open(headless: bool) -> Record {
     Record::for_app(APP, BEST_FILE, headless)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **A headless run must leave nothing behind**, and this module's whole
+    /// part in that rule is the `headless` it hands
+    /// [`Record::for_app`](crcbl::store::record::Record::for_app).
+    ///
+    /// A literal `false` here would write the best score into whoever's config
+    /// directory the suite runs as, and the number would still come back — from
+    /// the file instead of from memory — so every other assertion about the
+    /// best would pass exactly as it does now. What is read is therefore that
+    /// a second open starts over, which is the one reading a write would move.
+    #[test]
+    fn a_headless_run_keeps_its_best_in_memory_and_writes_nothing() {
+        let mut record = open(true);
+        assert!(record.raise(500), "it still tracks the value in memory");
+        assert_eq!(record.get(), 500);
+        assert_eq!(open(true).get(), 0, "a headless run left a file behind");
+    }
+}
