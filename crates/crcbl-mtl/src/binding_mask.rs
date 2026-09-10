@@ -423,4 +423,84 @@ mod tests {
         assert!(mask.uses(Stage::Vertex, Table::Texture, MASK_BITS));
         assert!(!mask.uses(Stage::Vertex, Table::Texture, 0));
     }
+
+    /// **`insert` marks exactly one physical slot**, which is what the render
+    /// replay uses to say "this argument writes table `t` slot `i`" without
+    /// building a reflection: an index past the word sets nothing, and no
+    /// neighbouring slot, table or stage moves with it.
+    #[test]
+    fn insert_marks_one_slot_and_ignores_one_past_the_mask() {
+        let mut mask = BindingMask::none();
+        mask.insert(Stage::Mesh, Table::Buffer, 7);
+        assert!(mask.uses(Stage::Mesh, Table::Buffer, 7));
+        assert!(!mask.uses(Stage::Mesh, Table::Buffer, 6));
+        assert!(!mask.uses(Stage::Vertex, Table::Buffer, 7));
+        assert!(!mask.uses(Stage::Mesh, Table::Texture, 7));
+
+        let before = mask;
+        mask.insert(Stage::Mesh, Table::Buffer, MASK_BITS);
+        assert_eq!(mask, before, "an index past the word set a bit somewhere");
+    }
+
+    /// [`intersection`](BindingMask::intersection) is "slots both arguments
+    /// write", which is how the replay asks whether a new argument replaces one
+    /// already materialised on the same physical slot. Symmetric, because a
+    /// comparison that depended on which side it was asked from would make the
+    /// answer a function of replay order.
+    #[test]
+    fn intersection_keeps_only_the_slots_both_masks_write() {
+        let mut left = BindingMask::none();
+        left.insert(Stage::Vertex, Table::Buffer, 1);
+        left.insert(Stage::Vertex, Table::Buffer, 2);
+        left.insert(Stage::Fragment, Table::Texture, 3);
+        let mut right = BindingMask::none();
+        right.insert(Stage::Vertex, Table::Buffer, 2);
+        right.insert(Stage::Fragment, Table::Texture, 4);
+
+        let shared = left.intersection(right);
+        assert!(shared.uses(Stage::Vertex, Table::Buffer, 2));
+        assert!(!shared.uses(Stage::Vertex, Table::Buffer, 1));
+        assert!(!shared.uses(Stage::Fragment, Table::Texture, 3));
+        assert!(!shared.uses(Stage::Fragment, Table::Texture, 4));
+        assert_eq!(right.intersection(left), shared);
+    }
+
+    /// **The replay walks its arguments backwards, so the last writer of a slot
+    /// is the one that reaches Metal.** [`claim`](BindingMask::claim) answers
+    /// which slots the current argument wins, given the union of the ones
+    /// already visited, and folds candidates into that union.
+    #[test]
+    fn claim_gives_a_slot_to_the_last_writer_only() {
+        let mut claimed = BindingMask::none();
+
+        let mut last = BindingMask::none();
+        last.insert(Stage::Vertex, Table::Buffer, 2);
+        assert_eq!(claimed.claim(last), last, "the last argument won no slot");
+
+        // An earlier argument writing that slot and one of its own keeps only
+        // the slot the later one did not take.
+        let mut earlier = BindingMask::none();
+        earlier.insert(Stage::Vertex, Table::Buffer, 1);
+        earlier.insert(Stage::Vertex, Table::Buffer, 2);
+        let mut only_one = BindingMask::none();
+        only_one.insert(Stage::Vertex, Table::Buffer, 1);
+        assert_eq!(
+            claimed.claim(earlier),
+            only_one,
+            "a slot the later argument already wrote was won twice"
+        );
+        assert!(
+            claimed.uses(Stage::Vertex, Table::Buffer, 1)
+                && claimed.uses(Stage::Vertex, Table::Buffer, 2),
+            "the union did not take in the earlier argument's slots"
+        );
+
+        let mut claimed_again = BindingMask::none();
+        claimed_again.insert(Stage::Vertex, Table::Buffer, 1);
+        assert_eq!(
+            claimed.claim(claimed_again),
+            BindingMask::none(),
+            "an argument won a slot an earlier one had already claimed"
+        );
+    }
 }
