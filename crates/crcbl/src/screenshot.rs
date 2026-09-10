@@ -8070,6 +8070,14 @@ mod tests {
     fn every_scene_records_the_passes_it_names_and_gives_back_every_object_at_finish() {
         use crate::hal::null::{Event, NullInstance, Recorder};
 
+        // **The expected list names passes a console variable decides**, so this
+        // holds the lock the tests that move those variables hold. Measured
+        // rather than argued: without it, a run of this crate's suite where a
+        // settings test has `r_ssao_blur_passes` at one while this frame is
+        // recorded loses the `ssao-blur-2` row and fails here, which is a race
+        // between two honest tests rather than anything wrong with either.
+        let _process_video = crate::settings::process_video_test_guard();
+
         // `(kind, label)` as `Command::opens_pass` reports them.
         //
         // **The cube scene's compute triple appears once per cull, and there is
