@@ -16,7 +16,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.140
-      - name: Report shader-validation findings to stderr
+      - name: Declare UI texture residency explicitly
         shell: bash
         run: |
           set -euo pipefail
@@ -29,12 +29,12 @@ jobs:
             cargo nextest run --locked -p crcbl --features render-e2e --test render_e2e \
             --run-ignored all --no-tests fail --no-fail-fast --test-threads=1 \
             --success-output immediate \
-            -E 'test(the_cube_scene_draws_through_the_forward_renderer_and_matches_its_golden) | test(the_ui_scene_draws_through_the_ui_renderer_and_matches_its_golden) | test(a_fragment_crossing_a_clipmap_level_fades_into_it)' \
-            > probe-logs/shader-validation-stderr.log 2>&1
+            -E 'test(the_ui_scene_draws_through_the_ui_renderer_and_matches_its_golden)' \
+            > probe-logs/ui-explicit-texture-read.log 2>&1
           result=$?
           set -e
-          echo "shader-validation-stderr exit=$result" | tee probe-logs/results.txt
-          tail -240 probe-logs/shader-validation-stderr.log
+          echo "ui-explicit-texture-read exit=$result" | tee probe-logs/results.txt
+          tail -240 probe-logs/ui-explicit-texture-read.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:
