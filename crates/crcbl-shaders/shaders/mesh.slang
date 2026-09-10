@@ -1989,12 +1989,22 @@ float3x3 normal_basis(float3x3 basis)
                     cross(basis[0], basis[1]));
 }
 
+// Slang 2026.14 splits numeric semantic indices in raster MSL, but keeps
+// them in mesh MSL. Unindexed names link both stages. Keep the original
+// semantics for SPIR-V, WGSL and DXIL. Match this definition and the names
+// in mesh.slang and mesh_cluster.slang; each manifest source is standalone.
+#if defined(CRCBL_TARGET_MSL)
+#define CRCBL_MESH_SEMANTIC(original, metal_name) metal_name
+#else
+#define CRCBL_MESH_SEMANTIC(original, metal_name) original
+#endif
+
 struct VertexOutput
 {
     float4 position : SV_Position;
-    float3 world_position : POSITION0;
-    float3 world_normal : NORMAL0;
-    float4 color : COLOR0;
+    float3 world_position : CRCBL_MESH_SEMANTIC(POSITION0, CRCBL_WORLD_POSITION);
+    float3 world_normal : CRCBL_MESH_SEMANTIC(NORMAL0, CRCBL_WORLD_NORMAL);
+    float4 color : CRCBL_MESH_SEMANTIC(COLOR0, CRCBL_COLOR);
     /// This primitive's material row, straight off `GpuInstance::material`.
     ///
     /// # `nointerpolation`, and why it is the whole of this varying's risk
@@ -2019,11 +2029,11 @@ struct VertexOutput
     /// subtle: `crates/crcbl/tests/golden/cube.png` draws its two instances in
     /// unlike colour families, so a fragment that resolved the wrong row is a
     /// smear between them and not a shade of the right answer.
-    nointerpolation uint material : TEXCOORD0;
+    nointerpolation uint material : CRCBL_MESH_SEMANTIC(TEXCOORD0, CRCBL_MATERIAL);
     /// This fragment's base-colour texture coordinates, straight off the
     /// vertex. Interpolated, unlike `material` above: a UV *is* a quantity, and
     /// the point of it is to vary across the primitive.
-    float2 uv : TEXCOORD1;
+    float2 uv : CRCBL_MESH_SEMANTIC(TEXCOORD1, CRCBL_UV);
     /// This vertex's clip position — the same value as `position` above,
     /// carried as an ordinary interpolant so the fragment stage can divide it
     /// itself.
@@ -2038,14 +2048,14 @@ struct VertexOutput
     /// performed at the corners and interpolated across the primitive names the
     /// screen position of a point that is not this fragment — and the
     /// subtraction below would then be wrong everywhere except at the corners.
-    float4 clip_position : TEXCOORD2;
+    float4 clip_position : CRCBL_MESH_SEMANTIC(TEXCOORD2, CRCBL_CLIP_POSITION);
     /// Where this vertex was last frame, in last frame's clip space:
     /// `FrameUniforms::previous_view_proj` applied to
     /// `GpuInstance::previous_transform`.
     ///
     /// Undivided, on `clip_position`'s terms. `motion_vector` below is what
     /// subtracts the two, and it is the only reader of either.
-    float4 previous_clip_position : TEXCOORD3;
+    float4 previous_clip_position : CRCBL_MESH_SEMANTIC(TEXCOORD3, CRCBL_PREVIOUS_CLIP_POSITION);
     /// This vertex's surface tangent in world space — the QTangent's tangent
     /// through the instance transform's **bare 3×3**.
     ///
@@ -2063,7 +2073,7 @@ struct VertexOutput
     /// applies for the same reason. Read only where `FRAME_AUTHORED_TANGENTS`
     /// is set; a mesh without it carries `orthonormal_basis`' stand-in here,
     /// which is a direction the UV parameterisation never agreed to.
-    float3 world_tangent : TEXCOORD4;
+    float3 world_tangent : CRCBL_MESH_SEMANTIC(TEXCOORD4, CRCBL_WORLD_TANGENT);
     /// Which frame this primitive's normal map is sampled in, and which way its
     /// bitangent points: `FRAME_AUTHORED_TANGENTS` and `FRAME_LEFT_HANDED`.
     ///
@@ -2075,7 +2085,7 @@ struct VertexOutput
     /// triangle that straddles it. The provoking vertex's frame is the one the
     /// whole primitive is shaded in, which is the same reading that makes the
     /// mesh flag meaningful at all: a mesh either shipped tangents or did not.
-    nointerpolation uint frame : TEXCOORD5;
+    nointerpolation uint frame : CRCBL_MESH_SEMANTIC(TEXCOORD5, CRCBL_FRAME);
 };
 
 /// `VertexOutput::frame` bit 0: this primitive's mesh carries authored
