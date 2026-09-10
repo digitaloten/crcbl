@@ -3490,8 +3490,48 @@ impl ForwardRenderer {
         target_format: Format,
         scene: &SceneDesc<'_>,
     ) -> Result<Self, HalError> {
+        Self::with_scene_on_path(
+            device,
+            queue,
+            target_format,
+            scene,
+            device.preferred_geometry_path(),
+        )
+    }
+
+    /// Builds exactly the requested geometry tail, independently of the device's
+    /// performance preference. Capabilities remain available to other callers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HalError::UnsupportedFeatures`] before creating device objects
+    /// when the requested tail lacks its required feature. Other failures follow
+    /// [`Self::with_scene`]'s rollback contract.
+    pub fn with_scene_on_path(
+        device: &dyn Device,
+        queue: QueueHandle,
+        target_format: Format,
+        scene: &SceneDesc<'_>,
+        geometry_path: GeometryPath,
+    ) -> Result<Self, HalError> {
+        let required = match geometry_path {
+            GeometryPath::MeshShader => crcbl_hal::Features::MESH_SHADER,
+            GeometryPath::IndirectCount => crcbl_hal::Features::DRAW_INDIRECT_COUNT,
+            GeometryPath::IndirectPerBatch => crcbl_hal::Features::empty(),
+        };
+        let missing = required.difference(device.caps().features);
+        if !missing.is_empty() {
+            return Err(HalError::UnsupportedFeatures { missing });
+        }
         let mut rollback = Rollback::default();
-        match Self::build(device, queue, target_format, scene, &mut rollback) {
+        match Self::build(
+            device,
+            queue,
+            target_format,
+            scene,
+            geometry_path,
+            &mut rollback,
+        ) {
             Ok(renderer) => Ok(renderer),
             Err(error) => {
                 rollback.run(device);
@@ -3690,6 +3730,7 @@ impl ForwardRenderer {
         queue: QueueHandle,
         target_format: Format,
         scene: &SceneDesc<'_>,
+        geometry_path: GeometryPath,
         rollback: &mut Rollback,
     ) -> Result<Self, HalError> {
         // Before anything exists, so a refused description leaks nothing — see
@@ -3703,7 +3744,7 @@ impl ForwardRenderer {
         // indirect tail never builds the mesh one, which is what makes "the
         // frame came out of the mesh stage" a fact about the object graph
         // rather than a claim about a branch.
-        let emit = EmitTail::from_path(device.preferred_geometry_path());
+        let emit = EmitTail::from_path(geometry_path);
         // **A second capability, asked separately.** `Features::TASK_SHADER` is
         // not implied by `MESH_SHADER`, so §3.5's per-cluster cull is an
         // amplification stage this renderer builds where the device has one and
@@ -13481,6 +13522,104 @@ mod tests {
     };
     use crcbl_hal::null::{Event, NullInstance, ObjectKind, Recorder};
     use crcbl_hal::{DeviceDesc, Features, Instance, QueueKind};
+
+    #[test]
+    fn exact_geometry_path_overrides_preference_and_default_keeps_it() {
+        let recorder = Recorder::new();
+        let instance = NullInstance::gpu_driven()
+            .with_geometry_preference(GeometryPath::IndirectPerBatch)
+            .with_recorder(recorder.clone());
+        let device = instance
+            .create_device(&DeviceDesc::for_adapter(crcbl_hal::AdapterId(0)))
+            .unwrap();
+        let queue = device.queue(QueueKind::Graphics).unwrap();
+        assert_eq!(device.caps().geometry_path(), GeometryPath::IndirectCount);
+        let default = ForwardRenderer::with_scene(
+            device.as_ref(),
+            queue,
+            Format::Rgba8UnormSrgb,
+            &scene::demo(),
+        )
+        .unwrap();
+        assert_eq!(default.geometry_path(), GeometryPath::IndirectPerBatch);
+        default.destroy(device.as_ref());
+        recorder.clear();
+        let mut exact = ForwardRenderer::with_scene_on_path(
+            device.as_ref(),
+            queue,
+            Format::Rgba8UnormSrgb,
+            &scene::demo(),
+            GeometryPath::IndirectCount,
+        )
+        .unwrap();
+        assert_eq!(exact.geometry_path(), GeometryPath::IndirectCount);
+        let rendered = frame(device.as_ref(), &mut exact, queue);
+        let commands = commands_in_pass(&recorder, "forward");
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            crcbl_hal::null::Command::DrawIndexedIndirectCount(_)
+        )));
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, crcbl_hal::null::Command::DrawIndexedIndirect(_)))
+        );
+        rendered.finish(device.as_ref(), exact);
+    }
+
+    #[test]
+    fn exact_geometry_path_builds_supported_tails_and_refuses_missing_features_without_allocating()
+    {
+        for features in [
+            Features::GPU_DRIVEN,
+            Features::COMPUTE | Features::MESH_SHADER,
+        ] {
+            let recorder = Recorder::new();
+            let instance = NullInstance::new(crcbl_hal::DeviceCaps {
+                features,
+                limits: crcbl_hal::Limits::desktop(),
+            })
+            .with_recorder(recorder.clone());
+            let device = instance
+                .create_device(&DeviceDesc {
+                    label: None,
+                    adapter: crcbl_hal::AdapterId(0),
+                    required_features: Features::COMPUTE,
+                    optional_features: features,
+                    compatible_surface: None,
+                })
+                .expect("null device opens");
+            let queue = device.queue(QueueKind::Graphics).unwrap();
+            for (path, required) in [
+                (GeometryPath::IndirectPerBatch, Features::empty()),
+                (GeometryPath::IndirectCount, Features::DRAW_INDIRECT_COUNT),
+                (GeometryPath::MeshShader, Features::MESH_SHADER),
+            ] {
+                recorder.clear();
+                let result = ForwardRenderer::with_scene_on_path(
+                    device.as_ref(),
+                    queue,
+                    Format::Rgba8UnormSrgb,
+                    &scene::demo(),
+                    path,
+                );
+                if features.contains(required) {
+                    let renderer = result.expect("supported exact tail builds");
+                    assert_eq!(renderer.geometry_path(), path);
+                    renderer.destroy(device.as_ref());
+                } else {
+                    assert!(
+                        matches!(result, Err(HalError::UnsupportedFeatures { missing }) if missing == required)
+                    );
+                    assert!(
+                        recorder.events().is_empty(),
+                        "unsupported selection must not touch device objects"
+                    );
+                }
+                recorder.assert_valid();
+            }
+        }
+    }
 
     fn open() -> (Recorder, Box<dyn Device>, QueueHandle) {
         open_with(DeviceDesc::for_adapter(crcbl_hal::AdapterId(0)).optional_features)
