@@ -171,3 +171,31 @@ References:
 and
 [Dawn Metal command encoding](https://raw.githubusercontent.com/google/dawn/main/src/dawn/native/metal/CommandBufferMTL.mm).
 The local reproductions and regression tests establish the fixes described here.
+
+## Hosted shader-validation control
+
+PR #17 exposed a hosted-runner difference: on macOS 26's Apple Paravirtual GPU,
+enabling shader validation makes valid sampled textures report usage-flag
+mismatches and return zero. Both renderer geometry paths fail the same three
+representative scenes with validation enabled and pass with it disabled.
+
+A standalone Swift/Metal control reproduces the failure without crcbl: sample
+one white R8Unorm texel from a ShaderRead texture into a red RGBA8 output pixel.
+The shader reports a usage mismatch and writes black on macOS 26 with validation
+([run 34462175408](https://github.com/digitaloten/crcbl/actions/runs/34462175408));
+the same runner writes the expected red pixel with validation disabled
+([run 34462431533](https://github.com/digitaloten/crcbl/actions/runs/34462431533)).
+The identical validated control passes on macOS 15
+([run 34462666976](https://github.com/digitaloten/crcbl/actions/runs/34462666976))
+and on the local M3 Pro with macOS 26.5.2. This isolates the failure to the
+hosted macOS 26 environment rather than establishing a failure on all macOS 26
+GPUs.
+
+The Metal CI job is pinned to macOS 15, where all 59 renderer goldens pass with
+API assertions and shader validation, error reporting, stderr reporting and
+abort-on-fault enabled
+([run 34463283160](https://github.com/digitaloten/crcbl/actions/runs/34463283160)).
+These extra shader settings matter: default shader fault handling can zero-fill
+an invalid read while the command buffer still completes successfully. The
+renderer gate now makes such findings fatal. The hardware harness retains its
+API logging mode because several probes deliberately end unused encoders.

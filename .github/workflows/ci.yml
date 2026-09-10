@@ -2444,8 +2444,12 @@ jobs:
           if-no-files-found: ignore
 
   mtl-e2e:
-    name: mtl e2e (macos-latest)
-    runs-on: macos-latest
+    name: mtl e2e (macos-15)
+    # macOS 26's hosted paravirtual driver reports false texture-usage faults
+    # under shader validation, including in a standalone native Metal draw.
+    # macOS 15 passes that control and all 59 strict renderer goldens.
+    # Keep shader validation enabled; see docs/notes/metal-local-baseline.md.
+    runs-on: macos-15
     # macOS runners are roughly 2x slower than Linux; see `build + test` — but
     # this job's clock is the debug layer's, not the runner's. With
     # `MTL_DEBUG_LAYER_WARNING_MODE=nslog` every finding prints a descriptor
@@ -2655,6 +2659,9 @@ jobs:
           CRCBL_GPU: mtl
           MTL_DEBUG_LAYER: '1'
           MTL_SHADER_VALIDATION: '1'
+          MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING: '1'
+          MTL_SHADER_VALIDATION_REPORT_TO_STDERR: '1'
+          MTL_SHADER_VALIDATION_ABORT_ON_FAULT: '1'
           MTL_DEBUG_LAYER_ERROR_MODE: assert
           MTL_DEBUG_LAYER_WARNING_MODE: assert
         run: crates/crcbl/tests/run-render-e2e.sh
