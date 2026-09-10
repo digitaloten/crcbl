@@ -113,6 +113,23 @@ jobs:
           tar xzf dxc.tar.gz -C "${RUNNER_TEMP}/dxc" --strip-components=1
           chmod +x "${RUNNER_TEMP}/dxc/bin/dxc"
           echo "CRCBL_DXC=${RUNNER_TEMP}/dxc/bin/dxc" >>"$GITHUB_ENV"
-      - name: Check the committed artifacts against their sources
+      - name: Regenerate all declared shader targets
+        run: crates/crcbl-shaders/tools/compile-shaders.sh
+      - name: Check regenerated artifacts
         run: crates/crcbl-shaders/tools/compile-shaders.sh --check
+      - name: Upload regenerated artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: metal-shader-candidate
+          path: |
+            crates/crcbl-shaders/spirv/
+            crates/crcbl-shaders/wgsl/
+            crates/crcbl-shaders/msl/
+            crates/crcbl-shaders/dxil/
+          if-no-files-found: error
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - name: Validate WGSL with Naga
+        run: cargo test -p crcbl-shaders --test wgsl_validation --locked
 
