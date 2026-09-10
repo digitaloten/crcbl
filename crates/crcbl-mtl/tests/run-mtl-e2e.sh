@@ -6,7 +6,7 @@
 #
 # # Who runs this
 #
-# **CI runs it, on `macos-latest`.** The device that image exposes is an
+# **CI runs it, on `macos-26`.** The device that image exposes is an
 # `Apple Paravirtual device`, and a paravirtual device was long assumed unable
 # to execute a shader — but that was generalised from macos-14, the one hosted
 # image whose `MTLCreateSystemDefaultDevice()` returns nil. macos-15 and
