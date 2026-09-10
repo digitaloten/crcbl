@@ -364,6 +364,9 @@ struct PackDispatch {
 /// against. Nothing here borrows, and nothing here is a handle to be looked up
 /// a second time — a lookup at replay could fail, and its failure would arrive
 /// at the wrong call.
+// Keep recording allocation-free per command: the pipeline's five-stage mask
+// is inline instead of introducing a heap allocation for every pipeline bind.
+#[allow(clippy::large_enum_variant)]
 enum RenderCommand {
     /// `pushDebugGroup:` on the encoder.
     PushDebugGroup(Retained<NSString>),
@@ -409,6 +412,8 @@ enum RenderCommand {
         vertex: bool,
         /// As `vertex`, for the fragment stage.
         fragment: bool,
+        object: bool,
+        mesh: bool,
     },
     Draw {
         primitive: objc2_metal::MTLPrimitiveType,
@@ -573,6 +578,9 @@ fn final_argument_writes(
 /// one ordered list. Replacing an entry moves it to the end, preserving which
 /// write wins even when the caller switches between incompatible layouts whose
 /// table slots overlap.
+// Group masks cover five independent native stages. Boxing them would add an
+// allocation to every remembered group in this render replay hot path.
+#[allow(clippy::large_enum_variant)]
 enum RenderArgument<'a> {
     Group {
         slot: u32,
@@ -730,6 +738,8 @@ impl<'a> RenderReplay<'a> {
             for (stage, visibility) in [
                 (Stage::Vertex, ShaderStages::VERTEX),
                 (Stage::Fragment, ShaderStages::FRAGMENT),
+                (Stage::Object, ShaderStages::TASK),
+                (Stage::Mesh, ShaderStages::MESH),
             ] {
                 if binding.visibility.contains(visibility) {
                     slots.insert(stage, table, binding.index);
@@ -783,7 +793,9 @@ impl<'a> RenderReplay<'a> {
                     for binding in *bindings {
                         let table = binding.table();
                         let wins = selected.uses(Stage::Vertex, table, binding.index)
-                            || selected.uses(Stage::Fragment, table, binding.index);
+                            || selected.uses(Stage::Fragment, table, binding.index)
+                            || selected.uses(Stage::Object, table, binding.index)
+                            || selected.uses(Stage::Mesh, table, binding.index);
                         if wins {
                             crate::binding::apply(
                                 core::slice::from_ref(binding),
@@ -812,6 +824,12 @@ impl<'a> RenderReplay<'a> {
                         },
                         Stage::Fragment => unsafe {
                             encoder.setFragmentBytes_length_atIndex(source, length, index);
+                        },
+                        Stage::Object => unsafe {
+                            encoder.setObjectBytes_length_atIndex(source, length, index);
+                        },
+                        Stage::Mesh => unsafe {
+                            encoder.setMeshBytes_length_atIndex(source, length, index);
                         },
                         Stage::Compute => unreachable!("render arguments have no compute stage"),
                     }
@@ -879,12 +897,20 @@ fn replay<'a>(
             bytes,
             vertex,
             fragment,
+            object,
+            mesh,
         } => {
             if *vertex {
                 replay.remember_bytes(Stage::Vertex, *slot, bytes);
             }
             if *fragment {
                 replay.remember_bytes(Stage::Fragment, *slot, bytes);
+            }
+            if *object {
+                replay.remember_bytes(Stage::Object, *slot, bytes);
+            }
+            if *mesh {
+                replay.remember_bytes(Stage::Mesh, *slot, bytes);
             }
         }
         RenderCommand::Draw {
@@ -2321,10 +2347,12 @@ impl CommandEncoder for MetalCommandEncoder {
             Target::Render => {
                 let vertex = block.stages.contains(ShaderStages::VERTEX);
                 let fragment = block.stages.contains(ShaderStages::FRAGMENT);
-                // A layout naming neither raster stage writes nothing here, and
+                let object = block.stages.contains(ShaderStages::TASK);
+                let mesh = block.stages.contains(ShaderStages::MESH);
+                // A layout naming no render stage writes nothing here, and
                 // recording a command that would make no call is not worth the
                 // copy of the block that carrying it costs.
-                if vertex || fragment {
+                if vertex || fragment || object || mesh {
                     // A **copy** of the shadow rather than a pointer into it,
                     // which is the one thing deferral changes about this call:
                     // a later `push_constants` splices the same shadow in
@@ -2336,6 +2364,8 @@ impl CommandEncoder for MetalCommandEncoder {
                         bytes,
                         vertex,
                         fragment,
+                        object,
+                        mesh,
                     });
                 }
             }

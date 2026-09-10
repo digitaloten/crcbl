@@ -3345,6 +3345,10 @@ fn resolve_count(requested: u32, base: NSUInteger, total: NSUInteger) -> NSUInte
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[cfg(feature = "mtl-mesh-e2e")]
+    mod native_mesh_proof {
+        include!("mesh_proof.rs");
+    }
     use super::*;
     use std::time::Duration;
 

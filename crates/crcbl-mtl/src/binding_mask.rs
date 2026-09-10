@@ -277,7 +277,13 @@ mod tests {
     #[test]
     fn the_fallback_reads_every_slot_of_every_table() {
         let mask = BindingMask::all();
-        for stage in [Stage::Vertex, Stage::Fragment, Stage::Compute] {
+        for stage in [
+            Stage::Vertex,
+            Stage::Fragment,
+            Stage::Compute,
+            Stage::Object,
+            Stage::Mesh,
+        ] {
             for table in Table::ALL {
                 for index in [0, 1, table.capacity() - 1] {
                     assert!(

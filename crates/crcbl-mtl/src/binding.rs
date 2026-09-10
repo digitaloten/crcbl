@@ -989,9 +989,8 @@ const fn table_usage(writable: bool) -> MTLResourceUsage {
 ///
 /// `useResource:usage:stages:` takes them because a render encoder declares
 /// residency per stage, where the compute encoder's twin has one stage to
-/// declare for. Only the two this backend's render pipelines have: a stage this
-/// device does not report is one no pipeline here can be built with, which
-/// `BindGroupLayoutDesc::check_entries` refuses at layout creation.
+/// declare for. Task visibility maps to Metal's object stage; mesh visibility
+/// maps to its mesh stage. Layout validation still gates both on device caps.
 const fn render_stages(visibility: ShaderStages) -> MTLRenderStages {
     let mut stages = MTLRenderStages::empty();
     if visibility.contains(ShaderStages::VERTEX) {
@@ -999,6 +998,12 @@ const fn render_stages(visibility: ShaderStages) -> MTLRenderStages {
     }
     if visibility.contains(ShaderStages::FRAGMENT) {
         stages = stages.union(MTLRenderStages::Fragment);
+    }
+    if visibility.contains(ShaderStages::TASK) {
+        stages = stages.union(MTLRenderStages::Object);
+    }
+    if visibility.contains(ShaderStages::MESH) {
+        stages = stages.union(MTLRenderStages::Mesh);
     }
     stages
 }
@@ -1044,6 +1049,8 @@ pub(crate) fn apply(
         let table = binding.resource.table();
         let vertex = binding.visibility.contains(ShaderStages::VERTEX);
         let fragment = binding.visibility.contains(ShaderStages::FRAGMENT);
+        let object = binding.visibility.contains(ShaderStages::TASK);
+        let mesh = binding.visibility.contains(ShaderStages::MESH);
         match &binding.resource {
             BoundResource::Buffer { raw, offset, .. } => {
                 let id = identity(raw);
@@ -1061,6 +1068,20 @@ pub(crate) fn apply(
                     })
                 {
                     unsafe { encoder.setVertexBuffer_offset_atIndex(Some(raw), ns_offset, index) };
+                }
+                if object
+                    && mask.issue(Stage::Object, table, slot, || {
+                        binds.buffer_changed(Stage::Object, slot, id, *offset)
+                    })
+                {
+                    unsafe { encoder.setObjectBuffer_offset_atIndex(Some(raw), ns_offset, index) };
+                }
+                if mesh
+                    && mask.issue(Stage::Mesh, table, slot, || {
+                        binds.buffer_changed(Stage::Mesh, slot, id, *offset)
+                    })
+                {
+                    unsafe { encoder.setMeshBuffer_offset_atIndex(Some(raw), ns_offset, index) };
                 }
                 if fragment
                     && mask.issue(Stage::Fragment, table, slot, || {
@@ -1084,6 +1105,20 @@ pub(crate) fn apply(
                 {
                     unsafe { encoder.setVertexTexture_atIndex(Some(raw), index) };
                 }
+                if object
+                    && mask.issue(Stage::Object, table, slot, || {
+                        binds.texture_changed(Stage::Object, slot, id)
+                    })
+                {
+                    unsafe { encoder.setObjectTexture_atIndex(Some(raw), index) };
+                }
+                if mesh
+                    && mask.issue(Stage::Mesh, table, slot, || {
+                        binds.texture_changed(Stage::Mesh, slot, id)
+                    })
+                {
+                    unsafe { encoder.setMeshTexture_atIndex(Some(raw), index) };
+                }
                 if fragment
                     && mask.issue(Stage::Fragment, table, slot, || {
                         binds.texture_changed(Stage::Fragment, slot, id)
@@ -1101,6 +1136,20 @@ pub(crate) fn apply(
                     })
                 {
                     unsafe { encoder.setVertexSamplerState_atIndex(Some(raw), index) };
+                }
+                if object
+                    && mask.issue(Stage::Object, table, slot, || {
+                        binds.sampler_changed(Stage::Object, slot, id)
+                    })
+                {
+                    unsafe { encoder.setObjectSamplerState_atIndex(Some(raw), index) };
+                }
+                if mesh
+                    && mask.issue(Stage::Mesh, table, slot, || {
+                        binds.sampler_changed(Stage::Mesh, slot, id)
+                    })
+                {
+                    unsafe { encoder.setMeshSamplerState_atIndex(Some(raw), index) };
                 }
                 if fragment
                     && mask.issue(Stage::Fragment, table, slot, || {
@@ -1138,6 +1187,20 @@ pub(crate) fn apply(
                     })
                 {
                     unsafe { encoder.setVertexBuffer_offset_atIndex(Some(raw), 0, index) };
+                }
+                if object
+                    && mask.issue(Stage::Object, table, slot, || {
+                        binds.buffer_changed(Stage::Object, slot, id, 0)
+                    })
+                {
+                    unsafe { encoder.setObjectBuffer_offset_atIndex(Some(raw), 0, index) };
+                }
+                if mesh
+                    && mask.issue(Stage::Mesh, table, slot, || {
+                        binds.buffer_changed(Stage::Mesh, slot, id, 0)
+                    })
+                {
+                    unsafe { encoder.setMeshBuffer_offset_atIndex(Some(raw), 0, index) };
                 }
                 if fragment
                     && mask.issue(Stage::Fragment, table, slot, || {
