@@ -554,9 +554,27 @@ fn remember<T>(groups: &mut Vec<(u32, T, BindingMask)>, slot: u32, bindings: T, 
     groups.push((slot, bindings, mask));
 }
 
+/// One argument-table value in force for the next draw.
+///
+/// Bind groups and inline bytes share Metal's buffer table, so they live in
+/// one ordered list. Replacing an entry moves it to the end, preserving which
+/// write wins even when the caller switches between incompatible layouts whose
+/// table slots overlap.
+enum RenderArgument<'a> {
+    Group {
+        slot: u32,
+        bindings: &'a [crate::binding::BoundBinding],
+    },
+    Bytes {
+        stage: Stage,
+        slot: u32,
+        bytes: &'a [u8],
+    },
+}
+
 /// What a render pass's replay carries from one command to the next.
 ///
-/// # Why the groups are kept
+/// # Why the arguments are kept
 ///
 /// `crcbl_hal::CommandEncoder` does not require a pipeline to be bound before
 /// [`bind_group`](CommandEncoder::bind_group) — it takes a *pipeline layout*,
@@ -566,12 +584,17 @@ fn remember<T>(groups: &mut Vec<(u32, T, BindingMask)>, slot: u32, bindings: T, 
 /// arrives, and it changes under the group whenever a pipeline with a different
 /// one is bound.
 ///
-/// The answer is to keep what is in force and re-apply it when the mask moves:
-/// a pass opens holding [`BindingMask::none`], so a group bound ahead of its
-/// pipeline sets nothing and is set in full by the pipeline bind that follows —
-/// and a draw cannot happen in between, because a draw with no pipeline bound
-/// is refused (see [`bound_primitive`](MetalCommandEncoder::bound_primitive)).
-/// Two pipelines sharing one mask re-apply nothing at all.
+/// The answer is to keep the final values in force and apply them at the draw
+/// that consumes them, after that draw's pipeline has reached the native
+/// encoder. A pass opens holding [`BindingMask::none`], so a group bound ahead
+/// of its pipeline is simply remembered until a pipeline and draw arrive.
+///
+/// This is also what strict Metal validation requires. An argument write made
+/// while the preceding pipeline is native is checked against that pipeline,
+/// while an argument write eagerly re-applied for a new mask can be overwritten
+/// by a later bind before any draw consumes it. Metal reports both as unused
+/// bindings. Keeping one ordered final state removes both calls rather than
+/// weakening validation.
 struct RenderReplay<'a> {
     /// State is applied at the draw that consumes it. A setter overwritten
     /// before a draw needs no Metal call at all.
@@ -586,9 +609,11 @@ struct RenderReplay<'a> {
     /// What this encoder's argument tables already hold. See
     /// [`crate::bind_cache`].
     binds: BindCache,
-    /// The groups in force, one entry per slot, in the order their binds were
-    /// issued.
-    groups: Vec<(u32, &'a [crate::binding::BoundBinding], BindingMask)>,
+    /// The groups and inline bytes in force, in last-write order.
+    arguments: Vec<RenderArgument<'a>>,
+    /// Whether [`Self::arguments`] changed, or a new mask may expose one of
+    /// their entries. False after a draw materializes the list.
+    arguments_dirty: bool,
     /// The bound pipeline's mask, or [`BindingMask::none`] before one is bound.
     mask: BindingMask,
 }
@@ -605,7 +630,8 @@ impl<'a> RenderReplay<'a> {
             stencil_reference: crcbl_hal::stencil::INITIAL_REFERENCE,
             applied_stencil_reference: None,
             binds: BindCache::default(),
-            groups: Vec::new(),
+            arguments: Vec::new(),
+            arguments_dirty: false,
             mask: BindingMask::none(),
         }
     }
@@ -660,17 +686,65 @@ impl<'a> RenderReplay<'a> {
         }
     }
 
-    /// Re-applies every group whose bindings were last decided under a
-    /// different mask than the one now in force.
-    fn reapply(&mut self, encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>) {
-        let mask = self.mask;
-        for (_, bindings, applied) in &mut self.groups {
-            if *applied == mask {
-                continue;
-            }
-            *applied = mask;
-            crate::binding::apply(bindings, encoder, &mut self.binds, mask);
+    /// Replaces one set's value and makes it the last effective write.
+    fn remember_group(&mut self, slot: u32, bindings: &'a [crate::binding::BoundBinding]) {
+        self.arguments.retain(
+            |argument| !matches!(argument, RenderArgument::Group { slot: held, .. } if *held == slot),
+        );
+        self.arguments
+            .push(RenderArgument::Group { slot, bindings });
+        self.arguments_dirty = true;
+    }
+
+    /// Replaces one stage's inline block and makes it the last effective write.
+    fn remember_bytes(&mut self, stage: Stage, slot: u32, bytes: &'a [u8]) {
+        self.arguments.retain(|argument| {
+            !matches!(
+                argument,
+                RenderArgument::Bytes {
+                    stage: held_stage,
+                    slot: held_slot,
+                    ..
+                } if *held_stage == stage && *held_slot == slot
+            )
+        });
+        self.arguments
+            .push(RenderArgument::Bytes { stage, slot, bytes });
+        self.arguments_dirty = true;
+    }
+
+    /// Applies the final argument-table values after the final pipeline state.
+    fn apply_arguments(&mut self, encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>) {
+        if !self.arguments_dirty {
+            return;
         }
+        for argument in &self.arguments {
+            match argument {
+                RenderArgument::Group { bindings, .. } => {
+                    crate::binding::apply(bindings, encoder, &mut self.binds, self.mask);
+                }
+                RenderArgument::Bytes { stage, slot, bytes } => {
+                    if !self.binds.bytes_changed(*stage, *slot, bytes) {
+                        continue;
+                    }
+                    let index = to_ns(u64::from(*slot));
+                    let length = to_ns(bytes.len() as u64);
+                    let source = NonNull::from(*bytes).cast::<core::ffi::c_void>();
+                    // SAFETY: the command owns `bytes` through the whole replay,
+                    // and layout planning bounded both its length and table slot.
+                    match stage {
+                        Stage::Vertex => unsafe {
+                            encoder.setVertexBytes_length_atIndex(source, length, index);
+                        },
+                        Stage::Fragment => unsafe {
+                            encoder.setFragmentBytes_length_atIndex(source, length, index);
+                        },
+                        Stage::Compute => unreachable!("render arguments have no compute stage"),
+                    }
+                }
+            }
+        }
+        self.arguments_dirty = false;
     }
 }
 
@@ -696,6 +770,7 @@ fn replay<'a>(
             | RenderCommand::DrawMeshTasksIndirect { .. }
     ) {
         replay.apply_draw_state(encoder);
+        replay.apply_arguments(encoder);
     }
     match command {
         RenderCommand::PushDebugGroup(name) => encoder.pushDebugGroup(name),
@@ -717,13 +792,13 @@ fn replay<'a>(
             // What a bind *does* change is which of the groups in force reach
             // the argument tables: `setRenderPipelineState:` changes what those
             // tables are read as. See `RenderReplay`.
-            replay.mask = bound.mask;
-            replay.reapply(encoder);
+            if replay.mask != bound.mask {
+                replay.arguments_dirty = true;
+                replay.mask = bound.mask;
+            }
         }
         RenderCommand::BindGroup { slot, bindings } => {
-            let mask = replay.mask;
-            crate::binding::apply(bindings, encoder, &mut replay.binds, mask);
-            remember(&mut replay.groups, *slot, bindings.as_slice(), mask);
+            replay.remember_group(*slot, bindings);
         }
         RenderCommand::PushConstants {
             slot,
@@ -731,30 +806,11 @@ fn replay<'a>(
             vertex,
             fragment,
         } => {
-            let index = to_ns(u64::from(*slot));
-            let length = to_ns(bytes.len() as u64);
-            let source = NonNull::from(&**bytes).cast::<core::ffi::c_void>();
-            // The whole block is re-sent at every write, so a pass that draws
-            // many times through one unchanged block sends it many times; the
-            // cache compares the bytes because `setBytes:` copies them and two
-            // equal blocks are therefore the same argument. See
-            // `crate::bind_cache`'s `bytes_changed`.
-            //
-            // SAFETY: `objc2` marks these unsafe because Metal bounds-checks
-            // neither the pointer nor the argument-table index. `source` points
-            // at `length` initialised bytes of a `Vec` this command owns and
-            // nothing mutates for the duration of the call, and Metal copies
-            // them before returning — that is what "inlined buffer contents"
-            // means. `length` is the recorded block's own length, which
-            // `crate::argument::plan` bounded by `Limits::max_push_constant_size`,
-            // and `index` is the buffer-table entry after the last binding,
-            // which the same call bounded by `BUFFER_TABLE_ENTRIES`.
-            if *vertex && replay.binds.bytes_changed(Stage::Vertex, *slot, bytes) {
-                unsafe { encoder.setVertexBytes_length_atIndex(source, length, index) };
+            if *vertex {
+                replay.remember_bytes(Stage::Vertex, *slot, bytes);
             }
-            // SAFETY: as above, on the fragment stage's table.
-            if *fragment && replay.binds.bytes_changed(Stage::Fragment, *slot, bytes) {
-                unsafe { encoder.setFragmentBytes_length_atIndex(source, length, index) };
+            if *fragment {
+                replay.remember_bytes(Stage::Fragment, *slot, bytes);
             }
         }
         RenderCommand::Draw {
@@ -3332,6 +3388,54 @@ impl Drop for MetalCommandEncoder {
         // `close_open` for why that is unconditional rather than skipped on a
         // buffer nothing will run.
         self.close_open();
+    }
+}
+
+#[cfg(test)]
+mod render_replay_tests {
+    use super::*;
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum Key {
+        Group(u32),
+        Bytes(Stage, u32),
+    }
+
+    /// A state setter overwritten before a draw must disappear, and each
+    /// surviving setter must retain its order relative to the others. The
+    /// latter matters because bind groups and inline constants share Metal's
+    /// buffer argument table when incompatible layouts reuse a slot.
+    #[test]
+    fn overwritten_arguments_leave_one_final_write_in_last_write_order() {
+        let mut replay = RenderReplay::new();
+        replay.remember_group(0, &[]);
+        replay.remember_bytes(Stage::Vertex, 7, &[1]);
+        replay.remember_group(1, &[]);
+        replay.remember_group(0, &[]);
+        replay.remember_bytes(Stage::Fragment, 7, &[2]);
+        replay.remember_bytes(Stage::Vertex, 7, &[3]);
+
+        let keys = replay
+            .arguments
+            .iter()
+            .map(|argument| match argument {
+                RenderArgument::Group { slot, .. } => Key::Group(*slot),
+                RenderArgument::Bytes { stage, slot, .. } => Key::Bytes(*stage, *slot),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            [
+                Key::Group(1),
+                Key::Group(0),
+                Key::Bytes(Stage::Fragment, 7),
+                Key::Bytes(Stage::Vertex, 7),
+            ]
+        );
+        let RenderArgument::Bytes { bytes, .. } = replay.arguments.last().unwrap() else {
+            panic!("the final argument is the last vertex write");
+        };
+        assert_eq!(*bytes, [3]);
     }
 }
 
