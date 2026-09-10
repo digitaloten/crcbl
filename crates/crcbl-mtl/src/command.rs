@@ -144,7 +144,7 @@ use objc2_metal::{
 };
 
 use crate::bind_cache::{BindCache, Stage};
-use crate::binding_mask::BindingMask;
+use crate::binding_mask::{BindingMask, Table};
 use crate::conv;
 use crate::device::{CommandBufferEntry, DeviceInner, QuerySetRaw, ResolvedImage, to_ns};
 
@@ -554,6 +554,19 @@ fn remember<T>(groups: &mut Vec<(u32, T, BindingMask)>, slot: u32, bindings: T, 
     groups.push((slot, bindings, mask));
 }
 
+/// Selects the physical writes each logical argument contributes to one draw.
+fn final_argument_writes(
+    candidates: impl DoubleEndedIterator<Item = BindingMask>,
+    selected: &mut Vec<BindingMask>,
+) {
+    selected.clear();
+    let mut claimed = BindingMask::none();
+    for candidate in candidates.rev() {
+        selected.push(claimed.claim(candidate));
+    }
+    selected.reverse();
+}
+
 /// One argument-table value in force for the next draw.
 ///
 /// Bind groups and inline bytes share Metal's buffer table, so they live in
@@ -564,12 +577,28 @@ enum RenderArgument<'a> {
     Group {
         slot: u32,
         bindings: &'a [crate::binding::BoundBinding],
+        /// Every physical slot permitted by the group's stage visibility.
+        slots: BindingMask,
     },
     Bytes {
         stage: Stage,
         slot: u32,
         bytes: &'a [u8],
     },
+}
+
+impl RenderArgument<'_> {
+    /// Physical slots this logical value would write for `pipeline`.
+    fn candidates(&self, pipeline: BindingMask) -> BindingMask {
+        let mut candidates = BindingMask::none();
+        match self {
+            Self::Group { slots, .. } => return slots.intersection(pipeline),
+            Self::Bytes { stage, slot, .. } => {
+                candidates.insert(*stage, Table::Buffer, *slot);
+            }
+        }
+        candidates
+    }
 }
 
 /// What a render pass's replay carries from one command to the next.
@@ -611,6 +640,9 @@ struct RenderReplay<'a> {
     binds: BindCache,
     /// The groups and inline bytes in force, in last-write order.
     arguments: Vec<RenderArgument<'a>>,
+    /// Scratch masks parallel to [`Self::arguments`], retained across draws so
+    /// selecting physical winners allocates only when the list first grows.
+    selected_arguments: Vec<BindingMask>,
     /// Whether [`Self::arguments`] changed, or a new mask may expose one of
     /// their entries. False after a draw materializes the list.
     arguments_dirty: bool,
@@ -631,6 +663,7 @@ impl<'a> RenderReplay<'a> {
             applied_stencil_reference: None,
             binds: BindCache::default(),
             arguments: Vec::new(),
+            selected_arguments: Vec::new(),
             arguments_dirty: false,
             mask: BindingMask::none(),
         }
@@ -691,8 +724,23 @@ impl<'a> RenderReplay<'a> {
         self.arguments.retain(
             |argument| !matches!(argument, RenderArgument::Group { slot: held, .. } if *held == slot),
         );
-        self.arguments
-            .push(RenderArgument::Group { slot, bindings });
+        let mut slots = BindingMask::none();
+        for binding in bindings {
+            let table = binding.table();
+            for (stage, visibility) in [
+                (Stage::Vertex, ShaderStages::VERTEX),
+                (Stage::Fragment, ShaderStages::FRAGMENT),
+            ] {
+                if binding.visibility.contains(visibility) {
+                    slots.insert(stage, table, binding.index);
+                }
+            }
+        }
+        self.arguments.push(RenderArgument::Group {
+            slot,
+            bindings,
+            slots,
+        });
         self.arguments_dirty = true;
     }
 
@@ -713,17 +761,43 @@ impl<'a> RenderReplay<'a> {
         self.arguments_dirty = true;
     }
 
+    /// Selects the last logical writer of every physical argument-table slot.
+    fn select_arguments(&mut self) {
+        final_argument_writes(
+            self.arguments
+                .iter()
+                .map(|argument| argument.candidates(self.mask)),
+            &mut self.selected_arguments,
+        );
+    }
+
     /// Applies the final argument-table values after the final pipeline state.
     fn apply_arguments(&mut self, encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>) {
         if !self.arguments_dirty {
             return;
         }
-        for argument in &self.arguments {
+        self.select_arguments();
+        for (argument, selected) in self.arguments.iter().zip(&self.selected_arguments) {
             match argument {
                 RenderArgument::Group { bindings, .. } => {
-                    crate::binding::apply(bindings, encoder, &mut self.binds, self.mask);
+                    for binding in *bindings {
+                        let table = binding.table();
+                        let wins = selected.uses(Stage::Vertex, table, binding.index)
+                            || selected.uses(Stage::Fragment, table, binding.index);
+                        if wins {
+                            crate::binding::apply(
+                                core::slice::from_ref(binding),
+                                encoder,
+                                &mut self.binds,
+                                *selected,
+                            );
+                        }
+                    }
                 }
                 RenderArgument::Bytes { stage, slot, bytes } => {
+                    if !selected.uses(*stage, Table::Buffer, *slot) {
+                        continue;
+                    }
                     if !self.binds.bytes_changed(*stage, *slot, bytes) {
                         continue;
                     }
@@ -3436,6 +3510,47 @@ mod render_replay_tests {
             panic!("the final argument is the last vertex write");
         };
         assert_eq!(*bytes, [3]);
+    }
+
+    /// A logical group remains in force when a later layout places push
+    /// constants over its physical slot, but only the final physical value may
+    /// be written. Replaying the group before each changed constant would turn
+    /// the last draw into A then B1 even though B0 already occupies the cache,
+    /// and strict Metal validation rejects A as overwritten without use.
+    #[test]
+    fn each_draw_selects_only_the_final_physical_slot_writer() {
+        let mut buffer_zero = BindingMask::none();
+        buffer_zero.insert(Stage::Vertex, Table::Buffer, 0);
+        let mut replay = RenderReplay::new();
+        replay.mask = buffer_zero;
+        replay.arguments.push(RenderArgument::Group {
+            slot: 0,
+            bindings: &[],
+            slots: buffer_zero,
+        });
+
+        replay.select_arguments();
+        assert_eq!(replay.selected_arguments, [buffer_zero]);
+
+        replay.remember_bytes(Stage::Vertex, 0, &[0]);
+        replay.select_arguments();
+        assert_eq!(
+            replay.selected_arguments,
+            [BindingMask::none(), buffer_zero],
+            "B0 is the only write to buffer 0 on its draw"
+        );
+
+        replay.remember_bytes(Stage::Vertex, 0, &[1]);
+        replay.select_arguments();
+        assert_eq!(
+            replay.selected_arguments,
+            [BindingMask::none(), buffer_zero],
+            "B1 remains the only write after B0 occupies the native cache"
+        );
+        let RenderArgument::Bytes { bytes, .. } = replay.arguments.last().unwrap() else {
+            panic!("the final argument is B1");
+        };
+        assert_eq!(*bytes, [1]);
     }
 }
 

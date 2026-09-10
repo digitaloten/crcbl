@@ -142,10 +142,11 @@ impl BindingMask {
     ///
     /// What [`from_reflection`](Self::from_reflection) builds up from, and what
     /// a pass holds **before any pipeline is bound**: there is nothing there to
-    /// read the tables, and `crcbl_mtl::command` re-applies every bind group in
-    /// force when one arrives. Deferring the binds that way rather than making
-    /// them under [`all`](Self::all) is what keeps a group bound ahead of its
-    /// pipeline from filling slots that pipeline turns out not to read.
+    /// read the tables, and `crcbl_mtl::command` retains every bind group in
+    /// force until a draw supplies a mask. Deferring the binds that way rather
+    /// than making them under [`all`](Self::all) is what keeps a group bound
+    /// ahead of its pipeline from filling slots that pipeline turns out not to
+    /// read.
     pub(crate) const fn none() -> Self {
         Self {
             stages: [[0; TABLES]; Stage::COUNT],
@@ -182,11 +183,47 @@ impl BindingMask {
     /// — [`plan_layout`](crate::binding::plan_layout) refuses a pipeline layout
     /// that overruns a table — so this is the direction to be wrong in rather
     /// than a case that arises.
-    const fn uses(&self, stage: Stage, table: Table, index: u32) -> bool {
+    pub(crate) const fn uses(&self, stage: Stage, table: Table, index: u32) -> bool {
         if index >= MASK_BITS {
             return true;
         }
         self.stages[stage.slot()][table.slot()] & (1 << index) != 0
+    }
+
+    /// Marks one physical argument-table slot.
+    pub(crate) fn insert(&mut self, stage: Stage, table: Table, index: u32) {
+        if index < MASK_BITS {
+            self.stages[stage.slot()][table.slot()] |= 1 << index;
+        }
+    }
+
+    /// Slots present in both masks.
+    pub(crate) fn intersection(self, other: Self) -> Self {
+        let mut shared = Self::none();
+        for stage in 0..Stage::COUNT {
+            for table in 0..TABLES {
+                shared.stages[stage][table] =
+                    self.stages[stage][table] & other.stages[stage][table];
+            }
+        }
+        shared
+    }
+
+    /// Claims every slot in `candidates` that no later argument claimed yet.
+    ///
+    /// `self` is the union of later writes while the render replay walks its
+    /// logical arguments backwards. The return value is therefore exactly the
+    /// physical writes the current argument wins.
+    pub(crate) fn claim(&mut self, candidates: Self) -> Self {
+        let mut won = Self::none();
+        for stage in 0..Stage::COUNT {
+            for table in 0..TABLES {
+                won.stages[stage][table] =
+                    candidates.stages[stage][table] & !self.stages[stage][table];
+                self.stages[stage][table] |= candidates.stages[stage][table];
+            }
+        }
+        won
     }
 
     /// Whether the `set*` for this slot is made: the pipeline reads it, and
