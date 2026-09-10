@@ -2172,7 +2172,9 @@ const EXPECTATIONS = {
       line.includes('gold: 120') &&
       line.includes('towers: 0') &&
       line.includes('built: 0') &&
+      line.includes('upgrades: 0') &&
       line.includes('refused: 0') &&
+      line.includes('kind: bolt') &&
       line.includes('geometry: IndirectPerBatch') &&
       line.includes('binding: ArrayPages') &&
       line.includes('lighting: Rasterised'),
@@ -2200,12 +2202,36 @@ const EXPECTATIONS = {
       prev: { code: 'ArrowLeft', key: 'ArrowLeft', virtualKeyCode: 37 },
       build: { code: 'KeyB', key: 'b', text: 'b', virtualKeyCode: 66 },
       send: { code: 'KeyN', key: 'n', text: 'n', virtualKeyCode: 78 },
+      // `U` steps the tower under the cursor up a tier, and `2` picks the kind
+      // the next build is of — `apps/towers/src/app.rs`'s `ACTION_UPGRADE` and
+      // the second of its `ACTION_KINDS`. Slice 3a's two new commands, and the
+      // only two keys on this page whose effect the server can refuse outright.
+      upgrade: { code: 'KeyU', key: 'u', text: 'u', virtualKeyCode: 85 },
+      pickKind: { code: 'Digit2', key: '2', text: '2', virtualKeyCode: 50 },
       // Which plot the cursor is on, by `map::Plot::label`. The client's own
       // state and the only field here that never crosses the wire — which is
       // exactly why the block reads it: it is what says the arrow keys reached
       // the game before anything asks what a build did.
       plot: /\bplot: ([a-z]+)/,
       lastPlot: 'gate',
+      // One `prev` further back, and therefore a plot with nothing on it after
+      // the build checks above have filled `lastPlot`: `map::PLOTS`' last but
+      // one. Where the upgrade refusal is asked for and where the splash tower
+      // goes up.
+      emptyPlot: 'middle',
+      // Which kind the client has picked, by `tower::Kind::label`. The client's
+      // own state, like `plot` — which is exactly why the block reads it: it is
+      // what says the kind key reached the game before anything asks what a
+      // build did with it.
+      kind: /\bkind: ([a-z]+)/,
+      kindLabel: 'splash',
+      // How many towers of that kind the **server** has built, and how many
+      // towers it has stepped up a tier. Note that `splash` and `upgrades` are
+      // the server's counters where `kind` above is the client's, which is the
+      // pair that tells a splash tower that went up from a key that was merely
+      // pressed.
+      splash: /\bsplash: (\d+)/,
+      upgrades: /\bupgrades: (\d+)/,
       // The purse, and the two counters that say what the server did with a
       // command: how many towers it has built and how many commands it has
       // turned down.
@@ -2231,10 +2257,42 @@ const EXPECTATIONS = {
       // tick the wave was due on, which is the control for the wave key.
       tick: /\[HUD\] tick: (\d+)/,
       tickHz: 60,
-      // `tower::COST`, in gold. The one number this block asserts an exact
-      // equality on, because a purse is the only place a build that was
-      // *applied* differs from a build that was merely *drawn*.
+      // `tower::TOWERS`' prices, in gold: what a bolt tower costs to build, what
+      // a splash tower costs to build, and what stepping a splash tower up
+      // costs. The purse is the only place a command that was *applied* differs
+      // from one that was merely *drawn*, so these are what the checks below
+      // compare against — and `apps/towers`'
+      // `the_browser_gates_game_constants_are_the_ones_this_crate_declares` is
+      // what keeps them the prices the rules give.
       cost: 40,
+      splashCost: 70,
+      splashUpgrade: 80,
+      // The row of buttons `web/demos/towers/main.js` puts under the field, for
+      // a visitor with no keyboard: its id, the `data-key` on each button, and
+      // the one this block clicks. **No other demo has any of this** — towers is
+      // the one sample here whose subject is a command, so a page a finger
+      // cannot issue one on is a page that shows nothing.
+      buttonRow: '#towers-controls',
+      buttonKeys: [
+        'ArrowLeft',
+        'ArrowRight',
+        'Digit1',
+        'Digit2',
+        'Digit3',
+        'KeyB',
+        'KeyU',
+      ],
+      buttonKey: 'Digit3',
+      // …and what the `[HUD]` line says once that button has been pressed:
+      // `tower::Kind::Slow`'s label, which is the third of `tower::ALL`.
+      buttonKindLabel: 'slow',
+      // The largest `creep::CREEPS` bounty, in gold. **Not decoration**: the
+      // purse checks after the first kill cannot assume the purse only fell,
+      // because a bounty may land inside the same heartbeat window. This bounds
+      // how much a window's kills could have paid in, which is what turns those
+      // checks into a two-sided bracket instead of an equality that is wrong
+      // whenever the field is doing its job.
+      maxBounty: 60,
     },
   },
 };
@@ -7715,9 +7773,12 @@ try {
           const reading = {
             line,
             plot: line.match(loop.plot)?.[1] ?? null,
+            kind: line.match(loop.kind)?.[1] ?? null,
             gold: number(loop.gold),
             towers: number(loop.towers),
             built: number(loop.built),
+            splash: number(loop.splash),
+            upgrades: number(loop.upgrades),
             refused: number(loop.refused),
             kills: number(loop.kills),
             wave: number(loop.wave),
@@ -7945,6 +8006,215 @@ try {
             `last said kills ${latest()?.kills}, towers ${latest()?.towers}, ` +
             `creeps on the field and gold ${latest()?.gold}`
     );
+
+    // ---- SLICE 3A'S TWO NEW COMMANDS, AND THE SERVER'S ANSWER TO EACH ------
+    //
+    // `PlaceTower` now names a **kind** and `UpgradeTower` stands beside it, and
+    // neither is something the checks above can see: a page that built a bolt
+    // tower whatever the player picked, or that drew an upgraded tower without
+    // asking anybody, reports exactly what they read. So the same shape again,
+    // twice over — a command the server **takes** against the same command
+    // **refused**:
+    //
+    // * an upgrade on a plot with nothing on it is refused, and nothing is spent;
+    // * a kind key picks a kind, a build puts **that kind** up and the purse pays
+    //   **that kind's** price;
+    // * and stepping that tower up is taken, and the purse pays the upgrade's own
+    //   price.
+    //
+    // **The purse is bracketed rather than equated from here on**, and that is
+    // not a weakening. By this point the field is killing things, so a bounty can
+    // land inside the same heartbeat window as a purchase; `maxBounty` is what
+    // bounds how much the window's kills could have paid in. The lower end of the
+    // bracket is the exact price — a bounty can only add — so a command that was
+    // never applied still fails, which is the whole point.
+    if (EXPECTED.loop.upgrade) {
+      /** The purse a purchase of `cost` leaves, as a bracket. */
+      const paidFor = (
+        /** @type {{gold: number, kills: number}} */ before,
+        /** @type {{gold: number, kills: number}} */ after,
+        /** @type {number} */ cost
+      ) => {
+        const earned = (after.kills - before.kills) * loop.maxBounty;
+        return (
+          after.gold >= before.gold - cost &&
+          after.gold <= before.gold - cost + earned
+        );
+      };
+
+      // ---- the upgrade the server refuses -------------------------------
+      // One `prev` back from the plot the build checks filled, which is a plot
+      // with nothing on it — read off the line rather than assumed, because
+      // everything below is about *that* plot.
+      await press(loop.prev);
+      const onEmpty = await until(async () =>
+        readings().find((reading) => reading.plot === loop.emptyPlot)
+      );
+      const beforeEmptyUpgrade = latest();
+      if (onEmpty) await press(loop.upgrade);
+      const emptyRefused =
+        onEmpty && beforeEmptyUpgrade
+          ? await until(async () =>
+              readings().find(
+                (reading) =>
+                  reading.runs === beforeEmptyUpgrade.runs &&
+                  reading.refused > beforeEmptyUpgrade.refused
+              )
+            )
+          : null;
+      check(
+        'C',
+        'an upgrade on a plot with nothing on it is refused',
+        Boolean(emptyRefused) &&
+          emptyRefused.upgrades === beforeEmptyUpgrade.upgrades &&
+          emptyRefused.towers === beforeEmptyUpgrade.towers &&
+          emptyRefused.gold >= beforeEmptyUpgrade.gold,
+        !onEmpty
+          ? `the cursor never reached ${loop.emptyPlot}; it reads ` +
+              `${latest()?.plot} after ${readings().length} heartbeat(s)`
+          : emptyRefused
+            ? `refused went ${beforeEmptyUpgrade.refused} → ` +
+              `${emptyRefused.refused} with upgrades ${emptyRefused.upgrades} ` +
+              `and gold ${beforeEmptyUpgrade.gold} → ${emptyRefused.gold}`
+            : `the refusal counter stayed at ${latest()?.refused} over ` +
+              `${readings().length} heartbeat(s), with upgrades ` +
+              `${latest()?.upgrades} — the server either stepped up a tower ` +
+              'that is not there or never saw the command'
+      );
+
+      // ---- the kind key, which is the client's alone ---------------------
+      await press(loop.pickKind);
+      const picked = await until(async () =>
+        readings().find((reading) => reading.kind === loop.kindLabel)
+      );
+      check(
+        'C',
+        'a kind key picks the kind the next build is of',
+        Boolean(picked),
+        picked
+          ? `the kind reads ${picked.kind}`
+          : `it stayed on ${latest()?.kind ?? 'no kind at all'} over ` +
+              `${readings().length} heartbeat(s)`
+      );
+
+      // ---- the build of that kind, which the server takes ---------------
+      // Waited for rather than pressed on sight: a splash tower costs more than
+      // the opening purse has left by now, and a build the purse cannot reach is
+      // a refusal this check could not tell from a kind byte that never arrived.
+      const flush = await until(async () => {
+        const now = latest();
+        return now && now.gold >= loop.splashCost ? now : null;
+      });
+      if (flush) await press(loop.build);
+      const placedKind = flush
+        ? await until(async () =>
+            readings().find(
+              (reading) =>
+                reading.runs === flush.runs && reading.splash > flush.splash
+            )
+          )
+        : null;
+      check(
+        'C',
+        'a build of that kind reaches the server and that kind goes up',
+        Boolean(placedKind) &&
+          placedKind.built === flush.built + 1 &&
+          placedKind.refused === flush.refused &&
+          paidFor(flush, placedKind, loop.splashCost),
+        !flush
+          ? `the purse never reached the ${loop.splashCost} gold a ` +
+              `${loop.kindLabel} tower costs over ${readings().length} ` +
+              'heartbeat(s)'
+          : placedKind
+            ? `${loop.kindLabel} went ${flush.splash} → ${placedKind.splash}, ` +
+              `built ${flush.built} → ${placedKind.built}, refused ` +
+              `${flush.refused} → ${placedKind.refused} and gold ` +
+              `${flush.gold} → ${placedKind.gold} against a cost of ` +
+              `${loop.splashCost} with ${placedKind.kills - flush.kills} kill(s)`
+            : `no heartbeat reported a ${loop.kindLabel} tower in ` +
+              `${readings().length} line(s); the last said ` +
+              `${latest()?.splash} of them, built ${latest()?.built} and ` +
+              `refused ${latest()?.refused}`
+      );
+
+      // ---- and the upgrade the server takes -----------------------------
+      const canUpgrade = await until(async () => {
+        const now = latest();
+        return now && now.gold >= loop.splashUpgrade ? now : null;
+      });
+      if (canUpgrade) await press(loop.upgrade);
+      const stepped = canUpgrade
+        ? await until(async () =>
+            readings().find(
+              (reading) =>
+                reading.runs === canUpgrade.runs &&
+                reading.upgrades > canUpgrade.upgrades
+            )
+          )
+        : null;
+      check(
+        'C',
+        "and stepping it up is taken, with the purse paying the upgrade's price",
+        Boolean(stepped) &&
+          stepped.refused === canUpgrade.refused &&
+          stepped.towers === canUpgrade.towers &&
+          paidFor(canUpgrade, stepped, loop.splashUpgrade),
+        !canUpgrade
+          ? `the purse never reached the ${loop.splashUpgrade} gold the ` +
+              `upgrade costs over ${readings().length} heartbeat(s)`
+          : stepped
+            ? `upgrades went ${canUpgrade.upgrades} → ${stepped.upgrades} with ` +
+              `towers ${stepped.towers}, refused ${canUpgrade.refused} → ` +
+              `${stepped.refused} and gold ${canUpgrade.gold} → ` +
+              `${stepped.gold} against a cost of ${loop.splashUpgrade} with ` +
+              `${stepped.kills - canUpgrade.kills} kill(s)`
+            : `the upgrade counter stayed at ${latest()?.upgrades} over ` +
+              `${readings().length} heartbeat(s), with refused ` +
+              `${latest()?.refused} — the server either never saw the command ` +
+              'or took it without saying so'
+      );
+
+      // ---- and the same commands, through a button ----------------------
+      // **The page's own half of slice 3a.** A phone has no keyboard and this
+      // demo's whole subject is a command, so `web/demos/towers/main.js` puts a
+      // row of buttons under the field that synthesise the very `keydown`/`keyup`
+      // pair `web/engine/shell.js` listens for. A list of buttons is not the
+      // claim, though — a row of dead buttons renders identically — so this
+      // reads the list and then **clicks one** and watches the `[HUD]` line say
+      // the game took it.
+      const buttonKeys = await evaluate(
+        page,
+        `[...document.querySelectorAll('${loop.buttonRow} button')].map((b) => b.dataset.key)`
+      );
+      check(
+        'C',
+        'the page carries a button for every control a finger needs',
+        Array.isArray(buttonKeys) &&
+          loop.buttonKeys.every((want) => buttonKeys.includes(want)),
+        Array.isArray(buttonKeys)
+          ? `the row under the field carries ${JSON.stringify(buttonKeys)}`
+          : `${loop.buttonRow} is not on the page at all`
+      );
+
+      const beforeTap = latest();
+      await evaluate(
+        page,
+        `document.querySelector('${loop.buttonRow} button[data-key="${loop.buttonKey}"]')?.click()`
+      );
+      const tapped = await until(async () =>
+        readings().find((reading) => reading.kind === loop.buttonKindLabel)
+      );
+      check(
+        'C',
+        'and pressing one of them reaches the game the way a key does',
+        Boolean(tapped),
+        tapped
+          ? `the kind reads ${tapped.kind}, from ${beforeTap?.kind ?? 'no kind'}`
+          : `the kind stayed on ${latest()?.kind ?? 'no kind at all'} over ` +
+              `${readings().length} heartbeat(s) after the ` +
+              `${loop.buttonKey} button was clicked`
+      );
+    }
   }
 
   // **A FILE THE VISITOR CHOSE, WHICH IS THE OTHER WAY INPUT REACHES THIS

@@ -218,7 +218,8 @@ impl Gpu {
         &mut self.ctx
     }
 
-    /// Draws the creeps, the towers and the bolts where the simulation says.
+    /// Draws the creeps, the towers, the bolts and the splash bursts where the
+    /// simulation says.
     ///
     /// Written every frame rather than only when one changes, for
     /// `apps/breach`'s reason: the frame is handed a snapshot, and a renderer
@@ -231,12 +232,16 @@ impl Gpu {
             let view = (index < state.creeps_alive).then(|| state.creeps[index]);
             self.field.set_creep(&mut self.renderer, index, view);
         }
-        for (plot, firing) in state.towers.iter().enumerate() {
-            self.field.set_tower(&mut self.renderer, plot, *firing);
+        for (plot, tower) in state.towers.iter().enumerate() {
+            self.field.set_tower(&mut self.renderer, plot, *tower);
         }
         for index in 0..map::MAX_BOLTS {
             let at = (index < state.bolts_flying).then(|| state.bolts[index]);
             self.field.set_bolt(&mut self.renderer, index, at);
+        }
+        for index in 0..map::MAX_BURSTS {
+            let burst = (index < state.bursts_live).then(|| state.bursts[index]);
+            self.field.set_burst(&mut self.renderer, index, burst);
         }
     }
 

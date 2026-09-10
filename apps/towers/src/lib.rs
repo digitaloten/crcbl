@@ -1,10 +1,11 @@
 //! Towers — co-op tower defense, and the ladder's flagship.
 //!
-//! `docs/plan/sample/07-towers.md`, **milestone 1, slices 1 and 2**: the solo
-//! loop on a hardcoded map, natively and in a browser. Creeps walk a path,
-//! towers shoot them, kills pay gold, a scripted table of waves runs out, and
-//! the run is won or lost. That document's status section is the list of what
-//! each remaining slice owes.
+//! `docs/plan/sample/07-towers.md`, **milestone 1, slices 1, 2 and 3a**: the
+//! solo loop on a hardcoded map, natively and in a browser, with the combat
+//! content milestone 1 asks for. Three kinds of tower and an upgrade tier each,
+//! three kinds of creep, ten scripted waves; creeps walk a path, towers shoot,
+//! burst and hold them, kills pay gold, and the run is won or lost. That
+//! document's status section is the list of what each remaining slice owes.
 //!
 //! # What it proves
 //!
@@ -19,7 +20,12 @@
 //!   [`map`] registers it and [`creep::has_reached_the_exit`] asks it.
 //! * **Acquisition is a sphere overlap, and the filter is the interesting
 //!   half.** The same query hands a tower the ground slab and the exit volume,
-//!   so [`tower::acquire`] answers with a creep or with nothing.
+//!   so [`tower::acquire`] answers with a creep or with nothing. Slice 3a asks
+//!   the same query two more ways: a [`tower::Kind::Splash`] bolt's
+//!   [`tower::burst_into`] at the point it lands, which is the plan's "overlap
+//!   burst at impact point", and a [`tower::Kind::Slow`] tower's [`tower::hold`]
+//!   once a tick, which is a **continuous** reading of the same query where the
+//!   other two are instants.
 //! * **CCD against a target that is itself moving.** A bolt covers more ground
 //!   in one tick than a creep is wide, and the creeps have already walked by
 //!   the time the bolts sweep — so
@@ -55,15 +61,24 @@
 //! It is the one engine gap this slice found, and it is recorded rather than
 //! worked around.
 //!
+//! # The content is three tables and nothing else
+//!
+//! [`tower::TOWERS`] is every number a tower has, at either tier;
+//! [`creep::CREEPS`] is every number a creep has; [`wave::WAVES`] says what each
+//! of the ten rows releases and how fast. Each is read in exactly one place and
+//! every capacity in [`map`] is derived from them, so a new tower kind is a row
+//! and a variant rather than a sweep through the crate — which is the
+//! extensibility `docs/plan/sample/07-towers.md`'s exit criteria ask for.
+//!
 //! # What is not here yet
 //!
-//! **Slice 1 is one map, one tower, one creep and three waves.** No splash or
-//! slow towers and no upgrade tiers; no tanky or swarm creeps and no
-//! world-space health bars; seven of the plan's ten waves; no `.crpix` art and
-//! so no build menu worth the name (rule 11 is owed, not exempted); no spatial
-//! audio (rule 8 is owed, not exempted); no save or resume; and no dev fly/walk
-//! camera. There is no pointer or touch input either, on the page as well as in
-//! the window — [`app`] says why a tap waits for the build menu.
+//! **Slice 3a is the combat half of milestone 1's remaining content, and not the
+//! presentation half.** No `.crpix` art and so no build menu worth the name
+//! (rule 11 is owed, not exempted); no spatial audio (rule 8 is owed, not
+//! exempted); no world-space health bars; no save or resume; and no dev fly/walk
+//! camera. There is no pointer or touch input **inside the canvas** either, on
+//! the page as well as in the window — [`app`] says why a tap waits for the build
+//! menu, and what a touch player gets on the page instead.
 //! `docs/plan/sample/07-towers.md` carries the list with what each would take.
 //!
 //! # One library, two front ends
@@ -91,11 +106,96 @@ pub mod web;
 
 pub use app::{Loop, PendingLoop, Summary, Towers, TowersError, run, start, with_shell};
 pub use args::{Invocation, Options, USAGE, parse};
-pub use creep::{Creep, CreepView};
+pub use creep::{CREEPS, Creep, CreepSpec, CreepView};
 pub use game::{Controls, DEFAULT_TICK_HZ, Game, GameError, RenderState, Stats};
 pub use gpu::{Gpu, Paths};
 pub use map::{PLOTS, Plot};
 pub use menu::{MenuAction, MenuKind, Menus};
 pub use page::PageStats;
-pub use tower::{Bolt, BoltOutcome, Tower};
-pub use wave::{Outcome, WAVES, Wave, Waves};
+pub use tower::{Bolt, BoltOutcome, BurstView, TOWERS, Tier, Tower, TowerSpec, TowerView};
+pub use wave::{Outcome, Release, WAVES, Wave, Waves};
+
+#[cfg(test)]
+mod tests {
+    use crcbl_sample_test::browser_gate_expectation as gate;
+
+    use crate::{creep, game, map, tower};
+
+    /// **Every game constant `web/tools/browser-e2e.mjs` writes out is this
+    /// crate's, and drift is a red test rather than a red browser row.**
+    ///
+    /// The gate's `towers` row carries prices, labels and a tick rate beside a
+    /// comment naming the symbol each came from, and nothing until this read the
+    /// two halves together. The failures that leaves are two, and the second is
+    /// the bad one: a changed price reddens the towers row with "the purse did
+    /// not pay the cost", which reads as a broken game rather than a stale gate —
+    /// and a changed plot label or a changed **maximum bounty** makes one of the
+    /// gate's own *controls* wrong, so the row goes on passing while the thing it
+    /// was controlling for is no longer true.
+    ///
+    /// `apps/shard/src/lib.rs` and `apps/breach/src/map/practice.rs` hold the
+    /// same kind of mirror for their own rows.
+    #[test]
+    fn the_browser_gates_game_constants_are_the_ones_this_crate_declares() {
+        use tower::Tier::{Base, Upgraded};
+
+        assert_eq!(
+            gate("loop", "cost"),
+            tower::Kind::Bolt.spec(Base).cost.to_string(),
+            "the gate's build price is not a bolt tower's",
+        );
+        assert_eq!(
+            gate("loop", "splashCost"),
+            tower::Kind::Splash.spec(Base).cost.to_string(),
+            "the gate's splash price is not a splash tower's",
+        );
+        assert_eq!(
+            gate("loop", "splashUpgrade"),
+            tower::Kind::Splash.spec(Upgraded).cost.to_string(),
+            "the gate's upgrade price is not a splash tower's",
+        );
+
+        // The control for every purse reading the row takes after the first
+        // kill — see the `maxBounty` comment in that file.
+        assert_eq!(
+            gate("loop", "maxBounty"),
+            creep::CREEPS
+                .iter()
+                .map(|spec| spec.bounty)
+                .max()
+                .expect("the creep table has rows")
+                .to_string(),
+            "the gate's bounty ceiling is not the creep table's",
+        );
+        assert_eq!(
+            gate("loop", "tickHz"),
+            game::DEFAULT_TICK_HZ.to_string(),
+            "the gate's tick rate is not this sample's",
+        );
+
+        // The labels, quoted as the JavaScript spells them. Each is a plot the
+        // gate walks its cursor to by **name**, so a renamed or reordered
+        // `map::PLOTS` leaves it pressing keys at a plot it is not on.
+        let quoted = |label: &str| format!("'{label}'");
+        assert_eq!(
+            gate("loop", "lastPlot"),
+            quoted(map::PLOTS[map::PLOTS.len() - 1].label),
+            "the gate's far plot is not the last of PLOTS",
+        );
+        assert_eq!(
+            gate("loop", "emptyPlot"),
+            quoted(map::PLOTS[map::PLOTS.len() - 2].label),
+            "the gate's empty plot is not the one a second `prev` reaches",
+        );
+        assert_eq!(
+            gate("loop", "kindLabel"),
+            quoted(tower::Kind::Splash.label()),
+            "the gate's kind label is not the one the `[HUD]` line prints",
+        );
+        assert_eq!(
+            gate("loop", "buttonKindLabel"),
+            quoted(tower::Kind::Slow.label()),
+            "the gate's button label is not the kind that button's key picks",
+        );
+    }
+}

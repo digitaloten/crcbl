@@ -3897,6 +3897,24 @@ The ten documents `docs/plan/06-assets-scenes.md`, `07-ui-debug.md`,
 against the tree on 2026-08-27. What follows is what they still describe and the
 tree does not have.
 
+### `tools/check-wrapped-strings.sh` misses a literal whose continuation resumes with a capital (2026-09-10)
+
+**Found by the formatter, not by an author.** A control hint in
+`apps/towers/src/page.rs` outgrew `rustfmt.toml`'s `max_width`, and rustfmt
+joined the continued literal back onto one line **keeping the continuation's
+indentation inside the string** — exactly the defect that guard exists to catch,
+arriving from the formatter rather than from someone forgetting a `\`. The guard
+stayed green: its pattern requires a lowercase letter or a brace after the run
+of spaces, and the next word was capitalised. The hint is a `concat!` of two
+literals now, which the formatter lays out normally and cannot collapse, so the
+tree is clean — but the hole is not.
+
+**What it would take:** widen the character class after the space run to accept
+a capital and re-run the guard over every tracked Rust file to see what else it
+then finds, which is why this is its own change rather than a line in the slice
+that found it: a widened guard needs its own red-then-green and whatever it
+turns up needs fixing in the same commit.
+
 ### Asset hot reload is still entirely future tense (2026-08-27)
 
 **Not built.** No file watcher exists: `notify` appears in no `Cargo.toml`.
@@ -5154,9 +5172,12 @@ scripted waves, shared gold and lives, and `PlaceTower`/`StartWave`/ `Restart`
 validated server-side over `InMemoryTransport`. The slice table in
 `docs/plan/sample/07-towers.md` is the record of what the rest of milestone 1
 costs. **Slice 2 shipped the same day:** `/demos/towers/` is on the site, gated
-by `web/tools/browser-e2e.mjs`'s `towers` row. Slice 3 is the content (splash
-and slow towers, upgrade tiers, the other creep types, all ten waves, `.crpix`
-art, spatial audio, world-space health bars).
+by `web/tools/browser-e2e.mjs`'s `towers` row. **Slice 3a shipped 2026-09-10:**
+three tower kinds with one upgrade tier each and an `UpgradeTower` command
+beside `PlaceTower`, three creep kinds, all ten waves, a material per kind and a
+burst instance at a splash impact. What is left of slice 3 is **3b**, which is
+the presentation half: `.crpix` art and the build menu it makes possible,
+spatial audio, and world-space health bars.
 
 **The one engine gap the slice found is a spline type.** Nothing in `crcbl-phys`
 or `crcbl-scene` offers a curve a body can be put on — the only splines in the
@@ -5186,13 +5207,83 @@ it would be sample code.
 
 **Rules owed rather than exempted, stated so the next slice does not read them
 as decisions:** rule 11 (no `.crpix` art anywhere — the tower and creep icons,
-the wave banner and the build menu are untextured rectangles and the built-in
-font), rule 8 (the sample ships silent), and rule 12's third selector (the three
-paths are reported on the panel, the `[HUD]` line and the summary, but there is
-no flag to hold one below what the device offers). There is still **no pointer
-or touch input**, in the window or on the page, and slice 2 shipped without
-adding any on purpose: the only tap target today is `page`'s untextured build
-list, which slice 3 replaces with the `.crpix` build menu.
+the wave banner and the two build lists are untextured rectangles and the
+built-in font), rule 8 (the sample ships silent), and rule 12's third selector
+(the three paths are reported on the panel, the `[HUD]` line and the summary,
+but there is no flag to hold one below what the device offers).
+
+**There is still no pointer or touch input inside the canvas**, in the window or
+on the page, and slice 3a did not add any on purpose: the only tap target there
+is `page`'s untextured build list, which 3b replaces with the `.crpix` build
+menu, so a hit test written now would be thrown away with it. What a touch
+visitor has instead is a row of buttons **outside** the canvas —
+`web/demos/towers/main.js` — which synthesise the `keydown`/`keyup` pair
+`web/engine/shell.js` already listens for and are thrown away with the hint text
+rather than with engine code.
+
+### towers' bolt tower is priced against a table the other two kinds were then tuned to beat (2026-09-10)
+
+**What is asserted, and it is the weaker half.** `crate::wave`'s
+`the_bounties_pay_for_the_plan_the_last_rows_need` is arithmetic over `WAVES`
+and `TOWERS`: the plan the last rows want — three bolt towers, a splash tower
+and a slow tower, all five stepped up — costs 530 gold against an opening purse
+of 120, which the first two rows' bounties nowhere near reach and the first
+eight rows' bounties do. `crate::game`'s
+`neither_a_splash_nor_a_slow_tower_alone_can_hold_the_last_row` and
+`a_splash_and_a_slow_tower_hold_the_whole_table` are the simulated half: five
+bolt towers, a splash tower and four bolts, and a slow tower and four bolts are
+each overrun on the tenth row, and a splash tower at the entry plot with a slow
+tower at the gate holds the whole table.
+
+**What is _not_ asserted is that the numbers are good ones.** The separation was
+reached by measurement rather than by design: at the numbers slice 3a first had,
+five bolt towers cleared the table with every life intact and a splash or a slow
+tower in their place made the field strictly **worse** — a bolt tower's damage
+per second is the highest in the table and a slow tower contributes none at all,
+so on a coverage-limited field bolt spam was optimal. The shipped numbers are
+where a sweep put them, and the sweep itself is not in the tree.
+
+**What it would take:** play it, then decide what each kind is _for_ and price
+it from that. A useful first reading is that the field is **coverage**-limited
+rather than damage-limited: a tower only fires while something is inside its
+reach, creeps die near the entry, and the plots on the far legs see far less
+than the ones on the first leg — so damage per second, which is what a bolt
+tower wins on, is not what decides a plan. **What it blocks:** nothing; the
+content runs and the gates hold it. It is a game-design gap, and the exit
+criterion it touches is "it's actually fun for a session with friends".
+
+### towers' creep instance pool is the whole table and a run uses a fifth of it (2026-09-10)
+
+`crate::wave::MAX_CREEPS` is the number of creeps the whole table releases,
+because that is the only bound that cannot be too small: the gap between waves
+is measured from the last release, so nothing in the rules stops a wave walking
+while the next one starts. The measured peak over a won run is a fraction of it,
+and the widest reading any plan gave during the balance sweep was under a
+quarter. So `map::CAPACITIES.instances` reserves several times what a run
+reaches, and `RenderState` copies a `CreepView` array of the table's whole
+length per draw.
+
+**What it would take:** a bound argued from the table's own tempo — the most a
+row can release before the slowest creep in it reaches the exit, summed over the
+rows that can overlap — with a test that measures the peak against it, which
+`a_splash_and_a_slow_tower_hold_the_whole_table` already does against the loose
+bound. **Why it is not done:** a tighter bound is a derivation to defend, and
+the loose one costs a few kilobytes and a few hundred `set_instance` calls a
+frame on a field that draws nothing else.
+
+### towers' `game.rs` and `tower.rs` are the two files slice 3a doubled (2026-09-10)
+
+Both roughly doubled, and neither is unreadable yet: each is one subject, the
+stage and the towers. But `game.rs` now holds four of them — the wire
+(`Intent`), the stage and its tick, the ECS module, and the `Game` facade with
+`RenderState`/`Stats`. Those are seams rather than line counts: each could be
+its own module with the public surface re-exported from `game`.
+
+**Not done in slice 3a on purpose.** A move and a behaviour change in one commit
+is the shape a reviewer cannot check, and that slice is the behaviour change.
+**What it would take:** one commit that only moves — `game/intent.rs`,
+`game/stage.rs`, `game/view.rs` behind the existing `pub use` — with no diff in
+any body.
 
 ## arena (`docs/plan/sample/08-arena.md`)
 

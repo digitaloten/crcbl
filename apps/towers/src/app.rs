@@ -19,36 +19,46 @@
 //! know about; the build cursor, because which plot is highlighted is
 //! presentation; and the trait methods, because they are what a hosted game is.
 //!
-//! # The cursor is the client's and the build is the server's
+//! # The cursor and the kind are the client's, and the build is the server's
 //!
-//! `LEFT` and `RIGHT` move [`Towers::selected`] and nothing crosses the wire.
-//! `B` seals **that plot number** into a command, and
-//! `crate::game::Stage::place_tower` is what decides whether a tower appears.
-//! So the highlighted row is a local convenience and the build is authoritative,
-//! which is the split `docs/plan/sample/07-towers.md` needs for co-op: four
-//! players each have their own cursor and one server has the purse.
+//! `LEFT` and `RIGHT` move [`Towers::selected`], `1`/`2`/`3` move
+//! [`Towers::kind`], and neither crosses the wire on its own. `B` seals **that
+//! plot number and that kind** into a command and `U` seals the plot to step up,
+//! and `crate::game::Stage::place_tower` and `Stage::upgrade_tower` are what
+//! decide whether anything happens. So the two highlighted rows are a local
+//! convenience and both commands are authoritative, which is the split
+//! `docs/plan/sample/07-towers.md` needs for co-op: four players each have their
+//! own cursor and one server has the purse.
 //!
 //! # This sample is played with the keyboard
 //!
 //! No [`pointer_event`](HostedGame::pointer_event) and no
-//! [`touch_event`](HostedGame::touch_event) override: the build list is picked
-//! through with two keys rather than clicked on. **The browser demo does not
-//! change that**, which is a decision rather than an omission: what a tap wants
-//! to land on is the build menu `docs/plan/sample/07-towers.md`'s slice 3
-//! brings with the `.crpix` art, and a hit test written against the untextured
-//! list this slice draws would be thrown away with it. So a phone gets the same
-//! self-playing field `apps/breach` and `apps/shard` give it — the waves arrive
-//! on their own and a finished run plays itself again — and that document
-//! records the pointer and the finger as still owed.
+//! [`touch_event`](HostedGame::touch_event) override: the two lists are picked
+//! through with keys rather than clicked on. **The browser demo does not change
+//! that in the window**, which is a decision rather than an omission: what a tap
+//! wants to land on is the build menu
+//! `docs/plan/sample/07-towers.md`'s slice 3b brings with the `.crpix` art, and a
+//! hit test written against the untextured lists [`crate::page`] draws today
+//! would be thrown away with it.
+//!
+//! **What a phone gets instead is a row of buttons on the page**, outside the
+//! canvas: `web/demos/towers/main.js` puts the plot cursor, the three kinds,
+//! `B` and `U` under the field and **synthesises the key each stands for**. That
+//! is the same input path a keyboard takes — the shell's own `keydown` listener
+//! — rather than a second one, so there is nothing for the two to disagree
+//! about, and it is thrown away with the hint text rather than built into the
+//! engine. The pointer and the finger **inside the canvas** are still owed, and
+//! that document records them.
 //!
 //! # `[HUD]` is logged here rather than in `crate::game`
 //!
 //! Every other line on it is the simulation's, and `apps/puppet` logs its
 //! heartbeat from the tick for that reason. This one also names the three
 //! selectors the frame is drawn through — rule 12 — and those are
-//! [`crate::Paths`]', which the stage cannot see. Logging it here is what puts
-//! both on one line at one cadence; `apps/breach` and `apps/quarry` do the
-//! same, and for the same reason.
+//! [`crate::Paths`]', which the stage cannot see, plus the plot and the kind the
+//! client has picked, which the stage cannot see either. Logging it here is what
+//! puts all of them on one line at one cadence; `apps/breach` and `apps/quarry`
+//! do the same, and for the same reason.
 
 use crcbl::core::input::KeyCode;
 use crcbl::engine::{Booted, Clock, FrameInfo, HostedGame, RunSummary, wait_for_configure};
@@ -61,6 +71,7 @@ use crate::gpu::{Gpu, Paths};
 use crate::map::PLOTS;
 use crate::menu::{MenuAction, MenuKind, Menus};
 use crate::page::PageStats;
+use crate::tower;
 use crate::wave::Outcome;
 
 pub use crate::args::Options;
@@ -74,10 +85,26 @@ const ACTION_NEXT: &str = "next-plot";
 /// Build on the highlighted plot. Read as a press **edge**: one press is one
 /// command, and a held key must not spend the purse sixty times a second.
 const ACTION_BUILD: &str = "build";
+/// Step the tower on the highlighted plot up a tier. An edge, for
+/// [`ACTION_BUILD`]'s reason — and the more pressing one, because an upgrade is
+/// the dearest thing a key can spend.
+const ACTION_UPGRADE: &str = "upgrade";
 /// Send the next wave now. An edge, for [`ACTION_BUILD`]'s reason.
 const ACTION_WAVE: &str = "send-wave";
 /// Throw the run away. An edge.
 const ACTION_RESTART: &str = "restart";
+
+/// Pick which kind the next build is of: one action per [`crate::tower::Kind`],
+/// in [`crate::tower::ALL`]'s order.
+///
+/// Named after the kinds rather than after the keys, so a rebind typed at the
+/// console reads as the game does — `the_kind_actions_are_named_after_the_kinds`
+/// holds the two lists together, which is what stops a reordered table silently
+/// binding `1` to the splash tower.
+const ACTION_KINDS: [&str; tower::KINDS] = ["kind-bolt", "kind-splash", "kind-slow"];
+
+/// The keys those three actions are bound to, in the same order.
+const KIND_KEYS: [KeyCode; tower::KINDS] = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3];
 
 /// The keyboard this sample is played with.
 ///
@@ -87,13 +114,21 @@ const ACTION_RESTART: &str = "restart";
 /// complaining.
 fn action_map() -> ActionMap {
     let mut map = ActionMap::new();
+    let kinds = ACTION_KINDS
+        .iter()
+        .zip(KIND_KEYS)
+        .map(|(name, key)| (*name, vec![Binding::Key(key)]));
     for (name, bindings) in [
         (ACTION_PREV, vec![Binding::Key(KeyCode::ArrowLeft)]),
         (ACTION_NEXT, vec![Binding::Key(KeyCode::ArrowRight)]),
         (ACTION_BUILD, vec![Binding::Key(KeyCode::KeyB)]),
+        (ACTION_UPGRADE, vec![Binding::Key(KeyCode::KeyU)]),
         (ACTION_WAVE, vec![Binding::Key(KeyCode::KeyN)]),
         (ACTION_RESTART, vec![Binding::Key(KeyCode::KeyR)]),
-    ] {
+    ]
+    .into_iter()
+    .chain(kinds)
+    {
         map.declare(ActionDecl {
             name: name.into(),
             kind: ActionKind::Button,
@@ -121,9 +156,12 @@ pub struct Summary {
     pub wave: usize,
     pub kills: u64,
     pub leaks: u64,
-    /// How many towers were built and how many commands the server turned
-    /// down. The second is the one that says validation happened.
+    /// How many towers were built, how many of each kind, how many were stepped
+    /// up a tier, and how many commands the server turned down. The last is the
+    /// one that says validation happened.
     pub built: u64,
+    pub built_by_kind: [u64; tower::KINDS],
+    pub upgrades: u64,
     pub refused: u64,
     pub outcome: Outcome,
     /// How many runs the demo played, restarts included.
@@ -165,6 +203,10 @@ pub struct Towers {
     /// Which plot the build cursor is on. **Presentation**: it never crosses
     /// the wire, and what does is the plot number a build command names.
     selected: u8,
+    /// Which kind the next build is of. Presentation in the same sense, with one
+    /// difference: it travels on **every** command frame rather than only on the
+    /// tick a build is asked for — see [`Controls::kind`].
+    kind: tower::Kind,
     /// Refilled from the simulation every frame.
     render_state: RenderState,
     /// The simulation's numbers, snapshotted in [`Towers::tick`].
@@ -198,6 +240,16 @@ impl Towers {
     /// brought forward from one that was arriving anyway, and cannot tell a
     /// refusal from bad timing of its own.
     ///
+    /// **And the slice 3a content is on it for the same reason.** `kind` is which
+    /// kind the client has picked, the one field beside `plot` that never crosses
+    /// the wire — so a gate pressing `2` can see the key arrive before it asks
+    /// what a build did with it. `bolt`, `splash` and `slow` are how many of each
+    /// kind the *server* has built, which is what tells a splash tower that went
+    /// up from a bolt tower that went up instead; `upgrades` is the same claim for
+    /// `UpgradeTower`. Note that `bolt` and `bolts` are different readings — the
+    /// first is towers built, the second bolts in the air — and a gate matching
+    /// one has to match the colon.
+    ///
     /// It also names the three selectors — see the module docs.
     fn log_heartbeat(&self) {
         if self.stats.ticks == 0
@@ -212,8 +264,9 @@ impl Towers {
         };
         crcbl::log::info!(
             "[HUD] tick: {}  gold: {}  lives: {}  wave: {}  next: {}  creeps: {}  towers: {}  \
-             bolts: {}  kills: {}  leaks: {}  shots: {}  built: {}  refused: {}  outcome: {}  \
-             runs: {}  plot: {}  geometry: {:?}  binding: {:?}  lighting: {:?}",
+             bolt: {}  splash: {}  slow: {}  upgrades: {}  bolts: {}  kills: {}  leaks: {}  \
+             shots: {}  built: {}  refused: {}  outcome: {}  runs: {}  plot: {}  kind: {}  \
+             geometry: {:?}  binding: {:?}  lighting: {:?}",
             stats.ticks,
             stats.gold,
             stats.lives,
@@ -221,6 +274,10 @@ impl Towers {
             next,
             stats.creeps,
             stats.towers,
+            stats.built_of(tower::Kind::Bolt),
+            stats.built_of(tower::Kind::Splash),
+            stats.built_of(tower::Kind::Slow),
+            stats.upgrades,
             stats.bolts,
             stats.kills,
             stats.leaks,
@@ -230,6 +287,7 @@ impl Towers {
             stats.outcome.label(),
             stats.runs,
             PLOTS[usize::from(self.selected)].label,
+            self.kind.label(),
             self.paths.geometry,
             self.paths.binding,
             self.paths.lighting,
@@ -244,6 +302,11 @@ impl Towers {
     /// Which plot the build cursor is on, for this crate's own tests.
     pub const fn selected(&self) -> u8 {
         self.selected
+    }
+
+    /// Which kind the next build is of, for this crate's own tests.
+    pub const fn kind(&self) -> tower::Kind {
+        self.kind
     }
 
     /// What the last frame's overlay drew.
@@ -338,6 +401,7 @@ fn assemble<S: Shell + ?Sized>(
             pending_keys: Vec::new(),
             pending_restart: false,
             selected: 0,
+            kind: tower::Kind::default(),
             render_state: RenderState::default(),
             stats: Stats::default(),
             page: PageStats::default(),
@@ -400,10 +464,22 @@ impl HostedGame for Towers {
             self.selected = (self.selected + 1) % plots;
         }
 
+        // …and so does the kind, for the same reason: it is what a command names.
+        for (at, kind) in tower::ALL.iter().enumerate() {
+            if self.actions.just_pressed(ACTION_KINDS[at]) {
+                self.kind = *kind;
+            }
+        }
+
         self.game.set_controls(Controls {
             place: self
                 .actions
                 .just_pressed(ACTION_BUILD)
+                .then_some(self.selected),
+            kind: self.kind,
+            upgrade: self
+                .actions
+                .just_pressed(ACTION_UPGRADE)
                 .then_some(self.selected),
             start_wave: self.actions.just_pressed(ACTION_WAVE),
             restart: self.actions.just_pressed(ACTION_RESTART)
@@ -463,6 +539,7 @@ impl HostedGame for Towers {
             gpu.extent(),
             &self.render_state,
             self.selected,
+            self.kind,
         );
     }
 
@@ -488,6 +565,8 @@ impl HostedGame for Towers {
             kills: self.stats.kills,
             leaks: self.stats.leaks,
             built: self.stats.built,
+            built_by_kind: self.stats.built_by_kind,
+            upgrades: self.stats.upgrades,
             refused: self.stats.refused,
             outcome: self.stats.outcome,
             runs: self.stats.runs,
@@ -499,7 +578,8 @@ impl HostedGame for Towers {
     fn log_summary(summary: &Summary) {
         crcbl::log::info!(
             "towers: {} frames, {} ticks, run {} left {} gold and {} lives at wave {}, \
-             {} kill(s) and {} leak(s), {} tower(s) built and {} command(s) refused, {}, \
+             {} kill(s) and {} leak(s), {} tower(s) built ({} bolt, {} splash, {} slow) with \
+             {} upgrade(s) and {} command(s) refused, {}, \
              {} overlay commands, geometry {:?}, binding {:?}, lighting {:?} ({:?})",
             summary.run.frames,
             summary.run.ticks,
@@ -510,6 +590,10 @@ impl HostedGame for Towers {
             summary.kills,
             summary.leaks,
             summary.built,
+            summary.built_by_kind[tower::Kind::Bolt.index()],
+            summary.built_by_kind[tower::Kind::Splash.index()],
+            summary.built_by_kind[tower::Kind::Slow.index()],
+            summary.upgrades,
             summary.refused,
             summary.outcome.label(),
             summary.commands,
@@ -571,6 +655,10 @@ mod tests {
         }
     }
 
+    /// The digit that picks the slow tower — the third row of
+    /// [`tower::ALL`], so the third of [`KIND_KEYS`].
+    const KEY_SLOW: KeyCode = KIND_KEYS[2];
+
     /// Presses and releases one key, then runs a frame so the tick sees it.
     fn tap(engine: &mut Loop<HeadlessShell>, key: KeyCode) {
         let window = engine.window();
@@ -619,18 +707,53 @@ mod tests {
         assert_eq!(first.run.backend, Backend::Headless);
     }
 
-    /// **The arrows move the build cursor and `B` builds on the plot it is
-    /// on**, which is the path this sample's commands take: shell event →
-    /// action map → wire → module → validation.
+    /// **The kind actions are named after the kinds**, in the same order, and
+    /// each is bound to the digit that picks it.
+    ///
+    /// Three lists have to agree — [`tower::ALL`], [`ACTION_KINDS`] and
+    /// [`KIND_KEYS`] — and nothing but this says so. A reordered tower table
+    /// would silently bind `1` to the splash tower, and every test that presses
+    /// a digit and reads a kind back would go on passing.
+    #[test]
+    fn the_kind_actions_are_named_after_the_kinds() {
+        for (at, kind) in tower::ALL.iter().enumerate() {
+            assert!(
+                ACTION_KINDS[at].ends_with(kind.label()),
+                "action {} is not the {} kind's",
+                ACTION_KINDS[at],
+                kind.label(),
+            );
+        }
+        let map = action_map();
+        for (at, name) in ACTION_KINDS.iter().enumerate() {
+            assert_eq!(
+                map.bindings(name),
+                Some([Binding::Key(KIND_KEYS[at])].as_slice()),
+                "{name} is not bound to {:?}",
+                KIND_KEYS[at],
+            );
+        }
+    }
+
+    /// **The arrows move the build cursor, the digits move the kind, and `B`
+    /// builds that kind on that plot**, which is the path this sample's commands
+    /// take: shell event → action map → wire → module → validation.
     ///
     /// The gold is the observable rather than the tower count alone: a build
     /// that never reached the server leaves the purse full, and one that
-    /// reached it twice leaves it short.
+    /// reached it twice leaves it short. And the gold is **the kind's**, which is
+    /// what says the digit reached the server rather than only the client — a
+    /// build that ignored the kind byte would spend a bolt tower's price here.
     #[test]
-    fn the_arrows_move_the_cursor_and_b_builds_on_the_plot_it_is_on() {
+    fn the_arrows_move_the_cursor_and_b_builds_the_picked_kind_on_it() {
         let mut engine = scripted(&headless(400));
         frames(&mut engine, 4);
         assert_eq!(engine.game().selected(), 0);
+        assert_eq!(
+            engine.game().kind(),
+            tower::Kind::Bolt,
+            "the page opens on a kind nobody picked"
+        );
 
         tap(&mut engine, KeyCode::ArrowRight);
         tap(&mut engine, KeyCode::ArrowRight);
@@ -640,16 +763,30 @@ mod tests {
             "two rights moved the cursor once"
         );
 
+        // The slow tower, which is the third row and therefore `3`.
+        tap(&mut engine, KEY_SLOW);
+        assert_eq!(
+            engine.game().kind(),
+            tower::Kind::Slow,
+            "the kind key did not reach the client",
+        );
+
         tap(&mut engine, KeyCode::KeyB);
         frames(&mut engine, 2);
         let stats = engine.game().game().stats();
         assert_eq!(stats.towers, 1, "the build never reached the server");
         assert_eq!(stats.built, 1);
+        assert_eq!(
+            stats.built_of(tower::Kind::Slow),
+            1,
+            "the server built something other than the picked kind",
+        );
+        assert_eq!(stats.built_of(tower::Kind::Bolt), 0);
         assert_eq!(stats.refused, 0, "the build was refused");
         assert_eq!(
             stats.gold,
-            crate::wave::STARTING_GOLD - crate::tower::COST,
-            "the purse does not match one tower",
+            crate::wave::STARTING_GOLD - tower::Kind::Slow.spec(tower::Tier::Base).cost,
+            "the purse does not match one slow tower",
         );
 
         // The cursor wraps, which is the whole of what makes five plots
@@ -662,6 +799,48 @@ mod tests {
             (PLOTS.len() - 1) as u8,
             "the cursor did not wrap round the end of the list",
         );
+    }
+
+    /// **`U` steps the tower under the cursor up a tier, and the purse pays the
+    /// kind's upgrade price.**
+    ///
+    /// The refusal beside it is the control: pressed on a plot with nothing on
+    /// it, the same key reaches the same server and is turned down — so a build
+    /// that upgraded on the client's word alone fails here rather than in a
+    /// browser.
+    #[test]
+    fn u_steps_the_tower_under_the_cursor_up_and_is_refused_on_an_empty_plot() {
+        let mut engine = scripted(&headless(400));
+        frames(&mut engine, 4);
+
+        // An empty plot first, so the refusal cannot be mistaken for a second
+        // upgrade on a tower that already has one.
+        tap(&mut engine, KeyCode::KeyU);
+        frames(&mut engine, 2);
+        let refused = engine.game().game().stats();
+        assert_eq!(refused.upgrades, 0, "an empty plot was upgraded");
+        assert_eq!(refused.refused, 1, "the server never saw the command");
+        assert_eq!(
+            refused.gold,
+            crate::wave::STARTING_GOLD,
+            "it took the gold anyway"
+        );
+
+        tap(&mut engine, KeyCode::KeyB);
+        frames(&mut engine, 2);
+        let purse = engine.game().game().stats().gold;
+
+        tap(&mut engine, KeyCode::KeyU);
+        frames(&mut engine, 2);
+        let stats = engine.game().game().stats();
+        assert_eq!(stats.upgrades, 1, "the upgrade never reached the server");
+        assert_eq!(stats.refused, 1, "the upgrade was refused");
+        assert_eq!(
+            stats.gold,
+            purse - tower::Kind::Bolt.spec(tower::Tier::Upgraded).cost,
+            "the purse does not match one bolt tower's upgrade",
+        );
+        engine.finish(ExitReason::FrameBudget).expect("teardown");
     }
 
     /// **A scripted run builds towers, sends the wave and holds it**, which is
@@ -688,16 +867,18 @@ mod tests {
         // Long enough for the whole first wave to be released and walked.
         frames(&mut engine, 600);
         let held = engine.game().game().stats();
+        let first = crate::wave::WAVES[0];
         assert!(
-            held.kills >= u64::from(crate::wave::WAVES[0].creeps),
+            held.kills >= u64::from(first.creeps()),
             "the towers killed {} of the first wave's {}",
             held.kills,
-            crate::wave::WAVES[0].creeps,
+            first.creeps(),
         );
         assert_eq!(held.leaks, 0, "the towers let {} through", held.leaks);
         assert_eq!(held.lives, crate::wave::STARTING_LIVES);
+        let spent = 2 * tower::Kind::Bolt.spec(tower::Tier::Base).cost;
         assert!(
-            held.gold > crate::wave::STARTING_GOLD - 2 * crate::tower::COST,
+            held.gold > crate::wave::STARTING_GOLD - spent,
             "the kills paid nothing",
         );
         engine.finish(ExitReason::FrameBudget).expect("teardown");
@@ -731,8 +912,19 @@ mod tests {
         assert_eq!(titles, expected, "no module appears that no system offered");
 
         let drawn = ui_text(engine.gpu().draw_list());
-        for row in ["gold", "lives", "wave", "creeps", "towers", "refused"] {
+        for row in [
+            "gold", "lives", "wave", "creeps", "towers", "upgrades", "refused",
+        ] {
             assert!(drawn.iter().any(|text| text == row), "missing {row}");
+        }
+        // …and one row per tower kind, which is how the panel says a kind key
+        // reached the server rather than only that a tower went up.
+        for kind in tower::ALL {
+            assert!(
+                drawn.iter().any(|text| text == kind.label()),
+                "missing the {} row",
+                kind.label(),
+            );
         }
         // The numbers are the stage's rather than a default: nothing has been
         // built and nothing has leaked, so the purse is whole.

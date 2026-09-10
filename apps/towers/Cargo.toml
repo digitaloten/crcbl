@@ -1,14 +1,14 @@
 [package]
 name = "towers"
-description = "Towers — a co-op tower defense; slice 1 is the solo loop on a hardcoded map"
+description = "Towers — a co-op tower defense; the solo loop on a hardcoded map, three tower kinds and ten waves"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
 
-# `cdylib` for the browser demo the next slice publishes, `rlib` so the binary
-# and the tests share one crate — the same pair every sample uses. See
+# `cdylib` for the browser demo at `/demos/towers/`, `rlib` so the binary and the
+# tests share one crate — the same pair every sample uses. See
 # `apps/breakout/Cargo.toml` for why both names are needed.
 [lib]
 name = "crcbl_towers"

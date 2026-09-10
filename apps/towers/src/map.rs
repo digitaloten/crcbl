@@ -46,6 +46,23 @@
 //! leg flies through it rather than exploding on it. Both halves are asserted —
 //! see this module's tests.
 //!
+//! # One material per kind, and two states over the top of them
+//!
+//! Each [`crate::creep::Kind`] and each [`crate::tower::Kind`] has a row of its
+//! own — [`creep_material`] and [`tower_material`] are the mapping — so a
+//! reviewer reads the field rather than counting it. Over the creep rows sit two
+//! **state** rows shared by every kind: [`CREEP_HURT_MATERIAL`] for one down to
+//! half its health and [`CREEP_SLOWED_MATERIAL`] for one a
+//! [`crate::tower::Kind::Slow`] tower is holding. Hurt wins where both apply,
+//! because a creep about to die is the more urgent reading of the two and a
+//! player watching the field is watching for kills.
+//!
+//! An **upgraded** tower is not another row: it is the same material standing
+//! [`UPGRADED_SCALE`] times as tall, which is a transform rather than a palette
+//! entry and keeps one row per kind however many tiers a kind grows.
+//! `an_upgraded_tower_still_fits_its_pad_and_clears_the_lane` is what says the
+//! bigger footprint is still a footprint that fits.
+//!
 //! # There is a sun in here, because this map has no roof
 //!
 //! [`sun`] is a real [`DirectionalLight`] rather than the token
@@ -56,7 +73,7 @@
 use std::borrow::Cow;
 
 use crcbl::greybox::{GREYBOX_TILE_M, cylinder, grid_material, grid_page, platform, sphere};
-use crcbl::math::{DVec3, Mat4, Vec3};
+use crcbl::math::{DVec3, Mat4, Quat, Vec3};
 use crcbl::phys::{BoxCollider, ColliderId, PhysicsWorld};
 use crcbl::render::scene::{Capacities, Geometry, InstanceDesc, MeshDesc, ProbeGrid, SceneDesc};
 use crcbl::render::{DirectionalLight, ForwardRenderer, InstanceHandle, InstancePoolError};
@@ -218,6 +235,15 @@ pub const MUZZLE_Y: f64 = 1.6;
 /// A bolt's radius, in metres. The **sweep's** radius as well as the mesh's.
 pub const BOLT_RADIUS: f64 = 0.16;
 
+/// How much taller an upgraded tower stands than the one it replaced.
+///
+/// A uniform scale rather than a stretch along `Y`: a non-uniform one tilts every
+/// side normal away from the surface it belongs to, and the shading of a greybox
+/// cylinder is the one thing on this field that would quietly look wrong. Wider
+/// as well as taller is also the more legible reading from directly overhead,
+/// which is where this sample is read from — see [`crate::camera`].
+pub const UPGRADED_SCALE: f32 = 1.35;
+
 /// How many bolts a frame draws: one slot per plot.
 ///
 /// A pool rather than a count of what is in flight: instances are added once at
@@ -230,11 +256,23 @@ pub const BOLT_RADIUS: f64 = 0.16;
 /// them out at once and a full field has one each: `crate::tower`'s
 /// `a_bolt_lands_long_before_its_tower_reloads` asserts that timing on the
 /// longest flight there is, and `crate::game`'s
-/// `towers_clear_the_table_and_win_the_run` measures the peak over a whole run
-/// against this pool. Bolts past it would be simulated and not drawn, which
-/// would be a presentation limit and never a simulation one — those two tests
-/// are what say the case does not arise.
+/// `a_splash_and_a_slow_tower_hold_the_whole_table` measures the peak over a
+/// whole run against this pool. Bolts past it would be simulated and not drawn,
+/// which would be a presentation limit and never a simulation one — those two
+/// tests are what say the case does not arise.
 pub const MAX_BOLTS: usize = PLOTS.len();
+
+/// How many splash bursts a frame draws: one slot per plot.
+///
+/// The same argument [`MAX_BOLTS`] makes, one step further along. A burst is
+/// drawn for [`crate::tower::BURST_S`] and every bursting row's reload is longer
+/// than that, so a plot never has two bursts on screen at once and a full field
+/// of splash towers has one each —
+/// `crate::tower`'s `a_burst_is_gone_before_its_tower_can_raise_another` asserts
+/// the inequality, and `crate::game`'s
+/// `a_splash_and_a_slow_tower_hold_the_whole_table` measures the peak over a
+/// whole run against this pool.
+pub const MAX_BURSTS: usize = PLOTS.len();
 
 /// Where an unused instance is parked: under the ground slab, inside its
 /// footprint, so the opaque floor hides it.
@@ -262,8 +300,14 @@ pub const CREEP_MESH: usize = EXIT_MESH + 1;
 pub const TOWER_MESH: usize = CREEP_MESH + 1;
 /// A bolt in flight.
 pub const BOLT_MESH: usize = TOWER_MESH + 1;
+/// A splash burst.
+///
+/// A **unit** sphere, scaled by the burst's own radius when it is drawn — the
+/// two bursting rows of [`crate::tower::TOWERS`] reach different distances and
+/// one mesh per radius would be a mesh per row for ever.
+pub const BURST_MESH: usize = BOLT_MESH + 1;
 /// How many meshes this map makes resident.
-pub const MESHES: usize = BOLT_MESH + 1;
+pub const MESHES: usize = BURST_MESH + 1;
 
 /// The ground. [`SceneDesc::materials`] slot 0, and therefore what an instance
 /// placed without a named material would shade through.
@@ -274,20 +318,48 @@ pub const LANE_MATERIAL: usize = 1;
 pub const PAD_MATERIAL: usize = 2;
 /// The exit volume.
 pub const EXIT_MATERIAL: usize = 3;
-/// A creep at full health.
+/// The first creep kind's row; kind `k` is `CREEP_MATERIAL + k`, in
+/// [`crate::creep::ALL`]'s order. [`creep_material`] is the mapping.
 pub const CREEP_MATERIAL: usize = 4;
-/// …and one that has been shot down to a third of it. **The picture says which**,
-/// for the reason a knocked-down plate is drawn orange on breach's range: a
-/// state a reviewer cannot see is a state they cannot check the readout against.
-pub const CREEP_HURT_MATERIAL: usize = 5;
-/// A tower between shots.
-pub const TOWER_MATERIAL: usize = 6;
-/// …and one that fired this tick.
-pub const TOWER_FIRING_MATERIAL: usize = 7;
+/// A creep of any kind that has been shot down to half its health or less.
+/// **The picture says which**, for the reason a knocked-down plate is drawn
+/// orange on breach's range: a state a reviewer cannot see is a state they
+/// cannot check the readout against.
+pub const CREEP_HURT_MATERIAL: usize = CREEP_MATERIAL + crate::creep::KINDS;
+/// …and one a [`crate::tower::Kind::Slow`] tower is holding. The only thing on
+/// the field that says the hold is being applied rather than merely priced.
+pub const CREEP_SLOWED_MATERIAL: usize = CREEP_HURT_MATERIAL + 1;
+/// The first tower kind's row; kind `k` is `TOWER_MATERIAL + k`, in
+/// [`crate::tower::ALL`]'s order. [`tower_material`] is the mapping.
+pub const TOWER_MATERIAL: usize = CREEP_SLOWED_MATERIAL + 1;
+/// A tower of any kind that worked this tick — fired, or held a creep.
+pub const TOWER_FIRING_MATERIAL: usize = TOWER_MATERIAL + crate::tower::KINDS;
 /// A bolt.
-pub const BOLT_MATERIAL: usize = 8;
+pub const BOLT_MATERIAL: usize = TOWER_FIRING_MATERIAL + 1;
+/// A splash burst.
+pub const BURST_MATERIAL: usize = BOLT_MATERIAL + 1;
 /// How many material rows this map declares.
-pub const MATERIALS: usize = BOLT_MATERIAL + 1;
+pub const MATERIALS: usize = BURST_MATERIAL + 1;
+
+/// Which row a creep of `view`'s kind and state is drawn through.
+///
+/// Hurt beats held where both apply — see the module docs.
+#[must_use]
+pub fn creep_material(view: &crate::creep::CreepView) -> usize {
+    if view.hurt {
+        CREEP_HURT_MATERIAL
+    } else if view.slowed {
+        CREEP_SLOWED_MATERIAL
+    } else {
+        CREEP_MATERIAL + view.kind.index()
+    }
+}
+
+/// Which row a tower of `kind` is drawn through when it is not working.
+#[must_use]
+pub const fn tower_material(kind: crate::tower::Kind) -> usize {
+    TOWER_MATERIAL + kind.index()
+}
 
 /// How many latitude bands and longitude columns a creep is drawn with, and how
 /// many facets a tower's cylinder has.
@@ -300,6 +372,8 @@ const CREEP_SEGMENTS: u32 = 14;
 const TOWER_SEGMENTS: u32 = 12;
 const BOLT_RINGS: u32 = 4;
 const BOLT_SEGMENTS: u32 = 8;
+const BURST_RINGS: u32 = 6;
+const BURST_SEGMENTS: u32 = 10;
 
 /// What this map reserves, which is a little over what it places.
 ///
@@ -313,8 +387,8 @@ const CAPACITIES: Capacities = Capacities {
     vertices: 8 * 1024,
     indices: 16 * 1024,
     meshes: 12,
-    instances: 64,
-    materials: 12,
+    instances: 320,
+    materials: 16,
     lights: 4,
     probes: 0,
 };
@@ -399,19 +473,38 @@ pub fn scene() -> SceneDesc<'static> {
         "bolt",
         sphere(BOLT_RADIUS as f32, BOLT_RINGS, BOLT_SEGMENTS),
     ));
+    meshes.push(mesh("burst", sphere(1.0, BURST_RINGS, BURST_SEGMENTS)));
 
     SceneDesc {
         meshes,
+        // In the constants' own order — `the_palette_is_the_one_the_constants_index`
+        // asserts it, because a row out of place is a creep kind drawn as a tower
+        // and a picture nobody would think to disbelieve.
         materials: vec![
+            // The field.
             painted([0.26, 0.31, 0.24]),
             painted([0.46, 0.42, 0.32]),
             painted([0.30, 0.38, 0.46]),
             painted([0.72, 0.30, 0.28]),
+            // One per creep kind: fast is the green the single archetype always
+            // was, tanky a heavier slate, swarm a pale wash — light things read
+            // as light ones from overhead.
             painted([0.55, 0.72, 0.40]),
+            painted([0.36, 0.40, 0.52]),
+            painted([0.82, 0.86, 0.62]),
+            // …and the two states over them: hurt, then held.
             painted([0.86, 0.52, 0.24]),
+            painted([0.40, 0.72, 0.88]),
+            // One per tower kind: the bolt's grey post, the splash's rust, the
+            // slow tower's cold blue — the same hue its hold tints a creep.
             painted([0.58, 0.62, 0.70]),
+            painted([0.74, 0.44, 0.34]),
+            painted([0.34, 0.52, 0.66]),
+            // …and a tower of any kind that worked this tick.
             painted([0.95, 0.88, 0.45]),
+            // The bolt, and the burst it leaves.
             painted([0.98, 0.94, 0.60]),
+            painted([1.0, 0.72, 0.36]),
         ],
         page: grid_page(),
         probes: ProbeGrid::default(),
@@ -428,6 +521,7 @@ pub struct Field {
     creeps: [InstanceHandle; MAX_CREEPS],
     towers: [InstanceHandle; PLOTS.len()],
     bolts: [InstanceHandle; MAX_BOLTS],
+    bursts: [InstanceHandle; MAX_BURSTS],
 }
 
 /// Where a creep's mesh sits, given where its centre is.
@@ -449,9 +543,8 @@ impl Field {
         index: usize,
         view: Option<crate::creep::CreepView>,
     ) {
-        let (material, centre) = match view {
-            Some(view) if view.hurt => (CREEP_HURT_MATERIAL, view.centre),
-            Some(view) => (CREEP_MATERIAL, view.centre),
+        let (material, centre) = match &view {
+            Some(view) => (creep_material(view), view.centre),
             None => (CREEP_MATERIAL, PARK),
         };
         renderer.set_instance(
@@ -466,22 +559,44 @@ impl Field {
 
     /// Draws one tower, or parks it on an empty plot.
     ///
+    /// An upgraded one stands [`UPGRADED_SCALE`] times as tall on the same pad,
+    /// which is the whole of how the picture says a plot has been stepped up.
+    ///
     /// # Panics
     ///
     /// If `plot` is not a plot. Called only from `crate::gpu`'s own
     /// enumeration of [`PLOTS`].
-    pub fn set_tower(&self, renderer: &mut ForwardRenderer, plot: usize, firing: Option<bool>) {
-        let (material, at) = match firing {
-            Some(true) => (TOWER_FIRING_MATERIAL, PLOTS[plot].at()),
-            Some(false) => (TOWER_MATERIAL, PLOTS[plot].at()),
-            None => (TOWER_MATERIAL, PARK),
+    pub fn set_tower(
+        &self,
+        renderer: &mut ForwardRenderer,
+        plot: usize,
+        view: Option<crate::tower::TowerView>,
+    ) {
+        let (material, at, scale) = match view {
+            Some(view) => (
+                if view.working {
+                    TOWER_FIRING_MATERIAL
+                } else {
+                    tower_material(view.kind)
+                },
+                PLOTS[plot].at(),
+                match view.tier {
+                    crate::tower::Tier::Base => 1.0,
+                    crate::tower::Tier::Upgraded => UPGRADED_SCALE,
+                },
+            ),
+            None => (TOWER_MATERIAL, PARK, 1.0),
         };
         renderer.set_instance(
             self.towers[plot],
             &InstanceDesc {
                 mesh: TOWER_MESH,
                 material,
-                transform: Mat4::from_translation(Vec3::new(at.x as f32, at.y as f32, at.z as f32)),
+                transform: Mat4::from_scale_rotation_translation(
+                    Vec3::splat(scale),
+                    Quat::IDENTITY,
+                    Vec3::new(at.x as f32, at.y as f32, at.z as f32),
+                ),
             },
         );
     }
@@ -499,6 +614,41 @@ impl Field {
                 mesh: BOLT_MESH,
                 material: BOLT_MATERIAL,
                 transform: creep_transform(at.unwrap_or(PARK)),
+            },
+        );
+    }
+
+    /// Draws one splash burst at the size the overlap that raised it was run
+    /// at, or parks it under the ground.
+    ///
+    /// The parked slot keeps the unit mesh's own size rather than being scaled
+    /// to nothing: a zero scale is a degenerate transform, and the slab is what
+    /// hides a parked instance here as it does every other.
+    ///
+    /// # Panics
+    ///
+    /// If `index` is not in the pool. Called only from `crate::gpu`'s own
+    /// enumeration of it.
+    pub fn set_burst(
+        &self,
+        renderer: &mut ForwardRenderer,
+        index: usize,
+        view: Option<crate::tower::BurstView>,
+    ) {
+        let (centre, radius) = match view {
+            Some(view) => (view.centre, view.radius_m as f32),
+            None => (PARK, 1.0),
+        };
+        renderer.set_instance(
+            self.bursts[index],
+            &InstanceDesc {
+                mesh: BURST_MESH,
+                material: BURST_MATERIAL,
+                transform: Mat4::from_scale_rotation_translation(
+                    Vec3::splat(radius),
+                    Quat::IDENTITY,
+                    Vec3::new(centre.x as f32, centre.y as f32, centre.z as f32),
+                ),
             },
         );
     }
@@ -577,6 +727,14 @@ pub fn place(renderer: &mut ForwardRenderer) -> Result<Field, InstancePoolError>
             transform: creep_transform(PARK),
         })?);
     }
+    let mut bursts = Vec::with_capacity(MAX_BURSTS);
+    for _ in 0..MAX_BURSTS {
+        bursts.push(renderer.add_instance(&InstanceDesc {
+            mesh: BURST_MESH,
+            material: BURST_MATERIAL,
+            transform: creep_transform(PARK),
+        })?);
+    }
 
     // No point lights: this field is outdoors and [`sun`] is what lights it.
     renderer.set_lights(&[]);
@@ -591,6 +749,9 @@ pub fn place(renderer: &mut ForwardRenderer) -> Result<Field, InstancePoolError>
         bolts: bolts
             .try_into()
             .unwrap_or_else(|_| unreachable!("one instance per pooled bolt was pushed")),
+        bursts: bursts
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("one instance per pooled burst was pushed")),
     })
 }
 
@@ -674,6 +835,7 @@ mod tests {
             (CREEP_MESH, "creep"),
             (TOWER_MESH, "tower"),
             (BOLT_MESH, "bolt"),
+            (BURST_MESH, "burst"),
         ] {
             assert_eq!(
                 scene.meshes[slot].label, label,
@@ -682,13 +844,70 @@ mod tests {
         }
     }
 
+    /// **Every material row is named by something, exactly once, and every kind
+    /// gets one of its own.**
+    ///
+    /// The per-kind rows are the half worth asserting. A build that mapped two
+    /// creep kinds — or two tower kinds — to one row leaves a field that reads
+    /// perfectly and is telling the player the wrong thing about what is walking
+    /// at them, and nothing else in this crate would notice: the simulation is
+    /// unaffected. The count is the control: a row nothing indexes is a colour
+    /// nobody can see, and a row two things index is the drift above.
+    #[test]
+    fn the_palette_is_the_one_the_constants_index() {
+        let mut named = [0_u32; MATERIALS];
+        for row in [
+            GROUND_MATERIAL,
+            LANE_MATERIAL,
+            PAD_MATERIAL,
+            EXIT_MATERIAL,
+            CREEP_HURT_MATERIAL,
+            CREEP_SLOWED_MATERIAL,
+            TOWER_FIRING_MATERIAL,
+            BOLT_MATERIAL,
+            BURST_MATERIAL,
+        ] {
+            named[row] += 1;
+        }
+        for kind in crate::creep::ALL {
+            let view = crate::creep::CreepView {
+                kind,
+                ..crate::creep::CreepView::default()
+            };
+            named[creep_material(&view)] += 1;
+        }
+        for kind in crate::tower::ALL {
+            named[tower_material(kind)] += 1;
+        }
+        for (row, times) in named.iter().enumerate() {
+            assert_eq!(
+                *times, 1,
+                "material row {row} is named {times} time(s), not once",
+            );
+        }
+
+        // And the two states win over the kind, in the order the module docs
+        // give: hurt beats held.
+        let held = crate::creep::CreepView {
+            slowed: true,
+            ..crate::creep::CreepView::default()
+        };
+        assert_eq!(creep_material(&held), CREEP_SLOWED_MATERIAL);
+        let both = crate::creep::CreepView { hurt: true, ..held };
+        assert_eq!(
+            creep_material(&both),
+            CREEP_HURT_MATERIAL,
+            "a hurt creep that is also held is not drawn hurt",
+        );
+    }
+
     /// **The map fits the pools it reserves**, with the pooled creeps, towers
     /// and bolts counted in — the instances a run can reach are the fixed field
     /// plus every pool, and a description that only fitted an empty field would
     /// fail on the first wave rather than at start-up.
     #[test]
     fn the_map_fits_the_pools_it_reserves() {
-        let placed = 1 + LEGS + PLOTS.len() + 1 + MAX_CREEPS + PLOTS.len() + MAX_BOLTS;
+        let placed = 1 + LEGS + PLOTS.len() + 1 + MAX_CREEPS + PLOTS.len() + MAX_BOLTS + MAX_BURSTS;
         assert!(
             placed <= CAPACITIES.instances as usize,
             "the map places {placed} instances into {}",
@@ -810,10 +1029,41 @@ mod tests {
                 plot.label,
             );
             assert!(
-                nearest < crate::tower::RANGE_M,
-                "{} is {nearest:.2} m from the nearest leg, past the {} m a tower reaches",
+                nearest < crate::tower::SHORTEST_RANGE_M,
+                "{} is {nearest:.2} m from the nearest leg, past the {} m the \
+                 shortest-reaching kind covers",
                 plot.label,
-                crate::tower::RANGE_M,
+                crate::tower::SHORTEST_RANGE_M,
+            );
+        }
+    }
+
+    /// **An upgraded tower still fits its pad and still clears the lane.**
+    ///
+    /// [`UPGRADED_SCALE`] makes a stepped-up tower wider as well as taller, and
+    /// a tower standing over the lane is a tower a creep walks through — which
+    /// looks like a bug in the physics and is a number in this file.
+    #[test]
+    fn an_upgraded_tower_still_fits_its_pad_and_clears_the_lane() {
+        let radius = TOWER_RADIUS * f64::from(UPGRADED_SCALE);
+        assert!(
+            radius < 0.5 * PAD_EDGE,
+            "an upgraded tower is {radius:.2} m across the radius on a {PAD_EDGE} m pad",
+        );
+        let clearance = 0.5 * LANE_WIDTH + radius;
+        for plot in PLOTS {
+            let mut nearest = f64::INFINITY;
+            for leg in 0..LEGS {
+                let (from, to) = (PATH[leg], PATH[leg + 1]);
+                let step = to - from;
+                let t = ((plot.at() - from).dot(step) / step.length_squared()).clamp(0.0, 1.0);
+                nearest = nearest.min((from + step * t - plot.at()).length());
+            }
+            assert!(
+                nearest > clearance,
+                "an upgraded tower on {} sits {nearest:.2} m from the lane, inside the \
+                 {clearance:.2} m it then needs",
+                plot.label,
             );
         }
     }

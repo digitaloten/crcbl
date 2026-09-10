@@ -84,6 +84,29 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **towers grows milestone 1's combat content** —
+  `docs/plan/sample/07-towers.md`'s slice 3a. Three tower kinds where there was
+  one: the single-target **bolt** tower, a **splash** tower whose shot raises an
+  `overlap_sphere` burst at the point it lands and wounds every creep inside it,
+  and a **slow** tower with no projectile at all that holds everything inside
+  its reach at a fraction of its speed for as long as it is inside. Each has one
+  **upgrade tier**, bought with an `UpgradeTower` command the server validates
+  beside `PlaceTower`: the plot must hold a tower, the tower must not already be
+  stepped up, and the purse must cover that kind's own upgrade price. Three
+  creep kinds where there was one — fast, tanky and swarm — and all ten scripted
+  waves, each row a mix of the three at a tempo a swarm arrives in a press at.
+  `1`/`2`/`3` pick the kind the next build is of and `U` steps the selected plot
+  up; the `[HUD]` line gains the kind picked, the count built of each kind and
+  the upgrades bought, so the browser gate can see a splash tower go up rather
+  than only a tower. The last row needs a splash tower **and** a slow tower to
+  hold: three other plans on the same five plots are overrun by it.
+- `/demos/towers/` gains a row of buttons under the field — plot, kind, build
+  and upgrade — so a visitor with no keyboard can play the flagship rather than
+  watch it. They synthesise the same `keydown`/`keyup` pair the canvas already
+  listens for, so a finger and a keyboard reach the game down one path, and the
+  browser gate clicks one and reads the game take it rather than only counting
+  buttons.
+
 - `sandbox --size <WxH>` controls the window and headless render extent while
   preserving the existing `1280x720` default; the private-Xvfb sample gate now
   includes sandbox and passes every sample its asserted size.
@@ -1373,6 +1396,14 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
   was the one job holding the demo site's deploy.
 
 ### Changed
+
+- **towers' command frame is four bytes and its protocol version is 2.**
+  `PlaceTower` now names the kind to build and `UpgradeTower` travels beside it,
+  so the sealed intent grew from two bytes to four — a breaking wire change, and
+  `ProtocolCompatibility::protocol_version` is the field that counts those. A
+  client built before this is refused at the handshake instead of having every
+  command read as a frame of the wrong length and dropped in silence. The schema
+  hash is the sample's identity and does not move with it.
 
 - `apps/asteroids`' `--balance` now refuses a table that parses and cannot be
   played, naming the field, the bound and the value: a count of zero, a

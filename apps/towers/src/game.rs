@@ -1,5 +1,5 @@
-//! The simulation: the field, the creeps on it, the towers shooting them, and
-//! the server that owns all three.
+//! The simulation: the field, the creeps on it, the towers shooting and holding
+//! them, and the server that owns all three.
 //!
 //! ```text
 //!  Stage ──▶ TowersModule ──▶ Server ──┐                     ┌──▶ Client
@@ -12,26 +12,34 @@
 //!
 //! `docs/plan/sample/00-samples-overview.md` rule 2 is server-authoritative
 //! always, and this sample's own document says the co-op build and the solo
-//! build are one binary: `PlaceTower` and `StartWave` are **commands** the
-//! client seals into bytes, the transport carries and the server validates. So
-//! they are exactly that here, over `InMemoryTransport`, and the validation —
-//! is that plot free, is there gold for it, is a wave already running — happens
-//! on the server's side of the wire in `Stage::place_tower` and
-//! [`crate::wave::Waves::start_now`]. A refused command is **counted**, so
-//! "the server said no" is a number a run reports rather than something it
-//! swallows.
+//! build are one binary: `PlaceTower`, `UpgradeTower` and `StartWave` are
+//! **commands** the client seals into bytes, the transport carries and the
+//! server validates. So they are exactly that here, over `InMemoryTransport`,
+//! and the validation — is that plot free, is there gold for it, has that tower
+//! already been stepped up, is a wave already running — happens on the server's
+//! side of the wire in `Stage::place_tower`, `Stage::upgrade_tower` and
+//! [`crate::wave::Waves::start_now`]. A refused command is **counted**, so "the
+//! server said no" is a number a run reports rather than something it swallows.
 //!
 //! # What one tick does, and why it is in that order
 //!
 //! ```text
-//!   1. commands       PlaceTower / StartWave / Restart, validated
+//!   1. commands       PlaceTower / UpgradeTower / StartWave / Restart, validated
 //!   2. WaveSystem     the table releases a creep, if one is due
-//!   3. CreepSystem    every creep walks and writes its sphere
-//!   4. the exit       overlap_sphere vs the trigger volume → a life
-//!   5. ProjectileSystem  every bolt sweeps → damage, a kill, gold
-//!   6. TowerSystem    every ready tower acquires and fires
-//!   7. EconomySystem  win at the end of the table, lose at zero lives
+//!   3. the hold       every Slow tower's overlap_sphere → Creep::slow_to
+//!   4. CreepSystem    every creep walks, at its speed times that hold
+//!   5. the exit       overlap_sphere vs the trigger volume → a life
+//!   6. ProjectileSystem  every bolt sweeps → damage, a burst, a kill, gold
+//!   7. TowerSystem    every shooting tower acquires and fires
+//!   8. EconomySystem  win at the end of the table, lose at zero lives
 //! ```
+//!
+//! **The hold is written before the creeps walk**, because a hold that landed
+//! after the walk would be a tick late for ever — the creep would cross the
+//! tower's reach at full speed and be slowed on its way out the far side.
+//! `Stage::hold_the_slowed` clears every creep's hold first rather than
+//! tracking who left: see [`crate::creep`]'s module docs for why that is the only
+//! encoding that cannot leak.
 //!
 //! **The creeps move before the bolts sweep**, which is the whole of the CCD
 //! claim: a bolt's segment is tested against where its target *is* at the end
@@ -43,7 +51,7 @@
 //!
 //! Every question about where things are is `crcbl-phys`':
 //! [`overlap_sphere`](crcbl::phys::PhysicsWorld::overlap_sphere) for a tower's
-//! range and for the exit volume,
+//! range, for a slow tower's reach, for a splash burst and for the exit volume,
 //! [`sweep_sphere`](crcbl::phys::PhysicsWorld::sweep_sphere) for a bolt. This
 //! file decides which query to ask and what an answer means.
 
@@ -57,15 +65,24 @@ use crcbl::phys::{ColliderId, PhysicsWorld};
 use crcbl::session::Loopback;
 
 use crate::creep::{self, Creep, CreepView};
-use crate::map::{self, MAX_BOLTS, PLOTS};
-use crate::tower::{self, Bolt, BoltOutcome, Tower};
+use crate::map::{self, MAX_BOLTS, MAX_BURSTS, PLOTS};
+use crate::tower::{self, Bolt, BoltOutcome, BurstView, Tier, Tower, TowerView};
 use crate::wave::{self, MAX_CREEPS, Outcome, STARTING_GOLD, STARTING_LIVES, Waves};
 
 /// Distinct from every other sample's, because they are distinct protocols: a
 /// client built for one must not hand-shake with a server running another. The
-/// low half spells `TWR`.
+/// low half of the schema spells `TWR`.
+///
+/// **`protocol_version` is 2 because the command frame grew.** Slice 3 added the
+/// kind a `PlaceTower` names and the `UpgradeTower` command beside it, so
+/// [`INTENT_BYTES`] went from two bytes to four and the flag byte gained a
+/// meaning — a breaking wire change, which is what that field is documented to
+/// count. A slice 1 client hand-shaking with this server would have every
+/// command read as a frame of the wrong length and silently dropped; the bump is
+/// what turns that into a refused handshake. The schema hash is this sample's
+/// identity and does not move with it.
 const COMPATIBILITY: ProtocolCompatibility = ProtocolCompatibility {
-    protocol_version: 1,
+    protocol_version: 2,
     engine_build_id: 0x0043_5243_424C,
     schema_hash: 0x0000_0054_5752,
 };
@@ -95,14 +112,25 @@ pub const RESTART_S: f64 = 4.0;
 
 /// What the player is asking for this tick.
 ///
-/// Every field is an **edge**: building, starting a wave and restarting are
-/// things a key press does once, not things a held key does sixty times a
-/// second. Which plot is highlighted is not here at all — that is presentation,
-/// and what crosses the wire is the plot a player actually pressed build on.
+/// Every field but [`Controls::kind`] is an **edge**: building, stepping a tower
+/// up, starting a wave and restarting are things a key press does once, not
+/// things a held key does sixty times a second. Which plot is highlighted is not
+/// here at all — that is presentation, and what crosses the wire is the plot a
+/// player actually pressed build on.
+///
+/// [`Controls::kind`] is the exception and is a **state**: it is which kind the
+/// `1`/`2`/`3` keys last picked, and it travels on every frame because it is what
+/// a build means. A client that sent it only on the tick the key was pressed
+/// would be asking the server to remember a client's selection.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Controls {
     /// Build a tower on this plot.
     pub place: Option<u8>,
+    /// …of this kind. Read only when [`Controls::place`] names a plot, and sent
+    /// always — see the type's docs.
+    pub kind: tower::Kind,
+    /// Step the tower on this plot up a tier.
+    pub upgrade: Option<u8>,
     /// Start the next wave now rather than at the end of the build phase.
     pub start_wave: bool,
     /// Throw the run away and start again.
@@ -113,6 +141,8 @@ pub struct Controls {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Intent {
     place: Option<u8>,
+    kind: tower::Kind,
+    upgrade: Option<u8>,
     start_wave: bool,
     restart: bool,
 }
@@ -124,15 +154,19 @@ const INTENT_RESTART: u8 = 1 << 1;
 /// something other than [`Intent::to_wire`] wrote.
 const INTENT_FLAGS: u8 = INTENT_START | INTENT_RESTART;
 
-/// The plot byte on a frame that is not building anything.
+/// The plot byte on a frame that is not building — or not upgrading — anything.
 ///
-/// A sentinel rather than a third flag bit, and it is safe to be one because
+/// A sentinel rather than two more flag bits, and it is safe to be one because
 /// [`PLOTS`] is five rows long — `the_no_plot_sentinel_is_not_a_plot` asserts
 /// that it never becomes a plot index.
 const PLOT_NONE: u8 = u8::MAX;
 
-/// How many bytes one sealed command is: a flag byte and a plot byte.
-const INTENT_BYTES: usize = 2;
+/// How many bytes one sealed command is: a flag byte, the plot to build on, the
+/// kind to build there, and the plot to step up.
+///
+/// **Four since slice 3**, which is why [`COMPATIBILITY`]'s protocol version
+/// moved with it.
+const INTENT_BYTES: usize = 4;
 
 impl Intent {
     /// The wire form handed to `Client::set_input`.
@@ -144,18 +178,28 @@ impl Intent {
         if self.restart {
             flags |= INTENT_RESTART;
         }
-        vec![flags, self.place.unwrap_or(PLOT_NONE)]
+        #[allow(clippy::cast_possible_truncation)]
+        let kind = self.kind.index() as u8;
+        vec![
+            flags,
+            self.place.unwrap_or(PLOT_NONE),
+            kind,
+            self.upgrade.unwrap_or(PLOT_NONE),
+        ]
     }
 
     /// The command a client sealed, read back on the server's side of the wire.
     ///
     /// `None` for anything this build did not write: a payload of the wrong
-    /// length, or a flag outside [`INTENT_FLAGS`]. **The plot byte is not
-    /// checked here**, and that is deliberate — a plot number is a thing the
-    /// *rules* refuse rather than a thing the format cannot express, so it
-    /// travels intact and [`Stage::place_tower`] turns it down. That is where
-    /// the refusal is counted, and where a co-op build would report it to the
-    /// player who asked.
+    /// length, a flag outside [`INTENT_FLAGS`], or a kind byte no row of
+    /// [`tower::TOWERS`] has. **The plot bytes are not checked here**, and that
+    /// is deliberate — a plot number is a thing the *rules* refuse rather than a
+    /// thing the format cannot express, so it travels intact and
+    /// [`Stage::place_tower`] turns it down. That is where the refusal is
+    /// counted, and where a co-op build would report it to the player who asked.
+    ///
+    /// The kind byte is the other way round for the same reason read the other
+    /// way: there is no `Kind` to carry, so the frame cannot be decoded at all.
     fn from_wire(bytes: &[u8]) -> Option<Self> {
         if bytes.len() != INTENT_BYTES {
             return None;
@@ -166,6 +210,8 @@ impl Intent {
         }
         Some(Self {
             place: (bytes[1] != PLOT_NONE).then_some(bytes[1]),
+            kind: tower::Kind::from_index(bytes[2])?,
+            upgrade: (bytes[3] != PLOT_NONE).then_some(bytes[3]),
             start_wave: flags & INTENT_START != 0,
             restart: flags & INTENT_RESTART != 0,
         })
@@ -179,7 +225,8 @@ impl Intent {
     /// not a retraction, and the **last** plot named wins — a player who
     /// pressed build twice inside one tick asked for the second plot, and
     /// merging two builds into one tick would drop a command rather than a
-    /// keystroke.
+    /// keystroke. The kind is a state rather than an edge, so the last frame's
+    /// is simply the current one.
     fn from_inputs(inputs: ClientInputs<'_>) -> Self {
         let mut merged = Self::default();
         for (_tick, data) in inputs.iter() {
@@ -190,8 +237,12 @@ impl Intent {
             };
             merged.start_wave |= frame.start_wave;
             merged.restart |= frame.restart;
+            merged.kind = frame.kind;
             if frame.place.is_some() {
                 merged.place = frame.place;
+            }
+            if frame.upgrade.is_some() {
+                merged.upgrade = frame.upgrade;
             }
         }
         merged
@@ -201,6 +252,22 @@ impl Intent {
 // ---------------------------------------------------------------------------
 // The stage
 // ---------------------------------------------------------------------------
+
+/// One splash burst, while it is still being drawn.
+///
+/// The damage it did was applied the instant it was raised — see
+/// [`Stage::splash`] — so this is presentation and nothing else, which is why it
+/// carries a time rather than a remaining lifetime: a paused demo's bursts stay
+/// where they are, because [`Stage::elapsed`] is what they are measured against.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Burst {
+    /// Where the bolt stopped, in metres.
+    at: DVec3,
+    /// How far the overlap that wounded reached, in metres.
+    radius_m: f64,
+    /// When it was raised, in [`Stage::elapsed`] seconds.
+    raised_at: f64,
+}
 
 /// Everything this sample simulates.
 ///
@@ -215,6 +282,8 @@ struct Stage {
     creeps: Vec<Creep>,
     towers: Vec<Tower>,
     bolts: Vec<Bolt>,
+    /// The bursts still being drawn, oldest first — see [`Burst`].
+    bursts: Vec<Burst>,
     waves: Waves,
     /// The team's shared purse and the team's shared lives — one of each,
     /// because co-op is what this sample is for.
@@ -224,6 +293,13 @@ struct Stage {
     leaks: u64,
     shots: u64,
     built: u64,
+    /// How many of each [`tower::Kind`] have been built, indexed by
+    /// [`tower::Kind::index`]. The `[HUD]` line carries all three, which is what
+    /// lets a gate see that a kind key reached the server rather than only that
+    /// *a* tower went up.
+    built_by_kind: [u64; tower::KINDS],
+    /// How many towers have been stepped up a tier.
+    upgrades: u64,
     /// How many commands the server turned down. **The observable that says
     /// validation happens at all**: a build that trusted its client leaves this
     /// at zero while towers appear on occupied plots.
@@ -243,6 +319,10 @@ struct Stage {
     /// The overlap queries' output buffer, hoisted so a tick that asks one
     /// question per creep and one per tower allocates nothing.
     scratch: Vec<ColliderId>,
+    /// …and the splash burst's own, because [`Stage::splash`] reads its answers
+    /// back **while** it wounds and removes creeps, which is the one place a
+    /// buffer and the rest of the stage are borrowed in the same breath.
+    burst_scratch: Vec<ColliderId>,
 }
 
 impl Stage {
@@ -255,6 +335,7 @@ impl Stage {
             creeps: Vec::new(),
             towers: Vec::new(),
             bolts: Vec::new(),
+            bursts: Vec::new(),
             waves: Waves::new(),
             gold: STARTING_GOLD,
             lives: STARTING_LIVES,
@@ -262,6 +343,8 @@ impl Stage {
             leaks: 0,
             shots: 0,
             built: 0,
+            built_by_kind: [0; tower::KINDS],
+            upgrades: 0,
             refused: 0,
             outcome: Outcome::Playing,
             ended_at: 0.0,
@@ -269,6 +352,7 @@ impl Stage {
             ticks: 0,
             elapsed: 0.0,
             scratch: Vec::new(),
+            burst_scratch: Vec::new(),
         }
     }
 
@@ -289,30 +373,167 @@ impl Stage {
         self.towers.iter().any(|tower| tower.plot() == plot)
     }
 
-    /// The server's half of the `PlaceTower` command: builds a tower, or turns
-    /// the command down.
+    /// Which of [`Stage::towers`] stands on `plot`.
+    fn tower_on(&self, plot: usize) -> Option<usize> {
+        self.towers.iter().position(|tower| tower.plot() == plot)
+    }
+
+    /// The server's half of the `PlaceTower` command: builds a tower of `kind`,
+    /// or turns the command down.
     ///
     /// Four ways to be refused, and each is a rule rather than a format
     /// problem: the run is over, the plot is not a plot, the plot is taken, or
     /// the purse is short. A client that predicted the build would have to
-    /// predict all four.
-    fn place_tower(&mut self, plot: u8) -> bool {
+    /// predict all four — and the price it would have to predict is the kind's,
+    /// which is the fifth thing slice 3 put on the server's side of the wire.
+    fn place_tower(&mut self, plot: u8, kind: tower::Kind) -> bool {
         let plot = plot as usize;
-        if self.outcome.is_over()
-            || plot >= PLOTS.len()
-            || self.is_taken(plot)
-            || self.gold < tower::COST
+        let cost = kind.spec(Tier::Base).cost;
+        if self.outcome.is_over() || plot >= PLOTS.len() || self.is_taken(plot) || self.gold < cost
         {
             return false;
         }
-        self.gold -= tower::COST;
-        self.towers.push(Tower::new(plot));
+        self.gold -= cost;
+        self.towers.push(Tower::new(plot, kind));
         self.built += 1;
+        self.built_by_kind[kind.index()] += 1;
         true
+    }
+
+    /// The server's half of the `UpgradeTower` command: steps the tower on
+    /// `plot` up a tier, or turns the command down.
+    ///
+    /// Four ways to be refused, and they are deliberately the same shape as
+    /// [`Stage::place_tower`]'s: the run is over, the plot holds no tower — which
+    /// covers a plot that is not a plot at all — the tower is already at the top
+    /// tier, or the purse is short. The price is the kind's and the tier's, off
+    /// [`tower::TOWERS`], so a client could not hard-code it even if it wanted
+    /// to predict the command.
+    fn upgrade_tower(&mut self, plot: u8) -> bool {
+        if self.outcome.is_over() {
+            return false;
+        }
+        let Some(index) = self.tower_on(plot as usize) else {
+            return false;
+        };
+        let Some(cost) = self.towers[index].upgrade_cost() else {
+            return false;
+        };
+        if self.gold < cost {
+            return false;
+        }
+        if !self.towers[index].upgrade() {
+            return false;
+        }
+        self.gold -= cost;
+        self.upgrades += 1;
+        true
+    }
+
+    /// Takes `damage` off the creep whose body is `body`, and pays its bounty if
+    /// that killed it.
+    ///
+    /// The one place a creep dies. A stale or unknown id — the ground, the exit
+    /// volume, a creep another bolt killed earlier in the same tick — is nothing
+    /// at all rather than an error: every caller here is handing over whatever a
+    /// `crcbl-phys` query answered with.
+    fn wound(&mut self, body: ColliderId, damage: u32) {
+        let Some(hit) = self.creeps.iter().position(|creep| creep.body() == body) else {
+            return;
+        };
+        if !self.creeps[hit].wounded(damage) {
+            return;
+        }
+        let bounty = self.creeps[hit].bounty();
+        self.creeps.swap_remove(hit).despawn(&mut self.world);
+        self.gold += bounty;
+        self.kills += 1;
+    }
+
+    /// Raises `bolt`'s splash burst where it stopped, and wounds everything in
+    /// it but `direct`.
+    ///
+    /// Nothing at all for a bolt with no burst, which is every
+    /// [`tower::Kind::Bolt`] shot — so the projectile pass calls this
+    /// unconditionally and the table is what decides.
+    ///
+    /// `direct` is the creep the bolt struck, already wounded by
+    /// [`Stage::wound`]: the overlap answers with it too, and wounding it twice
+    /// would make a splash tower quietly better against one creep than against
+    /// two.
+    fn splash(&mut self, bolt: &Bolt, direct: Option<ColliderId>) {
+        if !bolt.bursts() {
+            return;
+        }
+        let (at, radius_m) = (bolt.at(), bolt.burst_m());
+        self.bursts.push(Burst {
+            at,
+            radius_m,
+            raised_at: self.elapsed,
+        });
+        {
+            let Stage {
+                world,
+                burst_scratch,
+                ..
+            } = &mut *self;
+            tower::burst_into(world, at, radius_m, burst_scratch);
+        }
+        // By index rather than by iterator, because `wound` takes the whole
+        // stage: the buffer is read one id at a time and the creep list is
+        // swap-removed from underneath.
+        for index in 0..self.burst_scratch.len() {
+            let body = self.burst_scratch[index];
+            if Some(body) == direct {
+                continue;
+            }
+            self.wound(body, bolt.damage());
+        }
+    }
+
+    /// Lets go of every creep, then has each [`tower::Kind::Slow`] tower hold
+    /// what its own overlap finds.
+    ///
+    /// The release comes first and covers every creep on the field, which is what
+    /// makes "the hold ends when the creep leaves" a fact about this tick rather
+    /// than a timer — see [`crate::creep`]'s module docs. A tower that held
+    /// something is drawn hot for [`tower::FLASH_S`], so a slow tower with
+    /// nothing in reach is plainly a slow tower with nothing in reach.
+    fn hold_the_slowed(&mut self, now: f64) {
+        for creep in &mut self.creeps {
+            creep.release();
+        }
+        for index in 0..self.towers.len() {
+            let tower = self.towers[index];
+            let spec = tower.spec();
+            if !spec.slows() {
+                continue;
+            }
+            let muzzle = tower.muzzle();
+            let held = {
+                let Stage {
+                    world,
+                    creeps,
+                    scratch,
+                    ..
+                } = &mut *self;
+                tower::hold(
+                    world,
+                    creeps,
+                    muzzle,
+                    spec.range_m,
+                    spec.slow_factor,
+                    scratch,
+                )
+            };
+            if held > 0 {
+                self.towers[index].fired(now);
+            }
+        }
     }
 }
 
-/// One tick of the simulation: a command in, and the six systems in the order
+/// One tick of the simulation: a command in, and the seven systems in the order
 /// the module docs give.
 fn run_tick(stage: &mut Stage, intent: Intent, dt: f64) {
     if intent.restart {
@@ -320,7 +541,12 @@ fn run_tick(stage: &mut Stage, intent: Intent, dt: f64) {
         return;
     }
     if let Some(plot) = intent.place
-        && !stage.place_tower(plot)
+        && !stage.place_tower(plot, intent.kind)
+    {
+        stage.refused += 1;
+    }
+    if let Some(plot) = intent.upgrade
+        && !stage.upgrade_tower(plot)
     {
         stage.refused += 1;
     }
@@ -343,17 +569,21 @@ fn run_tick(stage: &mut Stage, intent: Intent, dt: f64) {
 
     // 1. The table releases, at most one creep a tick — see
     //    `crate::wave::Waves::step`.
-    if let Some(wave) = stage.waves.step(stage.elapsed) {
-        let creep = Creep::spawn(&mut stage.world, &wave);
+    if let Some(release) = stage.waves.step(stage.elapsed) {
+        let creep = Creep::spawn(&mut stage.world, release.kind);
         stage.creeps.push(creep);
     }
 
-    // 2. Every creep walks, and writes its sphere where the walk left it.
+    // 2. Every slow tower holds what is inside its reach, before anything walks.
+    stage.hold_the_slowed(stage.elapsed);
+
+    // 3. Every creep walks — at its kind's speed times whatever is holding it —
+    //    and writes its sphere where the walk left it.
     for creep in &mut stage.creeps {
         creep.advance(&mut stage.world, dt);
     }
 
-    // 3. The exit volume takes what reached it. One overlap per creep, against
+    // 4. The exit volume takes what reached it. One overlap per creep, against
     //    the trigger `crate::map` registered.
     let mut leaked = 0_u32;
     {
@@ -379,7 +609,12 @@ fn run_tick(stage: &mut Stage, intent: Intent, dt: f64) {
         stage.lives = stage.lives.saturating_sub(leaked);
     }
 
-    // 4. Every bolt flies, against the creeps as they are *now*.
+    // 5. Every bolt flies, against the creeps as they are *now*. A bolt that
+    //    stops raises its burst, if its kind has one.
+    let now = stage.elapsed;
+    stage
+        .bursts
+        .retain(|burst| now - burst.raised_at < tower::BURST_S);
     let mut index = 0;
     while index < stage.bolts.len() {
         let outcome = {
@@ -394,26 +629,22 @@ fn run_tick(stage: &mut Stage, intent: Intent, dt: f64) {
         match outcome {
             BoltOutcome::Flying => index += 1,
             BoltOutcome::Spent => {
-                stage.bolts.swap_remove(index);
+                let bolt = stage.bolts.swap_remove(index);
+                stage.splash(&bolt, None);
             }
             BoltOutcome::Hit(body) => {
-                let damage = stage.bolts.swap_remove(index).damage();
-                if let Some(hit) = stage.creeps.iter().position(|creep| creep.body() == body)
-                    && stage.creeps[hit].wounded(damage)
-                {
-                    let bounty = stage.creeps[hit].bounty();
-                    stage.creeps.swap_remove(hit).despawn(&mut stage.world);
-                    stage.gold += bounty;
-                    stage.kills += 1;
-                }
+                let bolt = stage.bolts.swap_remove(index);
+                stage.wound(body, bolt.damage());
+                stage.splash(&bolt, Some(body));
             }
         }
     }
 
-    // 5. Every ready tower acquires and fires.
-    let now = stage.elapsed;
+    // 6. Every ready shooting tower acquires and fires. A slow tower is not
+    //    here: its whole effect was step 2.
     for index in 0..stage.towers.len() {
-        if !stage.towers[index].is_ready(now) {
+        let spec = stage.towers[index].spec();
+        if !spec.fires() || !stage.towers[index].is_ready(now) {
             continue;
         }
         let muzzle = stage.towers[index].muzzle();
@@ -424,17 +655,17 @@ fn run_tick(stage: &mut Stage, intent: Intent, dt: f64) {
                 scratch,
                 ..
             } = &mut *stage;
-            tower::acquire(world, creeps, muzzle, scratch)
+            tower::acquire(world, creeps, muzzle, spec.range_m, scratch)
         };
         if let Some(creep) = target {
-            let bolt = Bolt::fire(muzzle, &stage.creeps[creep], tower::DAMAGE);
+            let bolt = Bolt::fire(muzzle, &stage.creeps[creep], spec);
             stage.bolts.push(bolt);
             stage.towers[index].fired(now);
             stage.shots += 1;
         }
     }
 
-    // 6. Win at the end of the table, lose at zero lives.
+    // 7. Win at the end of the table, lose at zero lives.
     if stage.lives == 0 {
         stage.outcome = Outcome::Lost;
         stage.ended_at = stage.elapsed;
@@ -501,20 +732,24 @@ fn lock(shared: &Arc<Mutex<Stage>>) -> MutexGuard<'_, Stage> {
 /// frame that read through the lock would be holding it for the length of a
 /// draw. The pools are fixed-size for the same reason — a heap allocation here
 /// would be one per draw.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderState {
     /// Every creep on the field, the first [`RenderState::creeps_alive`] of
     /// them live.
     pub creeps: [CreepView; MAX_CREEPS],
     pub creeps_alive: usize,
-    /// One entry per plot: `None` for an empty plot, `Some(firing)` for a built
-    /// tower.
-    pub towers: [Option<bool>; PLOTS.len()],
+    /// One entry per plot: `None` for an empty plot, the tower for a built one.
+    pub towers: [Option<TowerView>; PLOTS.len()],
     /// Every bolt in the air, the first [`RenderState::bolts_flying`] of them
     /// live. Bolts past the pool are simulated and not drawn — see
     /// [`crate::map::MAX_BOLTS`].
     pub bolts: [DVec3; MAX_BOLTS],
     pub bolts_flying: usize,
+    /// Every splash burst still being drawn, the first
+    /// [`RenderState::bursts_live`] of them live — see
+    /// [`crate::map::MAX_BURSTS`].
+    pub bursts: [BurstView; MAX_BURSTS],
+    pub bursts_live: usize,
     pub gold: u32,
     pub lives: u32,
     /// How many waves have been started, out of [`crate::wave::WAVES`].
@@ -525,6 +760,32 @@ pub struct RenderState {
     /// How long until the next wave starts, in seconds, or `None` while one is
     /// releasing or the table is spent.
     pub next_wave_in: Option<f64>,
+}
+
+impl Default for RenderState {
+    /// An empty field.
+    ///
+    /// Written out rather than derived: `#[derive(Default)]` reaches for
+    /// `<[T; N]>::Default`, which the standard library only implements up to
+    /// thirty-two elements, and [`MAX_CREEPS`] is the whole wave table.
+    fn default() -> Self {
+        Self {
+            creeps: [CreepView::default(); MAX_CREEPS],
+            creeps_alive: 0,
+            towers: [None; PLOTS.len()],
+            bolts: [DVec3::ZERO; MAX_BOLTS],
+            bolts_flying: 0,
+            bursts: [BurstView::default(); MAX_BURSTS],
+            bursts_live: 0,
+            gold: 0,
+            lives: 0,
+            wave: 0,
+            kills: 0,
+            leaks: 0,
+            outcome: Outcome::default(),
+            next_wave_in: None,
+        }
+    }
 }
 
 /// The stage's numbers, for the debug overlay and the `[HUD]` line.
@@ -541,11 +802,24 @@ pub struct Stats {
     pub leaks: u64,
     pub shots: u64,
     pub built: u64,
+    /// How many of each [`tower::Kind`] are on the field, in
+    /// [`tower::ALL`]'s order — see `Stage::built_by_kind`.
+    pub built_by_kind: [u64; tower::KINDS],
+    /// How many towers have been stepped up a tier.
+    pub upgrades: u64,
     /// How many commands the server turned down — see `Stage::refused`.
     pub refused: u64,
     pub outcome: Outcome,
     pub runs: u64,
     pub next_wave_in: Option<f64>,
+}
+
+impl Stats {
+    /// How many towers of `kind` have been built.
+    #[must_use]
+    pub const fn built_of(&self, kind: tower::Kind) -> u64 {
+        self.built_by_kind[kind.index()]
+    }
 }
 
 impl crcbl::ui::DebugModule for Stats {
@@ -567,6 +841,12 @@ impl crcbl::ui::DebugModule for Stats {
         }
         section.row("creeps", format_args!("{}", self.creeps));
         section.row("towers", format_args!("{}/{}", self.towers, PLOTS.len()));
+        // One row per kind, because "three towers" says nothing about whether
+        // the kind keys reached the server.
+        for kind in tower::ALL {
+            section.row(kind.label(), format_args!("{}", self.built_of(kind)));
+        }
+        section.row("upgrades", format_args!("{}", self.upgrades));
         section.row("bolts", format_args!("{}", self.bolts));
         section.row("kills", format_args!("{}", self.kills));
         section.row("leaks", format_args!("{}", self.leaks));
@@ -677,10 +957,11 @@ impl Game {
 
         crcbl::log::info!(
             "sim: {tick_hz} Hz, {:.3} ms per tick, {} waves of up to {MAX_CREEPS} creeps over a \
-             {:.1} m path, {} lives and {} gold",
+             {:.1} m path, {} tower kinds, {} lives and {} gold",
             tick_period.as_secs_f64() * 1e3,
             wave::WAVES.len(),
             crate::path::length(),
+            tower::KINDS,
             STARTING_LIVES,
             STARTING_GOLD,
         );
@@ -691,6 +972,8 @@ impl Game {
     pub fn set_controls(&mut self, controls: Controls) {
         self.pending = Intent {
             place: controls.place,
+            kind: controls.kind,
+            upgrade: controls.upgrade,
             start_wave: controls.start_wave,
             restart: controls.restart,
         };
@@ -741,6 +1024,13 @@ impl Game {
         for (slot, bolt) in bolts.iter_mut().zip(stage.bolts.iter()) {
             *slot = bolt.at();
         }
+        let mut bursts = [BurstView::default(); MAX_BURSTS];
+        for (slot, burst) in bursts.iter_mut().zip(stage.bursts.iter()) {
+            *slot = BurstView {
+                centre: burst.at,
+                radius_m: burst.radius_m,
+            };
+        }
         let now = stage.elapsed;
         RenderState {
             creeps,
@@ -750,10 +1040,16 @@ impl Game {
                     .towers
                     .iter()
                     .find(|tower| tower.plot() == plot)
-                    .map(|tower| tower.is_firing(now))
+                    .map(|tower| TowerView {
+                        kind: tower.kind(),
+                        tier: tower.tier(),
+                        working: tower.is_firing(now),
+                    })
             }),
             bolts,
             bolts_flying: stage.bolts.len().min(MAX_BOLTS),
+            bursts,
+            bursts_live: stage.bursts.len().min(MAX_BURSTS),
             gold: stage.gold,
             lives: stage.lives,
             wave: stage.waves.started(),
@@ -780,6 +1076,8 @@ impl Game {
             leaks: stage.leaks,
             shots: stage.shots,
             built: stage.built,
+            built_by_kind: stage.built_by_kind,
+            upgrades: stage.upgrades,
             refused: stage.refused,
             outcome: stage.outcome,
             runs: stage.runs,
@@ -791,10 +1089,28 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::CREEP_RADIUS;
+    use crate::tower::Kind::{Bolt as BoltKind, Slow, Splash};
     use crate::wave::WAVES;
 
     /// One tick at the default rate.
     const DT: f64 = 1.0 / DEFAULT_TICK_HZ as f64;
+
+    /// Long enough for the whole table to be released and walked out, in
+    /// seconds, with a wide margin. Derived from the table rather than guessed,
+    /// so a row added to [`WAVES`] does not quietly truncate a run.
+    fn long_enough_for_the_table() -> f64 {
+        let releases: f64 = WAVES
+            .iter()
+            .map(|wave| {
+                (0..wave.creeps())
+                    .filter_map(|index| wave.gap_after(index))
+                    .sum::<f64>()
+            })
+            .sum();
+        let walk = crate::path::length() / creep::Kind::Tanky.spec().speed;
+        releases + (WAVES.len() + 2) as f64 * wave::GAP_S + 3.0 * walk
+    }
 
     /// Runs the stage for `seconds`, asking for nothing.
     fn idle(stage: &mut Stage, seconds: f64) {
@@ -824,12 +1140,142 @@ mod tests {
         stage.outcome
     }
 
-    /// The command that builds on `plot`.
-    const fn build(plot: u8) -> Intent {
+    /// The command that builds a `kind` tower on `plot`.
+    const fn build(plot: u8, kind: tower::Kind) -> Intent {
         Intent {
             place: Some(plot),
+            kind,
+            upgrade: None,
             start_wave: false,
             restart: false,
+        }
+    }
+
+    /// The command that steps the tower on `plot` up a tier.
+    const fn step_up(plot: u8) -> Intent {
+        Intent {
+            place: None,
+            kind: tower::Kind::Bolt,
+            upgrade: Some(plot),
+            start_wave: false,
+            restart: false,
+        }
+    }
+
+    /// The command that sends the next wave now.
+    const fn send_wave() -> Intent {
+        Intent {
+            place: None,
+            kind: tower::Kind::Bolt,
+            upgrade: None,
+            start_wave: true,
+            restart: false,
+        }
+    }
+
+    /// Which plot is labelled `label`.
+    fn plot(label: &str) -> u8 {
+        let at = PLOTS
+            .iter()
+            .position(|plot| plot.label == label)
+            .unwrap_or_else(|| panic!("the map has no {label} plot"));
+        #[allow(clippy::cast_possible_truncation)]
+        let at = at as u8;
+        at
+    }
+
+    /// Puts a creep of `kind` on the field, walked `along` metres in.
+    ///
+    /// Walked rather than placed, because `Creep::advance` is what writes the
+    /// sphere every query here reads.
+    fn creep_at(stage: &mut Stage, kind: creep::Kind, along: f64) -> ColliderId {
+        let mut creep = Creep::spawn(&mut stage.world, kind);
+        let ticks = (along / (kind.spec().speed * DT)).round() as u64;
+        for _ in 0..ticks {
+            creep.advance(&mut stage.world, DT);
+        }
+        let body = creep.body();
+        stage.creeps.push(creep);
+        body
+    }
+
+    /// What a creep with this body has left, or `None` once it is dead.
+    fn health_of(stage: &Stage, body: ColliderId) -> Option<u32> {
+        stage
+            .creeps
+            .iter()
+            .find(|creep| creep.body() == body)
+            .map(Creep::health)
+    }
+
+    /// The creep with this body, or `None` once it has left the field.
+    ///
+    /// By body rather than by index, because the wave table goes on releasing
+    /// creeps underneath a test and `swap_remove` moves whoever is left.
+    fn creep_with(stage: &Stage, body: ColliderId) -> Option<&Creep> {
+        stage.creeps.iter().find(|creep| creep.body() == body)
+    }
+
+    /// What a player following `plan` asks for this tick.
+    ///
+    /// Builds the plots in order and then steps each tower up, and **asks for
+    /// nothing it cannot pay for** — so a run played by this policy leaves
+    /// `refused` at zero, which the tests below assert. The purse is read off the
+    /// stage rather than tracked here: the server owns it.
+    fn next_purchase(stage: &Stage, plan: &[tower::Kind]) -> Intent {
+        for (at, kind) in plan.iter().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
+            let at_byte = at as u8;
+            if !stage.is_taken(at) {
+                return if stage.gold >= kind.spec(Tier::Base).cost {
+                    build(at_byte, *kind)
+                } else {
+                    Intent::default()
+                };
+            }
+        }
+        for tower in &stage.towers {
+            if let Some(cost) = tower.upgrade_cost()
+                && stage.gold >= cost
+            {
+                #[allow(clippy::cast_possible_truncation)]
+                let at_byte = tower.plot() as u8;
+                return step_up(at_byte);
+            }
+        }
+        Intent::default()
+    }
+
+    /// What happened over one run of the table played to `plan`.
+    struct Played {
+        stage: Stage,
+        /// The most creeps, bolts and bursts the run ever had at once — what
+        /// `crate::map`'s three pools have to cover.
+        peak_creeps: usize,
+        peak_bolts: usize,
+        peak_bursts: usize,
+    }
+
+    /// Plays the whole table with `plan` on the plots, buying as the purse
+    /// allows, and stops the moment the run is decided.
+    fn play(plan: &[tower::Kind]) -> Played {
+        let mut stage = Stage::new();
+        let (mut peak_creeps, mut peak_bolts, mut peak_bursts) = (0, 0, 0);
+        for _ in 0..(long_enough_for_the_table() / DT).round() as u64 {
+            if stage.outcome.is_over() {
+                break;
+            }
+            let intent = next_purchase(&stage, plan);
+            run_tick(&mut stage, intent, DT);
+            peak_creeps = peak_creeps.max(stage.creeps.len());
+            peak_bolts = peak_bolts.max(stage.bolts.len());
+            peak_bursts = peak_bursts.max(stage.bursts.len());
+        }
+        Played {
+            stage,
+            peak_creeps,
+            peak_bolts,
+            peak_bursts,
         }
     }
 
@@ -843,14 +1289,15 @@ mod tests {
     fn a_command_survives_the_wire_and_nonsense_does_not() {
         for intent in [
             Intent::default(),
+            build(3, Splash),
+            build(0, Slow),
+            step_up(4),
+            send_wave(),
             Intent {
-                place: Some(3),
+                place: Some(1),
+                kind: Splash,
+                upgrade: Some(2),
                 start_wave: true,
-                restart: false,
-            },
-            Intent {
-                place: None,
-                start_wave: false,
                 restart: true,
             },
         ] {
@@ -860,11 +1307,29 @@ mod tests {
         }
 
         assert_eq!(Intent::from_wire(&[]), None, "an empty frame was read");
-        assert_eq!(Intent::from_wire(&[0, 0, 0]), None, "a long frame was read");
         assert_eq!(
-            Intent::from_wire(&[0b1000_0000, PLOT_NONE]),
+            Intent::from_wire(&[0, PLOT_NONE]),
+            None,
+            "a slice 1 frame was read as a slice 3 one",
+        );
+        assert_eq!(
+            Intent::from_wire(&[0, 0, 0, 0, 0]),
+            None,
+            "a long frame was read",
+        );
+        assert_eq!(
+            Intent::from_wire(&[0b1000_0000, PLOT_NONE, 0, PLOT_NONE]),
             None,
             "a flag this build never sets was read",
+        );
+        // **A kind byte no row has is a format problem rather than a rules one**,
+        // because there is no `tower::Kind` to carry — see `Intent::from_wire`.
+        #[allow(clippy::cast_possible_truncation)]
+        let past_the_table = tower::KINDS as u8;
+        assert_eq!(
+            Intent::from_wire(&[0, 0, past_the_table, PLOT_NONE]),
+            None,
+            "a kind byte past the table was read",
         );
     }
 
@@ -883,35 +1348,357 @@ mod tests {
     ///
     /// Four refusals and one success, because the four are what the server is
     /// for: a build that trusted its client passes the success and leaves
-    /// `refused` at zero.
+    /// `refused` at zero. The price is the **kind's**, which is the half slice 3
+    /// added: a splash tower the purse cannot reach is refused where a bolt
+    /// tower would have gone up.
     #[test]
     fn a_tower_is_built_only_when_the_rules_allow_it() {
         let mut stage = Stage::new();
-        command(&mut stage, build(0));
+        command(&mut stage, build(0, BoltKind));
         assert_eq!(stage.towers.len(), 1, "the first build was refused");
-        assert_eq!(stage.gold, STARTING_GOLD - tower::COST);
+        assert_eq!(stage.gold, STARTING_GOLD - BoltKind.spec(Tier::Base).cost);
         assert_eq!(stage.refused, 0);
+        assert_eq!(stage.built_by_kind[BoltKind.index()], 1);
+        assert_eq!(stage.built_by_kind[Splash.index()], 0);
 
         // The same plot again.
-        command(&mut stage, build(0));
+        command(&mut stage, build(0, BoltKind));
         assert_eq!(stage.towers.len(), 1, "it built twice on one plot");
         assert_eq!(stage.refused, 1);
 
         // A plot that is not a plot — the byte the wire carried intact.
-        command(&mut stage, build(200));
+        command(&mut stage, build(200, BoltKind));
         assert_eq!(stage.towers.len(), 1, "it built on plot 200");
         assert_eq!(stage.refused, 2);
 
+        // A kind the purse cannot reach on a plot that is free, which the purse
+        // *could* have reached had it been a bolt tower.
+        let purse = stage.gold;
+        assert!(
+            purse >= BoltKind.spec(Tier::Base).cost && purse < 2 * Splash.spec(Tier::Base).cost,
+            "the purse at {purse} does not separate the two kinds' prices",
+        );
+        command(&mut stage, build(1, Splash));
+        command(&mut stage, build(2, Splash));
+        assert_eq!(
+            stage.refused, 3,
+            "a splash tower nobody could afford went up"
+        );
+        assert_eq!(
+            stage.built_by_kind[Splash.index()],
+            1,
+            "the first splash tower was refused too",
+        );
+
         // Spend down to nothing, then ask again.
-        let affordable = stage.gold / tower::COST;
-        for plot in 1..=affordable as u8 {
-            command(&mut stage, build(plot));
+        let mut at = 2;
+        while stage.gold >= BoltKind.spec(Tier::Base).cost && at < PLOTS.len() {
+            command(&mut stage, build(at as u8, BoltKind));
+            at += 1;
         }
-        assert!(stage.gold < tower::COST, "the purse is not empty");
-        let built = stage.towers.len();
-        command(&mut stage, build(built as u8));
+        assert!(
+            stage.gold < BoltKind.spec(Tier::Base).cost,
+            "the purse is not empty",
+        );
+        let (built, refused) = (stage.towers.len(), stage.refused);
+        command(&mut stage, build((PLOTS.len() - 1) as u8, BoltKind));
         assert_eq!(stage.towers.len(), built, "it built with no gold");
+        assert_eq!(stage.refused, refused + 1);
+    }
+
+    /// **A tower is stepped up only when there is a tower, a tier left and the
+    /// gold for it** — and every refusal is counted.
+    ///
+    /// The three refusals are the whole of the `UpgradeTower` command's server
+    /// side, and the middle one is the interesting case: a command the server
+    /// **accepted twice** would give a player two tiers for the price of one,
+    /// and nothing on the client could tell.
+    #[test]
+    fn an_upgrade_is_built_only_when_the_rules_allow_it() {
+        let mut stage = Stage::new();
+
+        // An empty plot — which is also every plot that is not a plot at all.
+        command(&mut stage, step_up(0));
+        assert_eq!(stage.upgrades, 0, "an empty plot was upgraded");
+        assert_eq!(stage.refused, 1);
+        command(&mut stage, step_up(200));
+        assert_eq!(stage.refused, 2, "plot 200 was upgraded");
+
+        command(&mut stage, build(0, BoltKind));
+        let purse = stage.gold;
+        let cost = BoltKind.spec(Tier::Upgraded).cost;
+        assert!(purse >= cost, "the opening purse cannot reach one upgrade");
+
+        command(&mut stage, step_up(0));
+        assert_eq!(stage.upgrades, 1, "the upgrade was refused");
+        assert_eq!(
+            stage.gold,
+            purse - cost,
+            "the purse did not pay the upgrade"
+        );
+        assert_eq!(stage.towers[0].tier(), Tier::Upgraded);
+        assert_eq!(stage.refused, 2, "the upgrade was counted as a refusal");
+
+        // …and a second one on the same plot, which is the refusal that matters.
+        //
+        // **The purse is filled first, and that is load-bearing.** After one
+        // upgrade the opening purse cannot reach a second, so a server that
+        // consulted the price and nothing else would refuse this for the wrong
+        // reason and the tier rule would go untested. With gold to spare, the
+        // only thing left that can say no is "there is no tier to buy".
+        stage.gold = 10 * BoltKind.spec(Tier::Upgraded).cost;
+        let purse = stage.gold;
+        command(&mut stage, step_up(0));
+        assert_eq!(stage.upgrades, 1, "it was upgraded twice");
+        assert_eq!(stage.towers[0].tier(), Tier::Upgraded);
+        assert_eq!(stage.gold, purse, "a refused upgrade still took the gold");
         assert_eq!(stage.refused, 3);
+
+        // And one nobody can pay for: a splash tower is dear enough that the
+        // purse cannot reach its upgrade after building it.
+        let mut stage = Stage::new();
+        command(&mut stage, build(1, Splash));
+        assert_eq!(stage.towers.len(), 1, "the splash tower was refused");
+        assert!(
+            stage.gold < Splash.spec(Tier::Upgraded).cost,
+            "the purse at {} can reach the {} gold upgrade, so this proves nothing",
+            stage.gold,
+            Splash.spec(Tier::Upgraded).cost,
+        );
+        command(&mut stage, step_up(1));
+        assert_eq!(stage.upgrades, 0, "it upgraded with no gold");
+        assert_eq!(stage.refused, 1);
+    }
+
+    /// **A splash burst wounds more than the creep the bolt struck** — and it
+    /// does not wound the whole field.
+    ///
+    /// Three creeps and two controls, which is what makes the claim mean
+    /// anything:
+    ///
+    /// * the **neighbour** is further from the target than a direct hit could
+    ///   possibly reach — asserted from [`CREEP_RADIUS`] and
+    ///   [`crate::map::BOLT_RADIUS`] before the tick — so a build whose splash
+    ///   tower only wounded what it hit leaves it untouched;
+    /// * the **bystander** is outside the burst, so a build that wounded every
+    ///   creep on the field, or ran the overlap at the wrong radius, wounds it;
+    /// * and the target's own health says the burst did **not** wound it twice,
+    ///   which is what a burst that forgot its direct target would do.
+    #[test]
+    fn a_splash_burst_wounds_more_than_the_creep_the_bolt_struck() {
+        let spec = Splash.spec(Tier::Base);
+        let mut stage = Stage::new();
+
+        // Spaced along the opening leg, far from a corner. The neighbour is
+        // inside the burst and out of reach of the impact; the bystander is
+        // outside the burst altogether.
+        let gap = 1.5;
+        let outside = spec.burst_m + CREEP_RADIUS + 1.0;
+        let kind = creep::Kind::Fast;
+        let target = creep_at(&mut stage, kind, 10.0);
+        let neighbour = creep_at(&mut stage, kind, 10.0 + gap);
+        let bystander = creep_at(&mut stage, kind, 10.0 + outside);
+
+        // The controls, taken off the geometry rather than assumed.
+        let reach_of_a_direct_hit = CREEP_RADIUS + (CREEP_RADIUS + map::BOLT_RADIUS);
+        assert!(
+            gap > reach_of_a_direct_hit,
+            "the neighbour is {gap} m out, inside the {reach_of_a_direct_hit:.2} m a bolt \
+             stopping anywhere on the target could also touch",
+        );
+        assert!(
+            gap + CREEP_RADIUS < spec.burst_m,
+            "the neighbour is not inside the {} m burst",
+            spec.burst_m,
+        );
+        assert!(
+            outside - CREEP_RADIUS > spec.burst_m,
+            "the bystander is inside the burst",
+        );
+
+        // One splash bolt, fired by hand at the target: no tower on the field,
+        // so nothing else can be what wounded anybody.
+        let whole = kind.spec().health;
+        let tower = Tower::new(plot("entry") as usize, Splash);
+        let aimed = stage
+            .creeps
+            .iter()
+            .find(|creep| creep.body() == target)
+            .expect("the target is on the field");
+        let bolt = Bolt::fire(tower.muzzle(), aimed, spec);
+        stage.bolts.push(bolt);
+        // The health window that makes every reading below legible: one helping
+        // of this damage leaves a creep alive with a number to compare, and two
+        // kill it outright — so "wounded twice" shows up as an empty field slot
+        // rather than as a smaller number nobody would question.
+        assert!(
+            whole > spec.damage && whole <= 2 * spec.damage,
+            "a {} creep's {whole} health cannot tell one burst from two at {} damage",
+            kind.label(),
+            spec.damage,
+        );
+
+        // Long enough for the bolt to land and no longer.
+        for _ in 0..30 {
+            if stage.bolts.is_empty() {
+                break;
+            }
+            run_tick(&mut stage, Intent::default(), DT);
+        }
+        assert!(stage.bolts.is_empty(), "the bolt never landed");
+
+        assert_eq!(
+            health_of(&stage, target),
+            Some(whole - spec.damage),
+            "the creep the bolt struck was wounded {} times",
+            match health_of(&stage, target) {
+                Some(left) => format!("to {left} rather than once"),
+                None => "to death, so twice".to_string(),
+            },
+        );
+        assert_eq!(
+            health_of(&stage, neighbour),
+            Some(whole - spec.damage),
+            "the burst did not wound the creep beside its impact point",
+        );
+        assert_eq!(
+            health_of(&stage, bystander),
+            Some(whole),
+            "the burst wounded a creep outside it",
+        );
+        assert_eq!(
+            stage.kills, 0,
+            "something died, so the arithmetic is not this"
+        );
+    }
+
+    /// **A splash impact leaves a burst on screen, and it is gone a moment
+    /// later.**
+    ///
+    /// The second half is the control: a burst pool that never retired would
+    /// fill with every impact of the run and draw the whole history of the
+    /// field — and `crate::map::MAX_BURSTS`' one-slot-per-plot argument would be
+    /// wrong with it.
+    #[test]
+    fn a_burst_is_drawn_and_then_retired() {
+        let mut stage = Stage::new();
+        let target = creep_at(&mut stage, creep::Kind::Tanky, 10.0);
+        let spec = Splash.spec(Tier::Base);
+        let tower = Tower::new(plot("entry") as usize, Splash);
+        let aimed = stage
+            .creeps
+            .iter()
+            .find(|creep| creep.body() == target)
+            .expect("the target is on the field");
+        stage.bolts.push(Bolt::fire(tower.muzzle(), aimed, spec));
+
+        let mut seen = 0;
+        for _ in 0..30 {
+            run_tick(&mut stage, Intent::default(), DT);
+            seen = seen.max(stage.bursts.len());
+            if stage.bolts.is_empty() {
+                break;
+            }
+        }
+        assert_eq!(seen, 1, "the impact raised {seen} bursts rather than one");
+        assert!(
+            stage.bursts.len() <= map::MAX_BURSTS,
+            "{} bursts are being drawn into a pool of {}",
+            stage.bursts.len(),
+            map::MAX_BURSTS,
+        );
+
+        idle(&mut stage, tower::BURST_S + 4.0 * DT);
+        assert!(stage.bursts.is_empty(), "the burst is still being drawn");
+    }
+
+    /// **A slow tower holds the creeps it covers, and lets them go the moment
+    /// they walk out of its reach.**
+    ///
+    /// The second half is the claim, and the arithmetic is what makes it one: the
+    /// creep ends the run **ahead** of where a hold that never ended would have
+    /// left it and **behind** where no hold at all would have. Both ends are
+    /// worked out from the tick the hold actually began rather than assumed, so
+    /// a tower whose reach moves does not have to move a number in this test.
+    #[test]
+    fn a_slow_tower_holds_the_creeps_it_covers_and_lets_them_go() {
+        let seconds = 5.0;
+        let mut stage = Stage::new();
+        let tower = Tower::new(plot("entry") as usize, Slow);
+        let factor = tower.spec().slow_factor;
+        stage.towers.push(tower);
+        let kind = creep::Kind::Fast;
+        // One creep of this test's own, **followed by its body** rather than by
+        // its index: the wave table goes on releasing creeps of its own and
+        // `swap_remove` moves whoever is left when one of them leaks.
+        let body = creep_at(&mut stage, kind, 2.0);
+        let start = creep_with(&stage, body)
+            .expect("it was just put there")
+            .along();
+
+        let mut entered: Option<(f64, f64)> = None;
+        let mut held_ticks = 0_u64;
+        let mut free_after_the_hold = 0_u64;
+        let mut last_step = 0.0;
+        for tick in 0..(seconds / DT).round() as u64 {
+            let before = creep_with(&stage, body)
+                .expect("the creep left the field")
+                .along();
+            run_tick(&mut stage, Intent::default(), DT);
+            let creep = creep_with(&stage, body).expect("the creep left the field");
+            last_step = creep.along() - before;
+            if creep.is_slowed() {
+                held_ticks += 1;
+                if entered.is_none() {
+                    entered = Some((tick as f64 * DT, before));
+                }
+                assert!(
+                    (last_step - kind.spec().speed * factor * DT).abs() < 1e-9,
+                    "a held creep walked {last_step} m in a tick rather than {}",
+                    kind.spec().speed * factor * DT,
+                );
+            } else if held_ticks > 0 {
+                free_after_the_hold += 1;
+            }
+        }
+        let (entered_at, entered_along) = entered.expect("the creep was never held at all");
+        let creep = creep_with(&stage, body).expect("the creep left the field");
+
+        assert!(held_ticks > 0, "nothing was ever held");
+        assert!(
+            free_after_the_hold > 0,
+            "the creep never got out of the tower's reach, so the release is untested",
+        );
+        assert!(
+            !creep.is_slowed(),
+            "the creep is still held well past the tower's reach",
+        );
+        assert!(
+            (last_step - kind.spec().speed * DT).abs() < 1e-9,
+            "the last tick walked {last_step} m rather than a free {}",
+            kind.spec().speed * DT,
+        );
+
+        // The two ends, derived: a hold that never let go, and no hold at all.
+        let stuck = entered_along + kind.spec().speed * factor * (seconds - entered_at);
+        let free = start + kind.spec().speed * seconds;
+        let walked = creep.along();
+        assert!(
+            walked > stuck + 1.0,
+            "the creep reached {walked:.2} m against the {stuck:.2} m a hold that never ended \
+             would have left it at",
+        );
+        assert!(
+            walked < free - 1.0,
+            "the creep reached {walked:.2} m against the {free:.2} m an unheld one would have, \
+             so nothing held it",
+        );
+        assert_eq!(
+            health_of(&stage, body),
+            Some(kind.spec().health),
+            "a slow tower wounded something",
+        );
+        assert_eq!(stage.shots, 0, "a slow tower fired");
     }
 
     /// **A creep that reaches the exit costs a life**, and the field is left
@@ -919,31 +1706,28 @@ mod tests {
     #[test]
     fn a_creep_that_reaches_the_exit_costs_a_life() {
         let mut stage = Stage::new();
-        command(
-            &mut stage,
-            Intent {
-                place: None,
-                start_wave: true,
-                restart: false,
-            },
-        );
+        command(&mut stage, send_wave());
         assert_eq!(stage.refused, 0, "the first wave refused to start");
 
         // Long enough for the whole first wave to walk the path and no longer:
         // the second wave's own creeps must not be what this counts.
-        let walk = crate::path::length() / WAVES[0].speed;
-        idle(
-            &mut stage,
-            walk + f64::from(WAVES[0].creeps) * WAVES[0].spacing_s + 1.0,
-        );
+        let first = WAVES[0];
+        let slowest = (0..first.creeps())
+            .filter_map(|index| first.kind_at(index))
+            .map(|kind| kind.spec().speed)
+            .fold(f64::INFINITY, f64::min);
+        let span: f64 = (0..first.creeps())
+            .filter_map(|index| first.gap_after(index))
+            .sum();
+        idle(&mut stage, crate::path::length() / slowest + span + 1.0);
         assert_eq!(
             stage.leaks,
-            u64::from(WAVES[0].creeps),
+            u64::from(first.creeps()),
             "an empty field let {} of {} through",
             stage.leaks,
-            WAVES[0].creeps,
+            first.creeps(),
         );
-        assert_eq!(stage.lives, STARTING_LIVES - WAVES[0].creeps);
+        assert_eq!(stage.lives, STARTING_LIVES - first.creeps());
         assert_eq!(stage.kills, 0, "an empty field killed something");
     }
 
@@ -954,10 +1738,8 @@ mod tests {
     #[test]
     fn a_field_with_no_towers_on_it_loses_the_run() {
         let mut stage = Stage::new();
-        // Well past the whole table plus the walk, so a run that never ends
-        // fails here rather than running for ever.
         assert_eq!(
-            until_over(&mut stage, 120.0),
+            until_over(&mut stage, long_enough_for_the_table()),
             Outcome::Lost,
             "an empty field survived: {} leaks and {} lives left",
             stage.leaks,
@@ -972,62 +1754,150 @@ mod tests {
         );
     }
 
-    /// **Towers clear the table and win the run**, and the kills pay for
-    /// themselves: the run starts with three towers' worth of gold and buys the
-    /// other two out of bounties.
+    /// **The last row needs a splash tower *and* a slow tower**, and four plans
+    /// played out are what says so.
     ///
-    /// The build command is issued every tick and refused until the purse
-    /// catches up, which is the same validation
-    /// `a_tower_is_built_only_when_the_rules_allow_it` asserts, driven by the
-    /// game rather than by a test.
+    /// `docs/plan/sample/07-towers.md`'s scope line asks for three tower kinds,
+    /// and three kinds are three kinds only if one of them is not enough. So this
+    /// plays the whole table four ways on the same five plots, each upgraded as
+    /// the purse allows:
+    ///
+    /// | plan | outcome |
+    /// | --- | --- |
+    /// | five bolt towers | the last row overruns it |
+    /// | a splash tower and four bolts | the same |
+    /// | a slow tower and four bolts | the same |
+    /// | a splash tower **and** a slow tower | held, by
+    ///   `a_splash_and_a_slow_tower_hold_the_whole_table` |
+    ///
+    /// The three losing plans are the control for the winning one: without them
+    /// "a field holds the table" is a claim about having built five towers rather
+    /// than about what was built. Each of the three builds every plot and buys
+    /// every upgrade — asserted, so what failed is the **plan** and not the purse
+    /// — and each loses on the tenth row with a field that cleared the other
+    /// nine.
     #[test]
-    fn towers_clear_the_table_and_win_the_run() {
-        let mut stage = Stage::new();
-        let mut plot = 0_u8;
-        let mut ticks = 0_u64;
-        // The most bolts that were ever in the air at once, which is what
-        // `crate::map::MAX_BOLTS` has to cover — see that constant.
-        let mut peak_bolts = 0;
-        // Well past the table's own length, so a run that stalls fails here
-        // rather than running for ever.
-        while ticks < (150.0 / DT) as u64 && stage.outcome == Outcome::Playing {
-            let intent = if (plot as usize) < PLOTS.len() {
-                build(plot)
-            } else {
-                Intent::default()
-            };
-            run_tick(&mut stage, intent, DT);
-            peak_bolts = peak_bolts.max(stage.bolts.len());
-            if stage.towers.len() > plot as usize {
-                plot += 1;
-            }
-            ticks += 1;
+    fn neither_a_splash_nor_a_slow_tower_alone_can_hold_the_last_row() {
+        for plan in [
+            [BoltKind, BoltKind, BoltKind, BoltKind, BoltKind],
+            [Splash, BoltKind, BoltKind, BoltKind, BoltKind],
+            [BoltKind, BoltKind, BoltKind, BoltKind, Slow],
+        ] {
+            let played = play(&plan);
+            let stage = &played.stage;
+            let names: Vec<&str> = plan.iter().map(|kind| kind.label()).collect();
+            assert_eq!(
+                stage.outcome,
+                Outcome::Lost,
+                "{names:?} held the whole table: {} kills, {} leaks, {} lives left at wave {}",
+                stage.kills,
+                stage.leaks,
+                stage.lives,
+                stage.waves.started(),
+            );
+            // It was really built and really upgraded, so what failed is the plan
+            // rather than the purchase.
+            assert_eq!(
+                stage.towers.len(),
+                PLOTS.len(),
+                "{names:?} did not fill the field",
+            );
+            assert_eq!(
+                stage.upgrades,
+                PLOTS.len() as u64,
+                "{names:?} bought {} of {} upgrades",
+                stage.upgrades,
+                PLOTS.len(),
+            );
+            assert_eq!(
+                stage.refused, 0,
+                "{names:?} asked for something it could not pay for",
+            );
+            // …and it cleared the nine rows before the one that overran it, which
+            // is what makes the failure the last row's rather than the first's.
+            assert_eq!(
+                stage.waves.started(),
+                WAVES.len(),
+                "{names:?} was overrun before the last row, at wave {}",
+                stage.waves.started(),
+            );
         }
+    }
+
+    /// **A splash tower and a slow tower hold the whole table**, and the kills
+    /// pay for them: the run opens with three bolt towers' worth of gold and buys
+    /// the rest out of bounties.
+    ///
+    /// The end-to-end claim for everything slice 3a added — three tower kinds,
+    /// the upgrade command, three creep kinds and ten waves — and the plan
+    /// `neither_a_splash_nor_a_slow_tower_alone_can_hold_the_last_row` is the
+    /// control for. **Where they stand is part of the plan**: the splash tower is
+    /// on the plot the creeps meet first, where a wave is still in its press, and
+    /// the slow tower is at the gate, where what is left has to get past every
+    /// other tower again.
+    ///
+    /// It also measures the **three instance pools** over a whole run, which is
+    /// what `crate::map`'s `MAX_CREEPS`, `MAX_BOLTS` and `MAX_BURSTS` arguments
+    /// rest on: each is a bound argued from the rules, and this is the reading
+    /// beside it.
+    #[test]
+    fn a_splash_and_a_slow_tower_hold_the_whole_table() {
+        let played = play(&[Splash, BoltKind, BoltKind, BoltKind, Slow]);
+        let stage = &played.stage;
         assert_eq!(
             stage.outcome,
             Outcome::Won,
-            "five towers lost the table: {} kills, {} leaks, {} lives left",
+            "the plan lost the table: {} kills, {} leaks, {} lives left at wave {}",
             stage.kills,
             stage.leaks,
             stage.lives,
+            stage.waves.started(),
         );
         assert_eq!(stage.towers.len(), PLOTS.len(), "not every plot was built");
-        assert!(
-            stage.built as u32 * tower::COST > STARTING_GOLD,
-            "the opening purse paid for every tower, so nothing was earned",
+        assert_eq!(stage.built_by_kind[Splash.index()], 1);
+        assert_eq!(stage.built_by_kind[Slow.index()], 1);
+        assert_eq!(
+            stage.built_by_kind[BoltKind.index()],
+            (PLOTS.len() - 2) as u64,
+        );
+        assert_eq!(
+            stage.upgrades,
+            PLOTS.len() as u64,
+            "the plan was not upgraded"
+        );
+        assert_eq!(
+            stage.refused, 0,
+            "the policy asked for something it could not pay for",
         );
         assert_eq!(
             stage.kills,
             MAX_CREEPS as u64 - stage.leaks,
             "the kills and the leaks do not account for every creep",
         );
-        // **The draw pool covers what a full field puts in the air.** Measured
-        // over the whole run rather than argued from the reload, because what
-        // decides it is how long a bolt lives, and that is the map's geometry.
+        // The bounties paid for it: the opening purse is three bolt towers and
+        // the plan is five towers and five upgrades.
         assert!(
-            peak_bolts > 0 && peak_bolts <= map::MAX_BOLTS,
-            "{peak_bolts} bolts were in the air at once, against a pool of {}",
-            map::MAX_BOLTS,
+            stage.built as u32 * BoltKind.spec(Tier::Base).cost > STARTING_GOLD,
+            "the opening purse paid for every tower, so nothing was earned",
+        );
+
+        // **The pools cover what a full run puts on the field.** Measured rather
+        // than argued, because what decides each is the map's geometry and the
+        // table's tempo.
+        assert!(
+            played.peak_creeps > 0 && played.peak_creeps <= MAX_CREEPS,
+            "{} creeps were on the field at once, against a pool of {MAX_CREEPS}",
+            played.peak_creeps,
+        );
+        assert!(
+            played.peak_bolts > 0 && played.peak_bolts <= MAX_BOLTS,
+            "{} bolts were in the air at once, against a pool of {MAX_BOLTS}",
+            played.peak_bolts,
+        );
+        assert!(
+            played.peak_bursts > 0 && played.peak_bursts <= MAX_BURSTS,
+            "{} bursts were drawn at once, against a pool of {MAX_BURSTS}",
+            played.peak_bursts,
         );
     }
 
@@ -1036,7 +1906,10 @@ mod tests {
     #[test]
     fn a_finished_run_starts_itself_again() {
         let mut stage = Stage::new();
-        assert_eq!(until_over(&mut stage, 120.0), Outcome::Lost);
+        assert_eq!(
+            until_over(&mut stage, long_enough_for_the_table()),
+            Outcome::Lost,
+        );
         assert_eq!(stage.runs, 1);
 
         idle(&mut stage, RESTART_S + 1.0);
@@ -1047,18 +1920,23 @@ mod tests {
         assert_eq!(stage.waves.started(), 0);
     }
 
-    /// **`R` throws the run away at once**, without waiting for it to end.
+    /// **`R` throws the run away at once**, without waiting for it to end — and
+    /// it takes the upgrades with it.
     #[test]
     fn the_restart_command_starts_the_run_over() {
         let mut stage = Stage::new();
-        command(&mut stage, build(0));
+        command(&mut stage, build(0, BoltKind));
+        command(&mut stage, step_up(0));
         idle(&mut stage, 5.0);
         assert!(stage.waves.started() > 0 && stage.towers.len() == 1);
+        assert_eq!(stage.upgrades, 1);
 
         command(
             &mut stage,
             Intent {
                 place: None,
+                kind: tower::Kind::Bolt,
+                upgrade: None,
                 start_wave: false,
                 restart: true,
             },
@@ -1066,32 +1944,29 @@ mod tests {
         assert!(stage.towers.is_empty(), "the towers survived the restart");
         assert!(stage.creeps.is_empty(), "the creeps survived the restart");
         assert_eq!(stage.gold, STARTING_GOLD);
+        assert_eq!(stage.upgrades, 0, "the upgrades survived the restart");
+        assert_eq!(stage.built_by_kind, [0; tower::KINDS]);
         assert_eq!(stage.runs, 2);
     }
 
-    /// **A kill pays its wave's bounty**, which is the whole of the economy.
+    /// **A kill pays its kind's bounty**, which is the whole of the economy.
+    /// The first wave is every one of it a fast creep, so the purse moves by a
+    /// multiple of one number.
     #[test]
     fn a_kill_pays_its_bounty() {
         let mut stage = Stage::new();
-        command(&mut stage, build(0));
+        command(&mut stage, build(0, BoltKind));
         let purse = stage.gold;
-        command(
-            &mut stage,
-            Intent {
-                place: None,
-                start_wave: true,
-                restart: false,
-            },
-        );
+        command(&mut stage, send_wave());
         // One creep's worth of walking past one tower.
         idle(&mut stage, 6.0);
         assert!(stage.kills > 0, "one tower killed nothing in six seconds");
+        let bounty = creep::Kind::Fast.spec().bounty;
         assert_eq!(
             stage.gold,
-            purse + stage.kills as u32 * WAVES[0].bounty,
-            "the purse does not match {} kills at {} gold",
+            purse + stage.kills as u32 * bounty,
+            "the purse does not match {} kills at {bounty} gold",
             stage.kills,
-            WAVES[0].bounty,
         );
     }
 }
