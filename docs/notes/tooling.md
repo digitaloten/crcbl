@@ -866,3 +866,26 @@ the same macro, further down the file, as unresolved. Verified by documenting
 the previous commit's `engine.rs`, which is clean. So a doc run's error list is
 not a list of independent defects: fix the first and re-run before chasing the
 rest. The fix was the explicit path `[`impl_game_gpu!`](crate::impl_game_gpu)`.
+
+## Prettier's object expansion is sticky, so one wrong run leaves churn behind (2026-09-10)
+
+`~/.editorconfig` on this machine sets `indent_size = 4` for `[*]` and names no
+JavaScript extension, and prettier reads it unless told not to. A run without
+`--no-editorconfig` over `web/tools/browser-e2e.mjs` therefore reindents the
+whole 11,000-line file, which CI's runner — where no such file exists — would
+then reject. That much was already known.
+
+**What was new is that re-running with the flag does not undo it.** Prettier
+preserves an object literal's multi-line-ness: once a `{` has a newline after it
+in the input, the object stays expanded however short it is. So the four-space
+pass broke several short objects across lines because they no longer fitted, and
+the two-space pass that "reverted" it kept them broken. The result is a diff
+that passes `prettier --check` and still carries seven unrelated reformats in
+other demos' blocks, which is exactly the churn a reviewer has to read and
+decide about.
+
+**So: the flag goes on the first run, not the second.** If a wrong run has
+already happened, the repair is to collapse each expanded object by hand against
+`git diff` and re-check, not to re-run the formatter. Verified by doing it: the
+towers slice's gate-file diff went from 312 insertions and 9 deletions to 273
+and 3, the three remaining deletions being the comment it meant to replace.
