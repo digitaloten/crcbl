@@ -1234,6 +1234,19 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Fixed
 
+- **`Pool::par_for` no longer lets a worker hold a borrow of the job after the
+  call is free to return.** A worker's last act was decrementing an
+  outstanding-chunk count that lived in the `Job` on the driver's stack, reached
+  through a `&Job` argument — and a reference handed to a function is protected
+  for the whole call, so the driver could read zero, return and drop that frame
+  while the worker was still inside it. Nothing reads through the borrow, so no
+  hardware can tell and every ordering, determinism and panic test passed; the
+  protector outliving the allocation is undefined behaviour all the same, and
+  Miri reported it on one run of the `miri (crcbl-jobs)` job. The count now
+  lives in the pool's shared state, behind the `Arc` every worker already holds,
+  and the worker path carries the job as a `*const Job`, so the last write a
+  chunk makes touches nothing that can be freed underneath it. No API changed.
+
 - Contact shadows now allocate their visibility mask as `R8Unorm`, matching the
   contact-shadow graphics pipeline. Enabling the effect no longer records a draw
   with an `Rgba8Unorm` attachment against an `R8Unorm` pipeline target.

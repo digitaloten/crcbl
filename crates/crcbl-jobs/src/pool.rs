@@ -67,6 +67,24 @@
 //! once rather than once an item — because a counter in the frame path that
 //! costs what it measures is worse than no counter at all.
 //!
+//! # Nothing a worker holds may outlive the driver's frame
+//!
+//! The state of a call in flight — the type-erased job, the split, the caller's
+//! closure — lives in `par_for`'s own frame, which is what makes a steady-state
+//! call allocate nothing. The price is that the frame is gone the instant the
+//! driver sees the outstanding-chunk count reach zero, and the thread that
+//! writes that zero is usually a worker. So a worker must hold **nothing
+//! borrowed from the driver's frame** by the time it makes that write — and
+//! "borrowed" here is stricter than "read", because a reference handed to a
+//! function is protected for the whole call whether or not anything reads
+//! through it.
+//!
+//! Two consequences, both load-bearing: the worker path carries the job as a
+//! raw pointer rather than a `&Job`, and the outstanding-chunk count lives in
+//! the shared state behind the workers' `Arc` rather than in the job, because an
+//! atomic can only be written *through* a reference to it. `run_one` has the
+//! whole argument and the Miri report that found it missing.
+//!
 //! # Shutdown
 //!
 //! Dropping the pool sets the shutdown flag and broadcasts, so a worker parked
@@ -134,6 +152,29 @@ pub struct Pool {
 /// What the workers share with the driver.
 struct Shared {
     thieves: deque::Stealer<Chunk>,
+    /// Chunks of the call in flight that have not finished yet: set by the
+    /// driver before it queues anything, and decremented once by whoever runs
+    /// each chunk.
+    ///
+    /// **Here rather than in [`Job`], where it reads like it belongs**, because
+    /// it is the *last* thing a worker touches and a worker's last touch must
+    /// not be a field of the driver's stack frame — see [`run_one`] for the
+    /// whole argument, which is the one this module got wrong. Every worker
+    /// holds an `Arc` of this state, so it outlives any `par_for` frame by
+    /// construction.
+    ///
+    /// One slot serves every call because [`Pool::par_for`] takes `&mut self`:
+    /// one thread drives a pool at a time, and a call does not return until
+    /// this reaches zero, so the next submission always starts from a settled
+    /// counter rather than sharing one with a call still in flight. Nothing
+    /// from a finished call can reach the next one's count either: a chunk runs
+    /// only after it has been taken off the deque, so a zero here means every
+    /// entry that was pushed has been taken, and the queue is empty.
+    ///
+    /// Released by the worker that writes it and acquired by the driver that
+    /// reads zero, which is what makes everything a chunk wrote visible before
+    /// the caller's `&mut [T]` is its own again.
+    remaining: AtomicUsize,
     /// Guards [`Sleep`]. Taken once per `par_for` submission, and by a worker
     /// only when it is about to sleep — never on the stealing path, which is
     /// the "no mutexes in the frame path" rule read for what it is aimed at.
@@ -317,20 +358,24 @@ struct Chunk {
 /// A `par_for` in flight, with the caller's types erased so a worker can run a
 /// chunk of it without knowing them.
 ///
-/// Lives on the calling thread's stack for exactly as long as `remaining` is
-/// non-zero. Every field is either read-only or interior-mutable, because
-/// workers reach it through a shared reference.
+/// Lives on the calling thread's stack for exactly as long as
+/// [`Shared::remaining`] is non-zero. Every field is either read-only or
+/// interior-mutable, because workers reach it through a shared pointer.
+///
+/// **A worker holds it as `*const Job` and never as `&Job`**, and the count
+/// that says when it may be dropped lives in [`Shared`] rather than here. Both
+/// are the same rule: nothing borrowed from this may still be borrowed at the
+/// moment the driver is free to return. [`run_one`] is where that is argued.
 struct Job {
     /// Runs one chunk of `payload`. See [`run_split`].
     run: unsafe fn(payload: *const (), index: usize),
     payload: *const (),
-    /// Chunks not yet finished. **The last thing a worker touches**, released
-    /// so that everything the chunk wrote is visible to the driver the moment
-    /// it reads zero — which is what makes the borrows in `payload` safe to
-    /// hand back to the caller.
-    remaining: AtomicUsize,
     /// The panic to re-raise, and the chunk it came from. See the module docs
     /// for why the lowest index wins.
+    ///
+    /// Safe to keep here, unlike the outstanding-chunk count: a chunk writes it
+    /// *before* it decrements that count, so the borrow is over while the
+    /// driver is still waiting.
     panic: Mutex<Option<(usize, Box<dyn Any + Send>)>>,
 }
 
@@ -402,6 +447,7 @@ impl Pool {
         let mut pool = Self {
             shared: Arc::new(Shared {
                 thieves,
+                remaining: AtomicUsize::new(0),
                 sleep: Mutex::new(Sleep {
                     submissions: 0,
                     parked: 0,
@@ -509,16 +555,22 @@ impl Pool {
         let job = Job {
             run: run_split::<T, F>,
             payload: (&raw const split).cast(),
-            remaining: AtomicUsize::new(chunks),
             panic: Mutex::new(None),
         };
+        // The one write to the count that is not a decrement, and it is made
+        // before anything can be queued. Relaxed because the release fence in
+        // `deque::Worker::push` is what publishes it: a thief acquires `bottom`
+        // before it can reach a chunk, so no worker can decrement a stale
+        // count. The inline path below writes it too, so that `run_one` has one
+        // behaviour rather than two.
+        self.shared.remaining.store(chunks, Ordering::Relaxed);
 
         if self.workers == 0 || chunks == 1 {
             for index in 0..chunks {
                 // SAFETY: `job` is alive for this whole loop, every index is
                 // one of its chunks, and each is run once because this is the
                 // only thing running them — nothing was queued.
-                unsafe { run_one(&job, index) };
+                unsafe { run_one(&self.shared, &raw const job, index) };
             }
             // Once for the whole loop rather than once per turn round it:
             // nothing else can be adding to this counter, because nothing else
@@ -531,9 +583,10 @@ impl Pool {
             self.run_in_parallel(&job, chunks);
         }
 
-        // Every chunk has run: `remaining` reached zero, and a chunk decrements
-        // it only after it has finished. So this is the only reference left,
-        // and the panic — if there was one — belongs to the calling thread now.
+        // Every chunk has run: the outstanding count reached zero, and a chunk
+        // decrements it only after it has finished *and* let go of everything it
+        // borrowed from `job`. So this is the only reference left, and the panic
+        // — if there was one — belongs to the calling thread now.
         if let Some((_, panic)) = lock(&job.panic).take() {
             resume_unwind(panic);
         }
@@ -545,6 +598,13 @@ impl Pool {
     /// Split out from [`par_for`](Self::par_for) because it is the half that
     /// does not need the caller's types, so the unsafe reasoning about the
     /// erased job sits in one place rather than inside a generic function.
+    ///
+    /// `job` is a reference here and a raw pointer everywhere a worker can
+    /// reach, which is not an inconsistency: the frame the job lives in is this
+    /// thread's own, so a borrow of it cannot outlive the allocation the way
+    /// [`run_one`]'s explains a worker's would. The reference is the stronger
+    /// statement where it can be made — it is what says the job outlives the
+    /// wait below.
     fn run_in_parallel(&mut self, job: &Job, chunks: usize) {
         // Filled before anything is pushed, so the buffer cannot reallocate
         // while the queue holds pointers into it.
@@ -572,7 +632,7 @@ impl Pool {
                 // SAFETY: `job` outlives this call, `entry.index` is one of its
                 // chunks, and this entry never reached the queue so nothing
                 // else can run it.
-                unsafe { run_one(job, entry.index) };
+                unsafe { run_one(&self.shared, core::ptr::from_ref(job), entry.index) };
             } else {
                 queued += 1;
             }
@@ -602,14 +662,14 @@ impl Pool {
         // Acquire, pairing with the release in `run_one`: reading zero here is
         // what tells the caller its `&mut [T]` is its own again, so every
         // chunk's writes have to be visible by then.
-        while job.remaining.load(Ordering::Acquire) > 0 {
+        while self.shared.remaining.load(Ordering::Acquire) > 0 {
             match self.queue.pop() {
                 // SAFETY: a chunk is in the queue exactly once, so taking it
                 // out is what makes running it exclusive; `job` outlives the
                 // wait by the argument above.
                 Some(chunk) => {
                     by_driver += 1;
-                    unsafe { run_chunk(chunk) };
+                    unsafe { run_chunk(&self.shared, chunk) };
                 }
                 // Nothing left to take, and workers still finishing what they
                 // took. Yielding rather than spinning, because on a machine
@@ -745,26 +805,29 @@ unsafe fn run_stolen(shared: &Shared, chunk: NonNull<Chunk>) {
         .chunks_run_by_workers
         .fetch_add(1, Ordering::Relaxed);
     // SAFETY: the caller's contract.
-    unsafe { run_chunk(chunk) };
+    unsafe { run_chunk(shared, chunk) };
 }
 
 /// Runs the chunk `chunk` describes.
 ///
 /// # Safety
 ///
-/// `chunk` must point at a live [`Chunk`] whose job is still in flight, and
-/// this chunk must not have been run already — running one twice would hand two
-/// threads the same `&mut` sub-slice.
-unsafe fn run_chunk(chunk: NonNull<Chunk>) {
+/// `chunk` must point at a live [`Chunk`] whose job is in flight on `shared`,
+/// and this chunk must not have been run already — running one twice would hand
+/// two threads the same `&mut` sub-slice.
+unsafe fn run_chunk(shared: &Shared, chunk: NonNull<Chunk>) {
     // SAFETY: the caller's contract. Shared rather than exclusive: the driver
     // owns the buffer these live in and only reads it while the job is in
     // flight.
     let chunk = unsafe { chunk.as_ref() };
-    // SAFETY: the driver stored this pointer before the entry was queued, and
-    // the job outlives every chunk of it by the caller's contract.
-    let job = unsafe { &*chunk.job.load(Ordering::Relaxed) };
-    // SAFETY: as above; the index came from the same entry as the job.
-    unsafe { run_one(job, chunk.index) };
+    // The driver stored this pointer before the entry was queued, and the
+    // push/steal pair orders that write before this read. Kept a pointer rather
+    // than turned into a `&Job` here: see `run_one` for what a reference in
+    // this frame would cost.
+    let job = chunk.job.load(Ordering::Relaxed);
+    // SAFETY: the job outlives every chunk of it by the caller's contract, and
+    // the index came from the same entry as the job.
+    unsafe { run_one(shared, job, chunk.index) };
 }
 
 /// Runs chunk `index` of `job`, wherever this is called from.
@@ -773,24 +836,63 @@ unsafe fn run_chunk(chunk: NonNull<Chunk>) {
 /// workers both come through here, so there is no second copy for the two modes
 /// to disagree in.
 ///
+/// # The decrement ends the job, so nothing borrowed from it may outlive it
+///
+/// The driver is free to return — and to drop the [`Job`], the `Split` and the
+/// caller's closure with it — the instant this decrement reaches zero. So by
+/// then this call must hold **nothing borrowed from the driver's frame**, and
+/// "borrowed" is stricter than "read": a reference handed to a function is
+/// *protected* for that whole call, and a protector outliving the allocation it
+/// points at is undefined behaviour even when nothing reads through it.
+///
+/// That is what shapes the two signatures here. `job` is a `*const Job` rather
+/// than a `&Job`, because a reference argument would be protected across the
+/// decrement and the return after it. And the count lives in [`Shared`] rather
+/// than in the job, because there is no way to write an atomic without
+/// borrowing it — every `AtomicUsize` operation takes `&self` — so a count
+/// inside the job would be protected across the very RMW that frees the job.
+/// Moving it into the `Arc` every worker already holds is what leaves no window
+/// at all rather than a narrower one.
+///
+/// Both halves are measured rather than argued. The original — a `&Job`
+/// argument, and the count a field of the job — is what Miri caught on the CI
+/// job, as "not granting access to tag … because that would remove
+/// \[SharedReadOnly for …\] which is strongly protected" in `Job`'s drop glue.
+/// The schedule is rare: a few hundred ordinary `cargo miri test` runs do not
+/// find it, and neither does `-Zmiri-preemption-rate` at any rate tried. What
+/// does is `-Zmiri-many-seeds` **over this module's tests together**:
+/// `-Zmiri-many-seeds=0..128` with `pool::` as the filter reddened the original
+/// within those seeds. Sweeping the single test the CI job failed is not the
+/// instrument — 512 seeds of it passed. The seed is not a handle either, since
+/// `-Zmiri-disable-isolation` lets real time into the schedule: the same sweep
+/// over the same source reddens on a different seed each time and on a different
+/// one again on another machine. That is the experiment to repeat if either half
+/// above is ever tidied away, because an ordinary run will go on passing.
+///
 /// # Safety
 ///
-/// `job` must be in flight, `index` must be one of its chunks, and no other
-/// thread may be running this same chunk.
-unsafe fn run_one(job: &Job, index: usize) {
+/// `job` must point at a live [`Job`] that is in flight on `shared`, `index`
+/// must be one of its chunks, and no other thread may be running this same
+/// chunk.
+unsafe fn run_one(shared: &Shared, job: *const Job, index: usize) {
     let outcome = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: the caller's contract, which is exactly `run_split`'s.
-        unsafe { (job.run)(job.payload, index) };
+        // SAFETY: the caller's contract, which is exactly `run_split`'s. Both
+        // fields are read by copy, so the job is never reached through a
+        // reference.
+        unsafe { ((*job).run)((*job).payload, index) };
     }));
     if let Err(panic) = outcome {
-        let mut first = lock(&job.panic);
+        // SAFETY: the caller's contract. This borrow is taken and dropped
+        // before the decrement below, which is the earliest the job can go
+        // away.
+        let mut first = lock(unsafe { &(*job).panic });
         if first.as_ref().is_none_or(|(earlier, _)| index < *earlier) {
             *first = Some((index, panic));
         }
     }
-    // Release, and **the last touch of `job`** — the driver's stack frame is
-    // gone the moment this reaches zero.
-    job.remaining.fetch_sub(1, Ordering::Release);
+    // Release, and **the last touch of anything this call was handed** — the
+    // driver's stack frame is gone the moment this reaches zero.
+    shared.remaining.fetch_sub(1, Ordering::Release);
 }
 
 /// Runs chunk `index` of the `par_for` described by `payload`.

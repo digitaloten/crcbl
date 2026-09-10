@@ -3679,24 +3679,39 @@ Three things it deliberately left:
 
 ## Jobs and threading (`21-jobs.md`)
 
-### The job pool drops a `Job` while a worker still holds a protected reference (2026-09-10)
+### The per-PR miri job interprets one schedule (2026-09-10)
 
-CI's `miri (crcbl-jobs)` job failed on 87e006c in
-`the_driver_and_the_workers_between_them_ran_every_chunk`: the `Job` lives in
-`Pool::par_for`'s frame, a worker inside `run_one` holds it as a strongly
-protected `&Job` argument, and `run_one`'s last act is the `remaining` decrement
-— so the driver returns and drops the `Job` while that protector is still live.
-No access happens after the decrement, which is why every other check passes and
-why it is invisible on hardware, but the protector outliving the deallocation is
-UB.
+`miri (crcbl-jobs)` runs `cargo miri test --tests -p crcbl-jobs` with one seed,
+so the interleavings it covers are whatever that seed produces. That is how the
+protected-borrow UB in `crcbl_jobs::pool::run_one` — now fixed — went unseen:
+green on the six CI runs before the one that caught it, and not reproducible
+locally in 40 plain runs of the failing test, nor with `-Zmiri-num-cpus=4`, nor
+at `-Zmiri-preemption-rate` 0.2 or 0.5.
 
-**It is rare**: green on the six CI runs before it, and not reproducible locally
-in 40 runs of that test under CI's exact flags, nor with `-Zmiri-num-cpus=4`, 24
-`-Zmiri-many-seeds`, or `-Zmiri-preemption-rate` at 0.2 and 0.5. **What it would
-take:** take the protected reference out of the worker path and put the worker's
-last write in storage that outlives the driver's frame — `Shared` is an `Arc`
-every worker already holds. A fix was delegated on 2026-09-10; if this entry is
-still here, it did not land.
+**What does find it is a seeded sweep over the whole module's tests.**
+`MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-many-seeds=0..128" cargo miri test -p crcbl-jobs --tests pool::`
+reddened the unfixed code here on its 58th seed, and the same sweep over
+`0..512` of the _one_ test CI named found nothing — so the instrument is the
+module's tests together, not the test that happened to fail. **The seed number
+is not a handle:** isolation is disabled, so real time leaks into the schedule
+and the sweep that reddened at 58 here reddened at a different seed elsewhere on
+the same source and toolchain. Treat the recipe as "a sweep of about a hundred
+seeds over `pool::tests`", never as a seed to re-run.
+
+- **Owed, and it is a decision.** Whether a sweep belongs anywhere. The per-PR
+  job cannot carry it: the sweep costs minutes against that job's present
+  half-minute. The weekly census in `cron.yml` could. Options: a `0..64` sweep
+  of `pool::tests` there, finding this class within a week rather than never; a
+  job of its own; or decline and accept that the next interleaving bug in this
+  crate is found by whichever push is unlucky.
+- **Coverage gap, stated plainly.** Nothing in the tree goes red when that
+  borrow is put back. The workspace suite, the native stress loops, the browser
+  jobs gate and an ordinary `cargo miri test` all pass with the old code,
+  because the UB has no observable effect on hardware. Only a seeded sweep does,
+  and `run_one`'s own docs carry the recipe.
+- **Not swept:** `mailbox`, `ring` and `deque` were read for the same shape —
+  each keeps its cross-thread state in an `Arc`, so no thread's last write lands
+  in another's stack frame — but no seeded sweep was run over their tests.
 
 ### The pipeline thread topology does not exist (2026-08-27)
 
