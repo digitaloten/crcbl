@@ -4993,21 +4993,6 @@ float-level nondeterminism between two runs is not what it holds.
 
 ## asteroids (`docs/plan/sample/02-asteroids.md`)
 
-### Asteroids' balance table is not validated beyond parsing (2026-09-07)
-
-**A gap, stated.** `Balance` in `apps/asteroids/src/balance.rs` is refused only
-by ron: an unknown field, a wrong type or a missing key is a field name, a line
-and a column, and everything that parses is accepted. So `max_bullets: 0` is a
-game that cannot shoot, `split_children: 0` is rocks that vanish rather than
-split, and a `first_wave_rocks` near `u32::MAX` panics in a debug build inside
-`Balance::wave_rocks`. None of these is unsound and none is silent for long, but
-none is refused at the boundary either.
-
-**What it would take:** a range check at the end of `Balance::load`, naming the
-field and the bound. **What it blocks:** nothing today — `--balance` is a
-developer's flag on a sample. Worth doing when a second sample copies the
-pattern.
-
 ### Asteroids' 10-minute soak and stale-handle session are unrun (2026-08-27)
 
 **Partly built.** `hundreds_of_spawns_and_deaths_leak_nothing` in

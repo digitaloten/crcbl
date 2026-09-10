@@ -1374,6 +1374,12 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- `apps/asteroids`' `--balance` now refuses a table that parses and cannot be
+  played, naming the field, the bound and the value: a count of zero, a
+  non-finite or non-positive rate, a negative delay, or a first wave above the
+  wave ceiling. `Balance::wave_rocks` saturates, so a long run cannot overflow
+  the wave count.
+
 - `crcbl::args::seed_u64` and `seed_u32` parse `--seed` for the five demos that
   take one; a seed too wide for a 32-bit generator is refused with the taker's
   name rather than truncated. Each demo keeps its own help prose.

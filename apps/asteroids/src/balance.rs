@@ -186,7 +186,95 @@ impl Balance {
             key: name.clone(),
             source: StorageError::Other(format!("not UTF-8: {error}")),
         })?;
-        crcbl::ron::from_str(&text).map_err(|error| BalanceError::parse(&name, &error))
+        let table: Self =
+            crcbl::ron::from_str(&text).map_err(|error| BalanceError::parse(&name, &error))?;
+        table.playable(&name)?;
+        Ok(table)
+    }
+
+    /// Refuses a table that parses and is not a game.
+    ///
+    /// **ron stops at the shape, and the shape is not the contract.** Every
+    /// field here has a type ron can check and a domain it cannot: a
+    /// `max_bullets` of zero is a ship that cannot shoot, a `split_children` of
+    /// zero is rocks that vanish instead of splitting, and a `first_wave_rocks`
+    /// above `max_wave_rocks` is a ceiling that fires on the opening wave. Each
+    /// of those is a table somebody would have to play to diagnose, so the
+    /// refusal happens here, naming the field and the bound.
+    ///
+    /// The float fields are checked for being finite and positive rather than
+    /// for a range: what a sensible thrust or damping is belongs to the table,
+    /// which is the whole reason it is a file, but a NaN or a zero is not a
+    /// tuning choice — a zero `ship_damping` is an infinite terminal speed and a
+    /// NaN spreads through every later position.
+    ///
+    /// # Errors
+    ///
+    /// [`BalanceError::Range`], naming the field, the bound it broke and the
+    /// value it had.
+    fn playable(&self, key: &str) -> Result<(), BalanceError> {
+        let refuse = |field: &'static str, bound: &'static str, value: String| {
+            Err(BalanceError::Range {
+                key: key.to_string(),
+                field,
+                bound,
+                value,
+            })
+        };
+
+        for (field, value) in [
+            ("ship_turn_rate", self.ship_turn_rate),
+            ("ship_thrust", self.ship_thrust),
+            ("ship_damping", self.ship_damping),
+            ("respawn_clear_radius", self.respawn_clear_radius),
+            ("bullet_speed", self.bullet_speed),
+            ("bullet_life", self.bullet_life),
+            ("fire_cooldown", self.fire_cooldown),
+        ] {
+            if !value.is_finite() || value <= 0.0 {
+                return refuse(
+                    field,
+                    "must be a finite number above zero",
+                    value.to_string(),
+                );
+            }
+        }
+
+        for (field, value) in [
+            ("respawn_delay", self.respawn_delay),
+            ("respawn_max_wait", self.respawn_max_wait),
+            ("split_angle_min", self.split_angle_min),
+            ("split_angle_range", self.split_angle_range),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return refuse(
+                    field,
+                    "must be a finite number, zero or above",
+                    value.to_string(),
+                );
+            }
+        }
+
+        for (field, value) in [
+            ("starting_lives", self.starting_lives as usize),
+            ("max_bullets", self.max_bullets),
+            ("split_children", self.split_children),
+            ("first_wave_rocks", self.first_wave_rocks as usize),
+            ("max_wave_rocks", self.max_wave_rocks as usize),
+        ] {
+            if value == 0 {
+                return refuse(field, "must be at least one", value.to_string());
+            }
+        }
+
+        if self.first_wave_rocks > self.max_wave_rocks {
+            return refuse(
+                "first_wave_rocks",
+                "must not be above `max_wave_rocks`",
+                self.first_wave_rocks.to_string(),
+            );
+        }
+        Ok(())
     }
 
     /// The table the file at `path` holds, or the message to refuse the run
@@ -218,14 +306,13 @@ impl Balance {
 
     /// How many rocks wave `wave` opens with. Wave 0 is the first.
     ///
-    /// # Panics
-    ///
-    /// In a debug build, if [`first_wave_rocks`](Self::first_wave_rocks) plus
-    /// `wave` overflows a `u32` — which needs a table asking for billions of
-    /// rocks in the opening wave.
+    /// Saturating rather than wrapping, and that is not defensive arithmetic
+    /// about a table [`load`](Self::load) already refused: `wave` is unbounded,
+    /// so a long enough run reaches the top of a `u32` whatever the opening
+    /// count is. The ceiling below is what the count means anyway.
     #[must_use]
     pub const fn wave_rocks(&self, wave: u32) -> u32 {
-        let count = self.first_wave_rocks + wave;
+        let count = self.first_wave_rocks.saturating_add(wave);
         if count > self.max_wave_rocks {
             self.max_wave_rocks
         } else {
@@ -260,6 +347,18 @@ pub enum BalanceError {
         /// What ron said, without the position it said it at.
         message: String,
     },
+    /// The text is this struct and one of its fields is outside the domain the
+    /// game can play.
+    Range {
+        /// The asset key the text came from.
+        key: String,
+        /// The field that is out of range.
+        field: &'static str,
+        /// What that field has to be.
+        bound: &'static str,
+        /// What it was instead.
+        value: String,
+    },
 }
 
 impl BalanceError {
@@ -284,6 +383,12 @@ impl std::fmt::Display for BalanceError {
                 column,
                 message,
             } => write!(f, "`{key}` line {line}, column {column}: {message}"),
+            Self::Range {
+                key,
+                field,
+                bound,
+                value,
+            } => write!(f, "`{key}`: `{field}` {bound}, not {value}"),
         }
     }
 }
@@ -364,6 +469,9 @@ mod tests {
             );
         }
         assert_eq!(balance.wave_rocks(500), balance.max_wave_rocks);
+        // `wave` is a `u32` and nothing bounds it, so the top of the type is a
+        // wave number this has to answer rather than overflow on.
+        assert_eq!(balance.wave_rocks(u32::MAX), balance.max_wave_rocks);
     }
 
     /// **A file that is not a balance table is refused by key, line and
@@ -385,6 +493,61 @@ mod tests {
             message.contains("startng_lives"),
             "ron names the field: {message}"
         );
+    }
+
+    /// **A table can parse and still not be a game**, and each of those is
+    /// refused by the field that is wrong rather than by a crash later.
+    ///
+    /// One case per rule in [`Balance::playable`]: a count of zero, a float that
+    /// must be positive and is not, a float that may be zero and is negative,
+    /// and the one rule about a pair of fields. A zero `max_bullets` is the case
+    /// that reads most like a game and plays least like one — the ship fires and
+    /// nothing leaves it.
+    #[test]
+    fn a_table_that_parses_and_cannot_be_played_is_refused_by_field() {
+        for (field, from, to, bound) in [
+            (
+                "max_bullets",
+                "max_bullets: 4",
+                "max_bullets: 0",
+                "at least one",
+            ),
+            (
+                "split_children",
+                "split_children: 2",
+                "split_children: 0",
+                "at least one",
+            ),
+            (
+                "ship_damping",
+                "ship_damping: 1.0",
+                "ship_damping: 0.0",
+                "above zero",
+            ),
+            (
+                "respawn_delay",
+                "respawn_delay: 1.0",
+                "respawn_delay: -1.0",
+                "zero or above",
+            ),
+            (
+                "first_wave_rocks",
+                "first_wave_rocks: 4",
+                "first_wave_rocks: 99",
+                "max_wave_rocks",
+            ),
+        ] {
+            let text = BUILT_IN_BALANCE_RON.replace(from, to);
+            assert_ne!(
+                text, BUILT_IN_BALANCE_RON,
+                "the committed table still says `{from}`"
+            );
+            let path = written(&format!("{field}.ron"), &text);
+            let message = Balance::read_file(&path)
+                .expect_err("a table outside the domain is not a game this can run");
+            assert!(message.contains(field), "the field is named: {message}");
+            assert!(message.contains(bound), "the bound is named: {message}");
+        }
     }
 
     /// A file that is not there is refused by the path the caller named, not by
