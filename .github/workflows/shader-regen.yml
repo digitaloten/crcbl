@@ -7,6 +7,11 @@
 name: shader regen
 
 on:
+  # A workflow that exists only on a non-default branch cannot be dispatched:
+  # GitHub resolves `workflow_dispatch` against the default branch. A push to
+  # this branch starts it instead, from this branch's own definition.
+  push:
+    branches: ['shader-regen']
   workflow_dispatch:
 
 permissions:
