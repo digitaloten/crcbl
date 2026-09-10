@@ -1163,7 +1163,7 @@ StructuredBuffer<uint> tables;
 // them in mesh MSL. Unindexed names link both stages. Keep the original
 // semantics for SPIR-V, WGSL and DXIL. Match this definition and the names
 // in mesh.slang and mesh_cluster.slang; each manifest source is standalone.
-#if CRCBL_TARGET_MSL
+#if defined(CRCBL_TARGET_MSL)
 #define CRCBL_MESH_SEMANTIC(original, metal_name) metal_name
 #else
 #define CRCBL_MESH_SEMANTIC(original, metal_name) original
