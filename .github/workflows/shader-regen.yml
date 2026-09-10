@@ -1,0 +1,64 @@
+# Diagnostic only — regenerate the committed shader artifacts on Linux, where
+# the pinned `dxc` runs. Never merged into a pull request; the artifacts it
+# emits are copied into the branch that needs them.
+#
+# The toolchain pins below are copied from `ci.yml`'s `shaders` job, so the
+# output is byte-identical to what that job's `--check` expects.
+name: shader regen
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regen:
+    name: regenerate committed shader artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SLANG_VERSION: '2026.14'
+      DXC_RELEASE: 'v1.9.2607'
+      DXC_ASSET: 'linux_dxc_2026_07_29.x86_x64.tar.gz'
+      SPIRV_TOOLS_VERSION: '2026.1-1'
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned spirv-tools
+        run: |
+          curl -sSfL --retry 3 --retry-delay 5 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 -o /tmp/spirv-tools.deb \
+            "http://archive.ubuntu.com/ubuntu/pool/universe/s/spirv-tools/spirv-tools_${SPIRV_TOOLS_VERSION}_amd64.deb"
+          timeout 120 sudo apt-get update \
+            || echo "the refresh did not finish; installing against the lists we have"
+          timeout 180 sudo apt-get install -y --no-install-recommends /tmp/spirv-tools.deb
+          spirv-val --version | head -1
+          spirv-dis --version | head -1
+      - name: Install the pinned slangc
+        run: |
+          curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors \
+            --connect-timeout 20 --max-time 180 -o slang.tar.gz \
+            "https://github.com/shader-slang/slang/releases/download/v${SLANG_VERSION}/slang-${SLANG_VERSION}-linux-x86_64-glibc-2.27.tar.gz"
+          mkdir -p "${RUNNER_TEMP}/slang"
+          tar xzf slang.tar.gz -C "${RUNNER_TEMP}/slang"
+          echo "CRCBL_SLANGC=${RUNNER_TEMP}/slang/bin/slangc" >>"$GITHUB_ENV"
+      - name: Install the pinned dxc
+        run: |
+          curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors \
+            --connect-timeout 20 --max-time 180 -o dxc.tar.gz \
+            "https://github.com/microsoft/DirectXShaderCompiler/releases/download/${DXC_RELEASE}/${DXC_ASSET}"
+          mkdir -p "${RUNNER_TEMP}/dxc"
+          tar xzf dxc.tar.gz -C "${RUNNER_TEMP}/dxc" --strip-components=1
+          chmod +x "${RUNNER_TEMP}/dxc/bin/dxc"
+          echo "CRCBL_DXC=${RUNNER_TEMP}/dxc/bin/dxc" >>"$GITHUB_ENV"
+      - name: Regenerate every target
+        run: crates/crcbl-shaders/tools/compile-shaders.sh
+      - name: Upload the regenerated artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: shader-artifacts
+          path: |
+            crates/crcbl-shaders/spirv
+            crates/crcbl-shaders/wgsl
+            crates/crcbl-shaders/msl
+            crates/crcbl-shaders/dxil
