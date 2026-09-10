@@ -16,7 +16,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.140
-      - name: Declare UI texture residency explicitly
+      - name: Let Metal infer UI texture usage
         shell: bash
         run: |
           set -euo pipefail
@@ -30,11 +30,11 @@ jobs:
             --run-ignored all --no-tests fail --no-fail-fast --test-threads=1 \
             --success-output immediate \
             -E 'test(the_ui_scene_draws_through_the_ui_renderer_and_matches_its_golden)' \
-            > probe-logs/ui-explicit-texture-read.log 2>&1
+            > probe-logs/ui-unknown-texture-usage.log 2>&1
           result=$?
           set -e
-          echo "ui-explicit-texture-read exit=$result" | tee probe-logs/results.txt
-          tail -240 probe-logs/ui-explicit-texture-read.log
+          echo "ui-unknown-texture-usage exit=$result" | tee probe-logs/results.txt
+          tail -240 probe-logs/ui-unknown-texture-usage.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:

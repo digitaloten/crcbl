@@ -2180,7 +2180,8 @@ impl Device for MetalDevice {
         let descriptor = MTLTextureDescriptor::new();
         descriptor.setTextureType(conv::texture_type(desc.image_type, layers, desc.samples));
         descriptor.setPixelFormat(conv::pixel_format(desc.format));
-        descriptor.setUsage(conv::texture_usage(desc.usage));
+        let _declared_usage = conv::texture_usage(desc.usage);
+        descriptor.setUsage(objc2_metal::MTLTextureUsage::Unknown);
         // An image is device-local — `MTLStorageMode::Private` — and
         // `ImageDesc` has no field that could say otherwise; see
         // `MemoryLocation`. Metal ignores a `Private` texture's cache mode, so

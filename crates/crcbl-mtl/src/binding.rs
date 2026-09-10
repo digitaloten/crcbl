@@ -1067,21 +1067,6 @@ pub(crate) fn apply(
             }
             BoundResource::Texture(raw) => {
                 let id = identity(raw);
-                let stages = render_stages(binding.visibility);
-                if !stages.is_empty() {
-                    eprintln!(
-                        "crcbl-mtl probe: texture {:?} usage={:?} parent_usage={:?} stages={:?}",
-                        raw.label(),
-                        raw.usage(),
-                        raw.parentTexture().map(|parent| parent.usage()),
-                        stages,
-                    );
-                    encoder.useResource_usage_stages(
-                        ProtocolObject::from_ref(&**raw),
-                        MTLResourceUsage::Read,
-                        stages,
-                    );
-                }
                 // SAFETY: as above, minus the offset — the index was bounded by
                 // the texture table's capacity at layout planning and the
                 // texture is kept alive by the group.
