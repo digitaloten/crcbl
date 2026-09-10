@@ -246,11 +246,11 @@ cargo test --workspace
 ```
 
 All three, every time — a green clippy with a skipped `fmt` is a red CI run over
-whitespace. As of 2026-09-03 `cargo test --workspace` reports **6,006 passing
-tests** across 178 test binaries and doctest runs, with 21 ignored: six that
-need a real device pinned with `CRCBL_GPU`, or a generator rerun, and are driven
-by their own scripts, and fifteen doctests marked `ignore` because they are
-illustrative fragments rather than runnable programs.
+whitespace. As of 2026-09-10 `cargo test --workspace` reports **6,475 passing
+tests** across 195 test binaries and doctest runs, with 24 ignored: eight that
+need a real device pinned with `CRCBL_GPU`, a generator rerun, or a wall-clock
+measurement, and are driven by their own scripts, and sixteen doctests marked
+`ignore` because they are illustrative fragments rather than runnable programs.
 
 That command is the floor rather than the suite. The device-bound work lives in
 the nine `crates/crcbl/tests/run-*-e2e.sh` harnesses, each of which pins a
