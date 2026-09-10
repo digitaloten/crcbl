@@ -16,24 +16,33 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.140
-      - name: Run renderer validation on macOS 15
+      - name: Run full Metal validation on macOS 15
         shell: bash
+        env:
+          CRCBL_GPU: mtl
+          CRCBL_MTL_VALIDATION: '1'
+          MTL_DEBUG_LAYER: '1'
+          MTL_DEBUG_LAYER_ERROR_MODE: assert
+          MTL_DEBUG_LAYER_WARNING_MODE: assert
+          MTL_SHADER_VALIDATION: '1'
+          MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING: '1'
+          MTL_SHADER_VALIDATION_REPORT_TO_STDERR: '1'
+          MTL_SHADER_VALIDATION_ABORT_ON_FAULT: '1'
         run: |
           set -euo pipefail
           mkdir probe-logs
           set +e
-          CRCBL_GPU=mtl MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert \
-            MTL_DEBUG_LAYER_WARNING_MODE=assert MTL_SHADER_VALIDATION=1 \
-            MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING=1 \
-            MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1 \
-            cargo nextest run --locked -p crcbl --features render-e2e --test render_e2e \
-            --run-ignored all --no-tests fail --no-fail-fast --test-threads=1 \
-            --success-output immediate \
-            -E 'test(the_cube_scene_draws_through_the_forward_renderer_and_matches_its_golden) | test(the_ui_scene_draws_through_the_ui_renderer_and_matches_its_golden) | test(a_fragment_crossing_a_clipmap_level_fades_into_it)' \
+          crates/crcbl-mtl/tests/run-mtl-e2e.sh --no-fail-fast --test-threads=1 \
+            -E 'not test(a_layer_swapchain_acquires_a_drawable_and_presents_it)' \
+            > probe-logs/hardware-macos-15.log 2>&1
+          hardware=$?
+          crates/crcbl/tests/run-render-e2e.sh --no-fail-fast --test-threads=1 \
             > probe-logs/renderer-macos-15.log 2>&1
-          result=$?
+          renderer=$?
           set -e
-          echo "renderer-macos-15 exit=$result" | tee probe-logs/results.txt
+          echo "hardware-macos-15 exit=$hardware" | tee probe-logs/results.txt
+          echo "renderer-macos-15 exit=$renderer" | tee -a probe-logs/results.txt
+          tail -160 probe-logs/hardware-macos-15.log
           tail -240 probe-logs/renderer-macos-15.log
       - uses: actions/upload-artifact@v7
         if: always()
