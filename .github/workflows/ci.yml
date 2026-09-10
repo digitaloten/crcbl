@@ -2719,14 +2719,17 @@ jobs:
       # rendered nothing produces, because every surface is then lit and no
       # artifact appears anywhere.
       #
-      # Same validation switches as the renderer steps, for the reason argued at
-      # the ForwardRenderer one — `MTL_SHADER_VALIDATION` deliberately absent.
+      # API assertions and fatal shader validation, matching the renderer gate.
       - name: Check the forward pass on Metal
         env:
           CRCBL_GPU: mtl
           MTL_DEBUG_LAYER: '1'
-          MTL_DEBUG_LAYER_ERROR_MODE: nslog
-          MTL_DEBUG_LAYER_WARNING_MODE: nslog
+          MTL_DEBUG_LAYER_ERROR_MODE: assert
+          MTL_DEBUG_LAYER_WARNING_MODE: assert
+          MTL_SHADER_VALIDATION: '1'
+          MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING: '1'
+          MTL_SHADER_VALIDATION_REPORT_TO_STDERR: '1'
+          MTL_SHADER_VALIDATION_ABORT_ON_FAULT: '1'
         run: crates/crcbl/tests/run-forward-e2e.sh
 
       # The sprite pass on Metal. Until this step existed no Metal run had drawn
@@ -2757,25 +2760,22 @@ jobs:
       # granularity this backend has, and until now nothing had read the level it
       # selected on anything but Vulkan.
       #
-      # Same validation switches as the renderer steps, for the reason argued at
-      # the ForwardRenderer one — `MTL_SHADER_VALIDATION` deliberately absent.
+      # API assertions and fatal shader validation, matching the renderer gate.
       - name: Draw the lit mesh on Metal
         env:
           CRCBL_GPU: mtl
           MTL_DEBUG_LAYER: '1'
-          MTL_DEBUG_LAYER_ERROR_MODE: nslog
-          MTL_DEBUG_LAYER_WARNING_MODE: nslog
+          MTL_DEBUG_LAYER_ERROR_MODE: assert
+          MTL_DEBUG_LAYER_WARNING_MODE: assert
+          MTL_SHADER_VALIDATION: '1'
+          MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING: '1'
+          MTL_SHADER_VALIDATION_REPORT_TO_STDERR: '1'
+          MTL_SHADER_VALIDATION_ABORT_ON_FAULT: '1'
         run: crates/crcbl/tests/run-mesh-e2e.sh
 
-      # The physical-tiling count on Metal. It draws through `ForwardRenderer`,
-      # so the same validation switches the step above sets apply here and for
-      # the same reason — `MTL_SHADER_VALIDATION` deliberately absent, as
-      # argued at the ForwardRenderer step.
-      #
-      # This suite draws no UI pass, so the finding that held that switch off
-      # does not arise here; leaving it off anyway keeps the two renderer steps
-      # comparable rather than making this one the odd configuration nobody
-      # else runs.
+      # The physical-tiling count on Metal retains its diagnostic API logging
+      # settings without shader validation until separately verified under the
+      # strict settings used by the mesh suite above. This suite draws no UI pass.
       - name: Count the physical tiling on Metal
         env:
           CRCBL_GPU: mtl
