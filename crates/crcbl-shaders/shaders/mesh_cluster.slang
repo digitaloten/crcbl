@@ -1159,30 +1159,40 @@ StructuredBuffer<uint> tables;
 /// **Member order is the interface**, not just the layout: locations are
 /// assigned in declaration order and the consumer is the other file's fragment
 /// stage. See the header.
+// Slang 2026.14 splits numeric semantic indices in raster MSL, but keeps
+// them in mesh MSL. Unindexed names link both stages. Keep the original
+// semantics for SPIR-V, WGSL and DXIL. Match this definition and the names
+// in mesh.slang and mesh_cluster.slang; each manifest source is standalone.
+#if CRCBL_TARGET_MSL
+#define CRCBL_MESH_SEMANTIC(original, metal_name) metal_name
+#else
+#define CRCBL_MESH_SEMANTIC(original, metal_name) original
+#endif
+
 struct VertexOutput
 {
     float4 position : SV_Position;
-    float3 world_position : POSITION0;
-    float3 world_normal : NORMAL0;
-    float4 color : COLOR0;
+    float3 world_position : CRCBL_MESH_SEMANTIC(POSITION0, CRCBL_WORLD_POSITION);
+    float3 world_normal : CRCBL_MESH_SEMANTIC(NORMAL0, CRCBL_WORLD_NORMAL);
+    float4 color : CRCBL_MESH_SEMANTIC(COLOR0, CRCBL_COLOR);
     /// This primitive's material row. `nointerpolation` for the reason
     /// `mesh.slang` gives at length: an index is not a quantity, and
     /// interpolating one produces a fragment reading a row no vertex named.
-    nointerpolation uint material : TEXCOORD0;
-    float2 uv : TEXCOORD1;
+    nointerpolation uint material : CRCBL_MESH_SEMANTIC(TEXCOORD0, CRCBL_MATERIAL);
+    float2 uv : CRCBL_MESH_SEMANTIC(TEXCOORD1, CRCBL_UV);
     /// This vertex's clip position and where it was last frame, both undivided.
     /// `mesh.slang` declares them with the whole argument for why the
     /// perspective divide happens in the fragment stage rather than here.
-    float4 clip_position : TEXCOORD2;
-    float4 previous_clip_position : TEXCOORD3;
+    float4 clip_position : CRCBL_MESH_SEMANTIC(TEXCOORD2, CRCBL_CLIP_POSITION);
+    float4 previous_clip_position : CRCBL_MESH_SEMANTIC(TEXCOORD3, CRCBL_PREVIOUS_CLIP_POSITION);
     /// This vertex's surface tangent in world space, through the instance
     /// transform's **bare 3x3** — `mesh.slang` declares it with the whole
     /// account of why a tangent and a normal take different matrices.
-    float3 world_tangent : TEXCOORD4;
+    float3 world_tangent : CRCBL_MESH_SEMANTIC(TEXCOORD4, CRCBL_WORLD_TANGENT);
     /// Which frame the fragment stage perturbs this primitive's normal map in,
     /// and which way its bitangent points. `nointerpolation` for `material`'s
     /// reason: neither bit is a quantity.
-    nointerpolation uint frame : TEXCOORD5;
+    nointerpolation uint frame : CRCBL_MESH_SEMANTIC(TEXCOORD5, CRCBL_FRAME);
 };
 
 /// Matching `static const uint FRAME_AUTHORED_TANGENTS` in `mesh.slang`.
