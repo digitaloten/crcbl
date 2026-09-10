@@ -694,10 +694,22 @@ impl MetalDevice {
 /// would always be empty, and a stage `crcbl_mtl::bind_cache` has no argument
 /// tables for has nowhere to put a bit.
 fn raster_mask(label: &str, reflection: Option<&MTLRenderPipelineReflection>) -> BindingMask {
-    if reflection.is_none() {
+    let Some(reflection) = reflection else {
         missing_reflection(label);
-    }
-    BindingMask::all()
+        return BindingMask::all();
+    };
+    BindingMask::from_reflection(
+        reflection
+            .vertexBindings()
+            .iter()
+            .map(|binding| reflected(Stage::Vertex, &binding))
+            .chain(
+                reflection
+                    .fragmentBindings()
+                    .iter()
+                    .map(|binding| reflected(Stage::Fragment, &binding)),
+            ),
+    )
 }
 
 /// Says which pipeline fell back to binding everything, so the fallback is
