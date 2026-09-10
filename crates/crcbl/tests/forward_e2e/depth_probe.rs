@@ -1569,7 +1569,7 @@ fn render_probe(
         // one hand-written barrier in this file either.
         let sink = &reflectivity_handle;
         graph
-            .add_compute_pass("reflectivity probe")
+            .add_copy_pass("reflectivity probe")
             .use_image(reflectivity, ResourceState::TransferSrc)
             .execute(move |ctx| sink.set(Some(ctx.image(reflectivity))));
         graph.compile(&*pool).expect("a legal frame")
