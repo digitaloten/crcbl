@@ -90,3 +90,23 @@ MTL_DEBUG_LAYER_ERROR_MODE=nslog MTL_DEBUG_LAYER_WARNING_MODE=nslog \
 
 These results establish correctness on the tested hardware and settings. They do
 not measure a throughput improvement or native window/presentation behavior.
+
+## Hosted verification
+
+The updated hardware harness also passes 72/72 tests on the macOS 26 Apple
+Paravirtual device, with API logging and all fatal shader reporting defaults
+([job 102831154895](https://github.com/digitaloten/crcbl/actions/runs/34464924574/job/102831154895)).
+The captured test summary and harness report confirm the test count, validation
+interposition and zero failed submissions; this result is not inferred solely
+from the diagnostic workflow's status.
+
+The strict mesh suite passes 93/93 on macOS 15 in the same diagnostic run. Its
+captured terminal summary was preserved even though the combined mesh/forward
+job later hit its 20-minute limit during the forward suite. A partial forward
+run is not counted as a pass.
+
+A forward-only retry then passes 37/37 with API assertions and fatal shader
+validation on macOS 15
+([run 34466958609](https://github.com/digitaloten/crcbl/actions/runs/34466958609)).
+All hosted iteration runs used the exact crate source tree at `f0cc6fa0`; later
+changes at this validation checkpoint only update CI configuration and reports.
