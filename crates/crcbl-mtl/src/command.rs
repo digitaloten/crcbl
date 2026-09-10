@@ -605,7 +605,10 @@ impl RenderArgument<'_> {
                 candidates.insert(*stage, Table::Buffer, *slot);
             }
         }
-        candidates
+        // Keep inactive-stage bytes in the logical state, but do not send them
+        // through native setters until a pipeline reads that table. A shared
+        // raster/mesh layout can declare both stages while only one is active.
+        candidates.intersection(pipeline)
     }
 }
 

@@ -691,3 +691,359 @@ struct Sources {{ device const uint* values[2]; }};
         device.destroy_bind_group_layout(set);
     }
 }
+
+#[test]
+#[ignore = "requires real Metal mesh hardware"]
+fn native_mesh_same_pass_raster_mesh_argument_replacement() {
+    use crcbl_hal::{
+        BindGroupLayoutEntry, BindingFlags, BindingKind, BindingResource, PushConstantRange,
+        ShaderStages,
+    };
+    let (_validated, device) = open_mesh_proof_device();
+    let source = format!(
+        r#"{MESH_MSL}
+struct RasterVertex {{ float4 position [[position]]; float4 color; }};
+[[vertex]] RasterVertex coloredVertex(uint index [[vertex_id]], constant float4& color [[buffer(0)]]) {{
+    const float2 positions[3] = {{float2(0, .8), float2(-.8, -.8), float2(.8, -.8)}};
+    RasterVertex v; v.position = float4(positions[index], .25, 1); v.color = color; return v;
+}}
+[[mesh]] void coloredMesh(Triangle output, constant float4& color [[buffer(0)]]) {{
+    emit_triangle(output, float4(color.zxy, color.w));
+}}
+"#
+    );
+    let module = device
+        .create_shader_module(&msl_module(&source, "mixed raster mesh proof"))
+        .unwrap();
+    let stages = ShaderStages::VERTEX | ShaderStages::MESH;
+    let set = device
+        .create_bind_group_layout(&BindGroupLayoutDesc {
+            label: None,
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: stages,
+                kind: BindingKind::UniformBuffer { dynamic: false },
+                count: 1,
+                flags: BindingFlags::empty(),
+            }],
+        })
+        .unwrap();
+    let grouped_layout = device
+        .create_pipeline_layout(&PipelineLayoutDesc {
+            label: None,
+            bind_group_layouts: &[set],
+            push_constants: None,
+        })
+        .unwrap();
+    let inline_layout = device
+        .create_pipeline_layout(&PipelineLayoutDesc {
+            label: None,
+            bind_group_layouts: &[],
+            push_constants: Some(PushConstantRange {
+                stages,
+                offset: 0,
+                size: 16,
+            }),
+        })
+        .unwrap();
+    let raster = |layout| {
+        device
+            .create_graphics_pipeline(&GraphicsPipelineDesc {
+                label: Some("mixed proof raster"),
+                layout,
+                vertex: ShaderEntry {
+                    module,
+                    entry_point: "coloredVertex",
+                },
+                fragment: Some(ShaderEntry {
+                    module,
+                    entry_point: "fragmentMain",
+                }),
+                primitive: PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: MultisampleState::default(),
+                color_targets: &[ColorTargetState::opaque(Format::Rgba8Unorm)],
+            })
+            .unwrap()
+    };
+    let raster_grouped = raster(grouped_layout);
+    let raster_inline = raster(inline_layout);
+    let mesh_grouped = pipeline(&device, module, grouped_layout, None, "coloredMesh");
+    let mesh_inline = pipeline(&device, module, inline_layout, None, "coloredMesh");
+    let colors = [
+        [1f32, 0., 0., 1.],
+        [0., 1., 0., 1.],
+        [0., 0., 1., 1.],
+        [1., 1., 0., 1.],
+        [1., 0., 1., 1.],
+        [0., 1., 1., 1.],
+    ];
+    // Mesh rotates RGB, so the first raster/mesh switch can reuse the exact
+    // same group and native buffer while still producing distinct pixels.
+    // A cache incorrectly shared between Vertex and Mesh would skip that bind.
+    let inputs = [
+        colors[0], colors[0], colors[1], colors[4], colors[4], colors[5],
+    ];
+    let mut buffers = Vec::new();
+    let mut groups = Vec::new();
+    for color in inputs {
+        let buffer = device
+            .create_buffer(&BufferDesc {
+                label: None,
+                size: 16,
+                usage: BufferUsage::UNIFORM,
+                memory: MemoryLocation::HostUpload,
+            })
+            .unwrap();
+        let data: Vec<u8> = color.into_iter().flat_map(f32::to_ne_bytes).collect();
+        device.write_buffer(buffer, 0, &data).unwrap();
+        let group = device
+            .create_bind_group(&BindGroupDesc {
+                label: None,
+                layout: set,
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    array_index: 0,
+                    resource: BindingResource::whole_buffer(buffer),
+                }],
+                variable_count: None,
+            })
+            .unwrap();
+        buffers.push(buffer);
+        groups.push(group);
+    }
+    let pixels = draw_canvas(&device, Format::Rgba8Unorm, |encoder| {
+        for (tile, (pipeline, is_mesh, inline)) in [
+            (raster_grouped, false, false),
+            (mesh_grouped, true, false),
+            (mesh_inline, true, true),
+            (mesh_grouped, true, false),
+            (raster_inline, false, true),
+            (raster_grouped, false, false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            encoder.set_viewport(&Viewport {
+                x: (tile * 10) as f32,
+                ..Viewport::from_size(10, CANVAS.height)
+            });
+            encoder.set_scissor(&Rect2d {
+                x: (tile * 10) as i32,
+                ..Rect2d::from_size(10, CANVAS.height)
+            });
+            encoder.bind_graphics_pipeline(pipeline);
+            if inline {
+                let bytes: Vec<u8> = inputs[tile]
+                    .into_iter()
+                    .flat_map(f32::to_ne_bytes)
+                    .collect();
+                encoder.push_constants(stages, 0, &bytes, inline_layout);
+            } else {
+                let group = if tile == 1 { groups[0] } else { groups[tile] };
+                encoder.bind_group(0, group, &[], grouped_layout);
+            }
+            if is_mesh {
+                encoder.draw_mesh_tasks(1, 1, 1);
+            } else {
+                encoder.draw(0..3, 0..1);
+            }
+        }
+        for &group in &groups {
+            device.destroy_bind_group(group);
+        }
+        for &buffer in &buffers {
+            device.destroy_buffer(buffer);
+        }
+    });
+    for (tile, color) in colors.into_iter().enumerate() {
+        let expected = color.map(|component| (component * 255.) as u8);
+        assert_eq!(
+            texel_at(&pixels, tile as u32 * 10 + 5, CANVAS.height / 2),
+            expected,
+            "tile {tile}: raster/mesh and group/inline replacement must preserve the last writer"
+        );
+        assert_eq!(texel_at(&pixels, tile as u32 * 10, 0), CLEAR_TEXEL);
+    }
+    for pipeline in [raster_grouped, raster_inline, mesh_grouped, mesh_inline] {
+        device.destroy_graphics_pipeline(pipeline);
+    }
+    device.destroy_shader_module(module);
+    device.destroy_pipeline_layout(grouped_layout);
+    device.destroy_pipeline_layout(inline_layout);
+    device.destroy_bind_group_layout(set);
+}
+
+#[test]
+#[ignore = "requires real Metal mesh hardware"]
+fn native_mesh_writable_task_mesh_bindless_readback() {
+    use crcbl_hal::{
+        BindGroupLayoutEntry, BindingFlags, BindingKind, BindingResource, ShaderStages,
+    };
+    let (_validated, device) = open_mesh_proof_device();
+    let source = format!(
+        r#"{MESH_MSL}
+struct Sources {{ device uint* values[2]; }};
+struct Payload {{ uint value; }};
+[[object]] void writingObject(object_data Payload& payload [[payload]], mesh_grid_properties grid,
+    constant Sources& output [[buffer(0)]]) {{
+    payload.value = 0x10203040u;
+    *output.values[1] = payload.value;
+    grid.set_threadgroups_per_grid(uint3(1));
+}}
+[[mesh]] void writingMesh(Triangle mesh, object_data const Payload& payload [[payload]],
+    constant Sources& output [[buffer(1)]]) {{
+    *output.values[1] = payload.value ^ 0x55667788u;
+    emit_triangle(mesh, float4(64.,128.,192.,255.) / 255.);
+}}
+"#
+    );
+    let module = device
+        .create_shader_module(&msl_module(&source, "writable task mesh proof"))
+        .unwrap();
+    let mut sets = Vec::new();
+    let mut groups = Vec::new();
+    let mut buffers = Vec::new();
+    for stage in [ShaderStages::TASK, ShaderStages::MESH] {
+        let set = device
+            .create_bind_group_layout(&BindGroupLayoutDesc {
+                label: None,
+                entries: &[BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: stage,
+                    kind: BindingKind::StorageBuffer {
+                        read_only: false,
+                        dynamic: false,
+                    },
+                    count: 2,
+                    flags: BindingFlags::VARIABLE_COUNT,
+                }],
+            })
+            .unwrap();
+        let sources: Vec<_> = (0..2)
+            .map(|_| {
+                device
+                    .create_buffer(&BufferDesc {
+                        label: Some("writable bindless element"),
+                        size: 4,
+                        usage: BufferUsage::STORAGE
+                            | BufferUsage::TRANSFER_SRC
+                            | BufferUsage::TRANSFER_DST,
+                        memory: MemoryLocation::DeviceLocal,
+                    })
+                    .unwrap()
+            })
+            .collect();
+        let group = device
+            .create_bind_group(&BindGroupDesc {
+                label: None,
+                layout: set,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        array_index: 0,
+                        resource: BindingResource::whole_buffer(sources[0]),
+                    },
+                    BindGroupEntry {
+                        binding: 0,
+                        array_index: 1,
+                        resource: BindingResource::whole_buffer(sources[1]),
+                    },
+                ],
+                variable_count: Some(2),
+            })
+            .unwrap();
+        sets.push(set);
+        groups.push(group);
+        buffers.extend(sources);
+    }
+    let layout = device
+        .create_pipeline_layout(&PipelineLayoutDesc {
+            label: None,
+            bind_group_layouts: &sets,
+            push_constants: None,
+        })
+        .unwrap();
+    let pipeline = pipeline(
+        &device,
+        module,
+        layout,
+        Some("writingObject"),
+        "writingMesh",
+    );
+    let queue = device.queue(QueueKind::Graphics).unwrap();
+    let readback = readback_buffer(&device, 16);
+    let (image, view) = color_target_of(&device, CANVAS, Format::Rgba8Unorm);
+    let mut encoder = device.create_command_encoder(&CommandEncoderDesc { label: None, queue });
+    for &buffer in &buffers {
+        encoder.clear_buffer(buffer, 0, 4);
+    }
+    encoder.begin_render_pass(&RenderPassDesc {
+        label: Some("writable task mesh"),
+        color_attachments: &[ColorAttachment {
+            view,
+            resolve: None,
+            load: LoadOp::Clear,
+            store: StoreOp::Discard,
+            clear: ClearValue::color(CLEAR),
+        }],
+        depth_stencil_attachment: None,
+        render_area: Rect2d::from_size(CANVAS.width, CANVAS.height),
+        timestamp_writes: None,
+    });
+    encoder.set_viewport(&Viewport::from_size(CANVAS.width, CANVAS.height));
+    encoder.set_scissor(&Rect2d::from_size(CANVAS.width, CANVAS.height));
+    encoder.bind_graphics_pipeline(pipeline);
+    for (slot, &group) in groups.iter().enumerate() {
+        encoder.bind_group(slot as u32, group, &[], layout);
+    }
+    encoder.draw_mesh_tasks(1, 1, 1);
+    // Recorded bindings must retain both address tables before replay starts.
+    for &group in &groups {
+        device.destroy_bind_group(group);
+    }
+    encoder.end_render_pass();
+    for (element, &buffer) in buffers.iter().enumerate() {
+        encoder.copy_buffer_to_buffer(&BufferCopy {
+            src: buffer,
+            src_offset: 0,
+            dst: readback,
+            dst_offset: element as u64 * 4,
+            size: 4,
+        });
+        // Copy recording/native encoders retain the output after owner removal.
+        device.destroy_buffer(buffer);
+    }
+    let commands = encoder.finish().unwrap();
+    device.submit(queue, &SubmitInfo::new(&[commands])).unwrap();
+    let request = device
+        .request_readback(&ReadbackDesc {
+            label: None,
+            buffer: readback,
+            offset: 0,
+            size: 16,
+            after: None,
+        })
+        .unwrap();
+    let bytes = drain(&device, request, 16);
+    let words: Vec<_> = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_ne_bytes(word.try_into().unwrap()))
+        .collect();
+    assert_eq!(
+        words,
+        [0, 0x10203040, 0, 0x10203040 ^ 0x55667788],
+        "task and mesh writes target element1, preserve element0 and survive owner destruction"
+    );
+    device.destroy_readback(request);
+    device.destroy_buffer(readback);
+    device.destroy_command_buffer(commands);
+    device.destroy_graphics_pipeline(pipeline);
+    device.destroy_shader_module(module);
+    device.destroy_pipeline_layout(layout);
+    device.destroy_image_view(view);
+    device.destroy_image(image);
+    for set in sets {
+        device.destroy_bind_group_layout(set);
+    }
+}
