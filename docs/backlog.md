@@ -5589,18 +5589,6 @@ remove.
 explicitly handed to bracket when breach went LAN-only. If bracket does not
 build it, nothing does.
 
-### bracket's recorded numbers are absent from the doc (2026-08-27)
-
-**Not recorded.** The exit criteria ask for a stated population size converging
-to true skill within a stated tolerance over a stated number of matches, "the
-numbers recorded here, from a run, not estimated", plus a queue-time versus
-match-quality curve at several population sizes including the degenerate small
-one. `bracket sim` prints a report; no figure from it is in the doc.
-
-**What it would take:** running it and pasting the output. Cheap. **What it
-blocks:** two exit criteria, and it is the least expensive unclosed item in this
-whole audit.
-
 ### The two pointer axes: what is deliberate, and the arm nothing exercises (2026-08-28)
 
 `HostedGame::cursor` answers `Option<CursorIcon>` and `Loop::reconcile_cursor`

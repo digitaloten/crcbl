@@ -158,6 +158,39 @@ uncertainty instead of being told. `sim`'s
 `docs/notes/simulation.md` is the record. It is a six-fold reduction and not a
 cure: at 100000 ticks the spread is 1466–1547 and still climbing.
 
+**The two measured exit criteria, from runs of `bracket sim` on 2026-09-10** at
+2000 ticks and seed 1, built from this tree. `rating error` is the mean distance
+from true skill at the end of the run; the start of each run is the error a
+ladder that knows nothing has, which falls with population because a larger
+population's mean is closer to the middle of the skill range.
+
+| players | matches | wait, ticks | pairing, points apart | rating error, points |
+| ------- | ------- | ----------- | --------------------- | -------------------- |
+| 2       | 6       | 30.83       | 400.6                 | 194.9                |
+| 4       | 150     | 31.01       | 261.2                 | 29.0                 |
+| 8       | 859     | 9.00        | 107.6                 | 42.5                 |
+| 16      | 2971    | 3.48        | 59.3                  | 27.1                 |
+| 64      | 15099   | 1.42        | 37.5                  | 34.5                 |
+| 256     | 63146   | 1.06        | 18.0                  | 36.2                 |
+| 1024    | 255607  | 1.01        | 5.8                   | 39.7                 |
+
+**Convergence at a stated size:** 64 players over roughly fifteen thousand
+matches land between 25.7 and 34.5 points of mean error, from 254.0, across five
+seeds — five runs at seeds 1 to 5 gave 34.5, 27.0, 25.7, 31.7 and 28.1 against
+match counts of 15,099 to 15,241. So the tolerance this sample claims is **under
+40 points on a 1000-point skill range**, which is the figure to hold a change
+against rather than a hope.
+
+**The degenerate case is the interesting row, and it is both halves of the
+trade-off at once.** With two players the matchmaker has exactly one pair
+available, so it cannot choose a better opponent and it cannot fill the queue
+either: it waits thirty ticks _and_ pairs four hundred points apart, and only
+six matches happen in the whole run. Four players halve the pairing gap with the
+same wait; the wait only falls once there is a queue to pick from, and from
+sixteen players up it is a tick or two. The curve is monotone in pairing quality
+from four players up, while rating error is flat within its own seed spread from
+four players up — which says what the ladder needs is matches, not crowds.
+
 **Milestone 2 is blocked, and the blocker is narrower than "there is no UDP".**
 There is no UDP transport and no LAN discovery — `crcbl-net` ships
 `InMemoryTransport` and nothing else — but that is not what stands between this
