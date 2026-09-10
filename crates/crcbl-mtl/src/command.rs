@@ -1131,7 +1131,7 @@ pub(crate) struct MetalCommandEncoder {
     /// [`Self::bound_threads`].
     compute_mask: BindingMask,
     /// The compute pass's bind groups in force, one per slot, in the order
-    /// their binds were issued — [`RenderReplay::groups`] argues why they are
+    /// their binds were issued — [`RenderReplay::arguments`] argues why they are
     /// kept, and the argument is the seam's rather than the render encoder's.
     ///
     /// The bindings are **owned** here where the render side borrows them from
