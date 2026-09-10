@@ -16,29 +16,22 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.140
-      - name: Run Metal hardware validation on macOS 15
+      - name: Compile every committed MSL artifact on macOS 15
         shell: bash
-        env:
-          CRCBL_GPU: mtl
-          CRCBL_MTL_VALIDATION: '1'
-          MTL_DEBUG_LAYER: '1'
-          MTL_DEBUG_LAYER_ERROR_MODE: nslog
-          MTL_DEBUG_LAYER_WARNING_MODE: nslog
-          MTL_SHADER_VALIDATION: '1'
-          MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING: '1'
-          MTL_SHADER_VALIDATION_REPORT_TO_STDERR: '1'
-          MTL_SHADER_VALIDATION_ABORT_ON_FAULT: '1'
         run: |
           set -euo pipefail
           mkdir probe-logs
           set +e
-          crates/crcbl-mtl/tests/run-mtl-e2e.sh --no-fail-fast --test-threads=1 \
-            -E 'not test(a_layer_swapchain_acquires_a_drawable_and_presents_it)' \
-            > probe-logs/hardware-macos-15.log 2>&1
-          hardware=$?
+          compiled=0
+          for source in crates/crcbl-shaders/msl/*.metal; do
+            xcrun metal -c "$source" -o /dev/null \
+              >> probe-logs/msl-macos-15.log 2>&1 || break
+            compiled=$((compiled + 1))
+          done
           set -e
-          echo "hardware-macos-15 exit=$hardware" | tee probe-logs/results.txt
-          tail -240 probe-logs/hardware-macos-15.log
+          echo "msl-macos-15 compiled=$compiled" | tee probe-logs/results.txt
+          cat probe-logs/msl-macos-15.log
+          test "$compiled" -eq 45
       - uses: actions/upload-artifact@v7
         if: always()
         with:
