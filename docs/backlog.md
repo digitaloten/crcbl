@@ -4870,16 +4870,17 @@ asks a grid that the grid cannot answer, and "how many of tag X" would be a
 second copy of the walk. Worth a `Grid::holds_tag(&Catalog, Tag) -> bool` only
 if a third consumer wants it; noted so the third does not re-derive it silently.
 
-## The demo seam — what the review of 2026-09-07 found owed
+## The demo seam — what is left of the 2026-09-07 review
 
 A read-only review of every demo asked what code carries the **same knowledge**
 in two or more of them and belongs in the engine (`crates/*`,
-`apps/crcbl-sample-test`, `web/engine/`, `tools/`). What it ruled out as
-same-shape-different-knowledge, what is already hoisted, and what it did not
-read are recorded in `docs/notes/samples.md` under "The demo seam review of
-2026-09-07". Every entry below is owed work; the copy counts are the review's
-over comment-stripped bodies, and the four the parent re-ran are marked. The
-rest are the review's reading, not re-verified — re-count before cutting.
+`apps/crcbl-sample-test`, `web/engine/`, `tools/`). Its findings were hoisted in
+five slices on 2026-09-07 and the entries for them are gone; `git log` holds
+what shipped. `docs/notes/samples.md` holds the rest of the review under "The
+demo seam review of 2026-09-07" — what it ruled out, what was already hoisted,
+what each hoist's landing ruled out along the way, what was decided since, and
+what it never read. What is below is what the programme left owed: one coverage
+gap and one half-measure.
 
 ### `apps/options` has no test that drives a frame at all (2026-09-10)
 
@@ -4907,16 +4908,6 @@ breaks on a reformat of the `EXPECTATIONS` object, and the review only opened
 shard's and breach's blocks — other Rust ↔ JS mirrors in the rest of the driver
 are unsurveyed. **What it would take:** a constants file a demo emits and the
 gate imports, or a survey of the remaining blocks for symbols named in comments.
-
-### Three test-support asserts ship in `crcbl::args` (2026-09-07)
-
-`assert_shared_help`, `assert_screenshot_help` and `assert_forced_path_help` are
-only called from `#[cfg(test)]` modules, yet live in the shipped library beside
-the constants they check. `apps/crcbl-sample-test` is where test support went in
-the earlier slices, but alcove, options, sparks, sundial and `apps/bare` do not
-dev-depend on it, and `bare`'s charter is a plain-library consumer. **Decide:**
-leave them where they are, or move them and add the dev-dependency to every
-demo.
 
 ## The sample plans — what they still owe
 

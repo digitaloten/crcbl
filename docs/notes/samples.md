@@ -787,6 +787,22 @@ Verified present in the tree:
 
 ---
 
+### DECIDED 2026-09-10 — the help asserts stay in `crcbl::args`
+
+`assert_shared_help`, `assert_screenshot_help` and `assert_forced_path_help` are
+called only from `#[cfg(test)]` modules, and moving them down to
+`apps/crcbl-sample-test` was declined. `apps/bare` is the reason: its charter is
+to drive the engine "using nothing but `crcbl`'s public API and its own
+`loop {}`", it carries no dev-dependencies at all, and it asserts the same help
+blocks as every other demo. A move would either put a sample-support crate in
+bare's dependency list, against the one thing that sample exists to prove, or
+leave bare hand-writing the asserts the hoist deleted everywhere else.
+
+The cost of leaving them is three `pub fn`s in the shipped library that only
+tests call. They sit beside the constants they check, which is the only place
+they could be checked from without re-exporting those constants, and the
+alternative costs more than it saves.
+
 ### DECIDED 2026-09-10 — `scripted` and `headless` stay hand-written
 
 A `crcbl::scripted_loop!` macro over the `#[cfg(test)]` `scripted` helpers —
