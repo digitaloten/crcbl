@@ -4917,17 +4917,27 @@ deleted; it is what those plans still describe and the tree does not have.
 
 ## breakout (`docs/plan/sample/01-breakout.md`)
 
-### Breakout's 10-minute soak and store-persistence checks are unrun (2026-08-27)
+### Breakout's 10-minute soak is unrun (2026-08-27)
 
-**Partly built.** The high score persists through `crcbl::store::record::Record`
-(`apps/breakout/src/high_score.rs`), natively and through OPFS in a browser, so
-the persistence exit criterion has an implementation. What has not been run is
-the deterministic input-script criterion's full form — "same script → same final
-score hash" — as a recorded artefact rather than a unit test.
+**The determinism criterion is closed.**
+`the_same_script_plays_out_the_same_way_twice` in `apps/breakout/src/app.rs`
+launches, chases the ball with the paddle off the simulation's own `RenderState`
+until the frame budget runs out, and compares the two runs' whole summaries; the
+score is asserted to clear real bricks first, so the comparison is of a run that
+happened rather than of two losses. Persistence has both an implementation and,
+since 2026-09-10, a test that the headless rule holds.
 
-**What it would take:** a scripted run through the determinism harness with the
-hash recorded in the doc. **What it blocks:** nothing; it is an unclosed exit
-criterion.
+What is left of the exit criteria is the **10-minute soak**: an unattended run
+of that length with no leak, no drift and no crash, recorded. **What it would
+take:** a harness that can run a sample for ten minutes and report memory and
+tick drift at the end — nothing in `tools/` does that today, and it would serve
+every demo, not only breakout. **What it blocks:** nothing; it is an unclosed
+exit criterion.
+
+**A known limit of the determinism test:** it catches a divergence big enough to
+change which brick is hit. A clock-derived jitter on the launch angle reddens it
+at `1e-2` of the launch vector and leaves the outcome unchanged at `1e-4`, so
+float-level nondeterminism between two runs is not what it holds.
 
 ## asteroids (`docs/plan/sample/02-asteroids.md`)
 

@@ -705,6 +705,47 @@ mod tests {
         assert!(summary.run.ticks > 0);
     }
 
+    /// **Same script, same game**, which is the determinism criterion in the
+    /// form `docs/plan/sample/01-breakout.md` states it.
+    ///
+    /// `a_headless_run_is_deterministic` cannot make that claim: it never
+    /// launches, so both of its runs score zero and a simulation that had gone
+    /// clock- or order-dependent would still agree. Nor can a run that only
+    /// launches: measured, the ball breaks a single brick and is then lost with
+    /// the paddle standing still, so the score is the same however the ball
+    /// flew.
+    ///
+    /// So the script plays. The paddle chases the ball off the simulation's own
+    /// `RenderState`, which keeps the ball alive long enough to clear most of
+    /// the board, and the two runs are compared whole. Nothing in the script
+    /// reads a clock or a random number, so the only way the two can disagree
+    /// is the simulation.
+    ///
+    /// What it catches is a divergence large enough to change which brick is
+    /// hit: a clock-derived jitter on the launch angle reddens it at `1e-2` of
+    /// the launch vector and does not move this script's outcome at `1e-4`. A
+    /// float-level difference between two runs is not what this holds.
+    #[test]
+    fn the_same_script_plays_out_the_same_way_twice() {
+        let play = || {
+            let mut engine = scripted(&headless(3600));
+            engine.game_mut().game_mut().key_event(LAUNCH_KEY, true);
+            engine.game_mut().game_mut().key_event(LAUNCH_KEY, false);
+            let mut render = RenderState::default();
+            while let Ok(Flow::Continue) = engine.frame() {
+                let game = engine.game_mut().game_mut();
+                game.render_state(&mut render);
+                game.key_event(KeyCode::ArrowLeft, render.ball.x < render.paddle_x);
+                game.key_event(KeyCode::ArrowRight, render.ball.x > render.paddle_x);
+            }
+            engine.finish(ExitReason::FrameBudget).expect("teardown")
+        };
+
+        let first = play();
+        assert!(first.score > 100, "the script must clear real bricks");
+        assert_eq!(first, play(), "the same script must play out the same way");
+    }
+
     /// **The board reaches the frame, and the HUD is all the draw list has.**
     ///
     /// This replaces `the_frame_draws_every_live_brick_and_the_ball`, which
