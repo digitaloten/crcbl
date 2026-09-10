@@ -16,37 +16,23 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.140
-      - name: Compare geometry and shader-validation modes
+      - name: Test eager native PSO under shader validation
         shell: bash
         run: |
           set -euo pipefail
           mkdir probe-logs
-          for mode in preferred counted; do
-            if [ "$mode" = counted ]; then
-              python3 - <<'PY'
-          from pathlib import Path
-          p = Path('crates/crcbl-mtl/src/device.rs')
-          s = p.read_text()
-          old = 'crcbl_hal::GeometryPath::IndirectCount => crcbl_hal::GeometryPath::IndirectPerBatch,'
-          assert s.count(old) == 1
-          p.write_text(s.replace(old, 'crcbl_hal::GeometryPath::IndirectCount => crcbl_hal::GeometryPath::IndirectCount,'))
-          PY
-            fi
-            for shader in 0 1; do
-              set +e
-              CRCBL_GPU=mtl MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert \
-                MTL_DEBUG_LAYER_WARNING_MODE=assert MTL_SHADER_VALIDATION="$shader" \
-                cargo nextest run --locked -p crcbl --features render-e2e --test render_e2e \
-                --run-ignored all --no-tests fail --no-fail-fast --test-threads=1 \
-                --success-output immediate \
-                -E 'test(the_cube_scene_draws_through_the_forward_renderer_and_matches_its_golden) | test(the_ui_scene_draws_through_the_ui_renderer_and_matches_its_golden) | test(a_fragment_crossing_a_clipmap_level_fades_into_it)' \
-                > "probe-logs/$mode-shader-$shader.log" 2>&1
-              result=$?
-              set -e
-              echo "$mode shader=$shader exit=$result" | tee -a probe-logs/results.txt
-              tail -80 "probe-logs/$mode-shader-$shader.log"
-            done
-          done
+          set +e
+          CRCBL_GPU=mtl MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert \
+            MTL_DEBUG_LAYER_WARNING_MODE=assert MTL_SHADER_VALIDATION=1 \
+            cargo nextest run --locked -p crcbl --features render-e2e --test render_e2e \
+            --run-ignored all --no-tests fail --no-fail-fast --test-threads=1 \
+            --success-output immediate \
+            -E 'test(the_cube_scene_draws_through_the_forward_renderer_and_matches_its_golden) | test(the_ui_scene_draws_through_the_ui_renderer_and_matches_its_golden) | test(a_fragment_crossing_a_clipmap_level_fades_into_it)' \
+            > probe-logs/eager-pso-shader-1.log 2>&1
+          result=$?
+          set -e
+          echo "eager-pso shader=1 exit=$result" | tee probe-logs/results.txt
+          tail -120 probe-logs/eager-pso-shader-1.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:

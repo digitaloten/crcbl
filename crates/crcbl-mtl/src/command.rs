@@ -576,6 +576,10 @@ struct RenderReplay<'a> {
     /// State is applied at the draw that consumes it. A setter overwritten
     /// before a draw needs no Metal call at all.
     pipeline: Option<&'a crate::pipeline::BoundPipeline>,
+    /// The pipeline state currently bound on the native encoder. Kept
+    /// separately for the hosted shader-validation ordering probe: argument
+    /// tables must be replayed after the PSO that interprets them is active.
+    applied_raw_pipeline: Option<&'a crate::pipeline::BoundPipeline>,
     applied_pipeline: Option<&'a crate::pipeline::BoundPipeline>,
     viewport: Option<MTLViewport>,
     applied_viewport: Option<MTLViewport>,
@@ -597,6 +601,7 @@ impl<'a> RenderReplay<'a> {
     fn new() -> Self {
         Self {
             pipeline: None,
+            applied_raw_pipeline: None,
             applied_pipeline: None,
             viewport: None,
             applied_viewport: None,
@@ -614,10 +619,12 @@ impl<'a> RenderReplay<'a> {
     /// recording retains pipelines, and this cache lives for one encoder only.
     fn apply_draw_state(&mut self, encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>) {
         if let Some(bound) = self.pipeline {
-            let previous = self.applied_pipeline;
-            if previous.is_none_or(|held| !core::ptr::eq(&*held.raw, &*bound.raw)) {
+            let raw_previous = self.applied_raw_pipeline;
+            if raw_previous.is_none_or(|held| !core::ptr::eq(&*held.raw, &*bound.raw)) {
                 encoder.setRenderPipelineState(&bound.raw);
+                self.applied_raw_pipeline = Some(bound);
             }
+            let previous = self.applied_pipeline;
             if previous.is_none_or(|held| held.raster.cull != bound.raster.cull) {
                 encoder.setCullMode(bound.raster.cull);
             }
@@ -708,6 +715,13 @@ fn replay<'a>(
         }
         RenderCommand::BindPipeline(bound) => {
             replay.pipeline = Some(bound);
+            if replay
+                .applied_raw_pipeline
+                .is_none_or(|held| !core::ptr::eq(&*held.raw, &*bound.raw))
+            {
+                encoder.setRenderPipelineState(&bound.raw);
+                replay.applied_raw_pipeline = Some(bound);
+            }
             // **No `setStencilReferenceValue:` here.** The reference is pass
             // state on the seam and a pipeline carries none, so a bind leaves
             // whatever `set_stencil_reference` last set — see
