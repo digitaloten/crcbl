@@ -16,7 +16,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.140
-      - name: Test eager native PSO under shader validation
+      - name: Test all raster bindings under shader validation
         shell: bash
         run: |
           set -euo pipefail
@@ -28,11 +28,11 @@ jobs:
             --run-ignored all --no-tests fail --no-fail-fast --test-threads=1 \
             --success-output immediate \
             -E 'test(the_cube_scene_draws_through_the_forward_renderer_and_matches_its_golden) | test(the_ui_scene_draws_through_the_ui_renderer_and_matches_its_golden) | test(a_fragment_crossing_a_clipmap_level_fades_into_it)' \
-            > probe-logs/eager-pso-shader-1.log 2>&1
+            > probe-logs/all-raster-mask-shader-1.log 2>&1
           result=$?
           set -e
-          echo "eager-pso shader=1 exit=$result" | tee probe-logs/results.txt
-          tail -120 probe-logs/eager-pso-shader-1.log
+          echo "all-raster-mask shader=1 exit=$result" | tee probe-logs/results.txt
+          tail -120 probe-logs/all-raster-mask-shader-1.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:
