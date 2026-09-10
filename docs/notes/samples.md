@@ -787,6 +787,26 @@ Verified present in the tree:
 
 ---
 
+### DECIDED 2026-09-10 — the readout panel's coverage is unit tests and browser rows
+
+The five 3D demos' goldens do not read the panel, and the seam review's claim
+that shard's did is wrong: `apps/shard/tests/golden.rs` builds a
+`crcbl::screenshot::ForwardScene` through `OffscreenSetup` and runs no UI pass
+at all, so sabotaging `ReadoutPanel::draw_at`'s right-alignment arithmetic left
+`run-shard-golden.sh` passing every comparison on radv.
+
+**A golden that includes the overlay was declined.** The offscreen screenshot
+path is a scene path: adding the panel to it means wiring a UI pass into
+`crcbl::screenshot`, which is an engine change to the harness every 3D golden
+shares and its own task rather than a coverage decision. What holds the panel
+instead is each page's own layout test, named
+`every_reading_is_laid_out_where_it_can_actually_be_seen` in breach, puppet,
+shard and sparks and `the_page_keeps_to_its_own_column` in towers; two of them
+were the tests that did redden when that sabotage was measured. The five browser
+rows read the panel's pixels in a real browser besides. Two independent readings
+of the same claim is the coverage; a third costing an engine change is not worth
+it.
+
 ### Where the hoists landed, and what each one ruled out (2026-09-07)
 
 Six records from landing seam slices 1–5. Each says why a symbol is where it is
