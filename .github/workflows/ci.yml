@@ -16,25 +16,62 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.140
-      - name: Compile every committed MSL artifact on macOS 15
+      - name: Run strict mesh and forward validation on macOS 15
         shell: bash
+        env:
+          CRCBL_GPU: mtl
+          MTL_DEBUG_LAYER: '1'
+          MTL_DEBUG_LAYER_ERROR_MODE: assert
+          MTL_DEBUG_LAYER_WARNING_MODE: assert
+          MTL_SHADER_VALIDATION: '1'
+          MTL_SHADER_VALIDATION_ENABLE_ERROR_REPORTING: '1'
+          MTL_SHADER_VALIDATION_REPORT_TO_STDERR: '1'
+          MTL_SHADER_VALIDATION_ABORT_ON_FAULT: '1'
         run: |
           set -euo pipefail
           mkdir probe-logs
           set +e
-          compiled=0
-          for source in crates/crcbl-shaders/msl/*.metal; do
-            xcrun metal -c "$source" -o /dev/null \
-              >> probe-logs/msl-macos-15.log 2>&1 || break
-            compiled=$((compiled + 1))
-          done
+          crates/crcbl/tests/run-mesh-e2e.sh --no-fail-fast --test-threads=1 \
+            > probe-logs/mesh-macos-15.log 2>&1
+          mesh=$?
+          crates/crcbl/tests/run-forward-e2e.sh --no-fail-fast --test-threads=1 \
+            > probe-logs/forward-macos-15.log 2>&1
+          forward=$?
           set -e
-          echo "msl-macos-15 compiled=$compiled" | tee probe-logs/results.txt
-          cat probe-logs/msl-macos-15.log
-          test "$compiled" -eq 45
+          echo "mesh-macos-15 exit=$mesh" | tee probe-logs/results.txt
+          echo "forward-macos-15 exit=$forward" | tee -a probe-logs/results.txt
+          tail -240 probe-logs/mesh-macos-15.log
+          tail -240 probe-logs/forward-macos-15.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: metal-hosted-probe
           path: probe-logs
+          retention-days: 3
+
+  hardware:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.140
+      - name: Run fatal shader validation on macOS 26
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir hardware-logs
+          crates/crcbl-mtl/tests/run-mtl-e2e.sh --no-fail-fast --test-threads=1 \
+            -E 'not test(a_layer_swapchain_acquires_a_drawable_and_presents_it)' \
+            2>&1 | tee hardware-logs/hardware-macos-26.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: metal-hardware-macos-26
+          path: hardware-logs
           retention-days: 3
