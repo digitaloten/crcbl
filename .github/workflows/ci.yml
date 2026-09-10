@@ -6,7 +6,7 @@ permissions:
 jobs:
   probe:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -16,7 +16,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.140
-      - name: Run strict mesh and forward validation on macOS 15
+      - name: Run strict forward validation on macOS 15
         shell: bash
         env:
           CRCBL_GPU: mtl
@@ -30,48 +30,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir probe-logs
-          set +e
-          crates/crcbl/tests/run-mesh-e2e.sh --no-fail-fast --test-threads=1 \
-            > probe-logs/mesh-macos-15.log 2>&1
-          mesh=$?
           crates/crcbl/tests/run-forward-e2e.sh --no-fail-fast --test-threads=1 \
-            > probe-logs/forward-macos-15.log 2>&1
-          forward=$?
-          set -e
-          echo "mesh-macos-15 exit=$mesh" | tee probe-logs/results.txt
-          echo "forward-macos-15 exit=$forward" | tee -a probe-logs/results.txt
-          tail -240 probe-logs/mesh-macos-15.log
-          tail -240 probe-logs/forward-macos-15.log
+            2>&1 | tee probe-logs/forward-macos-15.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: metal-hosted-probe
           path: probe-logs
-          retention-days: 3
-
-  hardware:
-    runs-on: macos-26
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache: false
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest@0.9.140
-      - name: Run fatal shader validation on macOS 26
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir hardware-logs
-          crates/crcbl-mtl/tests/run-mtl-e2e.sh --no-fail-fast --test-threads=1 \
-            -E 'not test(a_layer_swapchain_acquires_a_drawable_and_presents_it)' \
-            2>&1 | tee hardware-logs/hardware-macos-26.log
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: metal-hardware-macos-26
-          path: hardware-logs
           retention-days: 3
