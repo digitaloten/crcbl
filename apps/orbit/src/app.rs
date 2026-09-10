@@ -416,7 +416,7 @@ mod tests {
     use crcbl::args::Common;
     use crcbl::engine::{DEBUG_OVERLAY_KEY, ExitReason, Flow, PAUSE_KEY};
     use crcbl::shell::{HeadlessShell, ShellBackend as Backend};
-    use crcbl_sample_test::{headless_common, row_value, ui_text};
+    use crcbl_sample_test::{headless_common, pass_labels, row_value, ui_text};
 
     fn scripted(options: &Options) -> Loop<HeadlessShell> {
         with_shell(Box::new(HeadlessShell::new()), options).expect("headless always starts")
@@ -598,6 +598,17 @@ mod tests {
         assert!(
             ui_text(engine.gpu().draw_list()).iter().any(|t| t == "ALT"),
             "the page is drawn behind the panel",
+        );
+        // **And the panel's art reached the frame, not just its labels.** The
+        // menu is a sprite pass and a sprite pass with nothing to draw declares
+        // nothing, so the pass between the two halves of the UI is what says
+        // the scrim and the panel were composited; the labels alone would still
+        // be drawn by `ui-overlay` with the menu's upload gone.
+        assert_eq!(
+            pass_labels(engine.gpu().last_dump()),
+            ["backdrop", "ui-composite", "sprites", "ui-overlay"],
+            "the paused frame's passes, in declaration order:\n{}",
+            engine.gpu().last_dump(),
         );
         engine.finish(ExitReason::FrameBudget).expect("teardown");
     }

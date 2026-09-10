@@ -4893,19 +4893,21 @@ sample. **What it would take:** decide whether a `crcbl::scripted_loop!` macro
 earns its keep against eleven three-line functions that have not drifted, or
 close this as declined.
 
-### No `PageBundle` sample's frame is checked with a menu on it (2026-09-07)
+### `apps/options` has no test that drives a frame at all (2026-09-10)
 
-Measured while landing `crcbl::engine::PageBundle`: deleting the
-`menu.begin_frame` call from `PageBundle::frame` leaves every
-`apps/{hud,orbit,bracket,options}` test green **and** `run-hud-golden.sh` on
-lavapipe passing with a byte-clean comparison. hud's golden is an unpaused
-wave-1 frame, so `set_menu(None)` holds and the menu pass declares nothing
-either way, and no unit test reads the menu pass's geometry. The pass _order_ is
-covered — declaring `ui.add_passes` before the backdrop clear reddens the same
-golden — but "the menu's art reached the frame" is not. **What it would take:**
-a second hud golden blessed with the panel up (`--screenshot` after a scripted
-`ESC`), or a unit assertion on `PageBundle::counters().instances` on a paused
-frame. Not done here: a new golden is its own review.
+The menu-on-a-frame gap is closed for the three `PageBundle` demos that run a
+headless loop under test: hud's, orbit's and bracket's pause tests now assert
+the paused frame's pass labels through `crcbl_sample_test::pass_labels`, and
+deleting `menu.begin_frame` from `PageBundle::frame` reddens all three with the
+sprite pass missing from the list. `apps/options` is the fourth bundle and is
+not covered: every test in its `app.rs` builds a `Screen` and a `Menus`
+directly, so there is no `scripted()`/`engine.frame()` harness to read a dump
+from, and the crate does not dev-depend on `apps/crcbl-sample-test`. **What it
+would take:** the dev-dependency plus the `scripted`/`headless` pair the other
+demos have, which is the same three-line shape eleven samples carry — and the
+settings screen's menu is up on every frame, so the assertion itself is one line
+once a frame can be driven. Worth doing with the `scripted`/`headless` decision
+above rather than on its own.
 
 ### Nothing checks that a sample forwards its own `--headless` to `Record` (2026-09-07)
 

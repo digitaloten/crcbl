@@ -626,7 +626,7 @@ mod tests {
 
     use super::*;
     use core::time::Duration;
-    use crcbl_sample_test::{headless_common, row_value, ui_text};
+    use crcbl_sample_test::{headless_common, pass_labels, row_value, ui_text};
 
     use crcbl::core::input::KeyCode;
     use crcbl::engine::Flow;
@@ -788,13 +788,8 @@ mod tests {
         assert!(engine.is_paused(), "the frame under test is a paused one");
 
         let dump = engine.gpu().last_dump();
-        let labels: Vec<&str> = dump
-            .lines()
-            .filter_map(|line| line.split(" pass ").nth(1))
-            .filter_map(|rest| rest.split('"').nth(1))
-            .collect();
         assert_eq!(
-            labels,
+            pass_labels(dump),
             [
                 "surround",
                 "sprites",

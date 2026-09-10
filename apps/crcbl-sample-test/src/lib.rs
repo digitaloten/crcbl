@@ -105,6 +105,22 @@ pub fn ui_text(list: &DrawList) -> Vec<String> {
         .collect()
 }
 
+/// Every render pass the frame declared, in declaration order.
+///
+/// A pass line of the graph dump reads `[i] <kind> pass "<label>"`, and the
+/// labels are the reading that separates "this was drawn" from "this was
+/// composited": a renderer whose geometry is empty declares **no pass at all**,
+/// so a pass missing from this list is art that never reached the frame. The
+/// dump is a sample's `engine.gpu().last_dump()`, which is recorded only for a
+/// bundle built with `recording_graph_dumps`.
+#[must_use]
+pub fn pass_labels(dump: &str) -> Vec<&str> {
+    dump.lines()
+        .filter_map(|line| line.split(" pass ").nth(1))
+        .filter_map(|rest| rest.split('"').nth(1))
+        .collect()
+}
+
 /// The value drawn immediately after the row labelled `label`, which is how the
 /// debug panel lays a row out: label then value, in one draw list.
 ///
