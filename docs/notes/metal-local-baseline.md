@@ -43,8 +43,8 @@ validation report, so a filtered run need not include a separate reporting test.
 
 ### Timestamp correctness
 
-The HAL seam initially failed because a clear-only render pass's closing
-sample preceded its opening sample. Independent native probes showed that:
+The HAL seam initially failed because a clear-only render pass's closing sample
+preceded its opening sample. Independent native probes showed that:
 
 - Clear-only passes write vertex-stage timestamps but no fragment timestamps.
 - An absent fragment stage leaves zeros in a fresh sample buffer and the
@@ -63,8 +63,8 @@ to fail the corresponding case.
 A lazily cached no-op kernel runs only for timed compute encoders with no
 recorded dispatch. Zero raw timestamps remain zero during CPU clock conversion.
 The HAL seam now verifies ordered samples and agreement between CPU and GPU
-resolve paths. The previously unrun Metal timestamp divergence was retired
-only after that hardware proof. Devices without stage-boundary sampling remain
+resolve paths. The previously unrun Metal timestamp divergence was retired only
+after that hardware proof. Devices without stage-boundary sampling remain
 excluded from the hardware regression.
 
 ### Profiling accounting
@@ -72,11 +72,11 @@ excluded from the hardware regression.
 An eight-second Metal System Trace explained why summed pass timings were much
 larger than observed frame throughput. Pairing intervals by API encoder ID gave:
 
-| Pass | Paired encoders | Median outer span | Median summed active stages |
-| --- | ---: | ---: | ---: |
-| Forward | 3,658 | 3,450.75 us | 591.08 us |
-| SSAO | 3,660 | 2,844.85 us | 334.27 us |
-| SSR | 3,657 | 3,681.83 us | 296.13 us |
+| Pass    | Paired encoders | Median outer span | Median summed active stages |
+| ------- | --------------: | ----------------: | --------------------------: |
+| Forward |           3,658 |       3,450.75 us |                   591.08 us |
+| SSAO    |           3,660 |       2,844.85 us |                   334.27 us |
+| SSR     |           3,657 |       3,681.83 us |                   296.13 us |
 
 Vertex-start to fragment-end includes scheduling gaps, and pass spans overlap.
 `FrameTimings::total_nanos` remains a diagnostic sum, labeled accordingly.
@@ -85,31 +85,32 @@ backwards timestamp pairs supply no budget sample. GPU budget reporting uses
 this elapsed interval, not the sum. It includes gaps/contention and excludes
 untimed leading/trailing work; it does not claim active GPU work or throughput.
 
-CPU profiling also found retirement waits inside reported CPU active time.
-Only the blocking calls in `GpuContext::retire_to` now receive idle spans;
+CPU profiling also found retirement waits inside reported CPU active time. Only
+the blocking calls in `GpuContext::retire_to` now receive idle spans;
 command-buffer destruction remains CPU work. Regressions cover overlapping
 pairs, invalid samples, budget selection, and retirement exclusions.
 
 ## Performance improvement
 
-The forward renderer emits one indirect argument per bucket. Its producer
-clears both the instance count and draw-count flag; a surviving instance
-increments the former and sets the latter. Empty buckets therefore already
-have zero instances. Metal's count emulation was repacking arguments that this
-producer had already made safe to draw unconditionally.
+The forward renderer emits one indirect argument per bucket. Its producer clears
+both the instance count and draw-count flag; a surviving instance increments the
+former and sets the latter. Empty buckets therefore already have zero instances.
+Metal's count emulation was repacking arguments that this producer had already
+made safe to draw unconditionally.
 
-`Device::preferred_geometry_path` defaults to the capability-based choice.
-Metal prefers `IndirectPerBatch` when its ceiling is `IndirectCount`, avoiding
-that packing work. Mesh remains preferred if supported. No capability is
-removed: generic counted draws retain their implementation and HAL tests.
-The renderer contains no backend-specific selection branch. Diagnostics report
-its actual path separately from the capability ceiling.
+`Device::preferred_geometry_path` defaults to the capability-based choice. Metal
+prefers `IndirectPerBatch` when its ceiling is `IndirectCount`, avoiding that
+packing work. Mesh remains preferred if supported. No capability is removed:
+generic counted draws retain their implementation and HAL tests. The renderer
+contains no backend-specific selection branch. Diagnostics report its actual
+path separately from the capability ceiling.
 
 The baseline for this comparison includes the correctness/binding fixes above
 but precedes the geometry preference. The after build also includes the timing
 accounting fixes. Identical commands were run in six alternating before/after
-pairs per viewport. Pair zero was warmup; all remaining five pairs were included.
-All processes exited successfully. No GPU tests or compilation ran concurrently.
+pairs per viewport. Pair zero was warmup; all remaining five pairs were
+included. All processes exited successfully. No GPU tests or compilation ran
+concurrently.
 
 ```sh
 CRCBL_TRACE=1 MTL_DEBUG_LAYER=0 MTL_SHADER_VALIDATION=0 \
@@ -118,10 +119,10 @@ CRCBL_TRACE=1 MTL_DEBUG_LAYER=0 MTL_SHADER_VALIDATION=0 \
 # Repeat at --size 1280x720 and alternate the before/after release executables.
 ```
 
-| Viewport | Before median | After median | Result |
-| --- | ---: | ---: | --- |
-| 256x192 | 1.3981 s | 1.2909 s | 7.7% less elapsed time; 8.3% higher throughput |
-| 1280x720 | 4.8819 s | 4.8766 s | Effectively unchanged |
+| Viewport | Before median | After median | Result                                         |
+| -------- | ------------: | -----------: | ---------------------------------------------- |
+| 256x192  |      1.3981 s |     1.2909 s | 7.7% less elapsed time; 8.3% higher throughput |
+| 1280x720 |      4.8819 s |     4.8766 s | Effectively unchanged                          |
 
 These are elapsed process times for a fixed workload, including startup. The
 sample's fixed simulation step is not measured CPU frame time. The improvement
@@ -150,21 +151,23 @@ CRCBL_GPU=mtl MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 \
 
 Results: 1,147 HAL/Metal/render/UI host tests; 375 engine tests; 72 offscreen
 Metal hardware tests; 28 HAL seam tests; and 59 strict renderer goldens passed.
-The PR branch was rechecked on upstream `bfab434a`; the broader mesh-frame
-suite also passed 93 tests with its current CI-style API logging settings
-(shader validation unset). That is separate from mesh/task-shader hardware proof.
+The PR branch was rechecked on upstream `bfab434a`; the broader mesh-frame suite
+also passed 93 tests with its current CI-style API logging settings (shader
+validation unset). That is separate from mesh/task-shader hardware proof.
 Formatting, all-target/all-feature clippy, and documentation checks passed with
 warnings denied for the modified crates. All 45 committed MSL artifacts compiled
 with Metal Toolchain 17F109, with 13 writable-resource vertex warnings and nine
 unused-variable warnings in generated code, and no compilation errors.
 
-The renderer CI step now uses the same strict API and shader-validation settings.
-The hosted runner remains an independent device check.
+The renderer CI step now uses the same strict API and shader-validation
+settings. The hosted runner remains an independent device check.
 
 API additions: the device preference method has a default implementation.
 `FrameTimings` struct-literal callers must supply `elapsed_nanos` or use
 `..Default::default()`.
 
-References: [Apple stage-boundary sampling](https://developer.apple.com/documentation/metal/sampling-gpu-data-into-counter-sample-buffers)
-and [Dawn Metal command encoding](https://raw.githubusercontent.com/google/dawn/main/src/dawn/native/metal/CommandBufferMTL.mm).
+References:
+[Apple stage-boundary sampling](https://developer.apple.com/documentation/metal/sampling-gpu-data-into-counter-sample-buffers)
+and
+[Dawn Metal command encoding](https://raw.githubusercontent.com/google/dawn/main/src/dawn/native/metal/CommandBufferMTL.mm).
 The local reproductions and regression tests establish the fixes described here.
