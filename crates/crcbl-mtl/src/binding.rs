@@ -712,6 +712,13 @@ pub(crate) struct BoundBinding {
     pub(crate) resource: BoundResource,
 }
 
+impl BoundBinding {
+    /// The physical Metal argument table this binding writes.
+    pub(crate) fn table(&self) -> Table {
+        self.resource.table()
+    }
+}
+
 impl DeviceInner {
     /// Everything `bind_group` has to tell the render encoder, with the
     /// per-table indices already absolute.
