@@ -13974,4 +13974,17 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
   the host's, so `a\b` was refused on Linux and quietly rewritten to `a/b` on
   Windows.
 
+### Changed
+
+- **Metal reports mesh and task shading on Metal 3 devices.** `crcbl-mtl`'s
+  adapter now reports `Features::MESH_SHADER | Features::TASK_SHADER` off the
+  same `supportsFamily:MTLGPUFamilyMetal3` + macOS 13 gate that
+  `create_mesh_pipeline` applies, `Device::supports` answers `Yes` for both
+  capabilities on such a device, and the two `Unrun` parity rows for Metal are
+  retired. A device without them takes `NotOnThisDevice`, which is what hosted
+  Paravirtual CI still answers. The unforced geometry tail stays
+  `IndirectPerBatch`: paired 720p/1080p runs on an M3 Pro put the mesh tail no
+  faster than per-batch, and the samples' `--force-geometry mesh-shader` still
+  selects it exactly. See `docs/notes/metal-geometry-preference.md`.
+
 [Unreleased]: https://github.com/kryptic-sh/crcbl/commits/main

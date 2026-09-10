@@ -1,19 +1,18 @@
 // Native MSL isolates the HAL mesh command and binding contract from Slang.
 use super::*;
 
-// Keep shipping capability reporting parked while exercising the already
-// implemented stage-visibility path on a private test device.
+// These qualification probes require actual reported/callable stage support.
 fn open_mesh_proof_device() -> (crate::fault::Validated, MetalDevice) {
-    let instance = open_instance();
-    let adapters = instance.adapters();
-    let mut device = instance.open_device(&device_desc(adapters[0].id)).unwrap();
+    let (validated, device) = open_device();
     assert!(device.inner.raw.supportsFamily(MTLGPUFamily::Metal3));
-    Arc::get_mut(&mut device.inner)
-        .expect("new device has one owner")
-        .caps
-        .features
-        .insert(Features::MESH_SHADER | Features::TASK_SHADER);
-    let validated = crate::fault::Validated::new(instance, &device);
+    assert!(
+        device
+            .caps()
+            .features
+            .contains(Features::MESH_SHADER | Features::TASK_SHADER)
+    );
+    assert_eq!(device.supports(Capability::MeshShading), Support::Yes);
+    assert_eq!(device.supports(Capability::TaskShaderStage), Support::Yes);
     (validated, device)
 }
 

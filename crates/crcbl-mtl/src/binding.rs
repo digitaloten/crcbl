@@ -1220,8 +1220,8 @@ impl MetalDevice {
     /// The seam's own rules come first, from
     /// [`BindGroupLayoutDesc::check_entries`] — including the mesh-stage
     /// visibility check, which is the one rule in this path that reads the
-    /// *device* rather than the descriptor: this backend reports no
-    /// `Features::MESH_SHADER`, so a layout naming the mesh stage is refused
+    /// *device* rather than the descriptor: a device without
+    /// `Features::MESH_SHADER` refuses a layout naming the mesh stage
     /// rather than becoming a set of argument-table slots no pipeline on this
     /// backend could ever read. [`plan_set`] then adds what only Metal refuses.
     ///
@@ -1590,9 +1590,8 @@ mod tests {
     ///
     /// [`plan_set`] is a pure function with no caps to consult, so it cannot
     /// state the rules that read the device — and the mesh-stage refusal is
-    /// the one this backend has nothing else to make: it reports no
-    /// `Features::MESH_SHADER`, and a layout naming the stage would otherwise
-    /// become argument-table slots no pipeline here could ever read.
+    /// controlled by device caps. The test checks acceptance on mesh-capable
+    /// devices and refusal on unsupported devices, including Paravirtual CI.
     ///
     /// **What turns it red.** Deleting the `check_entries` call from
     /// `create_bind_group_layout_impl`: the mesh case is then accepted, because
@@ -1601,33 +1600,32 @@ mod tests {
     #[ignore = "needs a real Metal device; run tests/run-mtl-e2e.sh"]
     fn the_seams_own_rules_arrive_through_create_bind_group_layout() {
         let (_instance, device) = open_device();
-        assert!(
-            !device
-                .inner
-                .caps
-                .features
-                .contains(crcbl_hal::Features::MESH_SHADER),
-            "this backend reports no mesh stage; the refusal below would prove nothing otherwise"
-        );
-
-        let mesh = [BindGroupLayoutEntry {
-            visibility: ShaderStages::MESH,
-            ..entry(0, STORAGE, 1)
-        }];
-        let error = device
-            .create_bind_group_layout_impl(&layout(&mesh))
-            .expect_err("a mesh-visible binding on a backend with no mesh stage");
-        assert!(
-            matches!(error, HalError::Unsupported { backend, .. }
-                if backend == crcbl_hal::BackendKind::Metal),
-            "{error:?}"
-        );
-
-        // The same binding visible to a stage this backend does report, so the
-        // refusal is about the stage and not about the entry.
-        device
+        for (stage, feature) in [
+            (ShaderStages::MESH, crcbl_hal::Features::MESH_SHADER),
+            (ShaderStages::TASK, crcbl_hal::Features::TASK_SHADER),
+        ] {
+            let entries = [BindGroupLayoutEntry {
+                visibility: stage,
+                ..entry(0, STORAGE, 1)
+            }];
+            let result = device.create_bind_group_layout_impl(&layout(&entries));
+            if device.inner.caps.features.contains(feature) {
+                device.destroy_bind_group_layout(
+                    result.expect("a reported stage accepts visibility"),
+                );
+            } else {
+                let error = result.expect_err("an unreported stage refuses visibility");
+                assert!(
+                    matches!(error, HalError::Unsupported { backend, .. }
+                    if backend == crcbl_hal::BackendKind::Metal),
+                    "{error:?}"
+                );
+            }
+        }
+        let graphics = device
             .create_bind_group_layout_impl(&layout(&[entry(0, STORAGE, 1)]))
-            .expect("one read-only storage buffer, visible to the graphics stages");
+            .expect("graphics-stage storage binding");
+        device.destroy_bind_group_layout(graphics);
     }
 
     /// The index of a binding in `plan`, by table and position.

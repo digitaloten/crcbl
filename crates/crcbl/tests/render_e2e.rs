@@ -5633,45 +5633,41 @@ fn the_cube_scene_draws_the_same_frame_on_every_pass_of_the_ring() {
     /// Frames to draw, several passes of the frame ring.
     const FRAMES: usize = 32;
 
+    // **The device is asked what it has before the tail is chosen**, exactly as
+    // `draw_scene_on_every_geometry_path` asks it: `open_on_path` refuses a tail
+    // the device cannot run, and a device with no amplification stage has to
+    // decline rather than fail. It also keeps the run non-vacuous — the
+    // unforced preference is the cheaper indirect tail even on a mesh device
+    // (see `docs/notes/metal-geometry-preference.md`), so a run that took the
+    // preference would never reach the per-cluster stage this test is about.
     let mesh_stage = Features::MESH_SHADER.union(Features::TASK_SHADER);
-    let setup = OffscreenSetup::open_with(
-        EXTENT.0,
-        EXTENT.1,
-        Scene::Cube,
-        OffscreenSetup::OPTIONAL_FEATURES.union(mesh_stage),
-    )
-    .unwrap_or_else(|why| panic!("a GPU backend opens for the cube scene: {why}"));
+    let probe = OffscreenSetup::open(EXTENT.0, EXTENT.1, Scene::Cube)
+        .unwrap_or_else(|why| panic!("a GPU backend opens for the cube scene: {why}"));
+    let probe = Offscreen::guard(SUITE, probe);
+    let features = probe.caps().features;
+    probe.finish();
+    if !features.contains(mesh_stage) {
+        eprintln!(
+            "{SUITE}: no amplification stage on this device, so there is no per-cluster ring to \
+             watch — that is every device without TASK_SHADER and every non-mesh path"
+        );
+        return;
+    }
+
+    let setup =
+        OffscreenSetup::open_on_path(EXTENT.0, EXTENT.1, Scene::Cube, GeometryPath::MeshShader)
+            .unwrap_or_else(|why| panic!("the cube scene opens on the mesh tail: {why}"));
     let mut setup = Offscreen::guard(SUITE, setup);
     let path = setup
         .geometry_path()
         .unwrap_or_else(|| setup.caps().geometry_path());
-    let amplifies = setup
-        .adapter()
-        .caps
-        .features
-        .contains(Features::TASK_SHADER);
+    let amplifies = features.contains(Features::TASK_SHADER);
     eprintln!(
         "crcbl render e2e: cube on {backend} adapter {adapter:?} — drew through {path:?}, \
          amplification stage: {amplifies}",
         backend = setup.backend(),
         adapter = setup.adapter().name,
     );
-
-    // **A device with no amplification stage cannot exercise this, and saying so
-    // is not the same as passing.** The defect lives in the per-cluster task
-    // stage; without [`Features::TASK_SHADER`] this scene draws through a path
-    // that selects and culls nothing, and thirty-two identical frames there
-    // would be a green light wired to code the hazard is not in. `crcbl-vk` on
-    // lavapipe is where CI actually runs it — `apps/quarry`'s `read_the_cut`
-    // declines on the same terms and in the same words.
-    if !amplifies {
-        eprintln!(
-            "{SUITE}: no amplification stage on this device, so there is no per-cluster ring to \
-             watch — that is every device without TASK_SHADER and every non-mesh path"
-        );
-        setup.finish();
-        return;
-    }
 
     let format = setup.format();
     let mut frames: Vec<Vec<u8>> = Vec::with_capacity(FRAMES);
