@@ -5439,29 +5439,30 @@ impl ForwardRenderer {
         let rsm_results =
             MeshModules::sided(|cull| modules.rsm_pipeline(device, mesh_pipeline_layout, cull));
         modules.destroy(device);
-        // Unwrapped in creation order and each handed to the rollback as it is,
-        // so a failure part way through releases everything already made — see
-        // [`MeshModules::sided`], which is why the pairs arrive as results.
-        //
-        // The **field** and not the whole rollback, because `rollback.lights` is
-        // already borrowed above and a helper taking the struct would conflict
-        // with it — the loose `push`es this replaces borrowed one field each.
-        let into_rollback = |results: [Result<GraphicsPipelineHandle, HalError>; 2],
-                             pipelines: &mut Vec<GraphicsPipelineHandle>|
+        // Register every successful creation before propagating any error.
+        // Results later in this batch may own pipelines even when the first
+        // result failed; dropping an unvisited Result does not release a HAL
+        // handle. The outer rollback owns all of them until build succeeds.
+        for pipeline in mesh_results
+            .iter()
+            .chain(&shadow_results)
+            .chain(&depth_masked_results)
+            .chain(std::iter::once(&shadow_clear_result))
+            .chain(&rsm_results)
+            .flatten()
+        {
+            rollback.pipelines.push(*pipeline);
+        }
+        let into_sided = |results: [Result<GraphicsPipelineHandle, HalError>; 2]|
          -> Result<SidedPipelines, HalError> {
             let [single, double] = results;
-            let single = single?;
-            pipelines.push(single);
-            let double = double?;
-            pipelines.push(double);
-            Ok(SidedPipelines { single, double })
+            Ok(SidedPipelines { single: single?, double: double? })
         };
-        let mesh_pipeline = into_rollback(mesh_results, &mut rollback.pipelines)?;
-        let shadow_pipeline = into_rollback(shadow_results, &mut rollback.pipelines)?;
-        let depth_masked_pipeline = into_rollback(depth_masked_results, &mut rollback.pipelines)?;
+        let mesh_pipeline = into_sided(mesh_results)?;
+        let shadow_pipeline = into_sided(shadow_results)?;
+        let depth_masked_pipeline = into_sided(depth_masked_results)?;
         let shadow_clear_pipeline = shadow_clear_result?;
-        rollback.pipelines.push(shadow_clear_pipeline);
-        let rsm_pipeline = into_rollback(rsm_results, &mut rollback.pipelines)?;
+        let rsm_pipeline = into_sided(rsm_results)?;
 
         // --- the tonemap pass ---
         let tonemap_entries = [
@@ -13058,7 +13059,7 @@ impl MeshModules {
     /// The results rather than the pair, because that is the discipline `build`
     /// keeps for every pipeline it makes: everything is created while the
     /// modules are alive, the modules are released once, and only then is each
-    /// result unwrapped and handed to the rollback that will release it. A
+    /// successful result handed to rollback before any error is propagated. A
     /// helper that unwrapped here would have to drop a handle it had already
     /// created when its twin failed, and nothing would ever destroy it.
     fn sided(
@@ -13522,6 +13523,57 @@ mod tests {
     };
     use crcbl_hal::null::{Event, NullInstance, ObjectKind, Recorder};
     use crcbl_hal::{DeviceDesc, Features, Instance, QueueKind};
+
+    #[test]
+    fn refused_mesh_color_pipelines_release_successful_depth_pipelines() {
+        let recorder = Recorder::new();
+        let mut limits = crcbl_hal::Limits::desktop();
+        limits.max_color_attachments = 2;
+        let features = Features::COMPUTE | Features::MESH_SHADER;
+        let instance = NullInstance::new(crcbl_hal::DeviceCaps { features, limits })
+            .with_recorder(recorder.clone());
+        let device = instance
+            .create_device(&DeviceDesc {
+                label: None,
+                adapter: crcbl_hal::AdapterId(0),
+                required_features: features,
+                optional_features: Features::empty(),
+                compatible_surface: None,
+            })
+            .unwrap();
+        let queue = device.queue(QueueKind::Graphics).unwrap();
+        let before = recorder.total_live_objects();
+        let error = ForwardRenderer::with_scene_on_path(
+            device.as_ref(),
+            queue,
+            Format::Rgba8UnormSrgb,
+            &scene::demo(),
+            GeometryPath::MeshShader,
+        )
+        .expect_err("three-target color pipelines must be refused");
+        assert!(
+            error
+                .to_string()
+                .contains("3 colour targets exceeds max_color_attachments 2"),
+            "{error}"
+        );
+        assert!(
+            recorder.events().iter().any(|event| matches!(
+                event,
+                Event::Created {
+                    kind: ObjectKind::GraphicsPipeline,
+                    ..
+                }
+            )),
+            "the refusal must exercise cleanup of successful pipelines"
+        );
+        assert_eq!(
+            recorder.total_live_objects(),
+            before,
+            "partial pipeline construction leaked resources"
+        );
+        recorder.assert_valid();
+    }
 
     #[test]
     fn exact_geometry_path_overrides_preference_and_default_keeps_it() {
