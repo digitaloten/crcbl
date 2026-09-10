@@ -787,6 +787,23 @@ Verified present in the tree:
 
 ---
 
+### DECIDED 2026-09-10 — `scripted` and `headless` stay hand-written
+
+A `crcbl::scripted_loop!` macro over the `#[cfg(test)]` `scripted` helpers —
+every demo but alcove, options, sparks and sundial has one — was declined. Read
+three of them and they are three different bodies under one name: hud's is the
+plain `with_shell` call, horde's builds the engine at its title screen and then
+starts the run, and lantern's wraps the loop in a `Scripted` struct that also
+holds a `crcbl::debug_view::for_test()` guard. The `headless` half is the same
+story through the type system — `Options` is each sample's own struct, so a
+shared builder cannot name its type.
+
+What they share is the shape, not the knowledge, and a macro covering them would
+need a clause per sample plus a `carry:` for lantern's guard: the same reasoning
+that keeps `apps/viewer`'s `PendingLoop` hand-written. A demo that wants the
+pair and has none — `apps/options` is the one a coverage gap is waiting on —
+writes the same three lines rather than adopting a macro.
+
 ### DECIDED 2026-09-10 — the readout panel's coverage is unit tests and browser rows
 
 The five 3D demos' goldens do not read the panel, and the seam review's claim

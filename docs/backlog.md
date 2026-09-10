@@ -4881,18 +4881,6 @@ read are recorded in `docs/notes/samples.md` under "The demo seam review of
 over comment-stripped bodies, and the four the parent re-ran are marked. The
 rest are the review's reading, not re-verified — re-count before cutting.
 
-### `scripted` and `headless` are still copied into every `app.rs` (2026-09-07)
-
-`ui_text`, `row_value` and the `Common` inside `headless` are hoisted into
-`apps/crcbl-sample-test` and gone from the demos. What is left is
-`fn scripted(options: &Options) -> Loop<HeadlessShell>` in eleven demos and the
-`Options` wrapper of `fn headless(frames)` in eight. Neither is hoistable as a
-function: `scripted` calls each sample's own `with_shell`, and `Options` is each
-sample's own type, so a shared version would be a macro with a clause per
-sample. **What it would take:** decide whether a `crcbl::scripted_loop!` macro
-earns its keep against eleven three-line functions that have not drifted, or
-close this as declined.
-
 ### `apps/options` has no test that drives a frame at all (2026-09-10)
 
 The menu-on-a-frame gap is closed for the three `PageBundle` demos that run a
@@ -4906,8 +4894,8 @@ from, and the crate does not dev-depend on `apps/crcbl-sample-test`. **What it
 would take:** the dev-dependency plus the `scripted`/`headless` pair the other
 demos have, which is the same three-line shape eleven samples carry — and the
 settings screen's menu is up on every frame, so the assertion itself is one line
-once a frame can be driven. Worth doing with the `scripted`/`headless` decision
-above rather than on its own.
+once a frame can be driven. Three hand-written lines, per the
+`scripted`/`headless` decision recorded in `docs/notes/samples.md`.
 
 ### The browser gate's mirrored constants are pinned, not emitted (2026-09-07)
 
