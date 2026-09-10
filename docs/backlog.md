@@ -3679,6 +3679,25 @@ Three things it deliberately left:
 
 ## Jobs and threading (`21-jobs.md`)
 
+### The job pool drops a `Job` while a worker still holds a protected reference (2026-09-10)
+
+CI's `miri (crcbl-jobs)` job failed on 87e006c in
+`the_driver_and_the_workers_between_them_ran_every_chunk`: the `Job` lives in
+`Pool::par_for`'s frame, a worker inside `run_one` holds it as a strongly
+protected `&Job` argument, and `run_one`'s last act is the `remaining` decrement
+— so the driver returns and drops the `Job` while that protector is still live.
+No access happens after the decrement, which is why every other check passes and
+why it is invisible on hardware, but the protector outliving the deallocation is
+UB.
+
+**It is rare**: green on the six CI runs before it, and not reproducible locally
+in 40 runs of that test under CI's exact flags, nor with `-Zmiri-num-cpus=4`, 24
+`-Zmiri-many-seeds`, or `-Zmiri-preemption-rate` at 0.2 and 0.5. **What it would
+take:** take the protected reference out of the worker path and put the worker's
+last write in storage that outlives the driver's frame — `Shared` is an `Arc`
+every worker already holds. A fix was delegated on 2026-09-10; if this entry is
+still here, it did not land.
+
 ### The pipeline thread topology does not exist (2026-08-27)
 
 **Only the pool's workers start through the spawn seam.** `crcbl_jobs::spawn`
@@ -4898,16 +4917,49 @@ settings screen's menu is up on every frame, so the assertion itself is one line
 once a frame can be driven. Three hand-written lines, per the
 `scripted`/`headless` decision recorded in `docs/notes/samples.md`.
 
-### The browser gate's mirrored constants are pinned, not emitted (2026-09-07)
+### Seven of the browser gate's mirrored constants make a check vacuous when they drift (2026-09-10)
 
-`crcbl_sample_test::browser_gate_expectation` reads a block's field out of
-`web/tools/browser-e2e.mjs` as text, and shard's and breach's tests hold the
-eight constants the seam review named to the Rust that owns them. That is the
-cheap half. The gate still carries the literals, the reader is a text scan that
-breaks on a reformat of the `EXPECTATIONS` object, and the review only opened
-shard's and breach's blocks — other Rust ↔ JS mirrors in the rest of the driver
-are unsurveyed. **What it would take:** a constants file a demo emits and the
-gate imports, or a survey of the remaining blocks for symbols named in comments.
+`web/tools/browser-e2e.mjs`'s `EXPECTATIONS` was read end to end on 2026-09-10
+(all of it; the rest of the file was not). Two demos pin their constants with
+`crcbl_sample_test::browser_gate_expectation` — shard's nine fields and breach's
+bot count — and about forty other literals in that object are copies of values
+the Rust owns. Most of those redden loudly when they drift. **These seven do
+not**: the check goes on passing while the thing it was written to catch stops
+being caught.
+
+- **alcove `knobs.centre` and sundial `knobs.centre` (`'0.50'`)** mirror
+  `occlusion::SEAM_CENTRE` and `filter::SEAM_CENTRE`. Re-verified: the consumer
+  asks `seamNow !== knobs.centre`, so a moved default makes the literal match
+  nothing, the inequality is trivially true, and "a press and a drag raise the
+  seam and move it" passes on a slider wired to nothing.
+- **quarry `autoexec.knob` (`'r_ssao_slices = 4'`)** has already drifted.
+  Re-verified: `r_ssao_slices` is declared `in 2 ..= 4 = 4`, and the gate's own
+  comment beside the literal still says "whose default is 2". The autoexec now
+  sets the variable to the value it already holds, so the check no longer
+  separates "the set took" from "it was already there".
+- **shard `beatMs` (250) and breach `beatMs` (500)** are `HEARTBEAT_TICKS` over
+  `DEFAULT_TICK_HZ`. They are not an assertion: every budget in the run is
+  scaled by them, so a wrong denominator inflates or shrinks every timeout
+  invisibly.
+- **towers `loop.tickHz` (60)** mirrors `game::DEFAULT_TICK_HZ` and is used to
+  compute when a wave is due. A _lowered_ tick rate inflates the due tick and
+  "the wave key sends the wave sooner than the table had it due" becomes
+  vacuous; a raised one reddens.
+- **puppet `walk.highStep` (0.9)** mirrors `map::HIGH_STEP_TOP`
+  (`LOW_STEP_TOP + HIGH_STEP_RISE`). It is the _refusal_ control: raised, the
+  bound stops bounding. `it_gets_onto_the_low_step_and_no_further` asserts the
+  same pair against the Rust constants and does not read the JS, so it pins
+  nothing here.
+
+All seven were re-verified against the Rust and the consumer site on 2026-09-10:
+shard's and breach's beats are `HEARTBEAT_TICKS` over `DEFAULT_TICK_HZ` against
+`NOMINAL_BEAT_MS`, whose own doc block says the ratio scales every budget in the
+file; towers' is `loop.tickHz` inside the wave's due tick; puppet's is
+`LOW_STEP_TOP + HIGH_STEP_RISE` against the `top < walk.highStep - tolerance`
+refusal. **What it would take:** `browser_gate_expectation` already exists, so
+each is a test in the owning crate like shard's; the quarry row needs its knob
+value and its comment corrected as well, which is a change to a row another
+slice is editing this hour and so is not done here.
 
 ## The sample plans — what they still owe
 
