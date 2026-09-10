@@ -787,6 +787,81 @@ Verified present in the tree:
 
 ---
 
+### Where the hoists landed, and what each one ruled out (2026-09-07)
+
+Six records from landing seam slices 1–5. Each says why a symbol is where it is
+rather than where the review proposed, or what was declined on the way, so
+neither gets re-proposed.
+
+#### The pause menu and the page bundle live in `crcbl::engine`, not where the seam review put them (2026-09-07)
+
+The 2026-09-07 seam review proposed `crcbl::ui::menu::pause_menu` and a
+`PageBundle` in `crcbl-render`. Neither is reachable: `crcbl::ui` _is_
+`crcbl_ui` (`pub use crcbl_ui as ui`), and `RESUME_ID` and its neighbours are
+defined beside `MenuAction` in `crates/crcbl/src/engine.rs`, which `crcbl-ui`
+cannot see; `PageBundle` holds a `GpuContext` and returns `GpuError`, both of
+which are `crcbl`'s and not `crcbl-render`'s. Both landed in
+`crates/crcbl/src/engine/`, beside `pause.rs` and `console_button.rs`, which are
+the same kind of hoist. Moving the widget ids down into `crcbl-ui` was
+considered and declined: their doc comments link `PAUSE_KEY` and
+`MenuAction::from_id`, which would become unresolvable and red `cargo doc`.
+
+#### The screenshot arming reaches the context through a second trait (2026-09-07)
+
+`crcbl::engine::HoldsContext` exists because `GameGpu` could not carry
+`context_mut`: `engine.rs`'s own `FakeGpu` and `BareGpu` hold no `GpuContext` at
+all, so a required method there is one they could only answer by lying. The
+sixteen inherent `context_mut` accessors were therefore **not** deleted —
+`impl_game_gpu!` forwards to them, which is the pattern that keeps
+`unconditional_recursion` working — but their five-line rationale collapsed to
+one pointer at the trait. **Considered and declined:** putting the screenshot
+request on `GpuOptions` so `GpuContext::open` arms it itself, which would delete
+the accessors and the free function both. It is the better shape and it touches
+`GpuOptions`, `GpuContextDesc`, both bring-up paths and `crcbl new`'s scaffold,
+so it is its own task.
+
+#### `impl_game_gpu!` now requires `context_mut`, which quarry and viewer gained (2026-09-07)
+
+Both hold a `ctx: GpuContext` and neither arms `--screenshot` in its `assemble`;
+the accessor exists only for the macro's forward. That they do not arm it is a
+pre-existing gap — `apps/quarry` and `apps/viewer` are the two samples with no
+golden-harness screenshot — and was not fixed here.
+
+#### `apps/viewer`'s `PendingLoop` stays hand-written (2026-09-07)
+
+`crcbl::impl_pending_loop!` covers the other seventeen. Viewer's pending state
+carries an `Rc<Model>` beside the options and its `request` takes a fourth
+argument, so a `carry:` clause would put one sample's exception into every other
+invocation. Recorded so it is not re-proposed; the same reasoning is written on
+the struct and in the macro's docs.
+
+#### `crcbl::knob::Knob` lives in the umbrella, and why not lower (2026-09-07)
+
+The 2026-09-07 seam review proposed the knob beside
+`crcbl::render::console_table()` or in `crcbl-console`. Neither works.
+`crcbl-console`'s Cargo.toml charter is "**No dependencies at all**, on purpose"
+(plan decision 1), so it cannot log a refused write — and reporting the refusal
+rather than dropping it is the one behaviour both samples' `set` had.
+`crcbl-render` is wrong the other way: the knowledge is about `ConVar` and
+`Table`, not rendering, and there are three console tables (`crcbl`,
+`crcbl_core`, `crcbl_render`), so `Knob::named` takes the table as an argument
+and a knob in render could not name the other two. It landed in
+`crates/crcbl/src/knob.rs`, the same place the pause menu and `PageBundle` went
+for the same kind of reason.
+
+Its tests are `crates/crcbl/tests/knob.rs` and not a `mod tests`:
+`crcbl_console::guard::declared_names` holds `crcbl::console_table` to every
+`convar!` under `crates/crcbl/src`, so fixture variables declared beside the
+code would be ones the engine's own table is then required to publish.
+
+#### A file under `web/engine/` must name no sample's export, even in prose (2026-09-07)
+
+`web/tools/check-exports.mjs` scans the _shared_ half of the shim
+(`web/engine/`) for `ex.__crcbl_…` and requires every symbol it finds there of
+**every** demo's artifact. A doc comment in `web/engine/knobs.js` naming
+`__crcbl_alcove_technique` failed `web/build.sh` on breakout. Recorded so the
+next shared module does not trip it.
+
 ### Coverage — what I did not read
 
 I read whole files where a finding rested on them and extracted specific items
