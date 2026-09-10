@@ -47,7 +47,7 @@ fn scene(kind: PageKind, checker: bool, span: f32) -> SceneDesc<'static> {
     for y in 0..EXTENT {
         for x in 0..EXTENT {
             let value = if checker {
-                if (x / CELL + y / CELL) % 2 == 0 {
+                if (x / CELL + y / CELL).is_multiple_of(2) {
                     0
                 } else {
                     255
