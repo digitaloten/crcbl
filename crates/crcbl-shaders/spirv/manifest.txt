@@ -277,20 +277,20 @@ entry-points = computeMain:glcompute
 
 [mesh]
 source = shaders/mesh.slang
-source-sha256 = 80062a8c5fea244ca7f30029ae00f68a222c973cce13b01734ad60e69f8a90bc
+source-sha256 = bb46e614f0552f44b2d749dc0aa3931644e5817d90dad6812d8690132820e824
 targets = spirv, wgsl, msl, dxil
 spirv = spirv/mesh.spv
-spirv-sha256 = e32abfbe94f0201e19f63304831e73fbaf10295dcf25f9745a43ab8fd418391a
+spirv-sha256 = 6baafbd8c434bcb64572ad27aa7b47dca37b0dd94b4a95a0095af85109494d2b
 wgsl = wgsl/mesh.wgsl
-wgsl-sha256 = e34bc446f749b581585677230c646f0b4f047d9847d980d5a9eeae7223678f49
+wgsl-sha256 = 7dc86fd3d6e4b5879bd6e145bc22ef645ec2d4d2c51213057765c30e2983c7a7
 msl = msl/mesh.metal
-msl-sha256 = b4274f4967b6445d4680a0d65c63f800faa6adb0c5e0d786b040ccfbe8ad5e32
+msl-sha256 = fa8b7a03cc0fbcae462e4e02cba5b7178e2967298d7cbb7d061f7eefb99830d9
 dxil = vertexMain:dxil/mesh.vertex.dxil:7be67c51fde9b7644a1255403c0131212203545583ed16fd904eb39e1c71915f
 dxil = depthVertexMain:dxil/mesh.depth_vertex.dxil:54166251ef71b7ead624305ae82f7a6e640a0e63d9805f50e34ef66726735b36
 dxil = depthClearVertexMain:dxil/mesh.depth_clear_vertex.dxil:e2007f43be9438f2c6d5022cb8fb44f825ab39426569a45117fd8c1494ab53a4
-dxil = fragmentMain:dxil/mesh.fragment.dxil:e17c9508dcc66ebcdbcda064a26767d667a03bdadb070d7bad17e8cb8cd1864e
-dxil = depthMaskedFragmentMain:dxil/mesh.depth_masked_fragment.dxil:6874909f115c1759f9e702a22482e7d34eb558326245891d2a76ded0c93f14fd
-dxil = rsmFragmentMain:dxil/mesh.rsm_fragment.dxil:ee0047584d3384f7cff8bcbdb6856e66b0b60d70baa64c9a995b3ce0f1cbc2bf
+dxil = fragmentMain:dxil/mesh.fragment.dxil:5b71c225a426f1ee22541aa181ecc1936bb416087d3c1cdcaeea3a336066d0f7
+dxil = depthMaskedFragmentMain:dxil/mesh.depth_masked_fragment.dxil:b314b23166670c6e188d1315ee77c6815e08d094116d21bcc92896d812a47343
+dxil = rsmFragmentMain:dxil/mesh.rsm_fragment.dxil:018a7a2fae9b3b355e73c72632d0f1a4c72df010c1b3ab64f86e40566d9e5cde
 entry-points = vertexMain:vertex, depthVertexMain:vertex, depthClearVertexMain:vertex, fragmentMain:fragment, depthMaskedFragmentMain:fragment, rsmFragmentMain:fragment
 
 [mesh_cluster]

@@ -1477,25 +1477,29 @@ SamplerState base_color_sampler;
 /// cutout is decided one way and whose shading is decided another is a hole in
 /// one pass and not in the next.
 ///
-/// # Derivatives before the branch, explicit gradients inside it
+/// # The branch is on the *index*, and the sample is unconditional
 ///
-/// WGSL treats the fragment's material id as possibly non-uniform, so an
-/// implicit-LOD `Sample` inside the page test is invalid. Take `ddx` and `ddy`
-/// in uniform control flow before the early return, then pass them to
-/// `SampleGrad`, as `shading_normal_of` does. The gradients use the resolved
-/// authored or physical UV, preserving mip selection and sampler filtering.
-/// A row naming no page returns the identity without fetching layer zero.
+/// WGSL's uniformity analysis reports the fragment's material id as possibly
+/// non-uniform, so anything derived from the material row is non-uniform as far
+/// as it can prove — and an implicit-LOD sample is legal only in uniform control
+/// flow. A `Sample` inside `if (layer != NO_PAGE)` therefore fails
+/// `CreateShaderModule` in the browser while SPIR-V, MSL and DXIL compile it
+/// without a word; `shading_normal_of` and `fxaa.slang`'s `tap` both carry that
+/// scar. So the fetch stays at this function's top level with a layer of `0`
+/// substituted for the unnamed case, and the *select* below it is what
+/// discards the texel. A page always has at least one layer, so the substituted
+/// index is in range.
+///
+/// What that costs is one page fetch on a surface with no base-colour texture.
+/// What it buys is that the module parses at all in the browser, which is the
+/// same trade `shading_normal_of`'s derivatives make one step earlier.
 float4 base_color_texel(GpuMaterial material, float2 uv)
 {
-    float2 duvdx = ddx(uv);
-    float2 duvdy = ddy(uv);
     uint layer = base_color_layer(material);
-    if (layer == NO_PAGE)
-    {
-        return float4(1.0, 1.0, 1.0, 1.0);
-    }
-    return base_color_textures.SampleGrad(
-        base_color_sampler, float3(uv, float(layer)), duvdx, duvdy);
+    bool named = layer != NO_PAGE;
+    float4 texel = base_color_textures.Sample(
+        base_color_sampler, float3(uv, float(named ? layer : 0u)));
+    return named ? texel : float4(1.0, 1.0, 1.0, 1.0);
 }
 
 /// The sun's cascaded shadow map: `SHADOW_CASCADES` square tiles **side by side
@@ -1881,9 +1885,12 @@ Texture2DArray<float4> emissive_textures;
 /// The packed occlusion, roughness and metallic a material row samples at `uv`,
 /// or the multiplicative identity when the row names no such page.
 ///
-/// Like `base_color_texel`, compute UV gradients before the page test and use
-/// `SampleGrad` only for a named page. This keeps derivatives in uniform flow
-/// for WGSL while avoiding a texture fetch for the unnamed case.
+/// **`base_color_texel`'s shape exactly, and for its reason**: the branch is on
+/// the *index* and the `Sample` is unconditional at this function's top level,
+/// because WGSL's uniformity analysis reports the fragment's material id as
+/// possibly non-uniform and an implicit-LOD sample is legal only in uniform
+/// control flow. The *select* below the fetch is what discards the texel. A page
+/// always has at least one layer, so the substituted index is in range.
 ///
 /// `float4(1, 1, 1, 1)` for the unnamed case, which is the identity of all three
 /// products the shading makes out of this texel — the occlusion on the indirect
@@ -1891,15 +1898,11 @@ Texture2DArray<float4> emissive_textures;
 /// shades bit for bit as it did before this page existed.
 float4 mro_texel(GpuMaterial material, float2 uv)
 {
-    float2 duvdx = ddx(uv);
-    float2 duvdy = ddy(uv);
     uint layer = mro_layer(material);
-    if (layer == NO_PAGE)
-    {
-        return float4(1.0, 1.0, 1.0, 1.0);
-    }
-    return mro_textures.SampleGrad(
-        base_color_sampler, float3(uv, float(layer)), duvdx, duvdy);
+    bool named = layer != NO_PAGE;
+    float4 texel = mro_textures.Sample(
+        base_color_sampler, float3(uv, float(named ? layer : 0u)));
+    return named ? texel : float4(1.0, 1.0, 1.0, 1.0);
 }
 
 /// The emissive texel a material row samples at `uv`, or the multiplicative
@@ -1910,15 +1913,11 @@ float4 mro_texel(GpuMaterial material, float2 uv)
 /// the sampler decoded it, which is the space `emissive_of(material)` is in.
 float4 emissive_texel(GpuMaterial material, float2 uv)
 {
-    float2 duvdx = ddx(uv);
-    float2 duvdy = ddy(uv);
     uint layer = emissive_layer(material);
-    if (layer == NO_PAGE)
-    {
-        return float4(1.0, 1.0, 1.0, 1.0);
-    }
-    return emissive_textures.SampleGrad(
-        base_color_sampler, float3(uv, float(layer)), duvdx, duvdy);
+    bool named = layer != NO_PAGE;
+    float4 texel = emissive_textures.Sample(
+        base_color_sampler, float3(uv, float(named ? layer : 0u)));
+    return named ? texel : float4(1.0, 1.0, 1.0, 1.0);
 }
 
 /// This surface's metalness: the row's `metallic` factor times the packed
@@ -5528,7 +5527,7 @@ FragmentOutput fragmentMain(VertexOutput input, bool front_facing : SV_IsFrontFa
     // indirect terms. Resolved here rather than beside the base colour above so
     // that a fragment the cutout removed and every debug view that returned
     // early pay no fetch for it — the control flow at this point is uniform,
-    // which is what `mro_texel`'s UV derivatives need, because every
+    // which is what `mro_texel`'s unconditional `Sample` needs, because every
     // early return above is on `frame.ambient.w` and `discard` is not a branch
     // the analysis follows.
     //
@@ -5539,9 +5538,10 @@ FragmentOutput fragmentMain(VertexOutput input, bool front_facing : SV_IsFrontFa
     // §2's emissive page, sampled here beside the packed one and read at the
     // very bottom of this stage. **Here rather than there, and that is the
     // uniformity rule again**: the light loop below runs a per-froxel count, so
-    // the helper's UV derivatives must be taken before that non-uniform loop.
-    // The page fetch itself uses `SampleGrad` and can branch on the page index.
-    // One `float4` held across the accumulation is what it costs.
+    // a `Sample` written after it would sit past a non-uniform loop and WGSL
+    // would refuse the module — the same analysis `mro_texel`'s own declaration
+    // carries the scar of. One `float4` held across the accumulation is what it
+    // costs.
     float4 emitted = emissive_texel(material, uv);
 
     // The row's two shading factors **times the page's own two channels**,
