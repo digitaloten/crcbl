@@ -191,11 +191,20 @@ and on the local M3 Pro with macOS 26.5.2. This isolates the failure to the
 hosted macOS 26 environment rather than establishing a failure on all macOS 26
 GPUs.
 
-The Metal CI job is pinned to macOS 15, where all 59 renderer goldens pass with
-API assertions and shader validation, error reporting, stderr reporting and
-abort-on-fault enabled
+The Metal renderer CI job is pinned to macOS 15, where all 59 renderer goldens
+pass with API assertions and shader validation, error reporting, stderr
+reporting and abort-on-fault enabled
 ([run 34463283160](https://github.com/digitaloten/crcbl/actions/runs/34463283160)).
 These extra shader settings matter: default shader fault handling can zero-fill
 an invalid read while the command buffer still completes successfully. The
 renderer gate now makes such findings fatal. The hardware harness retains its
 API logging mode because several probes deliberately end unused encoders.
+
+The full macOS 15 job also exposed a separate native indirect-command-buffer
+failure: three hardware probes abort inside Apple's `IOGPUMetalResource`
+initialization even with the harness's existing validation settings
+([run 34464266030](https://github.com/kryptic-sh/crcbl/actions/runs/34464266030)).
+The remaining 69 hardware tests pass and all 45 committed MSL artifacts compile.
+Hardware probes therefore retain a separate macOS 26 job, where all 72 offscreen
+tests passed; renderer coverage runs on macOS 15. No hardware probes are removed
+and neither job disables shader validation.
