@@ -11742,13 +11742,6 @@ are in docs/notes/backends.md.
   construction and not by observation.** The runner has one display, so a
   backend that ignored the named monitor entirely would pass every assertion.
   Needs a two-display machine.
-- **A window created borderless is untested.** The session creates its window
-  windowed and flips; `create_native_window`'s borderless arm (placing the
-  window with `initWithContentRect:` rather than `setFrame:display:`) has never
-  run, and the presentation options are applied by `refresh_presentation` on the
-  first `set_mode`, not at creation — whether that ordering matters for a window
-  born borderless has not been measured. Re-read the ordering rule in
-  `appkit::window`'s module docs before adding a test here.
 - **`injection_skipped` is written and unrun**, because the runner granted
   activation. It stays for the case that produced it — a developer running this
   as a background process on their own machine — and prints the `Activation`
