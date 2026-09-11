@@ -61,17 +61,21 @@ fullscreen-shaped extent are at this seam, and asserts the extent comes off the
 texture rather than the descriptor.
 
 What is still nobody's claim is the **window** half of the native-presentation
-item the Metal iteration left open: `Borderless { monitor: Some(..) }` — which
-monitor a frameless window lands on, where only the window's birth is asserted —
-the sample-level F11 pass, `injection_skipped`, drag and drop and the pasteboard
-prompt as the samples reach them. There is no fullscreen transition left to
-cover: `crates/crcbl-shell/src/appkit` drops Spaces fullscreen and makes
-borderless a frameless window at screen size. Those live in
+item the Metal iteration left open: the sample-level F11 pass,
+`injection_skipped`, drag and drop and the pasteboard prompt as the samples
+reach them. `Borderless { monitor: Some(..) }` closed on 2026-09-11 — the
+session creates a window naming an attached monitor and asserts it covers that
+screen, and asserts an unattached id is refused with `NoSuchMonitor` rather than
+landing on the primary. That refusal is what makes the lookup observable on a
+one-display machine, and the session runs locally in about a third of a second,
+so the window half is no longer CI-only. There is no fullscreen transition left
+to cover: `crates/crcbl-shell/src/appkit` drops Spaces fullscreen and makes
+borderless a frameless window at screen size. The rest lives in
 `crates/crcbl-shell/tests/appkit_session.rs`, which reads the first responder,
 the dragged types, the style mask, the frame, the screen and the backing scale
 off `NSWindow` and does a pasteboard round trip against `pbcopy`/`pbpaste`. That
-target is `harness = false`, activates the application and injects input, so it
-opens a window and belongs to CI's macOS job rather than a local gate.
+target is `harness = false`, activates the application and injects input, so a
+run holds the desktop for the length of the session.
 
 **Pacing is unmeasured against the engine's own loop.** `crcbl`'s `FramePacer`
 paces on presents and reports `elapsed_nanos`; the detached layer can supply a

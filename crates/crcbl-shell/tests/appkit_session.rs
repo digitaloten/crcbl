@@ -201,9 +201,9 @@ mod macos {
     use crcbl_core::log::Filter;
     use crcbl_shell::{
         ButtonState, ClipboardContent, ClipboardOffer, CursorIcon, DisplayMode, KeyCode, Keysym,
-        LogicalSize, MimeType, PhysicalPoint, PhysicalSize, PointerButton, PointerMode,
-        ReceivedMime, ScrollDelta, Shell, ShellBackend, ShellCaps, ShellEvent, SizeConstraints,
-        WindowDesc, WindowId, open_backend, session_support,
+        LogicalSize, MimeType, MonitorId, PhysicalPoint, PhysicalSize, PointerButton, PointerMode,
+        ReceivedMime, ScrollDelta, Shell, ShellBackend, ShellCaps, ShellError, ShellEvent,
+        SizeConstraints, WindowDesc, WindowId, open_backend, session_support,
     };
 
     /// The window's title, which is **how this session finds its own window**.
@@ -539,6 +539,10 @@ mod macos {
         // arm and the "nothing saved" way back were the two paths no window here
         // had ever taken.
         a_window_born_borderless_round_trips(&mut shell);
+
+        // And a fourth, which names the monitor it wants: the `Some(id)` arm of
+        // the creation lookup, and the refusal that stands beside it.
+        a_borderless_window_names_its_monitor(&mut shell);
 
         shell.destroy_window(window).expect("destroy_window");
         assert!(
@@ -1898,6 +1902,109 @@ mod macos {
         println!(
             "crcbl appkit session: a window born borderless covered its screen, restored the \
              requested placement and went back"
+        );
+    }
+
+    /// **The monitor a borderless window names is resolved, and one that is not
+    /// attached is refused rather than falling back to the primary.**
+    ///
+    /// Every borderless window this session made before now named no monitor, so
+    /// `create_window`'s `Some(id)` arm — the lookup, and the refusal beside it —
+    /// had never run.
+    ///
+    /// **The refusal is what makes the lookup observable on a machine with one
+    /// display.** With a single screen attached, "the window covers monitor 0"
+    /// and "the window covers the primary" are the same rectangle, so a backend
+    /// that ignored the id entirely would satisfy the placement assertion below;
+    /// it could not, however, refuse an id no screen has — which is the first
+    /// half, and the half a second display would not be needed to catch. The
+    /// placement assertion is the shape a two-display machine discriminates on.
+    ///
+    /// Hidden, like its siblings: placement and style are the subject, so there
+    /// is nothing to show.
+    fn a_borderless_window_names_its_monitor(shell: &mut Box<dyn Shell>) {
+        const NAMED_TITLE: &str = "crcbl appkit session — borderless on a monitor";
+
+        assert!(
+            !shell.monitors().is_empty(),
+            "a Mac with a window server has at least one screen to be borderless on"
+        );
+        let target = shell.monitors()[0].id;
+
+        // **An id no screen has.** `u32::MAX` rather than a plausible next id, so
+        // this cannot start passing because a display was plugged in.
+        let absent = MonitorId(u32::MAX);
+        let refused = shell.create_window(&WindowDesc {
+            title: NAMED_TITLE,
+            app_id: "sh.kryptic.crcbl.appkit-session",
+            size: REQUESTED,
+            constraints: SizeConstraints::min(LogicalSize::new(320.0, 180.0)),
+            mode: DisplayMode::Borderless {
+                monitor: Some(absent),
+            },
+            resizable: true,
+            visible: false,
+            accept_drops: false,
+        });
+        assert!(
+            matches!(refused, Err(ShellError::NoSuchMonitor(id)) if id == absent.0),
+            "a borderless request naming a display that is gone must fail rather than quietly \
+             land on the primary: {refused:?}"
+        );
+
+        let named = shell
+            .create_window(&WindowDesc {
+                title: NAMED_TITLE,
+                app_id: "sh.kryptic.crcbl.appkit-session",
+                size: REQUESTED,
+                constraints: SizeConstraints::min(LogicalSize::new(320.0, 180.0)),
+                mode: DisplayMode::Borderless {
+                    monitor: Some(target),
+                },
+                resizable: true,
+                visible: false,
+                accept_drops: false,
+            })
+            .expect("create_window on an attached monitor");
+        assert!(
+            !shell.window_state(named).expect("state").visible,
+            "a window created visible: false is not on screen, whichever monitor it names"
+        );
+        let _covering = wait_for(shell, "the named-monitor window's first Resized", |shell| {
+            shell
+                .window_state(named)
+                .ok()
+                .and_then(|state| state.size())
+        });
+
+        let facts = session_support::window_facts(NAMED_TITLE)
+            .expect("the named-monitor window is this process's to read");
+        assert!(
+            !facts.titled,
+            "a window created borderless has no title bar; the style mask is {:#x}",
+            facts.style_mask
+        );
+        let screen = facts
+            .screen_frame
+            .expect("a window created against a screen is on one");
+        assert_eq!(
+            facts.frame, screen,
+            "a borderless window covers the monitor it named, exactly: frame {:?}, screen \
+             {screen:?}",
+            facts.frame
+        );
+        assert_eq!(
+            shell.window_state(named).expect("state").requested_mode,
+            DisplayMode::Borderless {
+                monitor: Some(target),
+            },
+            "the seam echoes the monitor the caller named"
+        );
+
+        shell.destroy_window(named).expect("destroy_window");
+        println!(
+            "crcbl appkit session: a borderless window named its monitor, and a monitor that is \
+             not attached was refused"
         );
     }
 
