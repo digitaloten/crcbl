@@ -2461,13 +2461,17 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.140
-      # The offscreen runner cannot vend a live CAMetalLayer drawable.
       # API logging accommodates intentional empty-encoder probes; shader
       # validation remains enabled by the hardware harness.
+      #
+      # **The drawable test runs here too.** Its `CAMetalLayer` is detached —
+      # never in a window, never on a screen — so it needs a live window server
+      # rather than a visible display, and whether this runner has one is what
+      # the run answers. It is asked for rather than excluded because the
+      # present-feedback path has no other automated coverage.
       - name: Run the Metal hardware suite without a window
         run: >-
-          crates/crcbl-mtl/tests/run-mtl-e2e.sh --no-fail-fast -E 'not
-          test(a_layer_swapchain_acquires_a_drawable_and_presents_it)'
+          crates/crcbl-mtl/tests/run-mtl-e2e.sh --no-fail-fast
 
   mtl-e2e:
     name: mtl e2e (macos-15)
