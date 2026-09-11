@@ -3,6 +3,27 @@
 What was raised and not finished. A changelog says what shipped; this says what
 did not, and why. Delete an entry when it ships — `git log` is the history.
 
+## F11 never reaches a macOS application, so no sample's mode key works here (2026-09-11)
+
+`appkit::keys` maps `0x67` to `KeyCode::F11` and every sample binds that to its
+display-mode toggle, but the key does not arrive. Posted at the window server
+through `CGEventPost` from `crates/crcbl-shell`'s session harness, F11 produced
+`PointerFocus` and no `Key` event on every attempt, while `A`, `ArrowUp` and
+`F1` — the last through the same function-key path — all arrived in the same
+run. That is macOS taking the key for its own shortcut (F11 is Show Desktop in
+Mission Control's defaults) **ahead of the application**, so a player's press
+goes the same way: on this platform the samples' mode key is reachable only with
+`Fn`, or after the system shortcut is turned off.
+
+Nothing in the tree can fix that from the seam's side, which is why the
+sample-level F11 pass is not merely unwritten —
+`crates/crcbl-shell/tests/appkit_session.rs` says so where a reader of the
+harness will meet it, and this entry is the record. The decision it needs is the
+samples': rebind the mode toggle on macOS, accept `Fn`+F11 and document it, or
+leave it and let the Linux suites carry the pass — the engine half, turning the
+key into a display-mode request, is shared code those suites already assert by
+pressing F11 at a running `sandbox`.
+
 ## Presentation pacing cannot be measured offscreen, and that is now measured (2026-09-11)
 
 The drawable/present path runs on the detached `CAMetalLayer`, so "presentation
@@ -99,7 +120,8 @@ fullscreen-shaped extent are at this seam, and asserts the extent comes off the
 texture rather than the descriptor.
 
 What is still nobody's claim is the **window** half of the native-presentation
-item the Metal iteration left open: the sample-level F11 pass,
+item the Metal iteration left open: the sample-level F11 pass — which the entry
+at the top of this file now shows is blocked on macOS rather than unwritten —
 `injection_skipped`, drag and drop and the pasteboard prompt as the samples
 reach them. `Borderless { monitor: Some(..) }` closed on 2026-09-11 — the
 session creates a window naming an attached monitor and asserts it covers that

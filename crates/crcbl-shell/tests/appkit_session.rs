@@ -130,11 +130,18 @@
 //! *a* delta, and the Y-up position against Y-down delta asymmetry that
 //! `appkit::pointer` exists for is finally observable.
 //!
-//! What is **not** here is the sample-level pass: driving a running game and
-//! pressing F11 at it, which the two Linux suites do. That needs a renderer, and
-//! macOS has no Vulkan until MoltenVK clears its P14 gate —
-//! `docs/plan/ROADMAP.md`'s 2026-08-04 correction says so in as many words.
-//! `docs/backlog.md` carries it as the gap it is rather than approximating it.
+//! What is **not** here is the pass at a *running game*: launching a sample,
+//! pressing F11 at it and reading the mode it reports. `apps/sandbox` runs
+//! windowed here on Metal now that `crcbl-mtl` exists, so such a pass is
+//! reachable — what stops it is a measurement rather than a missing renderer.
+//! **F11 does not reach this seam.** Posted through `CGEventPost` it is
+//! swallowed whole, `PointerFocus` and no `Key` on every attempt, while `A`,
+//! `ArrowUp` and `F1` arrive through the same path: macOS binds F11 to a system
+//! shortcut (Show Desktop) and the session takes the key before any application
+//! is offered it. A player's press goes the same way, so every sample's mode key
+//! is out of reach on this platform unless that shortcut is turned off or the
+//! key is pressed with `Fn`. `docs/backlog.md` carries it, and what to do about
+//! the binding is its decision rather than this harness's.
 //!
 //! # Owning `main` means owning libtest's command line, not only its body
 //!
