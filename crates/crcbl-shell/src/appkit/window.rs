@@ -341,6 +341,34 @@ pub(super) unsafe fn backing_scale(window: Id) -> f64 {
     geometry::usable_scale(unsafe { ffi::msg_f64(window, ffi::sel(c"backingScaleFactor")) })
 }
 
+/// `+[NSWindow frameRectForContentRect:styleMask:]` — the frame a window of
+/// `mask` carries around `content`.
+///
+/// A **class** method, and a question about geometry rather than about any
+/// window: that is what lets a caller ask it for the style a window is only
+/// about to take. A window leaving borderless needs its frame before
+/// `setStyleMask:` has run, and the window it would ask then still has no title
+/// bar to measure.
+fn frame_for_content(mask: usize, content: NSRect) -> NSRect {
+    let Some(class) = ffi::class(c"NSWindow") else {
+        // No AppKit in the process. Nothing can be asking for a frame.
+        return content;
+    };
+    // SAFETY: `NSWindow` answers this class method on every macOS this backend
+    // supports. It takes an `NSRect` and an `NSUInteger` and returns an
+    // `NSRect`, which is the signature written here; it reads no window.
+    let send: unsafe extern "C" fn(Id, Sel, NSRect, usize) -> NSRect =
+        unsafe { ffi::msg_send_stret() };
+    unsafe {
+        send(
+            class,
+            ffi::sel(c"frameRectForContentRect:styleMask:"),
+            content,
+            mask,
+        )
+    }
+}
+
 /// Points the layer at the window's current backing store.
 ///
 /// Called at creation and on every resize and scale change. `contentsScale` is
@@ -731,18 +759,28 @@ impl AppKitShell {
                         // mask would stay borderless while the effective mode
                         // said windowed, which is the seam reporting a mode the
                         // window is not in.
+                        //
+                        // **`WindowDesc::size` is a client area, and a titled
+                        // frame is taller than one.** Creation hands the
+                        // rectangle to `initWithContentRect:`; here it becomes a
+                        // `setFrame:` rectangle, so AppKit is asked for the frame
+                        // the windowed mask carries around that content. Using
+                        // the content rectangle *as* the frame is what leaves the
+                        // client area a title bar short of what was asked for.
                         let state = self.window(handle)?;
+                        let mask = geometry::style_mask(DisplayMode::Windowed, resizable);
                         let size = geometry::points(state.requested_size);
+                        let frame =
+                            frame_for_content(mask, NSRect::new(0.0, 0.0, size.width, size.height));
+                        let wanted = frame.size;
                         let area = self
                             .screen_of(window)
                             .and_then(|id| self.screens.iter().find(|screen| screen.id == id))
-                            .map_or(NSRect::new(0.0, 0.0, size.width, size.height), |screen| {
-                                geometry::centred(screen.visible, size)
-                            });
-                        super::shell::Saved {
-                            mask: geometry::style_mask(DisplayMode::Windowed, resizable),
-                            frame: area,
-                        }
+                            .map_or(
+                                NSRect::new(0.0, 0.0, wanted.width, wanted.height),
+                                |screen| geometry::centred(screen.visible, wanted),
+                            );
+                        super::shell::Saved { mask, frame: area }
                     }
                 };
                 (restored.mask, restored.frame)

@@ -13987,4 +13987,14 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
   faster than per-batch, and the samples' `--force-geometry mesh-shader` still
   selects it exactly. See `docs/notes/metal-geometry-preference.md`.
 
+### Fixed
+
+- **A window created borderless keeps the client area it asked for when it goes
+  windowed.** `WindowDesc::size` is a client area and is handed to
+  `initWithContentRect:` at creation, but the return from borderless for a
+  window that had never been windowed used it as a `setFrame:` rectangle, so the
+  title bar came out of the content — a 640x448 client area where 640x480 was
+  asked for. The frame is now converted for the windowed mask with
+  `+[NSWindow frameRectForContentRect:styleMask:]`.
+
 [Unreleased]: https://github.com/kryptic-sh/crcbl/commits/main
