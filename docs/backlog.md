@@ -36,9 +36,48 @@ and every browser pixel-golden job passed on all three platforms. The change
 under test touched nothing in `apps/shard` or `web/`, and the step carries no
 timeout of its own, so a slow runner is the likely shape.
 
-Not yet distinguished from a real defect, and the job costs about an hour to
-find out. Worth a per-check budget that fails with the waits' own evidence
-rather than the job's 90-minute cap.
+**Checked 2026-09-11: the waits do carry a per-check budget already.** `until`'s
+default deadline is `pollCeiling()` in `web/tools/browser-e2e.mjs`, which is
+`TIMEOUT_MS` of the demo's own time bounded by `POLL_WALL_CAP_MS` — five minutes
+of wall clock per poll, from `e7720a72` and scaled by `33d29a0a`, both predating
+this failure. Both failing checks are plain `until` calls, so each gave up after
+its own five minutes and failed with its own readings; the 72 minutes is the
+whole shard run on a slow runner, not one wait. What is unexplained is why a
+runner slow enough to miss them passed on retry, and that wants a reproduction
+on the runner rather than a change to the budgets — this entry's earlier
+suggestion of a per-check budget is already what the file does.
+
+## Native presentation is covered at the seam and not in the window (2026-09-11)
+
+The swapchain's drawable path now runs on every push. `ci.yml`'s
+`mtl hardware e2e` job was excluding
+`a_layer_swapchain_acquires_a_drawable_and_presents_it` on the claim that a
+hosted runner's detached `CAMetalLayer` vends no drawable; the layer is never in
+a window, so what it needs is a live window server, and the runner had one — the
+test passed the first time it was asked (run 34580854730). A second test drives
+a real drawable across three `reconfigure_swapchain` calls and an out-of-band
+`setDrawableSize:`, which is what a resize, a Retina scale change and a
+fullscreen-shaped extent are at this seam, and asserts the extent comes off the
+texture rather than the descriptor.
+
+What is still nobody's claim is the **window** half of `docs/handoff.md`'s item
+4: `Borderless { monitor: Some(..) }` — which monitor a frameless window lands
+on, where only the window's birth is asserted — the sample-level F11 pass,
+`injection_skipped`, drag and drop and the pasteboard prompt as the samples
+reach them. There is no fullscreen transition left to cover:
+`crates/crcbl-shell/src/appkit` drops Spaces fullscreen and makes borderless a
+frameless window at screen size. Those live in
+`crates/crcbl-shell/tests/appkit_session.rs`, which reads the first responder,
+the dragged types, the style mask, the frame, the screen and the backing scale
+off `NSWindow` and does a pasteboard round trip against `pbcopy`/`pbpaste`. That
+target is `harness = false`, activates the application and injects input, so it
+opens a window and belongs to CI's macOS job rather than a local gate.
+
+**Pacing is unmeasured against the engine's own loop.** `crcbl`'s `FramePacer`
+paces on presents and reports `elapsed_nanos`; the detached layer can supply a
+presented sequence, but no test drives the loop against one. Measuring it wants
+a frame loop over the seam's acquire/present/wait with a real clock, and this
+slice did not build one.
 
 ## What specular antialiasing shipped without (2026-09-05)
 
