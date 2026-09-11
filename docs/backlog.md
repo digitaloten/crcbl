@@ -3,6 +3,39 @@
 What was raised and not finished. A changelog says what shipped; this says what
 did not, and why. Delete an entry when it ships — `git log` is the history.
 
+## The Metal frame is CPU-bound, and the next perf target is the bind path (2026-09-11)
+
+A fresh profile on the M3 Pro,
+`lantern --headless --backend mtl --frames 400 --size 1280x720 --fps 0 --no-debug-overlay`,
+with validation off:
+
+- **Metal System Trace puts the whole-frame GPU interval at 463.13 ms across the
+  400-frame run — 1.16 ms a frame**, while the same workload's wall clock is
+  3.9-6.9 ms a frame. The run is not GPU-bound at 720p, and that is the
+  consistency check on the mro/emissive win: 0.7-1.8% of elapsed time bought by
+  a fifth of the frame is the right order of magnitude.
+- **`sample` over eight seconds** puts the CPU where the allocation is:
+  `libsystem_malloc` 33.1%, our own code 24.7%, `libobjc` 13.5%,
+  `libsystem_platform` (memmove/memset) 10.4%, the Metal driver 12.0%. The
+  largest single leaf is `_xzm_free`, and `RawVec::finish_grow` — `Vec` growth —
+  is ~5%.
+- **The hottest `crcbl-mtl` code is the bind path.**
+  `command::MetalCommandEncoder::close_open` is 76 samples, of which
+  `binding::apply` is 44 and the `BindCache` work under `BindingMask::issue` is
+  most of the rest, with a `reserve` → `finish_grow` → `realloc` underneath
+  `BindCache::buffer_changed`.
+
+Why it allocates: `BindCache` is **per encoder** — `RenderReplay` and the
+compute encoder each hold a `BindCache::default()` and `reset()` it (a `clear`,
+so the capacity survives) when the encoder ends. `entry` grows a table with
+`resize_with(slot + 1, …)` whenever `slot >= table.len()`, so after a reset the
+first bind at each slot refills the table it just cleared, and a fresh encoder
+allocates all of them again. Sizing the tables from the pipeline layout —
+`plan_layout` already refuses a layout whose sets overrun `Table::capacity` — or
+keeping them across encoders would take the `realloc` out of every pass.
+
+Nothing has been changed; this is the profile the next slice starts from.
+
 ## F11 never reaches a macOS application, so no sample's mode key works here (2026-09-11)
 
 `appkit::keys` maps `0x67` to `KeyCode::F11` and every sample binds that to its
