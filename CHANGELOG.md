@@ -1410,6 +1410,19 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- **A material that names no packed or emissive page no longer fetches one.**
+  `mesh.slang`'s `mro_texel` and `emissive_texel` take their UV derivatives
+  before the page test and return the identity without sampling when the row
+  names no page, so both the forward fragment stage and the reflective shadow
+  map skip a fetch on every untextured surface. The base-colour helper
+  deliberately keeps its unconditional implicit `Sample`, because explicit
+  gradients lose anisotropic filtering on lavapipe and `tiling_e2e`'s grazing
+  floor is measured through that page. Measured offscreen on an M3 Pro over four
+  order-alternating pairs per workload at 720p and 1080p: 24 pairs, the after
+  build faster in every one, median elapsed time 0.7-1.8% lower on sandbox,
+  sundial and lantern. This is the half of `3ecad8c4` — 0.7-1.1% as a whole —
+  that does not move the tiling gate; the full change stays reverted.
+
 - **towers' command frame is four bytes and its protocol version is 2.**
   `PlaceTower` now names the kind to build and `UpgradeTower` travels beside it,
   so the sealed intent grew from two bytes to four — a breaking wire change, and

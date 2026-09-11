@@ -3,7 +3,7 @@
 What was raised and not finished. A changelog says what shipped; this says what
 did not, and why. Delete an entry when it ships — `git log` is the history.
 
-## The absent-page fetch skip is reverted, and what would bring it back (2026-09-11)
+## The base-colour page fetch skip is still owed (2026-09-11)
 
 `3ecad8c4` made `mesh.slang`'s material helpers return before fetching a page a
 material does not have, taking `ddx`/`ddy` in uniform control flow and sampling
@@ -13,12 +13,19 @@ anisotropic filtering on lavapipe**: `tiling_e2e`'s grazing floor draws contrast
 8.0 at 8x against 8.0 at 1x, where the gate wants at least 30 and twice the
 control. Metal is unaffected (70.0 against 7.0).
 
-Bringing it back means keeping the **base-colour** page on an implicit `Sample`
-— it is the page that gate measures, and the normal page already uses
-`SampleGrad` with nothing watching its anisotropy — or showing the lavapipe loss
-is a driver defect rather than a consequence of the shader. Any `mesh.slang`
-edit needs every artifact regenerated (Slang 2026.14, DXC 1.9, SPIRV-Tools
-2026.1); `dxc` is Linux-only, so a diagnostic Linux workflow is the route.
+**The packed and emissive halves of it shipped on 2026-09-11** — `mro_texel` and
+`emissive_texel` take their derivatives before the page test and sample with
+`SampleGrad` inside it, measured at 0.7-1.8% across sandbox, sundial and
+lantern; `docs/notes/metal-material-sampling.md` is the record. What remains is
+the **base-colour** page, which is the one that gate measures and therefore
+keeps the unconditional implicit `Sample`.
+
+It comes back only by showing the lavapipe loss is a driver defect rather than a
+consequence of the shader, or by a formulation that keeps an implicit `Sample`
+on that page while still skipping the fetch. Any `mesh.slang` edit needs every
+artifact regenerated (Slang 2026.14, DXC 1.9, SPIRV-Tools 2026.1); `dxc` is
+Linux-only, so a diagnostic Linux workflow is the route — the fork's
+`shader-regen` branch is the one this slice used.
 
 ## The shard browser job can time out its own gameplay waits (2026-09-11)
 
