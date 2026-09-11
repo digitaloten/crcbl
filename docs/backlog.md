@@ -3,6 +3,23 @@
 What was raised and not finished. A changelog says what shipped; this says what
 did not, and why. Delete an entry when it ships — `git log` is the history.
 
+## The viewer's shelf fetch can fail the whole Linux leg before a test runs (2026-09-11)
+
+`tools/fetch-shelf.sh` is step 7 of `ci.yml`'s `test (linux)`, and it is a 138
+MB download from `raw.githubusercontent.com`. On run 34589658129 it lost two
+files to `curl: (35) Recv failure: Connection reset by peer` —
+`Avocado/glTF/Avocado_roughnessMetallic.png` and
+`SciFiHelmet/glTF/SciFiHelmet.gltf` — reported "2 file(s) are missing or do not
+match", and failed the job 17 seconds in, before `cargo nextest` had run. So a
+network reset reads on a pull request as a red Linux leg with no failing test,
+and the step's own log is the only place that says so.
+
+The pin is not the problem: the same paths answered HTTP 200 minutes later, and
+the job passed on the preceding commit. What is worth knowing is that this
+failure mode is the fetch step's and nothing to do with the diff — and that
+`--check` cannot tell you locally, because a machine that has never fetched the
+shelf reports every file missing rather than the two.
+
 ## The base-colour page fetch skip is still owed (2026-09-11)
 
 `3ecad8c4` made `mesh.slang`'s material helpers return before fetching a page a
