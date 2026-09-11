@@ -3,6 +3,27 @@
 What was raised and not finished. A changelog says what shipped; this says what
 did not, and why. Delete an entry when it ships — `git log` is the history.
 
+## Presentation pacing cannot be measured offscreen, and that is now measured (2026-09-11)
+
+The drawable/present path runs on the detached `CAMetalLayer`, so "presentation
+needs a drawable" is answered — the test is in `ci.yml`'s `mtl hardware e2e` job
+now. **Pacing does not follow from it**, and that is measured rather than
+argued: `MTLDrawable::presentedTime` came back **0 for every present**, five of
+five, in `a_layer_swapchain_acquires_a_drawable_and_presents_it`. A layer that
+is never on screen has its drawables _skipped_; the handler still fires, which
+is the seam's guarantee that the numbered present is no longer waiting, but it
+carries no time. Apple documents the zero for a drawable that "has not been
+presented or has been skipped".
+
+So pacing needs a window on a real display, or a hosted window server, and then
+two things: `swapchain.rs`'s present handler reading `presentedTime`, which is
+`objc2-metal`'s `objc2-core-foundation` feature — one flag on a dependency
+`crcbl-mtl` already has for `CGSize`, and one line in the lockfile, both tried
+and reverted with this probe — and somewhere for the number to go, because the
+present ledger carries an id and no timestamp, so a caller asks by a HAL method
+that does not exist yet. Nothing in the tree wants one while every run is
+offscreen.
+
 ## The viewer's shelf fetch can fail the whole Linux leg before a test runs (2026-09-11)
 
 `tools/fetch-shelf.sh` is step 7 of `ci.yml`'s `test (linux)`, and it is a 138
