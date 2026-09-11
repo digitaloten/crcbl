@@ -60,13 +60,13 @@ a real drawable across three `reconfigure_swapchain` calls and an out-of-band
 fullscreen-shaped extent are at this seam, and asserts the extent comes off the
 texture rather than the descriptor.
 
-What is still nobody's claim is the **window** half of `docs/handoff.md`'s item
-4: `Borderless { monitor: Some(..) }` — which monitor a frameless window lands
-on, where only the window's birth is asserted — the sample-level F11 pass,
-`injection_skipped`, drag and drop and the pasteboard prompt as the samples
-reach them. There is no fullscreen transition left to cover:
-`crates/crcbl-shell/src/appkit` drops Spaces fullscreen and makes borderless a
-frameless window at screen size. Those live in
+What is still nobody's claim is the **window** half of the native-presentation
+item the Metal iteration left open: `Borderless { monitor: Some(..) }` — which
+monitor a frameless window lands on, where only the window's birth is asserted —
+the sample-level F11 pass, `injection_skipped`, drag and drop and the pasteboard
+prompt as the samples reach them. There is no fullscreen transition left to
+cover: `crates/crcbl-shell/src/appkit` drops Spaces fullscreen and makes
+borderless a frameless window at screen size. Those live in
 `crates/crcbl-shell/tests/appkit_session.rs`, which reads the first responder,
 the dragged types, the style mask, the frame, the screen and the backing scale
 off `NSWindow` and does a pasteboard round trip against `pbcopy`/`pbpaste`. That
