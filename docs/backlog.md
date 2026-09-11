@@ -3,6 +3,36 @@
 What was raised and not finished. A changelog says what shipped; this says what
 did not, and why. Delete an entry when it ships — `git log` is the history.
 
+## The absent-page fetch skip is reverted, and what would bring it back (2026-09-11)
+
+`3ecad8c4` made `mesh.slang`'s material helpers return before fetching a page a
+material does not have, taking `ddx`/`ddy` in uniform control flow and sampling
+with `SampleGrad` inside the branch. It measured 0.7-1.1% lower elapsed time at
+720p/1080p and was reverted in `16f48813`, because **explicit gradients lose
+anisotropic filtering on lavapipe**: `tiling_e2e`'s grazing floor draws contrast
+8.0 at 8x against 8.0 at 1x, where the gate wants at least 30 and twice the
+control. Metal is unaffected (70.0 against 7.0).
+
+Bringing it back means keeping the **base-colour** page on an implicit `Sample`
+— it is the page that gate measures, and the normal page already uses
+`SampleGrad` with nothing watching its anisotropy — or showing the lavapipe loss
+is a driver defect rather than a consequence of the shader. Any `mesh.slang`
+edit needs every artifact regenerated (Slang 2026.14, DXC 1.9, SPIRV-Tools
+2026.1); `dxc` is Linux-only, so a diagnostic Linux workflow is the route.
+
+## The shard browser job can time out its own gameplay waits (2026-09-11)
+
+`pages.yml`'s `render shard in a real browser` failed once on PR #18 with two
+`until()` waits unanswered — a foe's ability never landed damage, and a reload
+did not match the save's beat — after 72 minutes, while its retry passed in 70
+and every browser pixel-golden job passed on all three platforms. The change
+under test touched nothing in `apps/shard` or `web/`, and the step carries no
+timeout of its own, so a slow runner is the likely shape.
+
+Not yet distinguished from a real defect, and the job costs about an hour to
+find out. Worth a per-check budget that fails with the waits' own evidence
+rather than the job's 90-minute cap.
+
 ## What specular antialiasing shipped without (2026-09-05)
 
 The record behind this — the argument, the options and the measurements — is in
