@@ -3,6 +3,16 @@
 What was raised and not finished. A changelog says what shipped; this says what
 did not, and why. Delete an entry when it ships — `git log` is the history.
 
+## Forward overlay integration
+
+`ForwardRenderer::add_skinned_passes_with_overlay` has null-backend graph
+coverage for matching display/depth dimensions and ordering before FXAA and
+upscale. Real-device overlay drawing and depth occlusion remain to be exercised
+by EW's physical scope compositor. The existing `MAX_TIMED_PASSES` budget only
+covers engine passes; applications adding overlay or secondary-view passes must
+budget their timers separately. Eye-box behavior, magnification, lens shaders,
+and secondary-view scene synchronization belong in EW until validated there.
+
 ## What specular antialiasing shipped without (2026-09-05)
 
 The record behind this — the argument, the options and the measurements — is in

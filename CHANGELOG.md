@@ -107,6 +107,12 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
   browser gate clicks one and reads the game take it rather than only counting
   buttons.
 
+- `ForwardRenderer::add_skinned_passes_with_overlay` exposes the existing
+  display-space color and scene depth attachments, with their internal extent,
+  through `ForwardOverlayTargets`. Game-owned depth-tested overlays can run
+  before antialiasing and render-scale reconstruction without duplicating the
+  forward frame. Existing pass-building methods keep their behavior.
+
 - `sandbox --size <WxH>` controls the window and headless render extent while
   preserving the existing `1280x720` default; the private-Xvfb sample gate now
   includes sandbox and passes every sample its asserted size.

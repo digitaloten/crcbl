@@ -1440,6 +1440,20 @@ impl PresentedSky {
     }
 }
 
+/// The primary frame attachments an overlay may use before antialiasing and
+/// render-scale reconstruction.
+///
+/// `display` is the display-space image the tonemap and post-tonemap overlays
+/// have written. `depth` is the matching internal scene depth image, retained
+/// as a read-only attachment for depth-tested overlays. Both have
+/// `internal_extent` dimensions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForwardOverlayTargets {
+    pub display: ImageId,
+    pub depth: ImageId,
+    pub internal_extent: (u32, u32),
+}
+
 /// Everything the forward frame owns, created once.
 #[derive(Debug)]
 pub struct ForwardRenderer {
@@ -8709,7 +8723,7 @@ impl ForwardRenderer {
         target: ImageId,
         extent: (u32, u32),
     ) -> ImageId {
-        self.add_frame_passes(graph, pool, target, extent, None)
+        self.add_frame_passes(graph, pool, target, extent, None, |_, _| {})
     }
 
     /// [`add_passes`](Self::add_passes) for a frame that **skins**: the same
@@ -8751,20 +8765,48 @@ impl ForwardRenderer {
         extent: (u32, u32),
         skinning: &Skinning,
     ) -> ImageId {
-        self.add_frame_passes(graph, pool, target, extent, Some(skinning))
+        self.add_frame_passes(graph, pool, target, extent, Some(skinning), |_, _| {})
+    }
+
+    /// [`add_skinned_passes`](Self::add_skinned_passes) with one game-owned
+    /// overlay inserted after the display-space frame is complete and before
+    /// antialiasing or render-scale reconstruction.
+    ///
+    /// The callback receives the display target and its matching scene depth
+    /// attachment at the internal render extent. It may add graph passes that
+    /// sample `display` and attach `depth` read-only; it must leave both images
+    /// in states its declarations name. The forward renderer continues with its
+    /// existing resolve and upscale passes after the callback returns.
+    pub fn add_skinned_passes_with_overlay<'a, F>(
+        &'a mut self,
+        graph: &mut RenderGraph<'a>,
+        pool: &TransientPool,
+        target: ImageId,
+        extent: (u32, u32),
+        skinning: &Skinning,
+        overlay: F,
+    ) -> ImageId
+    where
+        F: FnOnce(&mut RenderGraph<'a>, ForwardOverlayTargets),
+    {
+        self.add_frame_passes(graph, pool, target, extent, Some(skinning), overlay)
     }
 
     /// The body of [`add_passes`](Self::add_passes) and
     /// [`add_skinned_passes`](Self::add_skinned_passes), which differ in one
     /// argument and in nothing else.
-    fn add_frame_passes<'a>(
+    fn add_frame_passes<'a, F>(
         &'a mut self,
         graph: &mut RenderGraph<'a>,
         pool: &TransientPool,
         target: ImageId,
         extent: (u32, u32),
         skinning: Option<&Skinning>,
-    ) -> ImageId {
+        overlay: F,
+    ) -> ImageId
+    where
+        F: FnOnce(&mut RenderGraph<'a>, ForwardOverlayTargets),
+    {
         // **From here down `extent` is the extent the frame is *drawn* at**,
         // which is the caller's at a render scale of `1.0` and smaller below it.
         // Every use of it in this function sizes a transient, and every one of
@@ -9907,6 +9949,15 @@ impl ForwardRenderer {
             self.atlas_viewer
                 .add_pass(graph, frame, shadow_atlas, display);
         }
+
+        overlay(
+            graph,
+            ForwardOverlayTargets {
+                display,
+                depth: scene_depth,
+                internal_extent: extent,
+            },
+        );
 
         // --- the antialiasing resolve ---
         //
@@ -19139,6 +19190,86 @@ mod tests {
         );
 
         renderer.destroy(device);
+        device.destroy_image_view(imported.view);
+        device.destroy_image(imported.image);
+        recorder.assert_valid();
+    }
+
+    /// **A skinned-frame overlay receives the display and depth images at the
+    /// internal extent, before either resolve reconstructs the target.**
+    ///
+    /// The callback's own pass attaches the display and depth it received. That
+    /// makes matching dimensions a graph invariant rather than a comparison of
+    /// numbers the callback could have been handed without ever using the
+    /// images; changing either id to a target-sized image makes compilation
+    /// refuse the mismatched attachments.
+    #[test]
+    fn an_overlay_uses_the_internal_display_and_depth_before_the_resolves() {
+        let (recorder, device, queue) = open();
+        let device = device.as_ref();
+        let mut fixture = SkinnedFixture::build(device, queue);
+        fixture.renderer.set_render_scale(0.5);
+        fixture.renderer.set_effect_request(EffectRequest {
+            antialiasing: Some(Antialiasing::Fxaa),
+            ..EffectRequest::default()
+        });
+        fixture.begin(device);
+        let internal_extent = fixture.renderer.internal_extent(TEST_EXTENT);
+
+        let imported = swapchain_image_at(device, TEST_EXTENT);
+        let mut pool = crate::TransientPool::new();
+        {
+            let mut graph = crate::RenderGraph::new(queue);
+            let target = graph.import_image("target", imported);
+            let mut received = None;
+            fixture.renderer.add_skinned_passes_with_overlay(
+                &mut graph,
+                &pool,
+                target,
+                TEST_EXTENT,
+                &fixture.skinning,
+                |graph, targets| {
+                    received = Some(targets);
+                    graph
+                        .add_render_pass("overlay-probe")
+                        .color(
+                            targets.display,
+                            LoadOp::Load,
+                            StoreOp::Store,
+                            crcbl_hal::ClearValue::default(),
+                        )
+                        .depth_read(targets.depth)
+                        .execute(|_| {});
+                },
+            );
+            let received = received.expect("the overlay callback runs while the frame is built");
+            assert_eq!(
+                received.internal_extent, internal_extent,
+                "the overlay receives the extent its display and depth attachments have"
+            );
+
+            let compiled = graph.compile(&pool).expect("the shared attachments match");
+            let labels: Vec<&str> = compiled.passes().iter().map(|pass| pass.label()).collect();
+            let overlay = labels
+                .iter()
+                .position(|label| *label == "overlay-probe")
+                .expect("the callback's pass is part of the frame");
+            let fxaa = labels
+                .iter()
+                .position(|label| *label == "fxaa")
+                .expect("the requested resolve is part of the frame");
+            let upscale = labels
+                .iter()
+                .position(|label| *label == "upscale")
+                .expect("the half-scale frame reconstructs its target");
+            assert!(
+                overlay < fxaa && overlay < upscale,
+                "the overlay must write display before its resolve and upscale: {labels:?}"
+            );
+        }
+
+        fixture.destroy(device);
+        pool.destroy(device);
         device.destroy_image_view(imported.view);
         device.destroy_image(imported.image);
         recorder.assert_valid();

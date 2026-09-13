@@ -217,8 +217,8 @@ pub use effects::{Antialiasing, EffectOverride, EffectRequest, RenderEffects, ra
 pub use exposure::{ExposureAdaptation, ExposureBuffers};
 pub use fly::{Flyer, LOOK, SPEED, TURN};
 pub use forward::{
-    DEFAULT_ANISOTROPY, DebugView, EXPOSURE_MAX, EXPOSURE_MIN, ForwardRenderer, MIN_RENDER_SCALE,
-    SCENE_CLEAR, SHADOW_LOD_BIAS, SkinnedInstanceDesc,
+    DEFAULT_ANISOTROPY, DebugView, EXPOSURE_MAX, EXPOSURE_MIN, ForwardOverlayTargets,
+    ForwardRenderer, MIN_RENDER_SCALE, SCENE_CLEAR, SHADOW_LOD_BIAS, SkinnedInstanceDesc,
 };
 pub use graph::{
     Attachment, BufferId, CompiledGraph, CompiledPass, GraphBarriers, GraphBufferBarrier,
