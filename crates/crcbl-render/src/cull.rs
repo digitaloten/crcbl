@@ -501,7 +501,9 @@ fn max_stretch(basis: Mat3) -> f32 {
 /// origin is. An instance naming an entry past the end of `meshes` is not
 /// visible either — the shader has no such guard, because a bind group's buffer
 /// bound whole is exactly the table and reading past it is a validation error
-/// the caller must not create.
+/// the caller must not create. A live instance with
+/// [`GpuInstance::BASE_VERTEX_OVERRIDE`] is kept after that empty-mesh check:
+/// its source mesh bounds do not describe its skinned vertex region.
 ///
 /// The order is ascending. **The GPU's is not**, because slots come from an
 /// atomic, so a comparison between the two sorts first.
@@ -522,12 +524,13 @@ pub fn visible_instances(
         if mesh.index_count == 0 {
             continue;
         }
+        let deforming = instance.flags & GpuInstance::BASE_VERTEX_OVERRIDE != 0;
         let bounds = Aabb {
             min: Vec3::from_array(mesh.bounds_min),
             max: Vec3::from_array(mesh.bounds_max),
         };
         let world = bounds.transformed(Mat4::from_cols_array(&instance.transform));
-        if frustum.intersects(&world) {
+        if deforming || frustum.intersects(&world) {
             visible.push(u32::try_from(index).unwrap_or_else(|_| {
                 unreachable!("an instance array is indexed by u32 everywhere else")
             }));
@@ -818,6 +821,24 @@ mod tests {
             },
         ];
         assert_eq!(visible_instances(&frustum, &instances, &meshes), vec![0]);
+    }
+
+    #[test]
+    fn a_skinned_instance_survives_when_its_source_bounds_are_outside() {
+        let source_outside = at(Vec3::X * 8.0);
+        assert!(
+            visible_instances(&frustum(), &[source_outside], &[unit_cube()]).is_empty(),
+            "the unskinned source bounds are outside the camera"
+        );
+        let skinned = GpuInstance {
+            flags: source_outside.flags | GpuInstance::BASE_VERTEX_OVERRIDE,
+            ..source_outside
+        };
+        assert_eq!(
+            visible_instances(&frustum(), &[skinned], &[unit_cube()]),
+            vec![0],
+            "a palette may have moved the skinned vertices into view"
+        );
     }
 
     /// The list is the instances the frustum keeps, in ascending order, and it

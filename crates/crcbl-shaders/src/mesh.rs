@@ -1324,9 +1324,9 @@ pub struct GpuInstance {
     /// writes a skinned copy of a mesh's vertices into a run of the same pool,
     /// and this is how the instance drawn out of that run says where it is. The
     /// instance goes on naming its **source** mesh in [`GpuInstance::mesh`], so
-    /// the bucket it is scattered into, the level tables it resolves through and
-    /// the bounding box it is culled against are the source mesh's and need no
-    /// entry of their own.
+    /// its bucket and level tables remain the source mesh's. Culling keeps
+    /// override instances and their selected clusters because the source
+    /// bounds and normal cones do not describe the deformed vertices.
     ///
     /// **The bucket stays authoritative without the bit**, which is what a
     /// `Geometry::Dag` needs: its level is chosen per instance on the GPU and

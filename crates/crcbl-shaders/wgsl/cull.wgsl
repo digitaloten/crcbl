@@ -79,6 +79,7 @@ fn computeMain(@builtin(global_invocation_id) thread_0 : vec3<u32>)
     {
         return;
     }
+    var _S1 : u32 = instances_0[index_0].flags_0;
     if((((instances_0[index_0].flags_0) & (u32(1)))) == u32(0))
     {
         return;
@@ -88,28 +89,31 @@ fn computeMain(@builtin(global_invocation_id) thread_0 : vec3<u32>)
     {
         return;
     }
-    var bounds_min_0 : vec3<f32> = vec3<f32>(mesh_1.min_x_0, mesh_1.min_y_0, mesh_1.min_z_0);
-    var bounds_max_0 : vec3<f32> = vec3<f32>(mesh_1.max_x_0, mesh_1.max_y_0, mesh_1.max_z_0);
-    var _S1 : vec3<f32> = vec3<f32>(0.5f);
-    var _S2 : mat4x4<f32> = mat4x4<f32>(instances_0[index_0].transform_0.data_0[i32(0)][i32(0)], instances_0[index_0].transform_0.data_0[i32(1)][i32(0)], instances_0[index_0].transform_0.data_0[i32(2)][i32(0)], instances_0[index_0].transform_0.data_0[i32(3)][i32(0)], instances_0[index_0].transform_0.data_0[i32(0)][i32(1)], instances_0[index_0].transform_0.data_0[i32(1)][i32(1)], instances_0[index_0].transform_0.data_0[i32(2)][i32(1)], instances_0[index_0].transform_0.data_0[i32(3)][i32(1)], instances_0[index_0].transform_0.data_0[i32(0)][i32(2)], instances_0[index_0].transform_0.data_0[i32(1)][i32(2)], instances_0[index_0].transform_0.data_0[i32(2)][i32(2)], instances_0[index_0].transform_0.data_0[i32(3)][i32(2)], instances_0[index_0].transform_0.data_0[i32(0)][i32(3)], instances_0[index_0].transform_0.data_0[i32(1)][i32(3)], instances_0[index_0].transform_0.data_0[i32(2)][i32(3)], instances_0[index_0].transform_0.data_0[i32(3)][i32(3)]);
-    var _S3 : vec3<f32> = (((vec4<f32>(_S1 * (bounds_max_0 + bounds_min_0), 1.0f)) * (_S2))).xyz;
-    var _S4 : vec3<f32> = (((_S1 * (bounds_max_0 - bounds_min_0)) * (abs_0(mat3x3<f32>(_S2[i32(0)].xyz, _S2[i32(1)].xyz, _S2[i32(2)].xyz)))));
-    var plane_0 : u32 = u32(0);
-    for(;;)
+    if(((_S1 & (u32(2)))) == u32(0))
     {
-        if(plane_0 < u32(6))
+        var bounds_min_0 : vec3<f32> = vec3<f32>(mesh_1.min_x_0, mesh_1.min_y_0, mesh_1.min_z_0);
+        var bounds_max_0 : vec3<f32> = vec3<f32>(mesh_1.max_x_0, mesh_1.max_y_0, mesh_1.max_z_0);
+        var _S2 : vec3<f32> = vec3<f32>(0.5f);
+        var _S3 : mat4x4<f32> = mat4x4<f32>(instances_0[index_0].transform_0.data_0[i32(0)][i32(0)], instances_0[index_0].transform_0.data_0[i32(1)][i32(0)], instances_0[index_0].transform_0.data_0[i32(2)][i32(0)], instances_0[index_0].transform_0.data_0[i32(3)][i32(0)], instances_0[index_0].transform_0.data_0[i32(0)][i32(1)], instances_0[index_0].transform_0.data_0[i32(1)][i32(1)], instances_0[index_0].transform_0.data_0[i32(2)][i32(1)], instances_0[index_0].transform_0.data_0[i32(3)][i32(1)], instances_0[index_0].transform_0.data_0[i32(0)][i32(2)], instances_0[index_0].transform_0.data_0[i32(1)][i32(2)], instances_0[index_0].transform_0.data_0[i32(2)][i32(2)], instances_0[index_0].transform_0.data_0[i32(3)][i32(2)], instances_0[index_0].transform_0.data_0[i32(0)][i32(3)], instances_0[index_0].transform_0.data_0[i32(1)][i32(3)], instances_0[index_0].transform_0.data_0[i32(2)][i32(3)], instances_0[index_0].transform_0.data_0[i32(3)][i32(3)]);
+        var _S4 : vec3<f32> = (((vec4<f32>(_S2 * (bounds_max_0 + bounds_min_0), 1.0f)) * (_S3))).xyz;
+        var _S5 : vec3<f32> = (((_S2 * (bounds_max_0 - bounds_min_0)) * (abs_0(mat3x3<f32>(_S3[i32(0)].xyz, _S3[i32(1)].xyz, _S3[i32(2)].xyz)))));
+        var plane_0 : u32 = u32(0);
+        for(;;)
         {
+            if(plane_0 < u32(6))
+            {
+            }
+            else
+            {
+                break;
+            }
+            var _S6 : vec3<f32> = cull_0.planes_0[plane_0].xyz;
+            if((dot(_S6, _S4) + cull_0.planes_0[plane_0].w) < (- dot(abs(_S6), _S5)))
+            {
+                return;
+            }
+            plane_0 = plane_0 + u32(1);
         }
-        else
-        {
-            break;
-        }
-        var _S5 : vec3<f32> = cull_0.planes_0[plane_0].xyz;
-        if((dot(_S5, _S3) + cull_0.planes_0[plane_0].w) < (- dot(abs(_S5), _S4)))
-        {
-            return;
-        }
-        plane_0 = plane_0 + u32(1);
     }
     var slot_0 : u32 = atomicAdd(&(visible_count_0[u32(0)]), u32(1));
     if(slot_0 < (cull_0.capacity_0))

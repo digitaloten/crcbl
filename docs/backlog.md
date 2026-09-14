@@ -3,6 +3,17 @@
 What was raised and not finished. A changelog says what shipped; this says what
 did not, and why. Delete an entry when it ships — `git log` is the history.
 
+## Posed bounds for deforming geometry
+
+`cull.slang` and `mesh_cluster.slang` conservatively retain live, nonempty
+base-vertex-override instances and their selected clusters. EW's first-person
+arms exposed the prior bug: the source arms sit outside the camera, while IK
+moves their hands into view. Tight per-instance posed bounds and cluster bounds
+or normal cones are not produced yet; add those before restoring culling for
+deformed geometry. Do not mutate a shared source mesh's bounds for one actor.
+Measure the rendering cost with many animated actors; no crowd-performance claim
+is established by the small skinning fixtures or EW's sandbox.
+
 ## Forward overlay integration
 
 `ForwardRenderer::add_skinned_passes_with_overlay` has null-backend graph

@@ -1240,6 +1240,12 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Fixed
 
+- Skinned instances and their selected mesh-shader clusters are no longer
+  rejected using undeformed source bounds or normal cones. This fixes animated
+  limbs disappearing when the bind pose is outside the camera. Static geometry
+  keeps its culling; deforming geometry is retained conservatively until posed
+  bounds are available.
+
 - **`Pool::par_for` no longer lets a worker hold a borrow of the job after the
   call is free to return.** A worker's last act was decrementing an
   outstanding-chunk count that lived in the `Job` on the driver's stack, reached

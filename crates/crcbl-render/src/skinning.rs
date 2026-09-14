@@ -30,11 +30,10 @@
 //! instance carrying
 //! [`GpuInstance::BASE_VERTEX_OVERRIDE`](crcbl_shaders::mesh::GpuInstance::BASE_VERTEX_OVERRIDE)
 //! takes it from its own record instead of from the mesh entry the draw
-//! resolved. Nothing else downstream grows a skinning branch — not
-//! [`crate::cull`], not [`crate::draw_gen`], not [`crate::shadow`] — because a
-//! skinned instance goes on naming its **source** mesh, so the bucket it is
-//! scattered into, the levels it selects through and the box it is culled
-//! against are all the ones the undeformed mesh already had.
+//! resolved. A skinned instance still names its **source** mesh for bucket
+//! scattering and level selection. Instance and cluster culling conservatively
+//! keep deforming geometry: the source bounds and normal cones no longer
+//! describe the vertices that the skinning pass writes.
 //!
 //! # The region is double-buffered, and the motion-vector pass reads the other half
 //!
@@ -221,10 +220,9 @@ impl SkinnedRegion {
 /// table's lack of a ring on.
 ///
 /// [`mesh_id`](Self::mesh_id) is therefore the **source** mesh's id, one entry
-/// and not two: everything that resolves through it — the bucket
-/// `draw_gen.slang` scatters the instance into, the level tables it indexes and
-/// the bounding box `cull.slang` reads — is the source mesh's, and only the base
-/// vertex differs.
+/// and not two: the bucket `draw_gen.slang` scatters the instance into and the
+/// level tables it indexes still belong to the source mesh. Culling must not
+/// reject the deformed vertices using that mesh's undeformed bounds.
 ///
 /// # It does not own the mesh
 ///

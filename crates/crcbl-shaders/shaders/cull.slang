@@ -90,7 +90,8 @@ struct GpuInstance
     /// Per-instance bits. Bit 0 is `INSTANCE_LIVE` below: clear means this
     /// element holds a removed instance's leftovers, and the entry point
     /// rejects it before reading anything else. Bit 1 is the base-vertex
-    /// override the raster stages read; nothing here does.
+    /// override the raster stages read. A set bit retains this instance because
+    /// the source mesh bounds do not describe its skinned vertices.
     uint flags;
     /// The pool vertex this instance's indices are relative to, read **instead
     /// of** the mesh entry's when `INSTANCE_BASE_VERTEX_OVERRIDE` is set in
@@ -118,6 +119,13 @@ struct GpuInstance
 /// `PLANE_COUNT` is one: a bare bit in an expression is a number the next bit
 /// this word gains has no way to be checked against.
 static const uint INSTANCE_LIVE = 1;
+
+/// `GpuInstance::flags` bit 1: raster stages fetch this instance's vertices
+/// from a skinning region instead of the source mesh's bind-pose run.
+///
+/// The mesh table still holds the source bounds, so they cannot reject a
+/// deforming instance: its skinned vertices may have moved into the frustum.
+static const uint INSTANCE_BASE_VERTEX_OVERRIDE = 2;
 
 /// Which element of `visible_count` this pass adds to.
 ///
@@ -266,29 +274,32 @@ void computeMain(uint3 thread: SV_DispatchThreadID)
         return;
     }
 
-    float3 bounds_min = float3(mesh.min_x, mesh.min_y, mesh.min_z);
-    float3 bounds_max = float3(mesh.max_x, mesh.max_y, mesh.max_z);
-    float3 local_center = 0.5 * (bounds_max + bounds_min);
-    float3 local_extent = 0.5 * (bounds_max - bounds_min);
-
-    // The conservative transform the header names. `mul(m, v)` is row-wise —
-    // `r[i] = dot(m[i], v)` — so `mul(abs(basis), e)` is
-    // `r[i] = sum_j |m[i][j]| * e[j]`, which is the world-axis half-extent of
-    // the rotated box.
-    float3x3 basis = (float3x3)instance.transform;
-    float3 center = mul(instance.transform, float4(local_center, 1.0)).xyz;
-    float3 extent = mul(abs(basis), local_extent);
-
-    for (uint plane = 0; plane < PLANE_COUNT; ++plane)
+    if ((instance.flags & INSTANCE_BASE_VERTEX_OVERRIDE) == 0)
     {
-        float4 half_space = cull.planes[plane];
-        // How far the box can reach towards the plane from its centre, along
-        // that plane's normal. The same `abs`-and-dot as the extent above, and
-        // the reason neither the plane nor the normal needs to be unit length.
-        float radius = dot(abs(half_space.xyz), extent);
-        if (dot(half_space.xyz, center) + half_space.w < -radius)
+        float3 bounds_min = float3(mesh.min_x, mesh.min_y, mesh.min_z);
+        float3 bounds_max = float3(mesh.max_x, mesh.max_y, mesh.max_z);
+        float3 local_center = 0.5 * (bounds_max + bounds_min);
+        float3 local_extent = 0.5 * (bounds_max - bounds_min);
+
+        // The conservative transform the header names. `mul(m, v)` is row-wise —
+        // `r[i] = dot(m[i], v)` — so `mul(abs(basis), e)` is
+        // `r[i] = sum_j |m[i][j]| * e[j]`, which is the world-axis half-extent of
+        // the rotated box.
+        float3x3 basis = (float3x3)instance.transform;
+        float3 center = mul(instance.transform, float4(local_center, 1.0)).xyz;
+        float3 extent = mul(abs(basis), local_extent);
+
+        for (uint plane = 0; plane < PLANE_COUNT; ++plane)
         {
-            return;
+            float4 half_space = cull.planes[plane];
+            // How far the box can reach towards the plane from its centre, along
+            // that plane's normal. The same `abs`-and-dot as the extent above, and
+            // the reason neither the plane nor the normal needs to be unit length.
+            float radius = dot(abs(half_space.xyz), extent);
+            if (dot(half_space.xyz, center) + half_space.w < -radius)
+            {
+                return;
+            }
         }
     }
 

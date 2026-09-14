@@ -1811,6 +1811,10 @@ fn assert_different_picture(
 /// number, so the margin is readable on any run rather than taken from here.
 const LEAST_GROSS_RATIO: f64 = 0.02;
 
+/// Places a source mesh outside this camera's frustum while its palette moves
+/// the skinned vertices back to the origin.
+const SKINNED_SOURCE_OUTSIDE_X: f32 = 8.0;
+
 /// The demo description cut down to its cube, which is the scene this case
 /// draws a skinned mesh out of.
 ///
@@ -1905,7 +1909,7 @@ fn a_skinned_cube_draws_the_pose_its_palette_asks_for_through_the_mesh_stage() {
     skinned_palette_case(headless);
 }
 
-/// The five frames both cases above compare, driven against whichever device
+/// The frames both cases above compare, driven against whichever device
 /// they opened.
 ///
 /// One body rather than two, because the claim is the same claim: what differs
@@ -1957,7 +1961,7 @@ fn skinned_palette_case(headless: Headless) {
         region.vertex_count(),
         "one binding per bind-pose vertex, or `begin_frame` refuses the range"
     );
-    skinned_renderer
+    let skinned_instance = skinned_renderer
         .add_skinned_instance(&crcbl_render::SkinnedInstanceDesc {
             mesh: &region,
             material: crcbl_render::scene::DEMO_UNTINTED,
@@ -1980,21 +1984,44 @@ fn skinned_palette_case(headless: Headless) {
     )
     .expect("a skinning pass");
 
-    let mut draw = |what: &str, palette: &[Mat4], skinning: &mut Skinning| {
+    let mut draw = |what: &str,
+                    palette: &[Mat4],
+                    skinning: &mut Skinning,
+                    renderer: &mut crcbl_render::ForwardRenderer| {
         let range = region.skin_range(palette, &bindings);
         render_frame(
             &headless,
             what,
-            &mut skinned_renderer,
+            renderer,
             &mut skinned_transients,
             &camera,
             Some((skinning, core::slice::from_ref(&range))),
         )
     };
-    let rest = draw("rest palette", &rest_palette(), &mut skinning);
-    let parted = draw("parted palette", &parted_palette(), &mut skinning);
-    let dropped = draw("dropped palette", &dropped_palette(), &mut skinning);
-    let parted_again = draw("parted palette again", &parted_palette(), &mut skinning);
+    let rest = draw(
+        "rest palette",
+        &rest_palette(),
+        &mut skinning,
+        &mut skinned_renderer,
+    );
+    let parted = draw(
+        "parted palette",
+        &parted_palette(),
+        &mut skinning,
+        &mut skinned_renderer,
+    );
+    let dropped = draw(
+        "dropped palette",
+        &dropped_palette(),
+        &mut skinning,
+        &mut skinned_renderer,
+    );
+    let parted_again = draw(
+        "parted palette again",
+        &parted_palette(),
+        &mut skinning,
+        &mut skinned_renderer,
+    );
 
     // The cube is on screen and covers a real share of it. Every claim below is
     // about pixels the cube owns, so this is what stops them being claims about
@@ -2029,6 +2056,37 @@ fn skinned_palette_case(headless: Headless) {
         &parted,
         &parted_again,
         "a palette repeated two frames later",
+    );
+
+    skinned_renderer.set_skinned_instance(
+        skinned_instance,
+        &crcbl_render::SkinnedInstanceDesc {
+            mesh: &region,
+            material: crcbl_render::scene::DEMO_UNTINTED,
+            transform: Mat4::from_translation(Vec3::X * SKINNED_SOURCE_OUTSIDE_X),
+        },
+    );
+    let outside = draw(
+        "source and pose outside",
+        &rest_palette(),
+        &mut skinning,
+        &mut skinned_renderer,
+    );
+    assert_same_picture(&empty, &outside, "source and identity pose outside camera");
+    let posed_inside = draw(
+        "source outside, skinned pose inside",
+        &[
+            Mat4::from_translation(Vec3::NEG_X * SKINNED_SOURCE_OUTSIDE_X),
+            Mat4::from_translation(Vec3::NEG_X * SKINNED_SOURCE_OUTSIDE_X),
+        ],
+        &mut skinning,
+        &mut skinned_renderer,
+    );
+    assert_different_picture(
+        &empty,
+        &posed_inside,
+        LEAST_GROSS_RATIO,
+        "source outside against a skinned pose inside",
     );
 
     device.wait_idle().expect("idle");

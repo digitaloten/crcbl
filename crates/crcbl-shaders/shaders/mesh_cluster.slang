@@ -1711,7 +1711,11 @@ void taskMain(uint3 group: SV_GroupID)
 
     uint index = draw.cluster_base + group.x * active;
     uint selected = cluster_is_selected(cluster_select[index], instance_index);
-    uint verdict = cluster_survives(cluster, instance.transform, instance_material_mode(instance));
+    // A skinned instance keeps its selected clusters. Their source-mesh sphere
+    // and normal cone do not describe vertices fetched through the override.
+    uint verdict = (instance.flags & INSTANCE_BASE_VERTEX_OVERRIDE) != 0u
+        ? CLUSTER_KEPT
+        : cluster_survives(cluster, instance.transform, instance_material_mode(instance));
     uint keep = active * selected * (verdict == CLUSTER_KEPT ? 1u : 0u);
 
     // **Only a cluster that was actually tested lands in a bucket, and it lands
