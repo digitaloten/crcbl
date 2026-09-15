@@ -1442,6 +1442,16 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Changed
 
+- **A D3D12 adapter with DXR reports the ray-tracing features Vulkan reports for
+  the same GPU.** `crcbl-dx12` now reads
+  `D3D12_FEATURE_DATA_D3D12_OPTIONS5::RaytracingTier` beside the shader model:
+  tier 1.0 at SM 6.3 reports `Features::ACCELERATION_STRUCTURE` and
+  `RAY_TRACING_PIPELINE`, and tier 1.1 at SM 6.5 adds `RAY_QUERY`, so
+  `LightingPath::from_features` answers `RayTraced` on D3D12 wherever it did on
+  Vulkan. On an RX 9060 XT the two backends disagreed about one GPU before this
+  (`Rasterised` against `RayTraced`). The seam still has no acceleration-
+  structure or ray-tracing call on any backend; the flags describe the device.
+
 - **towers' command frame is four bytes and its protocol version is 2.**
   `PlaceTower` now names the kind to build and `UpgradeTower` travels beside it,
   so the sealed intent grew from two bytes to four — a breaking wire change, and

@@ -50,15 +50,17 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION, D3D12_CS_THREAD_GROUP_MAX_THREADS_PER_GROUP,
     D3D12_CS_THREAD_GROUP_MAX_X, D3D12_CS_THREAD_GROUP_MAX_Y, D3D12_CS_THREAD_GROUP_MAX_Z,
     D3D12_FEATURE, D3D12_FEATURE_ARCHITECTURE1, D3D12_FEATURE_D3D12_OPTIONS,
-    D3D12_FEATURE_DATA_ARCHITECTURE1, D3D12_FEATURE_DATA_D3D12_OPTIONS,
+    D3D12_FEATURE_D3D12_OPTIONS5, D3D12_FEATURE_DATA_ARCHITECTURE1,
+    D3D12_FEATURE_DATA_D3D12_OPTIONS, D3D12_FEATURE_DATA_D3D12_OPTIONS5,
     D3D12_FEATURE_DATA_FORMAT_SUPPORT, D3D12_FEATURE_DATA_SHADER_MODEL,
     D3D12_FEATURE_FORMAT_SUPPORT, D3D12_FEATURE_SHADER_MODEL, D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE,
-    D3D12_FORMAT_SUPPORT1_TEXTURE2D, D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT,
-    D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT, D3D12_REQ_MAXANISOTROPY,
-    D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION, D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
-    D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION, D3D12_RESOURCE_BINDING_TIER,
-    D3D12_RESOURCE_BINDING_TIER_3, D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT,
-    D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, D3D12CreateDevice, ID3D12Device,
+    D3D12_FORMAT_SUPPORT1_TEXTURE2D, D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT, D3D12_RAYTRACING_TIER,
+    D3D12_RAYTRACING_TIER_1_0, D3D12_RAYTRACING_TIER_1_1, D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT,
+    D3D12_REQ_MAXANISOTROPY, D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION,
+    D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION, D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION,
+    D3D12_RESOURCE_BINDING_TIER, D3D12_RESOURCE_BINDING_TIER_3,
+    D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,
+    D3D12CreateDevice, ID3D12Device,
 };
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ADAPTER_DESC1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIAdapter1, IDXGIDevice,
@@ -156,9 +158,37 @@ pub(crate) struct RawCaps {
     /// flag — a partial answer would be a feature that is true of some of the
     /// formats it names, which is worse than either.
     pub(crate) block_compression: bool,
+    /// `D3D12_FEATURE_DATA_D3D12_OPTIONS5::RaytracingTier` — DXR, and whether
+    /// its inline form is there too.
+    pub(crate) raytracing_tier: D3D12_RAYTRACING_TIER,
 }
 
 impl RawCaps {
+    /// Whether this adapter builds acceleration structures and runs a
+    /// ray-tracing pipeline: [`D3D12_RAYTRACING_TIER_1_0`] and the shader model
+    /// DXR's library shaders were introduced at.
+    ///
+    /// Both halves, for [`dynamic_resources`](Self::dynamic_resources)'s reason:
+    /// the tier is what the driver can do and the shader model is what the
+    /// runtime will compile a ray-tracing stage for, and a driver can report the
+    /// one without the other.
+    pub(crate) fn raytracing(self) -> bool {
+        self.raytracing_tier.0 >= D3D12_RAYTRACING_TIER_1_0.0
+            && self.shader_model.0 >= D3D_SHADER_MODEL_6_3.0
+    }
+
+    /// Whether this adapter also traces inline — `RayQuery` from any stage,
+    /// [`D3D12_RAYTRACING_TIER_1_1`] and the shader model that brought it.
+    ///
+    /// Implies [`raytracing`](Self::raytracing) by construction, since both
+    /// thresholds are at or above its own, which is what keeps
+    /// [`Features::RAY_QUERY`] from ever being reported without the
+    /// [`Features::ACCELERATION_STRUCTURE`] it traverses.
+    pub(crate) fn ray_query(self) -> bool {
+        self.raytracing_tier.0 >= D3D12_RAYTRACING_TIER_1_1.0
+            && self.shader_model.0 >= D3D_SHADER_MODEL_6_5.0
+    }
+
     /// Whether this adapter supports **SM6.6 dynamic resources** —
     /// `ResourceDescriptorHeap[i]` and `SamplerDescriptorHeap[i]` in HLSL.
     ///
@@ -207,6 +237,10 @@ impl FeatureQuery for D3D12_FEATURE_DATA_ARCHITECTURE1 {
 
 impl FeatureQuery for D3D12_FEATURE_DATA_FORMAT_SUPPORT {
     const FEATURE: D3D12_FEATURE = D3D12_FEATURE_FORMAT_SUPPORT;
+}
+
+impl FeatureQuery for D3D12_FEATURE_DATA_D3D12_OPTIONS5 {
+    const FEATURE: D3D12_FEATURE = D3D12_FEATURE_D3D12_OPTIONS5;
 }
 
 /// One `CheckFeatureSupport` call, with the answer returned rather than written
@@ -620,6 +654,22 @@ fn device_type_of(raw: &RawCaps) -> DeviceType {
 ///   that PIX and RenderDoc both decode from the bare calls. `crate::command`
 ///   records that encoding, so no dependency was needed.
 ///
+/// * [`Features::ACCELERATION_STRUCTURE`] and
+///   [`Features::RAY_TRACING_PIPELINE`] from [`RawCaps::raytracing`], and
+///   [`Features::RAY_QUERY`] from [`RawCaps::ray_query`] — **the adapter's own
+///   answer**, `D3D12_FEATURE_DATA_D3D12_OPTIONS5::RaytracingTier` beside the
+///   shader model. The seam has no acceleration-structure or ray-tracing call
+///   on any backend yet; these flags describe the device, exactly as
+///   `crcbl-vk`'s do, and are what
+///   [`LightingPath::from_features`](crcbl_hal::LightingPath::from_features)
+///   reads. Before they were reported a D3D12 adapter that Vulkan called
+///   `RayTraced` was `Rasterised` here, so the two backends disagreed about one
+///   GPU for no reason the API gives. Nothing needs enabling at device
+///   creation — an `ID3D12Device` is what `CheckFeatureSupport` says, always —
+///   and `RawCaps::ray_query` implying `RawCaps::raytracing` is what stops a ray
+///   query being reported without the structure it traverses, the dependency
+///   `crcbl-vk` restores in `granted_with_dependencies`.
+///
 /// # Absent, with the reason for each
 ///
 /// * [`Features::ASYNC_COMPUTE_QUEUE`] and [`Features::TRANSFER_QUEUE`] —
@@ -637,6 +687,12 @@ fn features_of(raw: &RawCaps) -> Features {
     }
     if raw.block_compression {
         out |= Features::TEXTURE_COMPRESSION_BC;
+    }
+    if raw.raytracing() {
+        out |= Features::ACCELERATION_STRUCTURE | Features::RAY_TRACING_PIPELINE;
+    }
+    if raw.ray_query() {
+        out |= Features::RAY_QUERY;
     }
     // No query for any of these: a GPU virtual address is not optional in
     // D3D12, anisotropic sampling is an architectural constant, compute is what
@@ -868,6 +924,11 @@ pub(crate) fn describe(
         luid: (u64::from(desc.AdapterLuid.HighPart.cast_unsigned()) << 32)
             | u64::from(desc.AdapterLuid.LowPart),
         block_compression: supports_block_compression(&device),
+        // A refused query leaves `RaytracingTier` at `NOT_SUPPORTED`, which is
+        // "no" — the direction `options` above fails in, for its reason.
+        raytracing_tier: check_feature(&device, D3D12_FEATURE_DATA_D3D12_OPTIONS5::default())
+            .unwrap_or_default()
+            .RaytracingTier,
     };
     let features = features_of(&raw);
     let info = AdapterInfo {
@@ -901,9 +962,9 @@ mod tests {
         D3D12_FEATURE_D3D12_OPTIONS3, D3D12_FEATURE_D3D12_OPTIONS7,
         D3D12_FEATURE_DATA_D3D12_OPTIONS3, D3D12_FEATURE_DATA_D3D12_OPTIONS7,
         D3D12_MESH_SHADER_TIER, D3D12_MESH_SHADER_TIER_1, D3D12_MESH_SHADER_TIER_NOT_SUPPORTED,
-        D3D12_RESOURCE_BINDING_TIER_2, D3D12_SAMPLER_FEEDBACK_TIER,
-        D3D12_SAMPLER_FEEDBACK_TIER_0_9, D3D12_SAMPLER_FEEDBACK_TIER_1_0,
-        D3D12_SAMPLER_FEEDBACK_TIER_NOT_SUPPORTED,
+        D3D12_RAYTRACING_TIER_NOT_SUPPORTED, D3D12_RESOURCE_BINDING_TIER_2,
+        D3D12_SAMPLER_FEEDBACK_TIER, D3D12_SAMPLER_FEEDBACK_TIER_0_9,
+        D3D12_SAMPLER_FEEDBACK_TIER_1_0, D3D12_SAMPLER_FEEDBACK_TIER_NOT_SUPPORTED,
     };
 
     use crate::device::tests::open_device;
@@ -968,6 +1029,7 @@ mod tests {
             unified_memory: false,
             luid: 0,
             block_compression: true,
+            raytracing_tier: D3D12_RAYTRACING_TIER_NOT_SUPPORTED,
         };
         assert!(base.dynamic_resources(), "tier 3 with SM6.6 is the answer");
 
@@ -999,6 +1061,80 @@ mod tests {
         assert!(newer.dynamic_resources(), "{newer:?}");
     }
 
+    /// The ray flags follow the DXR tier and the shader model together, and a
+    /// ray query is never reported without the acceleration structure it
+    /// traverses.
+    ///
+    /// Checked on constructed [`RawCaps`] for
+    /// `dynamic_resources_need_the_binding_tier_and_the_shader_model_together`'s
+    /// reason: every tier and every short shader model does not exist on one
+    /// machine. The lighting path is asserted beside the flags because it is
+    /// what the flags are *for* — a `RayTraced` answer from a device reporting
+    /// one half of the pair is the defect `LightingPath::from_features` guards.
+    #[test]
+    fn the_ray_flags_follow_the_dxr_tier_and_the_shader_model_together() {
+        use crcbl_hal::LightingPath;
+
+        let ray_flags =
+            Features::ACCELERATION_STRUCTURE | Features::RAY_TRACING_PIPELINE | Features::RAY_QUERY;
+        let base = RawCaps {
+            binding_tier: D3D12_RESOURCE_BINDING_TIER_3,
+            shader_model: D3D_SHADER_MODEL_6_6,
+            software: false,
+            unified_memory: false,
+            luid: 0,
+            block_compression: true,
+            raytracing_tier: D3D12_RAYTRACING_TIER_NOT_SUPPORTED,
+        };
+        let cases = [
+            (
+                D3D12_RAYTRACING_TIER_NOT_SUPPORTED,
+                D3D_SHADER_MODEL_6_6,
+                Features::empty(),
+            ),
+            (
+                D3D12_RAYTRACING_TIER_1_0,
+                D3D_SHADER_MODEL_6_6,
+                Features::ACCELERATION_STRUCTURE | Features::RAY_TRACING_PIPELINE,
+            ),
+            (D3D12_RAYTRACING_TIER_1_1, D3D_SHADER_MODEL_6_6, ray_flags),
+            // Tier 1.1 at a shader model that predates `RayQuery` traces only
+            // through the pipeline.
+            (
+                D3D12_RAYTRACING_TIER_1_1,
+                D3D_SHADER_MODEL_6_4,
+                Features::ACCELERATION_STRUCTURE | Features::RAY_TRACING_PIPELINE,
+            ),
+            // And a shader model below DXR's library stages traces nothing.
+            (
+                D3D12_RAYTRACING_TIER_1_1,
+                D3D_SHADER_MODEL_6_2,
+                Features::empty(),
+            ),
+            // A tier newer than the constants this rule names still counts.
+            (D3D12_RAYTRACING_TIER(12), D3D_SHADER_MODEL_6_9, ray_flags),
+        ];
+        for (tier, model, expected) in cases {
+            let raw = RawCaps {
+                raytracing_tier: tier,
+                shader_model: model,
+                ..base
+            };
+            let features = features_of(&raw);
+            assert_eq!(features & ray_flags, expected, "{raw:?}");
+            assert!(
+                !features.contains(Features::RAY_QUERY)
+                    || features.contains(Features::ACCELERATION_STRUCTURE),
+                "a ray query with nothing to traverse: {raw:?}"
+            );
+            assert_eq!(
+                LightingPath::from_features(features) == LightingPath::RayTraced,
+                expected.contains(Features::RAY_QUERY),
+                "{raw:?}"
+            );
+        }
+    }
+
     /// The features and the limits keyed off them cannot disagree.
     ///
     /// Checked on constructed [`RawCaps`] rather than on a real adapter, because
@@ -1020,6 +1156,7 @@ mod tests {
                 unified_memory: false,
                 luid: 0,
                 block_compression: true,
+                raytracing_tier: D3D12_RAYTRACING_TIER_NOT_SUPPORTED,
             };
             let features = features_of(&raw);
             let limits = limits_of(features);
@@ -1156,6 +1293,7 @@ mod tests {
             unified_memory: true,
             luid: 0,
             block_compression: true,
+            raytracing_tier: D3D12_RAYTRACING_TIER_NOT_SUPPORTED,
         };
         assert_eq!(device_type_of(&warp), DeviceType::Cpu, "{warp:?}");
 
