@@ -93,7 +93,7 @@ where the motion comes from.
 | Kind      | Extent                                      | Motion source                                        |
 | --------- | ------------------------------------------- | ---------------------------------------------------- |
 | Ocean     | unbounded, camera-centred rings             | FFT cascades (decision 5), shore waves near a coast  |
-| Lake      | a closed outline at one level               | table-driven trochoids plus detail normals           |
+| Lake      | a closed outline at one level               | trochoids plus detail normals                        |
 | River     | a spline with per-point width, depth, speed | flow map (decision 8) plus advected detail           |
 | Waterfall | a spline segment past a slope threshold     | flow along the fall, impact stamps on the body below |
 | Pool      | a closed outline, small and clear           | ripple grid (decision 9), detail normals             |
@@ -159,7 +159,7 @@ the wire carries body parameters and the tick, never heights.
 The tick is the game's fixed-step clock, not wall time. The renderer receives
 the tick and the fraction toward the next one, so a display faster than the
 simulation still sees continuous motion (decision 6 is how the phase stays
-continuous without a transcendental).
+continuous and exact).
 
 ### 5. The deep ocean is an FFT spectrum, split into non-overlapping cascades
 
@@ -199,38 +199,56 @@ an RTX 4070 (Ryan, 2026), with **rendering the surface, not the FFT,
 dominating** at 0.97–3.92 ms; Atlas's wind waves 0.5 ms on an RTX 2080. The
 engine's own numbers replace these before the rung counts as built.
 
-### 6. No transcendental reaches a pixel: the phase is an integer and the tables are baked
+### 6. No transcendental reaches a pixel: constructed trigonometry and an integer phase
 
-The workspace rule ([44-lighting.md](44-lighting.md)) is that no `sin`, `cos`,
-`exp` or `pow` reaches a colour, with two escapes: bake the function into a
-table at build time, or build it from permitted operations. Every published
-water model is written in transcendentals, so the mapping is decided here rather
-than per shader:
+The workspace rule ([44-lighting.md](44-lighting.md)) is that no platform `sin`,
+`cos`, `exp` or `pow` reaches a colour, because IEEE-754 specifies those to no
+precision and four backends' implementations differ in the last place. The math
+is not banned; the platform's library is. Every published water model is written
+in trigonometry, so the mapping is decided here rather than per shader:
 
-- **Looping, quantised dispersion** (Tessendorf's own device): `ω₀ = 2π/T` and
-  each wavenumber's frequency is rounded to an integer multiple `n_k` of it. The
-  phase at tick `t` is then the integer `(n_k · t) mod M` into an M-entry cosine
-  and sine table. Longer `T` tracks the true dispersion more closely.
-- **Continuous phase between ticks** from two tables and permitted operations:
-  `cos(a + b) = cos a cos b − sin a sin b`, a coarse table and a fine one.
-- **Spectrum, spreading, Gaussian amplitudes and the FFT twiddle table** are
-  cooked at build time. The Gaussian draws come from an integer hash (HDRP's
-  precedent), so a seed reproduces the sea.
-- **Gerstner and trochoid waves** for lakes, pools and shore waves sample the
-  same periodic table.
-- **Per-channel absorption `exp(−σd)`** uses `crcbl_shaders::fog`'s constructed
-  exponential or a 1-D table.
-- **Schlick's `(1 − c)⁵`** is an integer power and permitted as written; a
-  roughness-aware Fresnel with a non-integer exponent (Atlas, Bruneton) becomes
-  a 2-D table.
+- **`crcbl_shaders::trig` — `sin` and `cos` built from exactly specified
+  operations**, on `crcbl_shaders::fog::exp_neg`'s pattern: reduce the argument
+  by multiples of π/2 against a two-part constant so the subtraction is exact,
+  keep the quadrant as an integer, evaluate a short Taylor polynomial in Horner
+  form on a remainder within π/4, and pick sign and function by quadrant. One
+  body in Rust and one in Slang, held to each other by a guard, and tested
+  against `f64` over the whole domain as `exp_neg` is. This is the default for
+  every trigonometric term below, so Gerstner and trochoid waves, Acerola's sum
+  of sines and the FFT's phase rotation are written as their sources write them.
+- **What "deterministic" means for it.** On the CPU it is bit-identical on every
+  target: Rust never contracts a multiply and an add on its own, and
+  `crcbl-phys` already bans fast-math and `mul_add`. On the GPU it is equal
+  within a known bound rather than bit-identical, because a shader compiler may
+  still contract a multiply-add — the fog construction measured within two
+  last-place units of `f64::exp`. That bound is the one every shading path
+  already meets, and it is far below anything a floating body could show.
+- **The phase stays an integer**, for precision rather than for the rule.
+  Tessendorf's looping, quantised dispersion: `ω₀ = 2π/T` and each wavenumber's
+  frequency is rounded to an integer multiple `n_k` of it, so the phase at tick
+  `t` is `(n_k · t) mod M` steps of `2π/M`, plus `n_k` times the fraction toward
+  the next tick. A float time grows without bound and `ω·t` in `f32` loses
+  precision over a long session, which shows as waves that judder; a phase
+  reduced modulo `M` is exact however long the game runs. Longer `T` tracks the
+  true dispersion more closely.
+- **Spectrum, spreading and Gaussian amplitudes** are cooked at build time,
+  where `f64` and any function are available. The Gaussian draws come from an
+  integer hash (HDRP's precedent), so a seed reproduces the sea.
+- **Per-channel absorption `exp(−σd)` and Beckmann's `exp`** use `exp_neg`
+  directly.
+- **Schlick's `(1 − c)⁵`** is an integer power and permitted as written.
 - **Snell's window** — `cos(asin(n sin(acos c)))` in Crest — is
-  `sqrt(max(0, 1 − n²(1 − c²)))`.
-- **Beckmann `exp` and the `erf` in whitecap coverage** are 1-D tables; Walter's
-  rational masking term is permitted as written.
+  `sqrt(max(0, 1 − n²(1 − c²)))`, cheaper than any construction.
+- **Baked tables remain where they win**: functions of two or more variables
+  with no cheap construction, like the roughness-aware Fresnel with a
+  non-integer exponent (Atlas, Bruneton), and the `erf` in whitecap coverage if
+  its construction measures slower than a fetch. A table is also the right
+  answer when a construction would be evaluated millions of times per frame and
+  a fetch is cheaper; that is priced per rung, not assumed.
 
-**The CPU side reads the same tables**, so physics needs neither platform libm
-nor a decision on [05-physics.md](05-physics.md)'s open `libm`-versus-tables
-question to evaluate a wave.
+**The CPU side runs the same constructions**, so physics needs neither platform
+libm nor a decision on [05-physics.md](05-physics.md)'s open
+`libm`-versus-tables question to evaluate a wave.
 
 ### 7. Reflection: sky and probes always, a surface march next, planar only where flat
 
@@ -322,7 +340,7 @@ replacement is published:
   `W = ½ + ½·erf((ε − µ_J) / sqrt(2σ_J²))`, with the Jacobian's mean and
   variance read from mipmapped per-cascade `J` and `J²`. The mip chain is the
   spatial blur the feedback approximated, and hardware filtering antialiases it.
-  `erf` is a table.
+  `erf` is constructed from `exp_neg` or baked, whichever prices cheaper.
 - **A lifetime look without a lifetime**: HDRP's stateless foam drives a baked
   erosion texture by coverage, which reads as foam dissolving.
 - **Intersection foam** from the depth difference between the surface and the
@@ -400,8 +418,8 @@ for air — because a global provider cannot float a crate and a boat differentl
   where the Jacobian's eigenvalues are positive and fails at a fold, so the
   query reports convergence rather than returning a guess.
 - **The ocean's CPU field** runs the swell cascades only, through the same
-  integer-phase tables and a hand-written radix-2 FFT with the baked twiddle
-  table in fixed operation order; the fine cascades are visual only.
+  integer phase and `crcbl_shaders::trig`, and a hand-written radix-2 FFT in
+  fixed operation order; the fine cascades are visual only.
 - **Pontoon buoyancy** for props: sample spheres, `−ρ g V_submerged` per sphere,
   first- and second-order vertical damping, a force cap and linear plus
   quadratic drag (the parameter set of Unreal's `BuoyancyComponent`).
@@ -471,7 +489,7 @@ rung runs on the WebGPU backend and publishes in the fixture's browser demo.
 | Rung | What it buys                                                                                                                                                                                                                                                                   | What it costs                                                                  | Needs                                                               |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
 | 1    | `crcbl-water` bodies and medium; the surface pass after `volumetric-composite`; scene colour and depth copies; refraction with the in-front rejection; per-channel absorption; soft shoreline fade; sky and probe reflection with Fresnel; sun cascades received; a still lake | one HDR and one depth copy per frame; one pass over water pixels               | a tick uniform for the pass; `copy_image_to_image` on every backend |
-| 2    | Table-driven trochoid waves for lakes and pools; hex-tiled detail normals (Mikkelsen 2022); camera-centred rings; `WaterQuery` height, normal and velocity; pontoon buoyancy; immersion events                                                                                 | the phase and trochoid tables; ring vertices per tier                          | rung 1; rigid-body rotation and per-body medium properties          |
+| 2    | `crcbl_shaders::trig`; trochoid waves for lakes and pools; hex-tiled detail normals (Mikkelsen 2022); camera-centred rings; `WaterQuery` height, normal and velocity; pontoon buoyancy; immersion events                                                                       | the trigonometry construction and its guard; ring vertices per tier            | rung 1; rigid-body rotation and per-body medium properties          |
 | 3    | The FFT ocean: cooked spectrum, integer phase, storage-buffer FFT in compute, cascades, sea-state blend, the Sea of Thieves colour model, Bruneton variance, whitecap coverage and erosion foam; the CPU swell field for physics                                               | compute per cascade; mipmapped cascade textures; a CPU FFT at the physics tick | rung 2; wind speed from [56-wind.md](56-wind.md)                    |
 | 4    | Rivers and waterfalls: spline meshes, cooked flow maps, two-phase flow, flow-driven foam, fall meshes, impact stamps, CPU flow drift; body transitions                                                                                                                         | flow textures; spline cook                                                     | rung 2                                                              |
 | 5    | Shores: the distance-field cook, shore waves, shallow attenuation, shore foam, openness                                                                                                                                                                                        | one RGBA8 field per body                                                       | rung 3                                                              |
@@ -500,8 +518,8 @@ resolve).
 
 - **Determinism**: two CPU evaluations of the same body, seed and tick are
   bit-identical, and a replay of a floating body lands in the same pose; a
-  sabotage that swaps a table read for `f32::sin` goes red on a cross-target
-  comparison.
+  sabotage that swaps `crcbl_shaders::trig` for `f32::sin` goes red on a
+  cross-target comparison.
 - **Agreement**: the CPU height query against the rendered displacement read
   back from the GPU, at sample points, within a stated tolerance — the claim War
   Thunder's "< 5 cm" is the shape of.

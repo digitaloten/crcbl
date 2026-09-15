@@ -147,9 +147,9 @@ the levers above are the ones the sources that exist agree on.
 Every blade reads [56-wind.md](56-wind.md)'s field at its root. Compute bends
 the facing by the wind (Ghost of Tsushima); the vertex stage adds a bob whose
 phase comes from the blade hash and its position along the blade — which Ghost
-of Tsushima wrote as "a simple sine wave" and which is written here as 56's
-permitted oscillator. Cards lean at the top vertices by the sample; shells
-displace along the wind in proportion to the shell's height constant.
+of Tsushima wrote as "a simple sine wave" and which is written here as one,
+through `crcbl_shaders::trig`. Cards lean at the top vertices by the sample;
+shells displace along the wind in proportion to the shell's height constant.
 
 ### 6. Interaction is simulation state on the tick
 
@@ -158,9 +158,9 @@ displace along the wind in proportion to the shell's height constant.
   and one fading upward at a constant rate; the difference over the fade rate is
   the time since contact, and the held channel's gradient is the lean. The fade
   rate is zero at the player's feet, so an idle character does not pop the grass
-  up. God of War's settle pose is "a cosine times a falloff", baked here into a
-  table. The texture is stepped on the tick, re-centred by whole texels: state,
-  not history.
+  up. God of War's settle pose is "a cosine times a falloff", written with
+  `crcbl_shaders::trig`. The texture is stepped on the tick, re-centred by whole
+  texels: state, not history.
 - **Per-blade simulation** is Jahrmann and Wimmer's (i3D 2017), the rung after:
   a quadratic Bézier whose tip alone moves under recovery toward rest, gravity,
   wind and sphere collision, validated each step to stay above ground and keep

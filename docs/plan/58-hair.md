@@ -118,16 +118,20 @@ hair of 10,000 strands and 240,000 points spent 4.7 ms in physics and 4.5 ms
 rendering; simulating a tenth of the strands and interpolating was about five
 times faster, which is H4's premise.
 
-### 6. Shading is Marschner's lobes from tables, and Kajiya-Kay below it
+### 6. Shading is Marschner's lobes, and Kajiya-Kay below it
 
 - **Kajiya-Kay** (Scheuermann, ATI 2004): two shifted specular highlights along
-  the tangent and a wrapped diffuse. Its `pow(sinTH, exp)` becomes a table over
-  the angle and exponent, or a power-of-two exponent by repeated squaring.
+  the tangent and a wrapped diffuse. Its `pow(sinTH, exp)` is a power-of-two
+  exponent by repeated squaring, or a non-integer one as `exp_neg` of a
+  constructed logarithm, which does not exist yet and is priced against a table
+  when a consumer needs it.
 - **Marschner R, TT and TRT** as Karis (Unreal 2016) approximates them, and
   Frostbite's LUT of Gaussian fit parameters for the transmission lobe: the
-  longitudinal and azimuthal lobes are baked into build-time tables indexed by
-  angle and roughness. Karis's `cos(φ/2)` term is `sqrt((1 + cos φ) / 2)`, which
-  is algebraic.
+  longitudinal and azimuthal lobes are functions of angle and roughness with
+  Gaussians in them, so they are baked into build-time tables where a
+  two-variable construction would cost more per fragment than a fetch — the case
+  [55-water.md](55-water.md)'s decision 6 keeps tables for. Karis's `cos(φ/2)`
+  term is `sqrt((1 + cos φ) / 2)`, which is algebraic.
 - **Multiple scattering** is Karis's wrapped Lambert with absorption over a path
   length taken from the shadow; Frostbite's deep opacity maps are a later rung.
 - **Hair has its own pass**, lit by a guarded copy of the light walk as

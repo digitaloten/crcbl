@@ -187,16 +187,20 @@ still air.
 
 Every shipped wind animation in the research is written with `sin`: Ghost of
 Tsushima's blade bob, Horizon's ambient motion, SpeedTree's oscillators, Pivot
-Painter's rotations, Acerola's `cos²` and marble noise. The permitted
-equivalents are decided here once:
+Painter's rotations, Acerola's `cos²` and marble noise. The rule bans the
+platform's library, not the math, so the mapping is decided here once:
 
-- **Oscillation**: Crysis's smoothed triangle wave, with its published frequency
-  set, or a baked periodic table indexed by a phase computed in integer
-  arithmetic from the tick.
+- **Oscillation**: `sin` and `cos` from `crcbl_shaders::trig`, the construction
+  [55-water.md](55-water.md)'s decision 6 defines — bit-identical on the CPU,
+  within a known bound on the GPU — so a source's sine bob is written as
+  published. The phase comes from the tick in integer arithmetic, so it stays
+  exact over a long session. Crysis's smoothed triangle wave remains the cheaper
+  choice where its shape is enough.
 - **Noise**: baked tileable textures.
 - **Rotation about a pivot**: translate and restore length toward the pivot, God
   of War's "avoids slow trigonometric functions" construction.
-- **Bend exponents**: integers by repeated multiplication, or a baked table.
+- **Bend exponents**: integers by repeated multiplication; a non-integer
+  exponent through the same constructions or a baked table, priced.
 - **Direction**: vectors, not angles (decision 1).
 
 ## The rungs
