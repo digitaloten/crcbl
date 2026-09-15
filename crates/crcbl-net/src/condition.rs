@@ -116,12 +116,12 @@ impl ManualClock {
     /// Moves every handle to this clock forward by `by`.
     pub fn advance(&self, by: Duration) {
         let by = u64::try_from(by.as_nanos()).unwrap_or(u64::MAX);
-        // `fetch_update` rather than `fetch_add`: an add wraps in release
+        // `try_update` rather than `fetch_add`: an add wraps in release
         // builds, and a clock that wraps to zero would make every pending
         // message due at once — the opposite of what the caller asked for.
         let _ = self
             .nanos
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |now| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |now| {
                 Some(now.saturating_add(by))
             });
     }
