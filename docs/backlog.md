@@ -22,7 +22,9 @@ about 864 MiB of them per renderer.
 ms over `ew --headless --frames 300`, driver 615.71.09: `--m4-demo` peaks at 217
 MiB (1077 MiB before); `--r700-demo --ads-demo` and `--elcan-demo --ads-demo`
 run to completion at a 363 MiB peak where they aborted before, and that is with
-`ew`'s scope still building a second `WorldScene` rather than a view.
+`ew`'s scope still building a second `WorldScene` rather than a view. With `ew`
+`869eaa5`, whose scope is a view, the scoped demos peak at 240 MiB and
+`--m4-demo` at 201 MiB.
 
 ### How this list is being worked
 
