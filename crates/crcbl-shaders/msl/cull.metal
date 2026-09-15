@@ -48,6 +48,7 @@ struct CullParams_0
     array<float4, int(6)> planes_0;
     uint instance_count_0;
     uint capacity_0;
+    uint hidden_view_0;
 };
 
 
@@ -94,7 +95,7 @@ struct GpuMesh_0
 };
 
 
-#line 309
+#line 321
 struct KernelContext_0
 {
     CullParams_0 constant* cull_0;
@@ -105,26 +106,26 @@ struct KernelContext_0
 };
 
 
-#line 246
+#line 250
 [[kernel]] void computeMain(uint3 thread_0 [[thread_position_in_grid]], CullParams_0 constant* cull_1 [[buffer(0)]], GpuInstance_natural_0 device* instances_1 [[buffer(1)]], GpuMesh_0 device* meshes_1 [[buffer(2)]], atomic<uint> device* visible_count_1 [[buffer(4)]], uint device* visible_1 [[buffer(3)]])
 {
 
-#line 246
+#line 250
     thread KernelContext_0 kernelContext_0;
 
-#line 246
+#line 250
     (&kernelContext_0)->cull_0 = cull_1;
 
-#line 246
+#line 250
     (&kernelContext_0)->instances_0 = instances_1;
 
-#line 246
+#line 250
     (&kernelContext_0)->meshes_0 = meshes_1;
 
-#line 246
+#line 250
     (&kernelContext_0)->visible_count_0 = visible_count_1;
 
-#line 246
+#line 250
     (&kernelContext_0)->visible_0 = visible_1;
 
     uint index_0 = thread_0.x;
@@ -133,21 +134,27 @@ struct KernelContext_0
         return;
     }
 
-#line 251
+#line 255
     GpuInstance_natural_0 device* _S1 = (&kernelContext_0)->instances_0+index_0;
 
-#line 251
+#line 255
     uint _S2 = _S1->flags_0;
 
-#line 261
+#line 265
     if(((_S1->flags_0) & 1U) == 0U)
+    {
+        return;
+    }
+
+#line 273
+    if((_S2 & ((&kernelContext_0)->cull_0->hidden_view_0)) != 0U)
     {
         return;
     }
 
     GpuMesh_0 mesh_1 = (&kernelContext_0)->meshes_0[_S1->mesh_0];
 
-#line 272
+#line 284
     if((mesh_1.index_count_0) == 0U)
     {
         return;
@@ -158,56 +165,56 @@ struct KernelContext_0
         float3 bounds_min_0 = float3(mesh_1.min_x_0, mesh_1.min_y_0, mesh_1.min_z_0);
         float3 bounds_max_0 = float3(mesh_1.max_x_0, mesh_1.max_y_0, mesh_1.max_z_0);
 
-#line 280
+#line 292
         float3 _S3 = float3(0.5f) ;
 
-#line 280
+#line 292
         matrix<float,int(4),int(4)>  _S4 = matrix<float,int(4),int(4)> (_S1->transform_0.data_0[int(0)][int(0)], _S1->transform_0.data_0[int(1)][int(0)], _S1->transform_0.data_0[int(2)][int(0)], _S1->transform_0.data_0[int(3)][int(0)], _S1->transform_0.data_0[int(0)][int(1)], _S1->transform_0.data_0[int(1)][int(1)], _S1->transform_0.data_0[int(2)][int(1)], _S1->transform_0.data_0[int(3)][int(1)], _S1->transform_0.data_0[int(0)][int(2)], _S1->transform_0.data_0[int(1)][int(2)], _S1->transform_0.data_0[int(2)][int(2)], _S1->transform_0.data_0[int(3)][int(2)], _S1->transform_0.data_0[int(0)][int(3)], _S1->transform_0.data_0[int(1)][int(3)], _S1->transform_0.data_0[int(2)][int(3)], _S1->transform_0.data_0[int(3)][int(3)]);
 
-#line 289
+#line 301
         float3 _S5 = (((float4(_S3 * (bounds_max_0 + bounds_min_0), 1.0f)) * (_S4))).xyz;
         float3 _S6 = (((_S3 * (bounds_max_0 - bounds_min_0)) * (abs_0(matrix<float,int(3),int(3)> (_S4[int(0)].xyz, _S4[int(1)].xyz, _S4[int(2)].xyz)))));
 
-#line 290
+#line 302
         uint plane_0 = 0U;
 
         for(;;)
         {
 
-#line 292
+#line 304
             if(plane_0 < 6U)
             {
             }
             else
             {
 
-#line 292
+#line 304
                 break;
             }
 
-#line 298
+#line 310
             float3 _S7 = (&kernelContext_0)->cull_0->planes_0[plane_0].xyz;
             if((dot(_S7, _S5) + (&kernelContext_0)->cull_0->planes_0[plane_0].w) < (- dot(abs(_S7), _S6)))
             {
                 return;
             }
 
-#line 292
+#line 304
             plane_0 = plane_0 + 1U;
 
-#line 292
+#line 304
         }
 
-#line 277
+#line 289
     }
 
-#line 306
+#line 318
     uint slot_0 = atomic_fetch_add_explicit((&kernelContext_0)->visible_count_0+0U, 1U, memory_order_relaxed);
     if(slot_0 < ((&kernelContext_0)->cull_0->capacity_0))
     {
         *((&kernelContext_0)->visible_0+slot_0) = index_0;
 
-#line 307
+#line 319
     }
 
 

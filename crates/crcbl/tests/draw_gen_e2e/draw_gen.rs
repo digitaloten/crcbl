@@ -32,7 +32,8 @@ use crcbl::hal::{
 use crcbl::math::{Mat4, Vec3};
 use crcbl::render::cull::{Aabb, Frustum, visible_instances};
 use crcbl::render::{
-    Camera, ForwardRenderer, InstanceHandle, Projection, RenderGraph, TransientPool,
+    Camera, ForwardRenderer, InstanceHandle, Projection, RenderGraph, TransientPool, ViewId,
+    ViewMask,
 };
 use crcbl::shaders::draw_gen::{DRAW_ARGS_SIZE, DrawIndexedArgs};
 use crcbl::shaders::mesh::{
@@ -499,7 +500,7 @@ fn the_generated_arguments_are_the_draws_the_cpu_would_have_recorded() {
     let instances = scene(model, PYRAMID_AT);
     let aspect = MESH_EXTENT.0 as f32 / MESH_EXTENT.1 as f32;
     let frustum = Frustum::from_view_projection(camera.view_projection(aspect));
-    let visible = visible_instances(&frustum, &instances, &meshes);
+    let visible = visible_instances(&frustum, &instances, &meshes, 0);
     assert_eq!(
         visible,
         vec![0, 1],
@@ -572,7 +573,7 @@ fn a_culled_bucket_generates_no_draw_and_says_so_in_the_count() {
     let aspect = MESH_EXTENT.0 as f32 / MESH_EXTENT.1 as f32;
     let frustum = Frustum::from_view_projection(camera.view_projection(aspect));
     assert_eq!(
-        visible_instances(&frustum, &instances, &meshes),
+        visible_instances(&frustum, &instances, &meshes, 0),
         vec![0],
         "the reference must cull the pyramid here, or this test is about nothing"
     );
@@ -604,6 +605,56 @@ fn a_culled_bucket_generates_no_draw_and_says_so_in_the_count() {
         "the mesh range is written whether or not anything draws it"
     );
     assert_eq!(generated.args[1].first_index, meshes[1].base_index);
+
+    teardown(headless, renderer, pool);
+}
+
+/// **An instance hidden from the camera is rejected by `cull.slang`**, on the
+/// bit [`ForwardRenderer::set_instance_views`] wrote into its record — and the
+/// frame is otherwise the one it would have been.
+///
+/// Both objects are on screen, so the only thing that can take the pyramid out
+/// of the survivor list is the hidden-views bit: the CPU reference keeps both
+/// with no bit to cull on and drops the pyramid with the primary camera's.
+#[test]
+#[ignore = "needs a real GPU and a backend pin; run tests/run-draw-gen-e2e.sh"]
+fn an_instance_hidden_from_the_camera_is_culled_before_its_bound_is_tested() {
+    let (headless, mut renderer, mut pool) = setup();
+    let pyramid = place_pyramid(&mut renderer, PYRAMID_AT);
+    renderer.set_instance_views(pyramid, ViewMask::ALL.without(ViewId::PRIMARY));
+
+    let camera = mesh_camera(Projection::default());
+    let model = cube_model();
+    let generated = generate(&headless, &mut renderer, &mut pool, &camera);
+
+    let meshes = mesh_table();
+    let mut instances = scene(model, PYRAMID_AT);
+    let hidden = 1 << GpuInstance::HIDDEN_VIEWS_SHIFT;
+    instances[1].flags |= hidden;
+    let aspect = MESH_EXTENT.0 as f32 / MESH_EXTENT.1 as f32;
+    let frustum = Frustum::from_view_projection(camera.view_projection(aspect));
+    assert_eq!(
+        visible_instances(&frustum, &instances, &meshes, 0),
+        vec![0, 1],
+        "both objects are on screen, so the bound alone rejects neither"
+    );
+    assert_eq!(
+        visible_instances(&frustum, &instances, &meshes, hidden),
+        vec![0],
+        "and the reference drops the pyramid on the camera's bit"
+    );
+
+    assert_eq!(
+        generated.visible_count, 1,
+        "the GPU kept only the cube: {:?}",
+        generated.args
+    );
+    assert_eq!(generated.args[0].instance_count, 1, "the cube still draws");
+    assert_eq!(
+        generated.args[1].instance_count, 0,
+        "and the hidden pyramid's bucket claims nothing: {:?}",
+        generated.args
+    );
 
     teardown(headless, renderer, pool);
 }

@@ -1423,6 +1423,28 @@ impl GpuInstance {
     /// pair.
     pub const MATERIAL_MODE_MASK: u32 = 0b11 << Self::MATERIAL_MODE_SHIFT;
 
+    /// Where the **hidden-views mask** starts in [`GpuInstance::flags`]: bit 8.
+    ///
+    /// One bit per render view a renderer may draw — bit `8 + n` set means view
+    /// `n` does not draw this instance. `cull.slang` rejects an instance whose
+    /// bit for the cull's own view is set, before it tests a bound, so a hidden
+    /// instance costs a view one flag test and no survivor slot.
+    ///
+    /// **Hidden, not visible**, so the all-zero record every other flag relies
+    /// on draws in every view: an instance nobody said anything about is drawn
+    /// by all of them, and a renderer that has only ever had one view writes
+    /// exactly the record it wrote before the mask existed. A cull that is no
+    /// view's — a shadow cascade's, a shadowed light's — tests no bit at all,
+    /// so what an instance hides from a camera still casts its shadow.
+    ///
+    /// Bits 4 to 7 are left free, so the material mode can widen without
+    /// moving this field.
+    pub const HIDDEN_VIEWS_SHIFT: u32 = 8;
+
+    /// The hidden-views mask's bits in [`GpuInstance::flags`]: bits 8 to 15,
+    /// one per view — see [`GpuInstance::HIDDEN_VIEWS_SHIFT`].
+    pub const HIDDEN_VIEWS_MASK: u32 = 0xff << Self::HIDDEN_VIEWS_SHIFT;
+
     /// This instance's material mode, unpacked from
     /// [`flags`](GpuInstance::flags).
     ///

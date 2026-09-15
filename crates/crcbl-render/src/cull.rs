@@ -505,6 +505,11 @@ fn max_stretch(basis: Mat3) -> f32 {
 /// [`GpuInstance::BASE_VERTEX_OVERRIDE`] is kept after that empty-mesh check:
 /// its source mesh bounds do not describe its skinned vertex region.
 ///
+/// An instance whose [`flags`](GpuInstance::flags) carry `hidden_view` is **not**
+/// visible, asked straight after the live bit: it is the view's own bit of
+/// [`GpuInstance::HIDDEN_VIEWS_MASK`](crcbl_shaders::mesh::GpuInstance::HIDDEN_VIEWS_MASK),
+/// and a cull that is no view's passes zero and rejects nothing on it.
+///
 /// The order is ascending. **The GPU's is not**, because slots come from an
 /// atomic, so a comparison between the two sorts first.
 #[must_use]
@@ -512,10 +517,14 @@ pub fn visible_instances(
     frustum: &Frustum,
     instances: &[GpuInstance],
     meshes: &[GpuMesh],
+    hidden_view: u32,
 ) -> Vec<u32> {
     let mut visible = Vec::new();
     for (index, instance) in instances.iter().enumerate() {
         if instance.flags & GpuInstance::LIVE == 0 {
+            continue;
+        }
+        if instance.flags & hidden_view != 0 {
             continue;
         }
         let Some(mesh) = meshes.get(instance.mesh as usize) else {
@@ -786,19 +795,19 @@ mod tests {
             ..live
         };
         assert_eq!(
-            visible_instances(&frustum, &[live, removed], &meshes),
+            visible_instances(&frustum, &[live, removed], &meshes, 0),
             vec![0],
             "the live instance survives and its dead twin does not"
         );
         // And the other order, so this is the flag and not the index.
         assert_eq!(
-            visible_instances(&frustum, &[removed, live], &meshes),
+            visible_instances(&frustum, &[removed, live], &meshes, 0),
             vec![1]
         );
         // A record that is all zeroes is dead too — that is the slot a pool
         // hands out before anything writes it.
         assert!(
-            visible_instances(&frustum, &[GpuInstance::default()], &meshes).is_empty(),
+            visible_instances(&frustum, &[GpuInstance::default()], &meshes, 0).is_empty(),
             "a default instance is not live"
         );
     }
@@ -820,14 +829,14 @@ mod tests {
                 ..at(Vec3::ZERO)
             },
         ];
-        assert_eq!(visible_instances(&frustum, &instances, &meshes), vec![0]);
+        assert_eq!(visible_instances(&frustum, &instances, &meshes, 0), vec![0]);
     }
 
     #[test]
     fn a_skinned_instance_survives_when_its_source_bounds_are_outside() {
         let source_outside = at(Vec3::X * 8.0);
         assert!(
-            visible_instances(&frustum(), &[source_outside], &[unit_cube()]).is_empty(),
+            visible_instances(&frustum(), &[source_outside], &[unit_cube()], 0).is_empty(),
             "the unskinned source bounds are outside the camera"
         );
         let skinned = GpuInstance {
@@ -835,9 +844,39 @@ mod tests {
             ..source_outside
         };
         assert_eq!(
-            visible_instances(&frustum(), &[skinned], &[unit_cube()]),
+            visible_instances(&frustum(), &[skinned], &[unit_cube()], 0),
             vec![0],
             "a palette may have moved the skinned vertices into view"
+        );
+    }
+
+    /// An instance hidden from a view is rejected by that view's cull and by no
+    /// other: not by a second view's, and not by a cull that is no view's.
+    #[test]
+    fn a_hidden_instance_is_rejected_by_its_own_view_alone() {
+        let first = 1 << GpuInstance::HIDDEN_VIEWS_SHIFT;
+        let second = 1 << (GpuInstance::HIDDEN_VIEWS_SHIFT + 1);
+        let shown = at(Vec3::ZERO);
+        let hidden = GpuInstance {
+            flags: shown.flags | first,
+            ..shown
+        };
+        let instances = [shown, hidden];
+        let meshes = [unit_cube()];
+        assert_eq!(
+            visible_instances(&frustum(), &instances, &meshes, first),
+            vec![0],
+            "the first view skips the instance hidden from it"
+        );
+        assert_eq!(
+            visible_instances(&frustum(), &instances, &meshes, second),
+            vec![0, 1],
+            "the second view still draws both"
+        );
+        assert_eq!(
+            visible_instances(&frustum(), &instances, &meshes, 0),
+            vec![0, 1],
+            "and a cull that is no view's rejects nothing on the mask"
         );
     }
 
@@ -850,7 +889,7 @@ mod tests {
         let instances = [at(Vec3::ZERO), at(Vec3::new(6.0, 0.0, 0.0))];
 
         let ahead = Frustum::from_view_projection(Camera::default().view_projection(1.0));
-        assert_eq!(visible_instances(&ahead, &instances, &meshes), vec![0]);
+        assert_eq!(visible_instances(&ahead, &instances, &meshes, 0), vec![0]);
 
         // The same scene from a camera looking at the *other* cube: now it is
         // the one that survives and the origin is behind the eye.
@@ -863,7 +902,8 @@ mod tests {
             visible_instances(
                 &Frustum::from_view_projection(turned.view_projection(1.0)),
                 &instances,
-                &meshes
+                &meshes,
+                0
             ),
             vec![1]
         );

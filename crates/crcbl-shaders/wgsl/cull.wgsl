@@ -3,6 +3,7 @@ struct CullParams_std140_0
     @align(16) planes_0 : array<vec4<f32>, i32(6)>,
     @align(16) instance_count_0 : u32,
     @align(4) capacity_0 : u32,
+    @align(8) hidden_view_0 : u32,
 };
 
 @binding(0) @group(0) var<uniform> cull_0 : CullParams_std140_0;
@@ -81,6 +82,10 @@ fn computeMain(@builtin(global_invocation_id) thread_0 : vec3<u32>)
     }
     var _S1 : u32 = instances_0[index_0].flags_0;
     if((((instances_0[index_0].flags_0) & (u32(1)))) == u32(0))
+    {
+        return;
+    }
+    if(((_S1 & ((cull_0.hidden_view_0)))) != u32(0))
     {
         return;
     }

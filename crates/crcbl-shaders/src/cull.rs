@@ -97,7 +97,7 @@ const _: () = assert!(CLUSTER_FRUSTUM_REJECT_WORD != CLUSTER_CONE_REJECT_WORD);
 
 /// Bytes of the uniform block.
 ///
-/// Six `float4` (96) then two `uint`, rounded up to the 16-byte multiple
+/// Six `float4` (96) then three `uint`, rounded up to the 16-byte multiple
 /// `std140` requires of a uniform block's size. Checked against the `Offset`
 /// decorations `slangc` emits by this module's
 /// `the_cull_params_block_matches_the_offsets_slangc_emits`.
@@ -123,6 +123,12 @@ pub struct Params {
     /// not written — see the shader, where the counter is deliberately the
     /// unbounded half.
     pub capacity: u32,
+    /// The [`GpuInstance::flags`](crate::mesh::GpuInstance::flags) bit that
+    /// removes an instance from this cull: one bit of
+    /// [`GpuInstance::HIDDEN_VIEWS_MASK`](crate::mesh::GpuInstance::HIDDEN_VIEWS_MASK)
+    /// for a camera's cull, and zero for a cull that is no view's — a shadow
+    /// cascade's or a shadowed light's — which rejects nothing on it.
+    pub hidden_view: u32,
 }
 
 impl Params {
@@ -142,11 +148,11 @@ impl Params {
                 at += 4;
             }
         }
-        for value in [self.instance_count, self.capacity] {
+        for value in [self.instance_count, self.capacity, self.hidden_view] {
             bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
             at += 4;
         }
-        debug_assert_eq!(at, 104, "the last eight bytes are std140 tail padding");
+        debug_assert_eq!(at, 108, "the last four bytes are std140 tail padding");
         bytes
     }
 }
@@ -177,7 +183,7 @@ mod tests {
     #[test]
     fn the_cull_params_block_matches_the_offsets_slangc_emits() {
         // `OpDecorate %_arr_v4float_int_6 ArrayStride 16`, and
-        // `OpMemberDecorate %CullParams_std140 n Offset …`: 0, 96, 100.
+        // `OpMemberDecorate %CullParams_std140 n Offset …`: 0, 96, 100, 104.
         assert_eq!(PARAMS_SIZE, 112);
         assert_eq!(
             PARAMS_SIZE % 16,
@@ -194,6 +200,7 @@ mod tests {
             planes,
             instance_count: 7,
             capacity: 9,
+            hidden_view: 1 << 10,
         }
         .to_bytes();
         let float_at =
@@ -210,10 +217,11 @@ mod tests {
         }
         assert_eq!(uint_at(96), 7, "instance_count at offset 96");
         assert_eq!(uint_at(100), 9, "capacity at offset 100");
+        assert_eq!(uint_at(104), 1 << 10, "hidden_view at offset 104");
         assert!(
-            bytes[104..].iter().all(|byte| *byte == 0),
+            bytes[108..].iter().all(|byte| *byte == 0),
             "the std140 tail padding is written, and it is zero: {:?}",
-            &bytes[104..]
+            &bytes[108..]
         );
     }
 

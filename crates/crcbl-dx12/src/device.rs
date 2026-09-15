@@ -7612,6 +7612,7 @@ pub(crate) mod tests {
             ],
             instance_count: 1,
             capacity: 1,
+            hidden_view: 0,
         };
 
         let draw_constants = crcbl_shaders::meshlet::ClusterDrawConstants {

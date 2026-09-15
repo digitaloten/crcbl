@@ -85,6 +85,7 @@ mod lights;
 mod occlusion;
 mod page;
 mod shadow;
+mod views;
 
 // The fixture, out of `tests/gpu_scene/` rather than beside the root, because
 // `tests/draw_gen_e2e/` and `tests/sprite_e2e/` open the same device against the

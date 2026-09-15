@@ -192,6 +192,10 @@ struct CullParams
     /// Elements `visible` can hold. A survivor whose slot is at or past this
     /// still counts — see `visible_count` — but is not written.
     uint capacity;
+    /// The `GpuInstance::flags` bit that removes an instance from this cull:
+    /// the camera's own bit of the hidden-views mask, or zero for a cull that
+    /// is no view's — every shadow cull — which rejects nothing on it.
+    uint hidden_view;
 };
 
 [[vk::binding(0, 0)]]
@@ -259,6 +263,14 @@ void computeMain(uint3 thread: SV_DispatchThreadID)
     // because it is also what keeps a stale `instance.mesh` from indexing the
     // table below.
     if ((instance.flags & INSTANCE_LIVE) == 0)
+    {
+        return;
+    }
+
+    // The view this cull draws for has been told not to draw the instance —
+    // `crcbl_shaders::mesh::GpuInstance::HIDDEN_VIEWS_SHIFT`. A shadow cull
+    // passes zero, so a hidden instance still casts its shadow.
+    if ((instance.flags & cull.hidden_view) != 0)
     {
         return;
     }

@@ -77,6 +77,13 @@ A dedicated pass after world opaque, before transparency:
   - post stack minimal preset on the PiP camera (tonemap yes, bloom/FXAA
     optional per quality);
   - active only while ADS with a magnified optic; one PiP max.
+- **The engine half is in `crcbl-render` (2026-09-15)**: a PiP camera is a
+  `ForwardRenderer` view — `create_view`, `begin_view`, `add_passes_with_views`
+  — with its own cull, clustering and post rings over the one scene, the shadow
+  atlas reused as above, and `ViewDesc::effects` as the minimal-preset knob.
+  `set_instance_views` is what keeps the shooter's own weapon and body out of
+  the lens. The RTT size, the LOD bias knob and the one-PiP rule are still the
+  game's to apply.
 - Non-magnified sights (red dots/holo) are **shader fakes** (collimator reticle
   at infinity) — no PiP, no cost. The 1×–4× gray zone is a per-optic game
   choice.

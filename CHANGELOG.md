@@ -16,6 +16,15 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Breaking
 
+- **A cull knows which view it culls for.** `crcbl_shaders::cull::Params` and
+  `cull.slang`'s `CullParams` gained `hidden_view: u32` (in the block's former
+  tail padding, so `PARAMS_SIZE` is still 112), `DrawGenDesc` gained the same
+  field, and `crcbl_render::cull::visible_instances` takes it as a fourth
+  argument. It is the `GpuInstance::flags` bit that removes an instance from
+  that cull: a camera's generator passes its view's bit, and zero — what a
+  generator culling for no view, or an existing caller, passes — rejects
+  nothing, so every frame drawn before views existed is drawn unchanged.
+
 - **A storage buffer's layout entry declares its element stride.**
   `BindingKind::StorageBuffer` gained `stride: u32`, the byte size of one
   element of the array the shader declares — `sizeof(T)` for a
@@ -97,6 +106,30 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
   stops asking for it.
 
 ### Added
+
+- **`ForwardRenderer` draws more than one camera without a second scene.**
+  `create_view` builds a view of the scene the renderer already holds and
+  `destroy_view` releases it; `begin_view` writes a view's blocks for the frame
+  `begin_frame` opened, and `add_passes_with_views` takes the frame's
+  `FrameTargets` and records each `ViewTarget`'s frame into its own target
+  before the primary camera's. A view owns only one camera's share of the frame
+  — its cull and draw-argument buffers, frame blocks, light clustering and
+  screen-space rings — and shares the mesh and instance pools, material pages,
+  probes and shadow atlas, where the only way to a second camera was a second
+  `ForwardRenderer` that duplicated all of them. The skinning dispatch, the
+  shadow atlas and the probe gather run once per frame whatever draws them, and
+  a view samples the maps the primary camera's frame fitted. `ViewDesc::effects`
+  lets a view draw fewer effects than the frame. Up to `MAX_VIEWS` views, the
+  primary camera included.
+- **Instances can be hidden from a view.** `set_instance_views` takes a
+  `ViewMask` of the views that draw an instance (`ViewMask::ALL` by default),
+  stored in bits 8–15 of `GpuInstance::flags` (`GpuInstance::HIDDEN_VIEWS_SHIFT`
+  / `HIDDEN_VIEWS_MASK`) and tested by `cull.slang` before the bound on every
+  backend. A hidden instance still casts its shadow; `set_instance` and
+  `set_skinned_instance` keep the mask, and `destroy_view` clears its view's bit
+  so a recreated view starts from `ALL`. `InstancePool::set_flags` and
+  `InstancePool::clear_flags` are the flag-only writes behind it, neither of
+  which reports motion.
 
 - **`crcbl-dx12` records debug labels, and reports `Features::DEBUG_MARKERS`.**
   `CommandEncoder::begin_debug_label`, `end_debug_label` and

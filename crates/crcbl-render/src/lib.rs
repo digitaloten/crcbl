@@ -218,7 +218,8 @@ pub use exposure::{ExposureAdaptation, ExposureBuffers};
 pub use fly::{Flyer, LOOK, SPEED, TURN};
 pub use forward::{
     DEFAULT_ANISOTROPY, DebugView, EXPOSURE_MAX, EXPOSURE_MIN, ForwardOverlayTargets,
-    ForwardRenderer, MIN_RENDER_SCALE, SCENE_CLEAR, SHADOW_LOD_BIAS, SkinnedInstanceDesc,
+    ForwardRenderer, FrameTargets, MAX_VIEWS, MIN_RENDER_SCALE, SCENE_CLEAR, SHADOW_LOD_BIAS,
+    SkinnedInstanceDesc, ViewDesc, ViewId, ViewMask, ViewTarget,
 };
 pub use graph::{
     Attachment, BufferId, CompiledGraph, CompiledPass, GraphBarriers, GraphBufferBarrier,

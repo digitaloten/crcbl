@@ -828,6 +828,9 @@ struct CullParams
     uint instance_count;
     /// Elements the visible list can hold. Read by nothing here either.
     uint capacity;
+    /// The hidden-views bit the instance cull rejected on. Read by nothing
+    /// here: an instance it rejected is not in the survivors this stage walks.
+    uint hidden_view;
 };
 
 /// Which element of `cull_stats` counts surviving clusters.

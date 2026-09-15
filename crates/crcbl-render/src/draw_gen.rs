@@ -206,6 +206,16 @@ pub struct DrawGenDesc<'a> {
     /// It also sizes `docs/plan/25-lod.md`'s hysteresis state, which is one word
     /// per (instance slot, group) — see [`DrawGen::group_state`].
     pub instance_capacity: u32,
+    /// The [`GpuInstance::flags`](crcbl_shaders::mesh::GpuInstance::flags) bit
+    /// that removes an instance from this cull, written into every frame's cull
+    /// parameters.
+    ///
+    /// One bit of
+    /// [`GpuInstance::HIDDEN_VIEWS_MASK`](crcbl_shaders::mesh::GpuInstance::HIDDEN_VIEWS_MASK)
+    /// for a generator that culls for a camera, and **zero** for one that culls
+    /// for no view — a shadow cascade's or a shadowed light's — which rejects
+    /// nothing on it, so an instance a camera hides still casts its shadow.
+    pub hidden_view: u32,
 }
 
 /// What one frame's generated draws live in.
@@ -353,6 +363,7 @@ pub struct DrawGen {
 
     bucket_count: u32,
     capacity: u32,
+    hidden_view: u32,
 }
 
 impl DrawGen {
@@ -847,6 +858,7 @@ impl DrawGen {
             gen_pipeline,
             bucket_count,
             capacity,
+            hidden_view: desc.hidden_view,
         })
     }
 
@@ -1118,6 +1130,7 @@ impl DrawGen {
                 planes: frustum.planes.map(|plane| plane.to_array()),
                 instance_count,
                 capacity: self.capacity,
+                hidden_view: self.hidden_view,
             }
             .to_bytes(),
         )

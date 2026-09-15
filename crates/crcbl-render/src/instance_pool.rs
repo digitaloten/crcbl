@@ -491,6 +491,44 @@ impl InstancePool {
         true
     }
 
+    /// Rewrites `handle`'s flags word and **nothing else**, on
+    /// [`set_bases`](Self::set_bases)' terms: a flag is not a move, so the
+    /// transform history is left as it is and the element is not enrolled in the
+    /// next [`rotate`](Self::rotate)'s carry-forward.
+    ///
+    /// [`GpuInstance::LIVE`] is kept set whatever `flags` says, because the pool
+    /// owns that bit. Returns whether the handle named a live instance; a stale
+    /// one writes nothing.
+    pub fn set_flags(&mut self, handle: InstanceHandle, flags: u32) -> bool {
+        if !self.slots.contains(handle.cast()) {
+            return false;
+        }
+        let index = handle.index();
+        let mut record = self.read(index);
+        record.flags = flags | GpuInstance::LIVE;
+        self.write(index, &record);
+        true
+    }
+
+    /// Clears `bits` from the flags of every live instance that carries any of
+    /// them, and writes only those.
+    ///
+    /// A walk over every slot ever handed out, for a change that is rare by
+    /// nature — a view being released, whose bit every record has to stop
+    /// carrying. [`GpuInstance::LIVE`] is never cleared here, whatever `bits`
+    /// holds.
+    pub fn clear_flags(&mut self, bits: u32) {
+        let bits = bits & !GpuInstance::LIVE;
+        for index in 0..self.high_water {
+            let mut record = self.read(index);
+            if record.flags & GpuInstance::LIVE == 0 || record.flags & bits == 0 {
+                continue;
+            }
+            record.flags &= !bits;
+            self.write(index, &record);
+        }
+    }
+
     /// What `handle`'s slot currently holds, decoded from the host mirror, or
     /// `None` if the handle is stale.
     ///

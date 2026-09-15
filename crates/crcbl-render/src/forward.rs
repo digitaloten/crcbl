@@ -206,7 +206,8 @@ use crcbl_shaders::atmosphere::{SKY_VIEW_BUILD_ROWS, SkyView, SkyViewBuild};
 
 mod view;
 
-use view::{View, ViewInputs};
+use view::{FramePasses, Overlays, TonemapPipeline, View, ViewInputs, ViewOutput};
+pub use view::{FrameTargets, MAX_VIEWS, ViewDesc, ViewId, ViewMask, ViewTarget};
 
 /// The clear behind the mesh, in **linear** light.
 ///
@@ -1444,6 +1445,38 @@ impl PresentedSky {
     }
 }
 
+/// What [`ForwardRenderer::begin_frame`] fitted for the whole frame, kept so a
+/// secondary view begun after it writes its blocks against the same sun, light
+/// rows and shadow matrices the primary camera's were written against.
+///
+/// Everything here is decided by the primary camera and drawn once: the rows
+/// carry the shadow tiles the primary camera's selection handed out, and the
+/// cascades are fitted to its frustum. A secondary view samples the maps those
+/// passes drew — `docs/plan/29-fp-rendering.md`'s "shadow maps reused".
+#[derive(Clone, Debug)]
+struct FrameScene {
+    light: DirectionalLight,
+    rows: Vec<crcbl_shaders::light::GpuLight>,
+    cascades: Cascades,
+    shadow_view_proj: [[f32; 16]; shadow::CASCADES],
+    light_view_proj: [[f32; 16]; shadow::LIGHT_TILES],
+    atlas_rects: [[f32; 4]; shadow::TILES],
+}
+
+/// The bucket and level tables a scene's generators are all built from, kept
+/// so [`ForwardRenderer::create_view`] can build one more after `build` has
+/// returned.
+#[derive(Debug)]
+struct DrawTables {
+    bucket_meshes: Vec<u32>,
+    bucket_clusters: Vec<u32>,
+    mesh_levels: Vec<level_select::MeshLevels>,
+    level_groups: Vec<level_select::LevelGroup>,
+    level_meshes: Vec<u32>,
+    instance_capacity: u32,
+    light_capacity: u32,
+}
+
 /// The primary frame attachments an overlay may use before antialiasing and
 /// render-scale reconstruction.
 ///
@@ -1686,6 +1719,17 @@ pub struct ForwardRenderer {
     /// The camera's resources and history — see [`view`], which is where the
     /// line between a camera's state and the scene's is drawn.
     primary: View,
+    /// Every secondary view [`ForwardRenderer::create_view`] built, indexed by
+    /// [`ViewId::index`] less one — a free id is `None`.
+    views: Vec<Option<View>>,
+    /// The tables a view's generator is built from — see [`DrawTables`].
+    draw_tables: DrawTables,
+    /// Counts every [`begin_frame`](ForwardRenderer::begin_frame), so a view can
+    /// say which frame it was last begun for — see [`View::begun`].
+    frame_serial: u64,
+    /// The frame the last `begin_frame` opened, for
+    /// [`begin_view`](ForwardRenderer::begin_view). `None` before the first.
+    frame_scene: Option<FrameScene>,
     /// Which frame-in-flight slot is current. Set from
     /// [`InstancePool::begin_frame`]'s return rather than counted here, so the
     /// uniform ring and the instance ring cannot drift apart.
@@ -3115,6 +3159,25 @@ impl BucketDraws {
             }
         }
     }
+}
+
+/// Imports a buffer a pass both reads and writes, carried from one frame on
+/// its slot to the next: it arrives in the state the previous frame that used
+/// the slot left it in, and that is the state it is declared to leave in.
+///
+/// A record of the cut or a statistics sink, which a pass writes and the next
+/// frame on the same slot writes again — a barrier naming `Undefined` as its
+/// source would carry no source scope and order this frame's write against
+/// nothing.
+fn import_read_write(graph: &mut RenderGraph<'_>, label: &str, buffer: BufferHandle) -> BufferId {
+    graph.import_buffer(
+        label,
+        ImportedBuffer {
+            buffer,
+            initial: ResourceState::ShaderReadWrite,
+            final_state: ResourceState::ShaderReadWrite,
+        },
+    )
 }
 
 /// Declares the buffers a geometry pass reads to find its draws.
@@ -4859,6 +4922,8 @@ impl ForwardRenderer {
             device,
             queue,
             &ViewInputs {
+                id: ViewId::PRIMARY,
+                effects: RenderEffects::all(),
                 target_format,
                 emit,
                 instances: &instance_buffers,
@@ -4990,6 +5055,9 @@ impl ForwardRenderer {
                     level_groups: &level_groups,
                     level_meshes: &level_meshes,
                     instance_capacity: scene.capacities.instances,
+                    // No view's: a shadow map is drawn from everything resident,
+                    // so an instance a camera hides still casts its shadow.
+                    hidden_view: 0,
                 },
             )?;
             rollback.shadow_draws.push(draws);
@@ -5407,6 +5475,18 @@ impl ForwardRenderer {
                 .primary
                 .take()
                 .unwrap_or_else(|| unreachable!("the camera was placed in the rollback above")),
+            views: Vec::new(),
+            draw_tables: DrawTables {
+                bucket_meshes,
+                bucket_clusters,
+                mesh_levels,
+                level_groups,
+                level_meshes,
+                instance_capacity: scene.capacities.instances,
+                light_capacity: scene.capacities.lights,
+            },
+            frame_serial: 0,
+            frame_scene: None,
             frame: 0,
             mesh_layout,
             mesh_pipeline_layout,
@@ -6048,7 +6128,7 @@ impl ForwardRenderer {
         device: &dyn Device,
         camera: &Camera,
         light: &DirectionalLight,
-        extent: (u32, u32),
+        target_extent: (u32, u32),
     ) -> Result<(), HalError> {
         // This slot's groups first, so everything below binds groups naming
         // the sampler in force — see `adopt_page_sampler`.
@@ -6075,40 +6155,10 @@ impl ForwardRenderer {
             stats.begin_frame(device);
         }
 
-        // **The aspect is the target's and everything below it is the internal
-        // render extent's.** What a viewer sees is the target: the upscale maps
-        // the whole internal image onto the whole of it, so a frame composed for
-        // the internal extent's own aspect would be composed for a rectangle
-        // nobody looks at. What the rounding of the two extents leaves is a
-        // sub-pixel non-squareness in the internal target, which the upscale
-        // undoes on the way out.
-        //
-        // A minimised window reports a zero extent in *either* dimension, and
-        // `Projection::matrix` asserts a finite positive aspect. Guarding only
-        // the height left `extent.0 == 0` producing `0.0`, which trips that
-        // assert and takes the frame loop down with it.
-        let aspect = if extent.0 == 0 || extent.1 == 0 {
-            1.0
-        } else {
-            extent.0 as f32 / extent.1 as f32
-        };
-        // From here down `extent` is the extent this frame is *drawn* at, which
-        // is the caller's at a render scale of `1.0` and smaller below it. Every
-        // use of it beneath this line sizes something — the cluster grid, the
-        // LOD metric's pixel budget, the Hi-Z pyramid's height, the bloom chain,
-        // the resolve's texel size — and every one of those wants the extent the
-        // pixels are actually at. See [`Self::set_render_scale`].
-        let extent = self.internal_extent(extent);
+        // The internal extent: the shadow cascades' pixel scale and the atlas
+        // viewer are sized by it — see [`ForwardRenderer::frame_extents`].
+        let (_, extent) = self.frame_extents(target_extent);
         let direction = light.direction.normalize_or_zero();
-        // One matrix, used twice. Recomputing it for the frustum below would be
-        // two chances to pass a different aspect ratio, and the failure that
-        // produces — geometry culled against a camera the frame does not draw
-        // with — is invisible until something at the edge of the screen
-        // disappears.
-        let view_projection = camera.view_projection(aspect);
-        // The same matrix again for the ground grid, whose pass `add_passes`
-        // records and which has no camera to ask.
-        self.primary.camera_view_proj = view_projection;
         // `docs/plan/25-lod.md`'s two selection numbers, from this frame's
         // viewport and this frame's camera. An orthographic projection has no
         // distance falloff for the metric to divide by, so it selects under a
@@ -6120,7 +6170,6 @@ impl ForwardRenderer {
         } else {
             self.lod_error_budget
         };
-        self.primary.lod_params = [lod_scale, lod_budget, lod_budget * self.lod_hold_ratio];
         // **The cascades select from this same camera at this same scale**, and
         // differ from it in the budgets alone — `docs/plan/25-lod.md`'s shadow
         // LOD bias, and see [`SHADOW_LOD_BIAS`] for why the bias is one factor
@@ -6133,8 +6182,8 @@ impl ForwardRenderer {
         // budget the metric cannot reach.
         self.shadow_lod_params = [
             lod_scale,
-            self.primary.lod_params[1] * SHADOW_LOD_BIAS,
-            self.primary.lod_params[2] * SHADOW_LOD_BIAS,
+            lod_budget * SHADOW_LOD_BIAS,
+            lod_budget * self.lod_hold_ratio * SHADOW_LOD_BIAS,
         ];
         // Topic 18's cascades. Built from the camera and the light alone, so a
         // frame that culls against them and a fragment that samples through them
@@ -6217,383 +6266,24 @@ impl ForwardRenderer {
             }
         }
 
-        // The grid this frame's viewport and camera get. An orthographic camera
-        // has no view depth to slice by — its `clip.w` is 1 everywhere — so it
-        // runs with one slice, which `light_cluster.slang` builds a different
-        // way rather than pretending it is a perspective frustum.
-        let perspective = !camera.projection.is_orthographic();
-        self.primary.grid =
-            Grid::for_frame(extent, perspective, self.primary.lights.froxel_capacity());
-        self.primary.lights.begin_frame(
-            device,
-            self.frame,
-            &rows,
-            self.primary.grid,
-            FrameView {
-                extent,
-                view_projection,
-                eye: camera.eye,
-                perspective,
-            },
-        )?;
-        // The froxel volume's block: the same grid, the same camera and the
-        // medium. **The same `Grid` value the clustering pass was just given**,
-        // not a second `Grid::for_frame` — the composite converts a pixel to a
-        // froxel index with these numbers, and two grids would have it read a
-        // column built for somewhere else.
-        //
-        // Written whether or not this frame adds the passes, on every other
-        // block's terms: one written only on the frames that draw is stale on
-        // the frame a caller first switches the effect on.
-        self.primary.volumetric.begin_frame(
-            device,
-            self.frame,
-            self.primary.grid,
-            FrameView {
-                extent,
-                view_projection,
-                eye: camera.eye,
-                perspective,
-            },
-            Medium {
-                fog: self.fog,
-                sun: light,
-                cascades: &cascades,
-                light_view_proj: &light_view_proj,
-                atlas_rects: &atlas_rects,
-            },
-        )?;
-
-        // The frame's gradient, resolved once and handed to all three of the
-        // things that want a sky: the L1 projection below for the ambient term,
-        // the march's block for a reflection that hit nothing, and the pass that
-        // draws the background. One `SkyGradient` rather than three readings of
-        // the field, so the sky a surface is lit by cannot differ from the one
-        // behind it.
-        // An atmosphere replaces the gradient outright — see
-        // `set_atmosphere`. Its LUT is marched here rather than in the pass,
-        // because all three consumers below want it and the march is the
-        // expensive part: `gradient_fit` is what the reflection pass and the
-        // background's own gradient rows take, `irradiance` is the ambient
-        // term, and the LUT itself is what the background samples. The first
-        // two are taken when a march finishes rather than here — see
-        // `PresentedSky` — so a frame whose sun has not moved reads them.
-        self.refresh_sky_view();
-        let sky_view = self.sky_view.as_ref();
-        let gradient = match sky_view {
-            Some(presented) => presented.gradient,
-            None => self.sky.gradient(),
-        };
-        // Projected on the host — once per gradient, and for an atmosphere once
-        // per completed march rather than once per frame — which is also why
-        // the shading rule that governs `mesh.slang` has nothing to say about
-        // it: these coefficients reach every backend as uploaded numbers.
-        let sky = match sky_view {
-            Some(presented) => presented.irradiance,
-            None => gradient.irradiance(),
-        };
-        let uniforms = mesh::FrameUniforms {
-            view_proj: view_projection.to_cols_array(),
-            camera_position: camera.eye.extend(1.0).to_array(),
-            // The ambient's `w` is the normals view's switch — see
-            // `set_normals_view` and the constants it names. A renderer nobody
-            // has called that on writes the `0.0` this line has always written,
-            // which is what makes every golden image untouched by the feature.
-            ambient: light.ambient.extend(self.debug_view_lane()).to_array(),
+        // The frame's half of every view's frame block, kept for the frame so a
+        // secondary view begun after this call writes its blocks from exactly
+        // what the primary camera's were — see [`ForwardRenderer::begin_view`].
+        self.frame_serial = self.frame_serial.wrapping_add(1);
+        let scene = FrameScene {
+            light: *light,
+            rows,
+            cascades,
             shadow_view_proj,
-            cascade_far: cascades.far,
-            shadow_params: Cascades::params(),
-            cluster_grid: self.primary.grid.to_frame_block(),
             light_view_proj,
-            // The scene's grid, unchanged since `with_scene` read it: the
-            // probes are static and nothing here varies them per frame. A
-            // description with no probes leaves the default, which evaluates to
-            // exactly zero in the shader.
-            probes: self.probe_volume,
-            // The very numbers the draw-argument pass selected under, carried
-            // into the geometry stage so the screen-error heatmap shades by the
-            // metric the cut was chosen with rather than by a second derivation
-            // of it. `w` is padding — the block's rows are sixteen bytes wide
-            // whatever is in them.
-            lod_params: [
-                self.primary.lod_params[0],
-                self.primary.lod_params[1],
-                self.primary.lod_params[2],
-                0.0,
-            ],
-            // `w` is padding on both rows — the block's rows are sixteen bytes
-            // wide whatever is in them. A renderer nobody called `set_fog` on
-            // writes a zero density here, which the fragment stage composites
-            // as the identity.
-            //
-            // **Zeroed on a frame that runs the froxel volume**, which
-            // integrates the same medium along the same rays: leaving it would
-            // charge the air twice, once here and once in
-            // `volumetric_composite.slang`, and the frame would be plausibly
-            // over-fogged rather than wrong in a way anything reports. See
-            // [`RenderEffects::VOLUMETRIC_FOG`].
-            fog_params: [
-                if self.frame_effects.contains(RenderEffects::VOLUMETRIC_FOG) {
-                    0.0
-                } else {
-                    self.fog.density
-                },
-                self.fog.falloff,
-                self.fog.reference_height,
-                0.0,
-            ],
-            fog_color: self.fog.color.extend(0.0).to_array(),
-            sky_sh_r: sky.sh_r,
-            sky_sh_g: sky.sh_g,
-            sky_sh_b: sky.sh_b,
-            // **Last frame's camera, and this frame's on the first frame** —
-            // see the field, which says why the fallback is this matrix rather
-            // than the identity.
-            previous_view_proj: self
-                .primary
-                .previous_view_projection
-                .unwrap_or(view_projection)
-                .to_cols_array(),
-            // Where the pool's attribute region begins, which is the one thing
-            // about `docs/plan/43-render-standards.md` §2's two streams that a
-            // shader cannot derive: it is the pool's *capacity*, and a shader
-            // has never been told that. Fixed for the life of the pool and
-            // written every frame anyway, because this is the block that
-            // carries it and there is no cheaper place. `yzw` are padding.
-            vertex_pool: [self.pool.attribute_base(), 0, 0, 0],
-            // Where each atlas slot's map went, out of the allocator
-            // `shadow::Selection::update` just spent — the *whole* of what the
-            // sampling side knows about the atlas's shape, so a map is read
-            // from the rectangle it was rendered into whatever size that was.
-            shadow_atlas_rect: atlas_rects,
-            // Which filter each side of the comparison seam samples through,
-            // and where the seam falls — see `crate::split`, whose header
-            // carries why a scene pass selects per pixel where a full-screen
-            // effect records itself twice.
-            //
-            // **The column comes from `split::halves`' left rectangle** rather
-            // than from a second multiplication here, so the seam module stays
-            // the one place a fraction becomes a column: a frame comparing
-            // nothing carries the console's own filter in both lanes and a zero
-            // column, which is a row of zeroes at the default and therefore the
-            // frame every golden was blessed as.
-            shadow_filter: {
-                let near = shadow::filter().mode();
-                let seam = shadow::split_at().and_then(|at| crate::split::halves(extent, at));
-                let (far, column) = seam.map_or((near, 0), |(left, _)| {
-                    (shadow::shipped_filter().mode(), left.width)
-                });
-                [near, far, column, 0]
-            },
-        };
-        // Advanced here, between writing the block that reads it and anything
-        // else that could look at it: this function runs exactly once per
-        // `InstancePool::rotate`, so the camera's history moves on the same
-        // frame boundary the instances' does. See the field.
-        self.primary.previous_view_projection = Some(view_projection);
-        device.write_buffer(self.primary.uniforms[self.frame], 0, &uniforms.to_bytes())?;
-
-        // The extent auto-exposure bins, which is the internal one this
-        // function has been working in since `internal_extent` — the histogram
-        // reads the scene target, not the caller's window.
-        //
-        // Written whether or not this frame adds the passes, on every other
-        // block's terms: one written only on the frames that measure is stale on
-        // the frame a caller first switches the effect on.
-        self.primary.auto_exposure.begin_frame(
-            device,
-            self.frame,
-            extent,
-            self.exposure_adaptation,
-        )?;
-
-        // The tonemap's one number, written here rather than in `add_passes` for
-        // every other block's reason: a pass body runs at execute time, and the
-        // buffer it reads has to have been written before the frame was
-        // submitted.
-        device.write_buffer(
-            self.primary.tonemap_uniforms[self.frame],
-            0,
-            &tonemap::TonemapParams {
-                exposure: self.exposure,
-                // **Resolved rather than requested**, on `resolved_effects`'
-                // terms: a readout view runs the clamp whatever the caller set,
-                // because its pixels are data — see `resolved_tonemap_curve`.
-                curve: self.resolved_tonemap_curve(),
-                // **The switch, and it is this frame's effects rather than the
-                // caller's request**: a device that refused the effect draws the
-                // frame with the number a caller set, and reading a buffer no
-                // pass wrote would be reading whatever the last frame in this
-                // slot left there.
-                auto_exposure: self.frame_effects.contains(RenderEffects::AUTO_EXPOSURE),
-            }
-            .to_bytes(),
-        )?;
-
-        // `docs/plan/18-render-features.md`'s occlusion block. **The projection
-        // alone, not the view-projection**: the occlusion integral asks what is
-        // near a surface, and view space is where "near" is isotropic and the eye
-        // is at the origin — a world-space reconstruction would put the camera
-        // somewhere else every frame and the hemisphere would have to be rotated
-        // into it for no gain.
-        //
-        // `inverse` here rather than a hand-derived unprojection: an infinite
-        // reversed-Z perspective and a reversed orthographic box do not share a
-        // closed form, and the two matrices this pass needs are then provably
-        // each other's inverse rather than two derivations that agree today.
-        let projection = camera.projection.matrix(aspect);
-        let inv_projection = projection.inverse();
-        self.primary.ssao.begin_frame(
-            device,
-            self.frame,
-            ssao::SsaoParams {
-                inv_proj: inv_projection.to_cols_array(),
-                proj: projection.to_cols_array(),
-                // View → world, for the bent direction alone: the gather works
-                // in view space and its one output has to reach `mesh.slang`'s
-                // world-space ambient term. The same expression the reflection
-                // pass's block carries, a few lines below.
-                inv_view: camera.view().inverse().to_cols_array(),
-                radius: crate::ssao::radius(),
-                slices: crate::ssao::slice_count(),
-                intensity: crate::ssao::intensity(),
-                bent_normals: crate::ssao::bent_normals(),
-            },
-        )?;
-        // The contact march's block: the same two matrices, and the sun in view
-        // space.
-        //
-        // **Rotated here rather than in the shader**, because the shader has no
-        // view matrix and no world-space anything: it walks a view-space ray in
-        // screen space, so the one rotation the frame needs happens once on the
-        // host instead of once per covered pixel. `Mat4::transform_vector3`
-        // takes the direction through the rotation and drops the translation,
-        // which is what a direction wants.
-        //
-        // `normalize_or_zero` for `sun_row`'s reason: a caller may hand this a
-        // zero direction, and the march reads a zero as "the sun is along the
-        // view axis at every pixel" and reports lit — which is the frame a
-        // scene with no sun should draw.
-        let to_light = camera
-            .view()
-            .transform_vector3(light.direction.normalize_or_zero())
-            .normalize_or_zero();
-        self.primary.contact_shadows.begin_frame(
-            device,
-            self.frame,
-            contact_shadows::ContactShadowParams {
-                inv_proj: inv_projection.to_cols_array(),
-                proj: projection.to_cols_array(),
-                to_light: to_light.to_array(),
-            },
-        )?;
-        // The reflection march's block: the same two matrices and nothing else.
-        // Its own buffer rather than the pair's — see [`crate::ssr::Ssr`] — and
-        // the same pair of `glam` values, so a march and an occlusion sample can
-        // never be looking at two different cameras.
-        self.primary.ssr.begin_frame(
-            device,
-            self.frame,
-            ssr::SsrParams {
-                inv_proj: inv_projection.to_cols_array(),
-                proj: projection.to_cols_array(),
-                inv_view: camera.view().inverse().to_cols_array(),
-                probe_volume: self.probe_volume,
-                // How far up the pyramid the march may climb, which is the
-                // pyramid this extent has — `add_passes` records the reduction
-                // whenever it records the march, so the two never disagree. A
-                // frame too small to halve gets zero, and the march walks the
-                // prepass at full resolution.
-                hiz_levels: crate::hiz::levels_for(extent),
-                // The gradient itself rather than the projection the frame
-                // block carries: this pass wants the radiance along one
-                // direction and `Sky::gradient` is what has it exactly. A
-                // renderer nobody called `set_sky` on writes three zero rows,
-                // which the march adds to its probe fallback and changes
-                // nothing.
-                sky: gradient.rows(),
-                // And the arm, on the background pass's terms below: an
-                // atmosphere frame hands the march the sun its LUT was built
-                // around, and every other frame the exactly-zero `w` that
-                // leaves `ssr.slang` evaluating the gradient it always did.
-                atmosphere: match sky_view {
-                    Some(presented) => {
-                        let sun = presented.view.sun_direction();
-                        [sun[0], sun[1], sun[2], crcbl_shaders::sky::ATMOSPHERE_ON]
-                    }
-                    None => [0.0, 0.0, 0.0, crcbl_shaders::sky::ATMOSPHERE_OFF],
-                },
-            },
-        )?;
-        // The background pass's block: the same two inverses `SsrParams` above
-        // carries and the same three gradient rows, so a reflection that missed
-        // and the sky behind it cannot be looking at two different skies.
-        // Written whether or not this frame adds the pass, on the blocks below's
-        // terms — a block written only on the frames that draw one is stale on
-        // the frame a caller first calls `set_sky`.
-        self.primary.sky_pass.begin_frame(
-            device,
-            self.frame,
-            inv_projection.to_cols_array(),
-            camera.view().inverse().to_cols_array(),
-            &gradient,
-            sky_view.map(|presented| &presented.view),
-        )?;
-        // The bloom chain's blocks, one row per step: each step needs the texel
-        // size of the image it reads, and the chain's shape is a function of the
-        // extent alone. Written whether or not the chain is in this frame, on
-        // the two blocks above's terms — a row nobody reads costs sixteen bytes.
-        self.primary.bloom.begin_frame(device, self.frame, extent)?;
-        // The resolve's block: the reciprocal of the extent and three constants.
-        // Written on the chain's terms above — a frame that adds no resolve pays
-        // for twenty bytes nobody reads, and a block written only on the frames
-        // that use it is a block that is stale on the frame a caller switches
-        // the effect on.
-        self.primary.fxaa.begin_frame(device, self.frame, extent)?;
-        // The higher tier's block: the extent and the two list capacities it
-        // implies, written on the resolve's terms above. Sixteen bytes, and a
-        // frame that resolves through the other tier pays for them and reads
-        // none.
-        self.primary.cmaa2.begin_frame(device, self.frame, extent)?;
-        // The upscale's block: the internal extent and its reciprocal. Written
-        // on the two above's terms — a frame at full scale adds no upscale pass
-        // and pays for sixteen bytes nobody reads, and a block written only on
-        // the frames that use it is stale on the frame a caller moves the knob.
-        self.primary
-            .upscale
-            .begin_frame(device, self.frame, extent)?;
-        // The atlas viewer's block: where the atlas is letterboxed into this
-        // frame, and where each slot's map is inside it. Written on the four
-        // above's terms — a frame not drawing the view pays for the write and
-        // reads none of it, and a block written only on the frames that draw it
-        // is stale on the frame a caller switches the view on.
-        //
-        // **`atlas_rects` and not a second derivation of it.** These are the
-        // rectangles the frame block above carries, so the grid the viewer draws
-        // is the one the sampling side reads through; a viewer that worked its
-        // own out would be a diagnostic supplying its own evidence.
-        self.atlas_viewer.begin_frame(
-            device,
-            self.frame,
-            extent,
-            shadow::atlas_extent(),
             atlas_rects,
-        )?;
+        };
 
-        // `docs/plan/07-ui-debug.md` item 5's immediate-mode buffer: whatever
-        // any system appended since the last frame, uploaded and cleared here.
-        // **The camera this frame is drawn with**, not a second derivation of
-        // it — the ground grid's pass takes the same matrix for the same
-        // reason.
-        //
-        // A frame with nothing appended, or one with the console switch off,
-        // uploads nothing and leaves the slot's count at zero, which is what
-        // makes `add_frame_passes` record no pass at all. See
-        // [`crate::debug_draw`].
-        let frames = self.primary.uniforms.len();
-        self.debug_draw
-            .begin_frame(device, frames, self.frame, view_projection)?;
-
+        // An atmosphere's LUT is marched here rather than in the pass that
+        // draws it, and before any view's blocks are written: every view reads
+        // the sky this leaves presented — see [`ForwardRenderer::view_frame`] —
+        // and the march is the expensive part, so it runs once for the frame.
+        self.refresh_sky_view();
         // Every element the pool has ever handed out, not its live count: a
         // removed instance leaves a hole and the live ones above it still have
         // to be tested. `InstancePool::slot_count` carries the difference.
@@ -6613,14 +6303,42 @@ impl ForwardRenderer {
         // `camera.eye`, so a pinned selection changes which cut is chosen and
         // nothing about what is culled, faced or drawn.
         let selection_eye = self.frozen_selection_eye.unwrap_or(camera.eye);
-        self.primary.draws.begin_frame(
+        let frame = self.view_frame(&scene, target_extent, instance_count, selection_eye);
+        let uniforms = self
+            .primary
+            .begin_frame(device, camera, &frame, self.sky_view.as_ref())?;
+
+        // The atlas viewer's block: where the atlas is letterboxed into this
+        // frame, and where each slot's map is inside it. Written on the four
+        // above's terms — a frame not drawing the view pays for the write and
+        // reads none of it, and a block written only on the frames that draw it
+        // is stale on the frame a caller switches the view on.
+        //
+        // **`atlas_rects` and not a second derivation of it.** These are the
+        // rectangles the frame block above carries, so the grid the viewer draws
+        // is the one the sampling side reads through; a viewer that worked its
+        // own out would be a diagnostic supplying its own evidence.
+        self.atlas_viewer.begin_frame(
             device,
             self.frame,
-            &Frustum::from_view_projection(view_projection),
-            instance_count,
-            [selection_eye.x, selection_eye.y, selection_eye.z],
-            self.primary.lod_params,
+            extent,
+            shadow::atlas_extent(),
+            scene.atlas_rects,
         )?;
+
+        // `docs/plan/07-ui-debug.md` item 5's immediate-mode buffer: whatever
+        // any system appended since the last frame, uploaded and cleared here.
+        // **The camera this frame is drawn with**, not a second derivation of
+        // it — the ground grid's pass takes the same matrix for the same
+        // reason.
+        //
+        // A frame with nothing appended, or one with the console switch off,
+        // uploads nothing and leaves the slot's count at zero, which is what
+        // makes `add_frame_passes` record no pass at all. See
+        // [`crate::debug_draw`].
+        let frames = self.primary.uniforms.len();
+        self.debug_draw
+            .begin_frame(device, frames, self.frame, self.primary.camera_view_proj)?;
 
         // One cull per cascade and per **occupied** light slot, against that
         // view's own frustum. The orthographic box gives
@@ -6656,7 +6374,7 @@ impl ForwardRenderer {
         // eye pushed along the sun's direction, so a "distance to the light"
         // taken from it is a fact about the camera wearing the light's name, and
         // it steps discontinuously from one cascade to the next because
-        // `cascades.far` does.
+        // `scene.cascades.far` does.
         //
         // What a coarser caster actually costs is a shadow edge displaced by the
         // group's error, and that displacement is **seen by the camera**, at the
@@ -6757,7 +6475,7 @@ impl ForwardRenderer {
         // shadow map cannot be through different matrices.
         let slot_matrices = |held: shadow::Assignment, light: &Light| -> (Vec<Mat4>, Frustum) {
             let faces = (0..shadow::tile_span(light))
-                .map(|face| Mat4::from_cols_array(&light_view_proj[held.base + face]))
+                .map(|face| Mat4::from_cols_array(&scene.light_view_proj[held.base + face]))
                 .collect();
             let frustum = match light {
                 Light::Point(point) => shadow::point_frustum(point),
@@ -6766,15 +6484,15 @@ impl ForwardRenderer {
                 // caller; its tile's identity matrix is what this would cull
                 // against if it did.
                 Light::Spot(_) | Light::Rect(_) => Frustum::from_view_projection(
-                    Mat4::from_cols_array(&light_view_proj[held.base]),
+                    Mat4::from_cols_array(&scene.light_view_proj[held.base]),
                 ),
             };
             (faces, frustum)
         };
         if shadows {
             for (cascade, region) in regions.iter_mut().take(shadow::CASCADES).enumerate() {
-                let view_proj = cascades.view_proj[cascade];
-                let centre = camera.eye + direction * cascades.far[cascade];
+                let view_proj = scene.cascades.view_proj[cascade];
+                let centre = camera.eye + direction * scene.cascades.far[cascade];
                 views.push((cascade, cascade, view_block(view_proj, centre)));
                 culls.push((cascade, Frustum::from_view_projection(view_proj)));
                 // **The cascade's own index is its tier**, which is the cadence
@@ -6783,7 +6501,7 @@ impl ForwardRenderer {
                 // it was fitted to — see [`shadow::Cascades::far`] — so an eye
                 // that has moved further than that is an eye whose new sphere
                 // the held map does not reach at all.
-                *region = Some((cascade, centre, cascades.far[cascade]));
+                *region = Some((cascade, centre, scene.cascades.far[cascade]));
             }
             for (slot, held) in self.shadow_lights.slots().iter().enumerate() {
                 let Some(held) = held else {
@@ -6958,6 +6676,7 @@ impl ForwardRenderer {
             // Nothing was fitted, so there is nothing for the map to be drawn
             // from — see [`ForwardRenderer::rsm_cull_ready`].
             self.rsm_cull_ready = false;
+            self.frame_scene = Some(scene);
             return Ok(());
         }
 
@@ -7005,8 +6724,8 @@ impl ForwardRenderer {
         // what the *atlas* is drawn from and none of this is being drawn into
         // it.
         if updater_drives_cascade_zero {
-            let view_proj = cascades.view_proj[0];
-            let centre = camera.eye + direction * cascades.far[0];
+            let view_proj = scene.cascades.view_proj[0];
+            let centre = camera.eye + direction * scene.cascades.far[0];
             device.write_buffer(
                 // **Cascade 0's view is view 0.** `shadow_view` numbers a light
                 // slot's faces, which start past `shadow::CASCADES` — a cascade
@@ -7089,6 +6808,7 @@ impl ForwardRenderer {
                 &producers,
             )?;
         }
+        self.frame_scene = Some(scene);
         Ok(())
     }
 
@@ -7347,8 +7067,18 @@ impl ForwardRenderer {
     ///
     /// On [`ForwardRenderer::add_instance`]'s terms, for the same reason.
     pub fn set_instance(&mut self, handle: InstanceHandle, desc: &InstanceDesc) {
-        let instance = self.gpu_instance(desc);
+        let mut instance = self.gpu_instance(desc);
+        instance.flags |= self.hidden_views(handle);
         self.instances.set(handle, &instance);
+    }
+
+    /// The hidden-views bits `handle`'s record carries, which a rewrite of the
+    /// record keeps — see [`ForwardRenderer::set_instance_views`]. Zero for a
+    /// stale handle, whose rewrite writes nothing anyway.
+    fn hidden_views(&self, handle: InstanceHandle) -> u32 {
+        self.instances.get(handle).map_or(0, |record| {
+            record.flags & mesh::GpuInstance::HIDDEN_VIEWS_MASK
+        })
     }
 
     /// Takes the object `handle` names back out of the scene, freeing its slot.
@@ -7839,7 +7569,8 @@ impl ForwardRenderer {
     ///
     /// On [`add_skinned_instance`](Self::add_skinned_instance)'s terms.
     pub fn set_skinned_instance(&mut self, handle: InstanceHandle, desc: &SkinnedInstanceDesc<'_>) {
-        let instance = self.skinned_gpu_instance(desc, 0);
+        let mut instance = self.skinned_gpu_instance(desc, 0);
+        instance.flags |= self.hidden_views(handle);
         if !self.instances.set(handle, &instance) {
             return;
         }
@@ -8268,7 +7999,12 @@ impl ForwardRenderer {
         target: ImageId,
         extent: (u32, u32),
     ) -> ImageId {
-        self.add_frame_passes(graph, pool, target, extent, None, |_, _| {})
+        self.add_frame_passes(
+            graph,
+            pool,
+            FrameTargets::primary(target, extent, None),
+            |_, _| {},
+        )
     }
 
     /// [`add_passes`](Self::add_passes) for a frame that **skins**: the same
@@ -8310,7 +8046,12 @@ impl ForwardRenderer {
         extent: (u32, u32),
         skinning: &Skinning,
     ) -> ImageId {
-        self.add_frame_passes(graph, pool, target, extent, Some(skinning), |_, _| {})
+        self.add_frame_passes(
+            graph,
+            pool,
+            FrameTargets::primary(target, extent, Some(skinning)),
+            |_, _| {},
+        )
     }
 
     /// [`add_skinned_passes`](Self::add_skinned_passes) with one game-owned
@@ -8334,24 +8075,63 @@ impl ForwardRenderer {
     where
         F: FnOnce(&mut RenderGraph<'a>, ForwardOverlayTargets),
     {
-        self.add_frame_passes(graph, pool, target, extent, Some(skinning), overlay)
+        self.add_frame_passes(
+            graph,
+            pool,
+            FrameTargets::primary(target, extent, Some(skinning)),
+            overlay,
+        )
     }
 
-    /// The body of [`add_passes`](Self::add_passes) and
-    /// [`add_skinned_passes`](Self::add_skinned_passes), which differ in one
-    /// argument and in nothing else.
-    fn add_frame_passes<'a, F>(
+    /// [`add_skinned_passes_with_overlay`](Self::add_skinned_passes_with_overlay)
+    /// for a frame that also draws secondary views — see
+    /// [`create_view`](Self::create_view).
+    ///
+    /// **The scene's passes are recorded once**: one skinning dispatch (where
+    /// `skinning` is `Some`), one shadow atlas, one probe gather. Then each view
+    /// in `views` records its own cull, clustering and frame into its own
+    /// target, and the primary camera's frame into `target` comes last — so
+    /// `overlay` may read a view's target, which is already drawn by then.
+    ///
+    /// Every view named must have been begun this frame by
+    /// [`begin_view`](Self::begin_view).
+    ///
+    /// # Panics
+    ///
+    /// If a [`ViewTarget`] in [`FrameTargets::views`] names [`ViewId::PRIMARY`],
+    /// a view this renderer did not build, a view not begun this frame, or a
+    /// view twice.
+    pub fn add_passes_with_views<'a, F>(
         &'a mut self,
         graph: &mut RenderGraph<'a>,
         pool: &TransientPool,
-        target: ImageId,
-        extent: (u32, u32),
-        skinning: Option<&Skinning>,
+        frame: FrameTargets<'_>,
         overlay: F,
     ) -> ImageId
     where
         F: FnOnce(&mut RenderGraph<'a>, ForwardOverlayTargets),
     {
+        self.add_frame_passes(graph, pool, frame, overlay)
+    }
+
+    /// The body of every `add_*passes` entry point, which differ in their
+    /// arguments and in nothing else.
+    fn add_frame_passes<'a, F>(
+        &'a mut self,
+        graph: &mut RenderGraph<'a>,
+        pool: &TransientPool,
+        frame: FrameTargets<'_>,
+        overlay: F,
+    ) -> ImageId
+    where
+        F: FnOnce(&mut RenderGraph<'a>, ForwardOverlayTargets),
+    {
+        let FrameTargets {
+            target,
+            extent,
+            skinning,
+            views,
+        } = frame;
         // **From here down `extent` is the extent the frame is *drawn* at**,
         // which is the caller's at a render scale of `1.0` and smaller below it.
         // Every use of it in this function sizes a transient, and every one of
@@ -8367,6 +8147,39 @@ impl ForwardRenderer {
         let target_extent = extent;
         let extent = self.internal_extent(target_extent);
         let upscaling = extent != target_extent;
+        let frame = self.frame;
+        let instance_count = self.instances.slot_count();
+        let emit = self.emit;
+
+        // Every secondary view the caller asked for, checked before anything of
+        // theirs is recorded: a view that does not exist, or one nothing began
+        // this frame, would draw out of blocks written for some other frame.
+        let secondary: Vec<(ViewTarget, (u32, u32))> = views
+            .iter()
+            .map(|view| {
+                assert!(
+                    view.view != ViewId::PRIMARY,
+                    "the primary camera draws into the target `add_passes_with_views` takes, \
+                     not into a `ViewTarget`"
+                );
+                let built = self
+                    .views
+                    .get(view.view.index() - 1)
+                    .and_then(Option::as_ref)
+                    .unwrap_or_else(|| panic!("{:?} is not a view this renderer built", view.view));
+                assert_eq!(
+                    built.begun, self.frame_serial,
+                    "{:?} was not begun this frame; call `begin_view` after `begin_frame`",
+                    view.view
+                );
+                assert!(
+                    views.iter().filter(|other| other.view == view.view).count() == 1,
+                    "{:?} was named twice in one frame",
+                    view.view
+                );
+                (*view, self.internal_extent(view.extent))
+            })
+            .collect();
 
         // **The skinning dispatch, before anything else is added.** It imports
         // the vertex pool and hands back that node's id; every pass below that
@@ -8374,37 +8187,18 @@ impl ForwardRenderer {
         // two declarations into the barrier between the compute write and the
         // draws. `None` is a frame with nothing to skin, which adds no pass and
         // declares nothing — see `Skinning::add_pass`.
-        let skinned = skinning.and_then(|skinning| skinning.add_pass(graph, self.frame));
+        let skinned = skinning.and_then(|skinning| skinning.add_pass(graph, frame));
 
-        // The cull dispatch and the draw-argument dispatch, before anything
-        // draws. Every barrier between them and the pass below — including the
-        // one into `IndirectArgument` — is the graph's, computed from what each
-        // pass declares.
-        let generated =
-            self.primary
-                .draws
-                .add_passes(graph, self.frame, self.instances.slot_count());
+        // The camera's cull dispatch and the draw-argument dispatch, and the
+        // light clustering after them — before anything draws, and before the
+        // shadow atlas, which is where they always ran. See [`View::add_cull`].
+        let cull = self.primary.add_cull(graph, frame, instance_count);
 
-        // `docs/plan/25-lod.md`'s record of the cut — the colour pass's, and one
-        // per cascade beside it. Each is written by exactly one mesh pass, so
-        // what the graph orders here is this frame's write against the next
-        // frame's use of the same slot. Each arrives in the state the previous
-        // frame left it in, which is the one declared as final.
-        let import_selection = |graph: &mut RenderGraph<'_>, label: &str, buffer| {
-            graph.import_buffer(
-                label,
-                ImportedBuffer {
-                    buffer,
-                    initial: ResourceState::ShaderReadWrite,
-                    final_state: ResourceState::ShaderReadWrite,
-                },
-            )
-        };
-        let selection = self
-            .primary
-            .cluster_selection
-            .get(self.frame)
-            .map(|&buffer| import_selection(graph, "cluster-selection", buffer));
+        // `docs/plan/25-lod.md`'s record of each cascade's cut. Each is written by
+        // exactly one mesh pass, so what the graph orders here is this frame's
+        // write against the next frame's use of the same slot. Each arrives in
+        // the state the previous frame left it in, which is the one declared as
+        // final.
         let tile_selection: Vec<BufferId> = self
             .shadow_selection
             .get(self.frame)
@@ -8412,30 +8206,16 @@ impl ForwardRenderer {
             .flatten()
             .enumerate()
             .map(|(tile, &buffer)| {
-                import_selection(graph, &format!("shadow-selection-{tile}"), buffer)
+                import_read_write(graph, &format!("shadow-selection-{tile}"), buffer)
             })
             .collect();
-
-        // Topic 18's clustering, **after the pair above and before anything
-        // draws**. After, because the clearing dispatch is what zeroes the
-        // overflow counter this pass adds to, and the two are ordered by the
-        // graph out of the one id they both declare — which is why `stats` is
-        // the id the draw generator handed back rather than a second import of
-        // the same buffer. It has no other dependency on the cull: lights are
-        // assigned to froxels, and a froxel is a property of the camera.
-        let light_grid = self.primary.lights.add_pass(
-            graph,
-            self.frame,
-            generated.visible_count_id,
-            self.primary.grid,
-        );
 
         // **This frame's slot of the probe ring**, which is the buffer every
         // one of this frame's bind groups names — see [`crate::probe`] for why
         // there is more than one. Imported in `ShaderRead` and handed back in
         // it: the build's staging copy left it there and no pass in the frame
         // writes it yet.
-        let probe_buffer = self.probes.buffer(self.frame);
+        let probe_buffer = self.probes.buffer(frame);
         let probe_table = graph.import_buffer(
             "probes",
             ImportedBuffer {
@@ -8539,211 +8319,6 @@ impl ForwardRenderer {
             },
         );
 
-        let scene_color =
-            graph.create_image("scene-color", TransientImageDesc::scene_color(extent));
-        let scene_depth =
-            graph.create_image("scene-depth", TransientImageDesc::scene_depth(extent));
-        // The occlusion chain's transients, and **every one of them is
-        // conditional**: a transient nothing reads or writes is a physical image
-        // taken out of the pool for a pass that does not exist. What the forward
-        // pass binds when they are absent is the 1×1 placeholder — see the pair
-        // below.
-        //
-        // **Three of the four are at [`crate::ssao::half_extent`]**, which is
-        // where the march and the blurs run — see that module's header. Only the
-        // reconstruction's target is the scene's own size, because it is the
-        // image `mesh.slang` reads at `SV_Position`.
-        //
-        // The blur's target is requested first, which is the order the two were
-        // requested in when only one of them was conditional. The pool hands out
-        // physical images in request order, and an AO-on frame has to be the
-        // frame it was before this became a chain.
-        let occlusion_chain = effects.contains(RenderEffects::AMBIENT_OCCLUSION).then(|| {
-            let gathered = crate::ssao::half_extent(extent);
-            let blurred = graph.create_image(
-                "ssao-blurred",
-                TransientImageDesc::ambient_occlusion(gathered),
-            );
-            let raw = graph.create_image("ssao", TransientImageDesc::ambient_occlusion(gathered));
-            // The second blur's target, and requested **last of the small ones**
-            // so the two above keep the physical images they had before this one
-            // could be asked for — the pool hands them out in request order, and
-            // a frame at the default switch has to be the frame it was.
-            let again = (self.frame_ssao_blurs > 1).then(|| {
-                graph.create_image(
-                    "ssao-blurred-2",
-                    TransientImageDesc::ambient_occlusion(gathered),
-                )
-            });
-            // The reconstruction's target, and the only one of these at the
-            // scene's extent. Requested after the small ones for their reason
-            // inverted: it is a different description, so it could not have
-            // aliased them whatever the order, and asking for it last leaves
-            // every request before it where it was.
-            let upsampled = graph.create_image(
-                "ssao-upsampled",
-                TransientImageDesc::ambient_occlusion(extent),
-            );
-            crate::ssao::OcclusionImages {
-                raw,
-                blurred,
-                again,
-                upsampled,
-            }
-        });
-        // The contact march's one transient, conditional for the occlusion
-        // pair's reason: an image nothing reads or writes is a physical image
-        // out of the pool for a pass that does not exist. Requested **after**
-        // the pair so that a frame with contact shadows off keeps the physical
-        // images it had before this rung existed — the pool hands them out in
-        // request order.
-        let contact_mask = effects.contains(RenderEffects::CONTACT_SHADOWS).then(|| {
-            graph.create_image(
-                "contact-shadows",
-                TransientImageDesc::contact_shadows(extent),
-            )
-        });
-        // **Created whatever the reflections are doing**, unlike the pair above.
-        // It is one of the forward pass's colour attachments, which is in that
-        // pipeline whether or not anything reads what it wrote — see the
-        // `clear_color` on it below.
-        let reflectivity =
-            graph.create_image("reflectivity", TransientImageDesc::reflectivity(extent));
-        // **Created whatever else the frame is doing**, on the reflectivity
-        // attachment's terms exactly: it is the forward pass's third colour
-        // attachment, which is in that pipeline whether or not anything reads
-        // what it wrote. Nothing does yet — `docs/plan/49-antialiasing.md`'s
-        // TAA is the first pass that will, and until then `DebugView::Motion`
-        // is what observes the subtraction.
-        let motion = graph.create_image("motion", TransientImageDesc::motion(extent));
-        // The march's output and the blur's, and both are the scene target's
-        // description exactly. The blur writes the scene colour plus a term, so
-        // a narrower image there would tonemap a truncated frame; the march
-        // writes a reflection *out of* that same colour, so an eight-bit image
-        // here would clip the frame's bright end before the tonemap saw it.
-        // Three live requests for one description are three physical images —
-        // see `TransientPool::image`.
-        let reflected = effects.contains(RenderEffects::REFLECTIONS).then(|| {
-            (
-                graph.create_image("reflection", TransientImageDesc::scene_color(extent)),
-                graph.create_image("scene-reflected", TransientImageDesc::scene_color(extent)),
-            )
-        });
-        // Where the froxel volume's composite writes, conditional on the effect
-        // for the reflection pair's reason exactly: an image nobody reads or
-        // writes is a physical image taken out of the pool for a pass that does
-        // not exist. It is the scene target's description, because it stands in
-        // for that image from here on.
-        let fogged = effects
-            .contains(RenderEffects::VOLUMETRIC_FOG)
-            .then(|| graph.create_image("scene-fogged", TransientImageDesc::scene_color(extent)));
-        // The Hi-Z pyramid's levels, **conditional on the march** that is the
-        // only thing that reads them: an image nobody samples is a physical
-        // image out of the pool for a pass that does not exist. Level 0 is the
-        // prepass itself and is not in this list.
-        //
-        // Empty on a target too small to halve, which is a frame the march walks
-        // at full resolution — `crate::hiz::levels_for` carries that floor, and
-        // `SsrParams::hiz_levels` is what tells the shader about it.
-        let pyramid: Vec<ImageId> = if reflected.is_some() {
-            (1..=crate::hiz::levels_for(extent))
-                .map(|level| {
-                    graph.create_image(
-                        format!("hiz-{level}"),
-                        TransientImageDesc::hiz_level(crate::hiz::level_extent(extent, level)),
-                    )
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        // The bloom chain's levels and the image its composite writes, and
-        // **all of them are conditional** on the pair above's terms exactly: a
-        // transient nothing reads or writes is a physical image taken out of the
-        // pool for a pass that does not exist.
-        //
-        // `None` covers two cases that are one case downstream — the toggle is
-        // off, or the target is too small for even one level of chain (see
-        // [`crate::bloom`]) — and in both the tonemap reads whatever it would
-        // have read before, which is what makes this effect's off-switch
-        // bit-identical.
-        //
-        // The levels are requested largest first, which is the order the
-        // downsample chain writes them in. The composite's target is the scene
-        // target's description exactly — it stands in for that image from here
-        // on, so a narrower one would tonemap a truncated frame — which makes it
-        // a fourth live request for that description on a frame that also
-        // reflects, and therefore a fourth distinct physical image out of the
-        // pool. See `TransientPool::image`.
-        let bloomed = effects
-            .contains(RenderEffects::BLOOM)
-            .then(|| crate::bloom::mips_for(extent))
-            .filter(|levels| *levels > 0)
-            .map(|levels| {
-                let mips: Vec<ImageId> = (1..=levels)
-                    .map(|level| {
-                        graph.create_image(
-                            format!("bloom-mip-{level}"),
-                            TransientImageDesc::bloom_mip(crate::bloom::mip_extent(extent, level)),
-                        )
-                    })
-                    .collect();
-                (
-                    mips,
-                    graph.create_image("bloom-color", TransientImageDesc::scene_color(extent)),
-                )
-            });
-        // Where the tonemap writes, and it is the caller's `target` on every
-        // frame that adds no resolve.
-        //
-        // **This is the one effect that changes the shape of the frame rather
-        // than adding a pass to it** — see [`crate::fxaa`]. The resolve reads
-        // what the tonemap wrote, so the tonemap has to write something the
-        // resolve can sample, and a swapchain image is not that. So with the bit
-        // on the tonemap writes a transient of the target's own description and
-        // the resolve writes the target; with it off the tonemap writes the
-        // target and there is no second image at all, which is what makes this
-        // effect's off-switch bit-identical on the three above's terms.
-        // Where the last pass of the internal frame writes, and it is the
-        // caller's `target` on every frame drawn at full render scale.
-        //
-        // **This is the second effect in the frame that changes its shape rather
-        // than adding a pass to it** — see [`crate::upscale`], and the resolve
-        // below for the first. The upscale reads what the internal frame ended
-        // with, so that last write has to go somewhere it can sample, and a
-        // swapchain image at the caller's own extent is not it. So with the
-        // scale below one the chain ends in a transient at the *internal*
-        // extent and the upscale writes the target; at full scale there is no
-        // second image at all, which is what makes the knob's off position
-        // bit-identical.
-        let present = if upscaling {
-            graph.create_image(
-                "render-scale-color",
-                TransientImageDesc::display_color(extent, self.target_format),
-            )
-        } else {
-            target
-        };
-        //
-        // **Two tiers share that slot and at most one fills it** — see
-        // [`RenderEffects::CMAA2`], which is where "never both" is written down.
-        // The shape above is the same either way; what differs is what the
-        // resolve reads besides the tonemap's image. CMAA2's two working
-        // buffers are declared inside its own pass group rather than here,
-        // where the tier it replaced declared two images: they are buffers,
-        // and [`crate::cmaa2`]'s header says why the graph owns them all the
-        // same.
-        let resolving = effects.intersects(RenderEffects::ANTIALIASING.union(RenderEffects::CMAA2));
-        let display = if resolving {
-            graph.create_image(
-                "display-color",
-                TransientImageDesc::display_color(extent, self.target_format),
-            )
-        } else {
-            present
-        };
-        let group = self.primary.mesh_groups[self.frame];
-        let emit = self.emit;
         // The wireframe twin where a caller switched the view on, and `None`
         // everywhere else — see `set_wireframe`. Written on `ground_grid`'s
         // terms, and the `filter` is what keeps "switched on" from outrunning
@@ -8859,712 +8434,91 @@ impl ForwardRenderer {
             gather.add_pass(graph, frame, images, probe_visibility_view, probe_table);
         }
 
-        // --- the depth prepass ---
-        //
-        // `docs/plan/18-render-features.md`'s prepass, and it is unusually cheap:
-        // the depth-only pipeline is already the shadow cascades' own, built from
-        // the same modules and the same layout as the colour pipeline, so driven
-        // with the camera's draws and a copy of the camera's bind group it *is* a
-        // scene depth prepass — no new pipeline and no new shader. On a frame
-        // whose material table masks nothing it is `depthVertexMain` and no
-        // fragment stage, which is why the split-stream vertex pool pays for this
-        // pass as well as for the atlas; a scene that masks something records its
-        // masked buckets under the cutout twin and its opaque ones under this
-        // one, and `depth_partitions` is where that split and its price are
-        // argued.
-        //
-        // **Stored, unlike the depth the forward pass writes.** This is what the
-        // occlusion pass samples, and it is the only reason
-        // `TransientImageDesc::scene_depth` carries `SAMPLED`.
-        //
-        // # The overdraw win, and what it rests on
-        //
-        // With this depth in the buffer the colour pass tests `GreaterOrEqual`
-        // with writes off — `PassBuilder::depth_read` and
-        // `DepthStencilState::equal_depth_read_only` — so every hidden fragment's
-        // clustered-forward shading goes away. See
-        // `MeshModules::color_depth_stencil`.
-        //
-        // **It rests on `SV_Position.z` invariance between the two pipelines**,
-        // which the engine does not decorate for: a fragment the colour pass
-        // places a hair farther than this pass did is *rejected*, and that
-        // arrives as holes in the frame rather than as an error. Two things make
-        // it hold rather than hope. On the mesh path the two passes run the
-        // **same** geometry stage — `depth_pipeline`'s doc says so — so there is
-        // nothing to diverge. On the vertex path `depthVertexMain` is the same
-        // clip position written the same way as `vertexMain`'s, out of the same
-        // module compiled in one invocation — and the cutout pipeline runs
-        // `vertexMain` itself, so a masked frame's prepass is not merely the same
-        // arithmetic as the colour pass's but the same code. The observable is a screenshot:
-        // holes are not subtle, and the render-e2e goldens are what would catch
-        // them on a rasteriser this machine does not have.
-        let depth_group = self.primary.prepass_groups[self.frame];
-        // The prepass's own cluster counter — see
-        // [`View::prepass_stats`]. Imported in the state the last frame
-        // on this slot left it in, on `cluster-selection`'s terms exactly: a
-        // barrier naming `Undefined` as its source carries no source scope, so it
-        // would order this frame's write against nothing.
-        let prepass_stats = import_selection(
-            graph,
-            "prepass-stats",
-            self.primary.prepass_stats[self.frame],
-        );
-        let prepass = graph
-            .add_render_pass("depth-prepass")
-            .depth(
-                scene_depth,
-                LoadOp::Clear,
-                StoreOp::Store,
-                crcbl_hal::ClearValue {
-                    depth: crcbl_hal::depth::CLEAR,
-                    ..crcbl_hal::ClearValue::default()
-                },
-            )
-            // Both are in this pass's bind group and neither is sampled by
-            // either depth-only pipeline — but a bound descriptor whose image is
-            // in the wrong layout is what
-            // `VUID-vkCmdDrawIndexedIndirectCount-imageLayout-00344` names, and
-            // the other backends read whatever the last writer left behind.
-            .read_image(shadow_atlas)
-            .read_image(occlusion_placeholder)
-            // And the page, which the **cutout** pipeline does sample: the alpha
-            // it cuts against is a texel of it. Declared on every frame rather
-            // than on the masked ones, because a declaration is also what lets
-            // the graph order a copy into a page layer against this pass — see
-            // `base_color_page_import`.
-            .read_image(base_color_page)
-            // And §2's other three pages, which are in the same groups for the
-            // same reason and are sampled here just as little.
-            .read_image(normal_page)
-            .read_image(mro_page)
-            .read_image(emissive_page)
-            // And the probe rows, which `mesh_layout` names in this group too
-            // and which the depth-only pipeline reads not at all — declared for
-            // the colour pass's reason exactly: they are device-local and
-            // writable-by-copy so a gather can fill them, and the graph orders a
-            // write against a pass only if that pass declared the read.
-            .read_buffer(probe_table);
-        // `read_draw_sources` declares the *camera's* statistics buffer, because
-        // that is the one the arguments came out of; the prepass writes its own
-        // instead, so both are declared and the graph barriers both.
-        let prepass = read_draw_sources(prepass, &generated, emit)
-            .use_buffer(prepass_stats, ResourceState::ShaderReadWrite);
-        // The skinned vertices, on the shadow pass's terms. This pass writes the
-        // depth the occlusion pair samples and the forward pass tests against,
-        // so a prepass reading the region before the dispatch is visible lays
-        // down the previous pose's silhouette and the frame is rejected against
-        // it.
-        let prepass = match skinned {
-            Some(vertices) => prepass.read_buffer(vertices),
-            None => prepass,
+        let passes = FramePasses {
+            slot: frame,
+            emit,
+            target_format: self.target_format,
+            ssao_blurs: self.frame_ssao_blurs,
+            draws_sky,
+            skinned,
+            probe_buffer,
+            probe_table,
+            occlusion_placeholder,
+            contact_placeholder,
+            pages,
+            shadow_atlas,
+            probe_visibility: probe_visibility_view,
+            mesh_layout: self.mesh_layout,
+            wireframe,
+            prepass_partitions,
+            color_partitions,
+            tonemap: TonemapPipeline {
+                sampler: self.sampler,
+                layout: self.tonemap_layout,
+                pipeline_layout: self.tonemap_pipeline_layout,
+                pipeline: self.tonemap_pipeline,
+            },
         };
-        // The camera's own cut, written here and again by the forward pass with
-        // the same camera and the same budget. Shared rather than a buffer of its
-        // own — unlike a cascade's, which a *later* pass would overwrite before
-        // anything could read it — because the second write is the one that stands
-        // and it writes the same words.
-        let prepass = match selection {
-            Some(selection) if emit.is_mesh() => {
-                prepass.use_buffer(selection, ResourceState::ShaderReadWrite)
-            }
-            _ => prepass,
-        };
-        prepass.execute(move |ctx| {
-            let encoder = ctx.encoder();
-            // One `open` per partition and its own buckets under it: the whole
-            // pass is still one indirect call per bucket, drawn under the
-            // pipeline that bucket's mode asked for.
-            for partition in &prepass_partitions {
-                partition.open(encoder);
-                partition.record(encoder, depth_group, &generated);
-            }
-        });
+        // From here the frame is borrowed field by field, because every view's
+        // passes hold its own caches for the life of the graph.
+        let Self {
+            primary,
+            views: built,
+            debug_draw,
+            ground_grid,
+            ground_grid_on,
+            atlas_viewer,
+            cull_stats,
+            ..
+        } = self;
 
-        let frame = self.frame;
-        // `docs/plan/18-render-features.md`'s occlusion pair, or the one texel
-        // that stands for "no occlusion was computed" where it is switched off.
-        //
-        // # The switched-off arm is the 1×1 placeholder, and the shader is what
-        // makes that work
-        //
-        // Topic 18 sanctions the placeholder — "a renderer-owned 1×1 `R8Unorm`
-        // cleared to 1.0, bound when the AO passes are not added" — and it is
-        // what this binds. The property it rests on is not free: `mesh.slang`
-        // reads this channel with a `Load` at `SV_Position.xy`, and a `Load`
-        // outside a texture's extent yields **zero** rather than the nearest
-        // texel, so the fetch has to be clamped against the image's own extent
-        // or a one-texel image occludes everything but the origin. That clamp is
-        // in `mesh.slang` and `crcbl`'s `forward_e2e::depth_probe` is what asks
-        // whether it is; a frame drawn without it is black wherever ambient is the whole of
-        // the light, on real hardware, with nothing reporting an error.
-        //
-        // So an AO-off frame records **no occlusion pass at all** and takes no
-        // frame-sized image out of the transient pool: no shader permutation, no
-        // uniform branch, one pipeline, and a bound value that occludes nothing.
-        //
-        // The placeholder's other job is unchanged — filling the binding for the
-        // two depth-only passes, neither of which has a fragment stage and so
-        // neither of which ever samples it.
-        let occlusion = match occlusion_chain {
-            Some(images) => self
-                .primary
-                .ssao
-                .add_passes(graph, frame, extent, scene_depth, images),
-            None => occlusion_placeholder,
-        };
-        // `docs/plan/45-shadows.md`'s contact march, or the one texel that
-        // stands for "the sun reaches this surface" where it is switched off.
-        //
-        // The occlusion pair's arms exactly, and the clamp the off-arm rests on
-        // is `mesh.slang`'s `contact_at`. What differs is what it costs to get
-        // wrong: an unclamped `Load` past this placeholder's one texel would
-        // report *total* shadow at every pixel but one, so a frame with the
-        // effect off would lose its sun rather than its ambient.
-        //
-        // Recorded here, after the occlusion pair and before the forward pass,
-        // because the forward pass is what binds it — and the prepass it reads
-        // has already run.
-        let contact = match contact_mask {
-            Some(mask) => self
-                .primary
-                .contact_shadows
-                .add_passes(graph, frame, scene_depth, mask),
-            None => contact_placeholder,
-        };
-
-        let pass = graph
-            .add_render_pass("forward")
-            .clear_color(scene_color, SCENE_CLEAR)
-            // `mesh.slang`'s second target, and **cleared rather than loaded or
-            // discarded**. A pixel no geometry covered has no material, and the
-            // pass that will read this marches a ray from whatever it finds
-            // there — so the value that has to be in it is the one that says
-            // "nothing reflects here", not the last frame's or an undefined
-            // one. `NO_REFLECTION` is that value: no `F0`, and fully rough —
-            // the alpha is a roughness, so a zero there would read as a
-            // mirror. No picture tells the two apart, because a zero `F0`
-            // leaves the reflection nothing to scale but Schlick's grazing
-            // tail; what the alpha buys is that `ssr.slang` takes its early
-            // return on every uncovered pixel instead of marching the sky.
-            .clear_color(reflectivity, ssr::NO_REFLECTION)
-            // `mesh.slang`'s third target, **cleared to zero** on the
-            // reflectivity attachment's terms: a pixel no geometry covered has
-            // no motion of its own, and zero is what a consumer reading its
-            // history at `uv - motion` needs there — it reads the same pixel
-            // back. It is not the *right* answer for the sky, whose motion is
-            // the camera's and is owed to the pass that first wants it; it is
-            // the answer that reprojects onto itself rather than onto
-            // somewhere undefined. `docs/backlog.md` carries what is owed.
-            .clear_color(motion, [0.0; 4]);
-        // **Loaded and stored rather than cleared, and read-only**, which is the
-        // half of the depth prepass that pays for the pass itself:
-        // `MeshModules::color_depth_stencil` tests `GreaterOrEqual` with writes
-        // off, so a fragment survives only where the prepass already put its
-        // surface — and the clustered-forward shading of everything a nearer
-        // surface goes on to cover is never run. It is stored because the
-        // reflection march is downstream and reads exactly this image; the
-        // values are the prepass's, which are this pass's own answer written by
-        // the same transform.
-        //
-        // **The wireframe frame keeps the old shape**, because
-        // `PolygonMode::Line` does not reproduce the prepass's depths — see
-        // `color_depth_stencil`. It must *clear*: loading the prepass's depth
-        // under the default `Greater` test rejects every fragment of the same
-        // geometry, and the frame goes black.
-        let pass = match wireframe {
-            Some(_) => pass.depth(
-                scene_depth,
-                LoadOp::Clear,
-                StoreOp::Store,
-                crcbl_hal::ClearValue {
-                    depth: crcbl_hal::depth::CLEAR,
-                    ..crcbl_hal::ClearValue::default()
-                },
-            ),
-            None => pass.depth_read(scene_depth),
-        };
-        let pass = pass
-            // The occlusion channel this frame's ambient term is scaled by. On
-            // an AO-on frame the blur pass wrote it as a colour attachment a
-            // moment ago, so this declaration is the barrier into a
-            // shader-readable layout; on an AO-off frame it is the imported
-            // placeholder, which is in that layout already and has nothing to
-            // transition.
-            .read_image(occlusion)
-            // The contact-shadow channel this frame's sun is scaled by, declared
-            // on the occlusion channel's terms exactly: the march wrote it as a
-            // colour attachment a moment ago and this is the barrier into a
-            // shader-readable layout, or it is the imported placeholder and there
-            // is nothing to transition.
-            .read_image(contact)
-            // **The page this pass's materials actually sample**, and the one
-            // pass of the three where that is literally true. Declared so the
-            // graph can order a caller's copy into a page layer against these
-            // draws — see `base_color_page_import`.
-            .read_image(base_color_page)
-            // **And §2's other three pages, every one of which this pass's
-            // fragment stage literally samples** — the normal map it perturbs
-            // through, the packed roughness and metalness its lobe takes, and
-            // the emissive radiance it adds. See `normal_page_import`.
-            .read_image(normal_page)
-            .read_image(mro_page)
-            .read_image(emissive_page)
-            // **The barrier out of the shadow pass's depth attachment.** The
-            // atlas is in this pass's bind group at `SHADOW_ATLAS_BINDING`, and
-            // without this declaration the graph leaves it in
-            // `DepthStencilWrite` — which Vulkan reports as
-            // `VUID-vkCmdDrawIndexedIndirectCount-imageLayout-00344` naming the
-            // binding, and which every other backend reads as whatever the
-            // depth writes left behind.
-            .read_image(shadow_atlas)
-            // The froxel grid, on the shadow atlas's terms exactly: the
-            // clustering pass left it in `ShaderReadWrite` and the fragment
-            // stage has it bound, so declaring the read is what moves it — and
-            // without the declaration the fragment stage reads a buffer the
-            // compute pass may still be writing.
-            .read_buffer(light_grid)
-            // The probe rows, on the froxel grid's terms and for a hazard that
-            // does not exist yet: nothing writes a probe on the GPU today, so
-            // this frame's slot is already in `ShaderRead` and the graph has
-            // nothing to transition. It is declared anyway, because the rows are
-            // device-local and `TRANSFER_DST` precisely so
-            // `docs/plan/50-irradiance-probes.md`'s gather can write them — and
-            // a pass that binds a buffer without declaring it is a pass the
-            // graph cannot barrier the day something does.
-            .read_buffer(probe_table);
-        // And the skinned vertices, which is the declaration this whole entry
-        // point exists for: without it the vertex stage pulls a region the
-        // compute dispatch may still be writing, and the graph — which is told
-        // about every other hazard in the frame — has not been told about this
-        // one.
-        let pass = match skinned {
-            Some(vertices) => pass.read_buffer(vertices),
-            None => pass,
-        };
-        let pass = read_draw_sources(pass, &generated, emit);
-        let pass = match selection {
-            // The colour pass's own, which no cascade writes — the cascades
-            // record into buffers of their own, so what survives a frame here is
-            // the camera's cut and what survives there is each cascade's. The
-            // depth prepass above writes this one too, with the same camera and
-            // the same budget, and is ordered before this pass by the graph.
-            Some(selection) if emit.is_mesh() => {
-                pass.use_buffer(selection, ResourceState::ShaderReadWrite)
-            }
-            _ => pass,
-        };
-
-        // The camera's group rebuilt against the two screen-space channels the
-        // graph just realised, cached against both views and the probe
-        // visibility maps — the shape the tonemap group below has, and for the
-        // same reason: a graph transient's view is not known until execute time.
-        // Three entries of the stored list differ; see
-        // `View::mesh_group_entries`.
-        //
-        //
-        // The rebuild is unconditional, so there is one shape of forward pass
-        // rather than two: the group is cached against the views it was built
-        // from, so an AO-off frame naming the placeholder's view and an AO-on
-        // frame naming the blur's target are the same code and one cache miss
-        // apiece when a toggle moves. **The key is both views**, because a group
-        // naming two transients is stale as soon as either one moves.
-        let entries = self.primary.mesh_group_entries[self.frame].clone();
-        let mesh_layout = self.mesh_layout;
-        // The captured probe-visibility maps, or the one-texel placeholder when
-        // nothing has been captured or the console switch is off. It rides
-        // through the same cache as the two channels beside it — it is not a
-        // graph transient, but it does change between frames when the switch
-        // moves, and a group cached against a view it no longer names is the
-        // failure that cache exists to stop.
-        let probe_visibility_view = match &self.probe_visibility {
-            Some(captured) if crate::probe_visibility::enabled() => captured.view,
-            _ => self.probe_visibility_placeholder.view,
-        };
-        let cached_mesh = &mut self.primary.screen_channel_groups[self.frame];
-        pass.execute(move |ctx| {
-            let view = ctx.image_view(occlusion);
-            let contact_view = ctx.image_view(contact);
-            let device = ctx.device();
-            let group = cached_group(
-                cached_mesh,
-                device,
-                &[
-                    (AMBIENT_OCCLUSION_BINDING, view),
-                    (CONTACT_SHADOW_BINDING, contact_view),
-                    (PROBE_VISIBILITY_BINDING, probe_visibility_view),
-                ],
-                "mesh frame",
-                mesh_layout,
-                entries,
-            )
-            // Falling back to the group built at `build` rather than dropping
-            // the frame, and **the fallback costs the occlusion and the contact
-            // shadow and nothing else**: that group names the two 1×1 white
-            // placeholders, which `mesh.slang` clamps its `Load`s into and reads
-            // as "nothing occludes" and "the sun reaches here". A descriptor
-            // failure therefore draws the frame this scene would have drawn with
-            // both effects switched off, rather than one with no ambient term
-            // and no sun in it.
-            .unwrap_or(group);
-            let encoder = ctx.encoder();
-            // One `open` per partition and its own buckets under it, on the
-            // depth prepass's terms: the pass is still one indirect call per
-            // bucket, drawn under the pipeline that bucket's side asked for.
-            for partition in &color_partitions {
-                partition.open(encoder);
-                partition.record(encoder, group, &generated);
-            }
-        });
-
-        // --- the background ---
-        //
-        // **After the forward pass and before everything that reads the scene
-        // colour**, which is what makes the sky the background of the frame the
-        // reflection composite, the bloom chain and the tonemap all work on
-        // rather than a colour added at the end.
-        //
-        // It does not disturb the reflection itself. The march reads the scene
-        // colour only at a crossing it found in the depth prepass, and the far
-        // plane has no surface to cross to — `ssr.slang` returns before it
-        // marches on a pixel whose depth is the clear value — so nothing this
-        // pass writes is ever tapped as a reflected colour. A ray that leaves
-        // the frame still falls back to the analytic gradient rather than to
-        // these texels, which is the same sky evaluated exactly.
-        //
-        // Conditional on the sky and not on [`RenderEffects`], on the ground
-        // grid's terms: see [`crate::sky_pass`] for why the off position has to
-        // be no pass at all.
-        if draws_sky {
-            self.primary
-                .sky_pass
-                .add_pass(graph, frame, scene_color, scene_depth);
-        }
-
-        // `docs/plan/51-volumetrics.md`'s froxel volume, and it composites over
-        // the sky as well as over the geometry — a pixel at the far plane is a
-        // whole column of air, which is exactly what makes a distant horizon
-        // read as distant.
-        //
-        // **Before the reflection march**, where `mesh.slang`'s closed form also
-        // ran: the march reads the scene colour as reflected radiance, and fog
-        // it can see is fog the surface it bounced off could see. The reflection
-        // the blur adds afterwards is still unfogged, which is the same gap the
-        // analytic path has and `docs/backlog.md` carries.
-        let scene_color = match fogged {
-            Some(composited) => {
-                self.primary.volumetric.add_passes(
-                    graph,
-                    frame,
-                    self.primary.grid,
-                    VolumetricImages {
-                        depth: scene_depth,
-                        color: scene_color,
-                        composited,
-                        shadow_atlas,
-                    },
-                    light_grid,
-                );
-                composited
-            }
-            None => scene_color,
-        };
-
-        // `docs/plan/18-render-features.md`'s reflection march and its blur, and
-        // **the second of them is the composite**: the march reads the scene
-        // colour, the depth prepass and the reflectivity attachment and writes
-        // the reflection alone, and the blur filters that and adds it to the
-        // scene colour — so everything below this line works on `tonemapped`
-        // rather than on `scene_color`. A frame that does not add the pair hands
-        // `scene_color` on and is bit-identical, which is this effect's whole
-        // off-switch.
-        let tonemapped = match reflected {
-            Some((reflection, composited)) => {
-                // Read before the split borrow below: `self.primary.ssr` is taken
-                // mutably by `add_passes` and this names a different field.
-                let sky_view_lut = self.primary.sky_pass.lut(frame);
-                // The pyramid first: the march climbs it, so every level has to
-                // be written before the pass that reads it is recorded. Skipped
-                // outright on a frame whose extent has no levels, which
-                // `Hiz::add_passes` would record zero passes for anyway.
-                self.primary
-                    .hiz
-                    .add_passes(graph, frame, extent, scene_depth, &pyramid);
-                self.primary.ssr.add_passes(
-                    graph,
-                    frame,
-                    SsrImages {
-                        depth: scene_depth,
-                        color: scene_color,
-                        reflectivity,
-                        reflection,
-                        composited,
-                        pyramid: crate::hiz::level_slots(scene_depth, &pyramid),
-                    },
-                    SsrEnvironment {
-                        probes: probe_buffer,
-                        probe_id: probe_table,
-                        // The same view the forward pass's own group named, so
-                        // the reflection's probe fallback is weighed by the
-                        // maps the diffuse gather was weighed by — or by the
-                        // placeholder, when there are none and every probe
-                        // keeps all of its weight.
-                        probe_visibility: probe_visibility_view,
-                        // The background pass's own LUT slot, not a copy of it
-                        // — see [`crate::sky_pass::SkyPass::lut`]. A frame with
-                        // no atmosphere binds the zeroes that buffer was
-                        // created holding, and `ssr.slang` returns before
-                        // reading it.
-                        sky_view: sky_view_lut,
-                    },
-                );
-                composited
-            }
-            None => scene_color,
-        };
-
-        // `docs/plan/18-render-features.md`'s bloom chain, and it slots in
-        // exactly where the reflection composite left off: it reads whatever the
-        // tonemap was about to read, writes a new full-resolution image, and the
-        // tonemap reads that instead. A frame that does not add it hands the
-        // image on untouched and is bit-identical, which is this effect's whole
-        // off-switch — and the group the tonemap builds below is cached against
-        // its source view, so a toggle costs one cache miss and nothing else.
-        let tonemapped = match &bloomed {
-            Some((mips, composited)) => {
-                self.primary
-                    .bloom
-                    .add_passes(graph, frame, extent, tonemapped, mips, *composited);
-                *composited
-            }
-            None => tonemapped,
-        };
-
-        // `docs/plan/43-render-standards.md` §6's auto-exposure, and it reads
-        // the image the tonemap is about to read: the frame with the medium, the
-        // reflection and the chain already in it, which is the picture a viewer
-        // sees and therefore the one to expose for. Binning `scene_color`
-        // instead would expose the frame for a picture nobody looks at.
-        //
-        // Read first because the passes borrow the ring for the rest of this
-        // function, and the tonemap below needs the handle out of it.
-        let measured = self.primary.auto_exposure.measured(frame);
-        if self.frame_effects.contains(RenderEffects::AUTO_EXPOSURE) {
-            self.primary
-                .auto_exposure
-                .add_passes(graph, frame, extent, tonemapped);
-        }
-
-        // --- the debug draw layer ---
-        //
-        // **Before the tonemap, into the HDR image the tonemap is about to
-        // read**, which is `docs/plan/18-render-features.md`'s interaction rule:
-        // "Debug overlays (debug draw, gizmos) render pre-tonemap in HDR
-        // (they're in the world) except UI-space panels." A segment is therefore
-        // exposed and tonemapped like the geometry it annotates, which is the
-        // opposite of the ground grid below — and [`crate::grid`]'s header and
-        // [`crate::debug_draw`]'s carry the two halves of that argument.
-        //
-        // **And after everything that reads the scene colour.** The reflection
-        // march, the bloom chain and the auto-exposure histogram have all
-        // already been recorded against this image, so a debug line does not
-        // reflect in a surface, does not bloom, and does not move the exposure
-        // the scene is metered at. Each of those would be an overlay changing
-        // the picture it is drawn over, which is the one thing an overlay must
-        // not do.
-        //
-        // Nothing here is conditional on [`RenderEffects`], on the ground
-        // grid's terms: a frame that appended no segment is the frame this
-        // renderer recorded before [`crate::debug_draw`] existed — no pass, no
-        // pipeline, no block.
-        self.debug_draw
-            .add_pass(graph, frame, tonemapped, scene_depth);
-
-        // The tonemap group names a *graph-owned* view, so it can only be built
-        // once the graph has realised one. It is cached against the view handle
-        // and therefore rebuilt only on a resize.
-        let sampler = self.sampler;
-        let layout = self.tonemap_layout;
-        let pipeline_layout = self.tonemap_pipeline_layout;
-        let tonemap_pipeline = self.tonemap_pipeline;
-        let exposure_block = self.primary.tonemap_uniforms[self.frame];
-        let cached = &mut self.primary.tonemap_groups[self.frame];
-
-        graph
-            .add_render_pass("tonemap")
-            // `DontCare`, not `Clear`: the full-screen triangle writes every
-            // pixel of the target, so loading or clearing it is pure bandwidth.
-            .color(
-                display,
-                LoadOp::DontCare,
-                StoreOp::Store,
-                crcbl_hal::ClearValue::default(),
-            )
-            // **The reflection pass's output where there is one, and the forward
-            // pass's where there is not.** The two are the same description and
-            // different images, and tonemapping the first one on a frame that
-            // reflected would compile, draw a picture, and silently be the frame
-            // without reflections in it.
-            .read_image(tonemapped)
-            .execute(move |ctx| {
-                let view = ctx.image_view(tonemapped);
-                let device = ctx.device();
-                let entries = vec![
-                    BindGroupEntry {
-                        binding: 0,
-                        array_index: 0,
-                        resource: BindingResource::ImageView(view),
-                    },
-                    BindGroupEntry {
-                        binding: 1,
-                        array_index: 0,
-                        resource: BindingResource::Sampler(sampler),
-                    },
-                    BindGroupEntry {
-                        binding: 2,
-                        array_index: 0,
-                        resource: BindingResource::whole_buffer(exposure_block),
-                    },
-                    BindGroupEntry {
-                        binding: 3,
-                        array_index: 0,
-                        resource: BindingResource::whole_buffer(measured),
-                    },
-                ];
-                let Some(group) = cached_group(
-                    cached,
-                    device,
-                    &[(0, view)],
-                    "tonemap scene",
-                    layout,
-                    entries,
-                ) else {
-                    return;
-                };
-                let encoder = ctx.encoder();
-                encoder.bind_graphics_pipeline(tonemap_pipeline);
-                encoder.bind_group(0, group, &[], pipeline_layout);
-                // Three vertices, no geometry bound, no vertex buffer anywhere.
-                encoder.draw(0..3, 0..1);
-            });
-
-        // --- the ground grid ---
-        //
-        // **After the tonemap, into the target the tonemap just wrote**, and
-        // that placement is the decision rather than an accident of ordering.
-        // The grid is reference chrome, not scene content: drawn into
-        // `scene_color` it would be exposed and tonemapped like geometry, so its
-        // colour would shift with how bright the scene happens to be — and a
-        // grid whose lines change with the exposure is no longer a reference.
-        // Blender draws its overlays the same way, in display space after the
-        // render.
-        //
-        // It still takes `scene_depth`, read-only, so geometry in front of the
-        // ground occludes it. That the depth survives this far is not luck: the
-        // forward pass stores it (`StoreOp::Store`) because the reflection march
-        // reads it, and the graph moves it from whatever state that left it in
-        // into `DepthStencilRead` for this pass.
-        //
-        // Nothing here is conditional on [`RenderEffects`]: the grid is a
-        // caller's opt-in, and a frame that never asked for one is the frame
-        // this renderer recorded before [`crate::grid`] existed — no pass, no
-        // pipeline, no block.
-        if let Some(grid) = self.ground_grid.as_ref()
-            && self.ground_grid_on
-        {
-            let view_proj = self.primary.camera_view_proj;
-            grid.add_pass(
+        // **Every secondary view before the primary camera's frame**, so a pass
+        // the primary records — an overlay compositing a scope's picture onto
+        // the lens it is seen through — reads a view that is already drawn. Each
+        // records its whole frame straight through: its own cull, its own
+        // clustering, and every pass the primary records after them, against the
+        // atlas and the probe rows the scene passes above left behind.
+        for (index, slot) in built.iter_mut().enumerate() {
+            let Some((view_target, view_extent)) = secondary
+                .iter()
+                .find(|(view, _)| view.view.index() == index + 1)
+            else {
+                continue;
+            };
+            let view = slot
+                .as_mut()
+                .unwrap_or_else(|| unreachable!("checked against the built views above"));
+            let view_cull = view.add_cull(graph, frame, instance_count);
+            view.add_passes(
                 graph,
-                frame,
-                display,
-                scene_depth,
-                view_proj,
-                // The one inversion in the frame, and it is here rather than in
-                // the pass: `begin_frame` has no reason to compute it for a grid
-                // that is usually off.
-                view_proj.inverse(),
+                &passes,
+                view_cull,
+                ViewOutput {
+                    target: view_target.target,
+                    target_extent: view_target.extent,
+                    extent: *view_extent,
+                },
+                Overlays::default(),
+                |_, _| {},
             );
         }
 
-        // --- the shadow atlas viewer ---
-        //
-        // **After the grid and before the resolve, and it replaces what both of
-        // them were about.** `docs/plan/sample/18-sundial.md`'s atlas viewer:
-        // the `D32Float` image the shadow pass filled, drawn over the finished
-        // frame so that which slot holds which map is something a reviewer can
-        // look at. [`crate::atlas_view`] carries why it draws here — in display
-        // space, after the operator — rather than into the scene colour.
-        //
-        // After the grid because a grid over a readout is noise; before the
-        // resolve because there is nothing to resolve, and nothing to resolve
-        // *with*: [`Self::resolved_effects`] takes both antialiasing tiers off
-        // for every debug view, so `display` and `present` are one image on
-        // every frame this branch runs on.
-        //
-        // Nothing here is conditional on [`RenderEffects`], on the ground
-        // grid's terms: a frame that resolved any other view is the frame this
-        // renderer recorded before this module existed — no pass, no pipeline,
-        // no block read.
-        if draws_atlas_view {
-            self.atlas_viewer
-                .add_pass(graph, frame, shadow_atlas, display);
-        }
-
-        overlay(
+        let tonemapped = primary.add_passes(
             graph,
-            ForwardOverlayTargets {
-                display,
-                depth: scene_depth,
-                internal_extent: extent,
+            &passes,
+            cull,
+            ViewOutput {
+                target,
+                target_extent,
+                extent,
             },
+            Overlays {
+                debug_draw: Some(debug_draw),
+                ground_grid: ground_grid.as_ref().filter(|_| *ground_grid_on),
+                atlas_viewer: draws_atlas_view.then_some(atlas_viewer),
+            },
+            overlay,
         );
-
-        // --- the antialiasing resolve ---
-        //
-        // **After the grid, and that is the same decision the grid's placement
-        // was.** The grid is a field of thin high-contrast lines, which is the
-        // thing an edge filter exists for; drawing it into the target *after*
-        // the resolve would leave it the one aliased element in an antialiased
-        // frame. The UI goes the other way and is composited onto `target` by
-        // the caller after this, so its glyphs are never filtered — topic 18
-        // refuses to antialias text in as many words.
-        //
-        // `display` is `present` when neither antialiasing bit is on, and this
-        // is the branch that makes that true: no pass, no second image, and the
-        // frame the tonemap wrote is already where the frame ends.
-        //
-        // **Which tier fills the slot is decided here, once.** CMAA2 is the
-        // higher one and takes it whenever its bit is on, whatever the FXAA bit
-        // says — the two are never both recorded, which is what
-        // [`RenderEffects::CMAA2`] means by a tier that is off being a frame with
-        // fewer passes rather than a shader branch. Everything the paragraph
-        // above says about the grid, the UI and the ordering holds for either.
-        if display != present {
-            if effects.contains(RenderEffects::CMAA2) {
-                self.primary
-                    .cmaa2
-                    .add_passes(graph, frame, display, present);
-            } else {
-                self.primary.fxaa.add_pass(graph, frame, display, present);
-            }
-        }
-
-        // --- the render-scale upscale ---
-        //
-        // **After the resolve, and that ordering is not interchangeable.**
-        // Either tier filters the edges the renderer actually drew; run the
-        // other way round
-        // it would be filtering an interpolation of them, which is both more
-        // expensive — the resolve would run at the target's extent rather than
-        // the internal one — and worse, because the edge it is looking for has
-        // already been spread across several target texels.
-        //
-        // The UI goes the other way and is composited onto `target` by the
-        // caller after this, at native resolution. That is the whole reason a
-        // render-scale knob is usable: the 3D frame gets cheap and the text does
-        // not get soft.
-        if present != target {
-            self.primary.upscale.add_pass(graph, frame, present, target);
-        }
 
         // **Last, and that is the point.** Three passes add to the statistics
         // buffer — the cull dispatch, the light grid's overflow counter and the
@@ -9573,8 +8527,8 @@ impl ForwardRenderer {
         // graph puts it in `TransferSrc` for this and back into the state the
         // next frame on this slot imports it in; there is not a barrier written
         // here.
-        if let Some(stats) = self.cull_stats.as_mut() {
-            stats.add_copy_pass(graph, generated.visible_count_id);
+        if let Some(stats) = cull_stats.as_mut() {
+            stats.add_copy_pass(graph, cull.generated.visible_count_id);
         }
 
         tonemapped
@@ -10938,12 +9892,18 @@ impl ForwardRenderer {
             return Ok(());
         }
         let layout = self.mesh_layout;
-        let mut fresh = Vec::with_capacity(2 + self.shadow_groups[frame].len());
-        let lists = std::iter::once((&mut self.primary.mesh_group_entries[frame], "mesh frame"))
-            .chain(std::iter::once((
-                &mut self.primary.prepass_group_entries[frame],
-                "depth prepass",
-            )))
+        let mut fresh =
+            Vec::with_capacity(2 * (1 + self.views.len()) + self.shadow_groups[frame].len());
+        // Every view's pair — the primary camera's and each secondary view's —
+        // then the shadow views, in the order the swap below walks them.
+        let lists = std::iter::once(&mut self.primary)
+            .chain(self.views.iter_mut().flatten())
+            .flat_map(|view| {
+                [
+                    (&mut view.mesh_group_entries[frame], "mesh frame"),
+                    (&mut view.prepass_group_entries[frame], "depth prepass"),
+                ]
+            })
             .chain(
                 self.shadow_group_entries[frame]
                     .iter_mut()
@@ -10970,13 +9930,15 @@ impl ForwardRenderer {
             );
             device.destroy_bind_group(stale);
         };
-        swap(&mut self.primary.mesh_groups[frame]);
-        swap(&mut self.primary.prepass_groups[frame]);
+        for view in std::iter::once(&mut self.primary).chain(self.views.iter_mut().flatten()) {
+            swap(&mut view.mesh_groups[frame]);
+            swap(&mut view.prepass_groups[frame]);
+            if let Some((_, stale)) = view.screen_channel_groups[frame].take() {
+                device.destroy_bind_group(stale);
+            }
+        }
         for group in &mut self.shadow_groups[frame] {
             swap(group);
-        }
-        if let Some((_, stale)) = self.primary.screen_channel_groups[frame].take() {
-            device.destroy_bind_group(stale);
         }
         self.slot_page_samplers[frame] = sampler;
         let named = &self.slot_page_samplers;
@@ -12162,8 +11124,11 @@ impl ForwardRenderer {
         if let Some(stats) = self.cull_stats {
             stats.destroy(device);
         }
-        // The camera first: its groups name the scene's buffers, pages and
-        // atlas below, and it owns nothing the scene's groups name.
+        // The cameras first: their groups name the scene's buffers, pages and
+        // atlas below, and they own nothing the scene's groups name.
+        for view in self.views.into_iter().flatten() {
+            view.destroy(device);
+        }
         self.primary.destroy(device);
         device.destroy_sampler(self.sampler);
         device.destroy_graphics_pipeline(self.tonemap_pipeline);
@@ -13049,7 +12014,7 @@ mod tests {
     use crcbl_hal::null::{Event, NullInstance, ObjectKind, Recorder};
     use crcbl_hal::{DeviceDesc, Features, Instance, QueueKind};
 
-    fn open() -> (Recorder, Box<dyn Device>, QueueHandle) {
+    pub(super) fn open() -> (Recorder, Box<dyn Device>, QueueHandle) {
         open_with(DeviceDesc::for_adapter(crcbl_hal::AdapterId(0)).optional_features)
     }
 
@@ -13102,7 +12067,7 @@ mod tests {
     ///
     /// `begin_frame` used to write this object for every caller; the tests below
     /// that are about a frame with something in it place it themselves now.
-    fn place_cube(renderer: &mut ForwardRenderer, transform: Mat4) -> InstanceHandle {
+    pub(super) fn place_cube(renderer: &mut ForwardRenderer, transform: Mat4) -> InstanceHandle {
         place_demo(renderer, DEMO_CUBE, DEMO_UNTINTED, transform)
     }
 
@@ -16680,6 +15645,7 @@ mod tests {
                 planes: expected.planes.map(|plane| plane.to_array()),
                 instance_count: 2,
                 capacity: scene::Capacities::default().instances,
+                hidden_view: ViewId::PRIMARY.hidden_bit(),
             }
             .to_bytes()[..],
             "the cull block must carry this frame's own frustum, the pool's whole \
@@ -22624,7 +21590,7 @@ mod tests {
     /// A frame's attachments must all be one size — the graph refuses a pass
     /// whose colour target and depth disagree — so a test drawing at anything
     /// but [`TEST_EXTENT`] has to import a target of that size too.
-    fn swapchain_image_at(device: &dyn Device, extent: (u32, u32)) -> ImportedImage {
+    pub(super) fn swapchain_image_at(device: &dyn Device, extent: (u32, u32)) -> ImportedImage {
         let format = Format::Rgba8UnormSrgb;
         let image = device
             .create_image(&crcbl_hal::ImageDesc {

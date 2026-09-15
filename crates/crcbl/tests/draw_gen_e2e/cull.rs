@@ -226,6 +226,9 @@ struct CullProbe {
     sentinel: crcbl::hal::BufferHandle,
     capacity: u32,
     instance_count: u32,
+    /// The hidden-views bit the dispatch culls on — zero, a cull that is no
+    /// view's, unless a test sets one.
+    hidden_view: u32,
     bind_group_layout: crcbl::hal::BindGroupLayoutHandle,
     bind_group: crcbl::hal::BindGroupHandle,
     pipeline_layout: crcbl::hal::PipelineLayoutHandle,
@@ -511,6 +514,7 @@ impl CullProbe {
             sentinel,
             capacity,
             instance_count,
+            hidden_view: 0,
             bind_group_layout,
             bind_group,
             pipeline_layout,
@@ -532,6 +536,7 @@ impl CullProbe {
                     planes: frustum.planes.map(|plane| plane.to_array()),
                     instance_count: self.instance_count,
                     capacity: self.capacity,
+                    hidden_view: self.hidden_view,
                 }
                 .to_bytes(),
             )
@@ -714,7 +719,7 @@ fn the_gpu_visible_list_matches_the_cpu_reference() {
     let probe = CullProbe::new(&headless, &instances, &meshes, VISIBLE_CAPACITY);
 
     let frustum = Frustum::from_view_projection(scene_camera().view_projection(aspect()));
-    let expected = visible_instances(&frustum, &instances, &meshes);
+    let expected = visible_instances(&frustum, &instances, &meshes, 0);
     // The scene is placed so this is a real mixture. Asserting it here means a
     // future edit that made every instance visible — or none — fails as a
     // *scene* problem rather than passing as a vacuous comparison.
@@ -744,6 +749,54 @@ fn the_gpu_visible_list_matches_the_cpu_reference() {
             "slot {slot} was written past the counter"
         );
     }
+
+    probe.destroy(&headless);
+    headless.finish();
+}
+
+/// **The hidden-views bit is a rejection of its own**, asked before the bound:
+/// the same scene, with the bit set on some of the instances the frustum keeps
+/// and on one it culls anyway, dispatched once with no view's bit and once with
+/// the bit — and the GPU agrees with the reference both times.
+#[test]
+#[ignore = "needs a real GPU and a backend pin; run tests/run-draw-gen-e2e.sh"]
+fn the_gpu_rejects_an_instance_hidden_from_its_view() {
+    let headless = open_probe();
+    let hidden = 1 << (GpuInstance::HIDDEN_VIEWS_SHIFT + 3);
+    let meshes = meshes();
+    let frustum = Frustum::from_view_projection(scene_camera().view_projection(aspect()));
+    let mut instances = scene();
+    let kept = visible_instances(&frustum, &instances, &meshes, 0);
+    assert!(
+        kept.len() > 2,
+        "the scene must keep more than two instances for hiding one of them to leave a mixture"
+    );
+    // The first survivor hidden, and instance 1 — which the frustum culls on its
+    // own — hidden too, so a pass that tested the bit after the bound is not a
+    // pass that happens to agree.
+    instances[kept[0] as usize].flags |= hidden;
+    instances[1].flags |= hidden;
+    let mut probe = CullProbe::new(&headless, &instances, &meshes, VISIBLE_CAPACITY);
+
+    let shown = probe.run(&headless, &frustum);
+    assert_eq!(
+        shown.visible,
+        visible_instances(&frustum, &instances, &meshes, 0),
+        "a cull that is no view's rejects nothing on the mask"
+    );
+
+    probe.hidden_view = hidden;
+    let expected = visible_instances(&frustum, &instances, &meshes, hidden);
+    assert_eq!(
+        expected.len(),
+        kept.len() - 1,
+        "the reference drops exactly the hidden survivor"
+    );
+    let result = probe.run(&headless, &frustum);
+    assert_eq!(
+        result.visible, expected,
+        "the GPU kept a different set than the reference once the view's bit was set"
+    );
 
     probe.destroy(&headless);
     headless.finish();
@@ -788,7 +841,7 @@ fn the_visible_set_changes_with_the_camera() {
     // re-culled rather than reporting a stale buffer.
     assert_eq!(
         second.visible,
-        visible_instances(&turned, &instances, &meshes)
+        visible_instances(&turned, &instances, &meshes, 0)
     );
     assert_eq!(
         second.count,
@@ -840,7 +893,7 @@ fn a_finite_far_plane_culls_what_an_infinite_one_keeps() {
     );
     assert_eq!(
         bounded.visible,
-        visible_instances(&finite, &instances, &meshes)
+        visible_instances(&finite, &instances, &meshes, 0)
     );
 
     probe.destroy(&headless);
@@ -860,7 +913,7 @@ fn an_overflowing_list_still_counts_every_survivor() {
     let headless = open_probe();
     let (instances, meshes) = (scene(), meshes());
     let frustum = Frustum::from_view_projection(scene_camera().view_projection(aspect()));
-    let expected = visible_instances(&frustum, &instances, &meshes);
+    let expected = visible_instances(&frustum, &instances, &meshes, 0);
     let capacity = u32::try_from(expected.len()).expect("a small scene") - 1;
 
     let probe = CullProbe::new(&headless, &instances, &meshes, capacity);
@@ -1007,7 +1060,7 @@ fn a_removed_instance_is_not_in_the_visible_list() {
     );
     assert_eq!(
         before.visible,
-        visible_instances(&frustum, &host_array(&pool, &live), &meshes),
+        visible_instances(&frustum, &host_array(&pool, &live), &meshes, 0),
         "the reference agrees before anything is removed"
     );
     // The slots nothing was ever inserted into are inside the dispatch, and
@@ -1038,7 +1091,7 @@ fn a_removed_instance_is_not_in_the_visible_list() {
     expected[0] = pooled(Vec3::ZERO);
     assert_eq!(
         after.visible,
-        visible_instances(&frustum, &expected, &meshes),
+        visible_instances(&frustum, &expected, &meshes, 0),
         "the reference learned liveness too, and agrees"
     );
 
@@ -1114,7 +1167,7 @@ fn a_slot_reused_after_a_removal_draws_its_new_contents() {
     ] {
         assert_eq!(
             result.visible,
-            visible_instances(frustum, &host_array(&pool, &live), &meshes),
+            visible_instances(frustum, &host_array(&pool, &live), &meshes, 0),
             "the reference disagrees with the {what} camera"
         );
     }
