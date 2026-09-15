@@ -18,6 +18,102 @@ R700 scope on a 2 GiB GeForce MX550) aborted with `OutOfDeviceMemory`; temporary
 allocation logging showed 61.7 MiB per `visible and bucket runs` buffer and
 about 864 MiB of them per renderer.
 
+**After P1 (`3a18ff9c`), on the same machine** — `nvidia-smi` sampled every 10
+ms over `ew --headless --frames 300`, driver 615.71.09: `--m4-demo` peaks at 217
+MiB (1077 MiB before); `--r700-demo --ads-demo` and `--elcan-demo --ads-demo`
+run to completion at a 363 MiB peak where they aborted before, and that is with
+`ew`'s scope still building a second `WorldScene` rather than a view.
+
+### How this list is being worked
+
+One item at a time: an implementation agent takes an item with the verification
+below, the change is reviewed and the whole verification re-run by hand, then
+committed on its own and pushed to `main`, and its bullet is deleted here. The
+remaining order, by expected win against risk: P3, P20, P2 (log the real stride
+first — it may be moot), P11, P31 and P32, P12, P13 and P14, P22, P23, P21, then
+the rest top to bottom. The verification every item gets:
+
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+  (it compiles the feature-gated GPU suites too, which a plain workspace check
+  does not), `cargo fmt --all --check`, and
+  `cargo test --workspace --all-features --locked`.
+- Every GPU suite on lavapipe with validation fatal — see "Running the GPU
+  suites on a Linux machine without sudo" below — and a shader artifact
+  `--check` whenever a `.slang` moved.
+- Private-items rustdoc with `-D warnings`, `tools/check-doc-citations.sh` and
+  `tools/check-wrapped-strings.sh`.
+- A test that fails when the change is broken, shown red then green.
+
+## Running the GPU suites on a Linux machine without sudo (2026-09-15)
+
+What CI runs, reproduced on an Arch workstation where installing packages was
+not an option. None of it is in the tree; it is how a new machine gets to a
+green local run.
+
+- **Shader compilers.** `slangc` 2026.14 and `dxc` `1.9(1-0d3ee6b5)(1.9.0.1)` —
+  the versions `crates/crcbl-shaders/tools/compile-shaders.sh` pins — unpacked
+  under `~/.local/opt` and linked from `~/.local/bin`. Regenerate with
+  `CRCBL_SLANGC=~/.local/bin/slangc CRCBL_DXC=~/.local/bin/dxc crates/crcbl-shaders/tools/compile-shaders.sh`,
+  then again with `--check`; `CRCBL_DXC` has no PATH fallback, and Arch's
+  `directx-shader-compiler` is a preview build the script refuses.
+- **`cargo-nextest` 0.9.140**, the version CI pins, from
+  `https://get.nexte.st/0.9.140/linux` extracted into `~/.cargo/bin`. Every
+  `run-*-e2e.sh` needs it.
+- **The Khronos validation layer.** The suites refuse to run without it
+  ("validation was not enabled, so this proves nothing"). Arch's
+  `vulkan-validation-layers` package matching the loader (1.4.357.0) was
+  extracted with `tar --zstd -xf` into
+  `~/.local/opt/vulkan-validation-layers-1.4.357.0`, its manifest's
+  `library_path` rewritten to the absolute path of
+  `libVkLayer_khronos_validation.so`, and the loader pointed at it with
+  `VK_ADD_LAYER_PATH=<that dir>/usr/share/vulkan/explicit_layer.d`.
+- **The environment CI's lavapipe leg uses:**
+  `CRCBL_VK_ICD=/usr/share/vulkan/icd.d/lvp_icd.json CRCBL_GPU=vk CRCBL_VK_VALIDATION=1 CRCBL_VK_SYNC_VALIDATION=1 CRCBL_VK_VALIDATION_FATAL=1`,
+  then `crates/crcbl-vk/tests/run-vk-e2e.sh` and
+  `crates/crcbl/tests/run-{render,hal-seam,draw-gen,forward,mesh,gltf,sprite,tiling}-e2e.sh`.
+  Without `CRCBL_VK_ICD` the loader picks the hardware adapter, which is not the
+  run CI makes.
+- **On an NVIDIA GeForce MX550 (615.71.09)** two `forward_e2e` occlusion tests
+  fail by one eight-bit level —
+  `the_bent_direction_switch_writes_the_sentinel_and_leaves_the_scalar_alone`
+  and `the_cheap_tier_occludes_the_band_and_reports_no_direction` read 127 where
+  `BENT_NORMAL_NONE` is 128 — and pass on lavapipe. Not diagnosed: rounding of
+  the half-resolution upsample on that driver is the suspect, not a view or
+  culling change (they failed before either landed).
+
+## What secondary views shipped without (2026-09-15)
+
+`ForwardRenderer::create_view`, `begin_view`, `add_passes_with_views` and
+`set_instance_views` (`crates/crcbl-render/src/forward/view.rs`). Verified: the
+null-device tests in `forward/view/tests.rs`, `draw_gen_e2e`'s
+`the_gpu_rejects_an_instance_hidden_from_its_view` and
+`an_instance_hidden_from_the_camera_is_culled_before_its_bound_is_tested`, and
+`forward_e2e`'s
+`views::a_view_draws_its_own_picture_and_skips_what_is_hidden_from_it`, all on
+lavapipe, plus CI's full matrix at `04dd4070`. Not done:
+
+- **Every view builds its own post pipelines.** `View::build` constructs `Ssao`,
+  `ContactShadows`, `Ssr`, `Hiz`, `Volumetric`, `Exposure`, `Bloom`, `Fxaa`,
+  `Cmaa2`, `Upscale` and `SkyPass`, each with its own pipelines, so a view
+  duplicates pipelines only its per-frame rings needed to own, and `create_view`
+  compiles them — a hitch if called mid-play. Split each module into a shared
+  pipeline half and a per-view ring half; until then create views at load.
+- **A secondary view samples the primary camera's cascades.** They are fitted to
+  the primary frustum (`Cascades::new` in `begin_frame_body`), so a scope
+  looking far past `shadow::DISTANCE` sees unshadowed distance. The plan's
+  "extend cascade far range while ADS" knob is unbuilt.
+- **`docs/plan/29-fp-rendering.md`'s LOD bias knob** for the PiP camera is
+  unbuilt: a view selects with the renderer's own budgets.
+- **Timing and counters count the primary camera only.** A view's passes carry
+  the primary's labels (`forward`, `tonemap`, …) in `PassTimers`, and
+  `MAX_TIMED_PASSES` does not include them; `counters()` and `cull_stats()` read
+  the primary's generator alone.
+- **The overlays are the primary camera's alone** — debug draw, ground grid and
+  the atlas viewer are not recorded into a view, and the frozen selection eye
+  pins the primary's cut only.
+- **Render scale applies to every view**, which is a choice rather than a
+  per-view knob.
+
 ### Measurement first
 
 - **No memory accounting.** Add a `crcbl-vk` counter of allocation count and
@@ -272,11 +368,11 @@ validation fatal: `run-draw-gen-e2e.sh`, `run-forward-e2e.sh`,
 - **`startsMain` is one invocation walking every bucket.** Fine at the measured
   938 buckets by argument, not by timing; a table in the tens of thousands would
   want the timing checked against a device watchdog.
-- **Memory saved is a formula, not a measurement.** The per-buffer size is
-  pinned by
+- **Memory saved per buffer is a formula** pinned by
   `draw_gen::tests::the_measured_scene_pays_a_word_per_bucket_rather_than_a_capacity`;
-  the `ew` scene that ran out of memory was not re-run. It needs the memory
-  accounting in "Measurement first" to say what a renderer holds now.
+  the whole-process effect was measured once with `nvidia-smi` (see the
+  performance section's "After P1"), and an in-engine breakdown still needs the
+  memory accounting in "Measurement first".
 
 ## D3D12 on hardware: what structured storage views made visible (2026-09-15)
 
