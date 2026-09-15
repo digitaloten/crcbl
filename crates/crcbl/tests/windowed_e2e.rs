@@ -977,6 +977,23 @@ fn a_windowed_swapchain_is_not_the_offscreen_ring() {
 /// than subtracted because a smaller request is legal on window systems whose
 /// range is wide (Wayland's) and this test wants the case that is illegal
 /// everywhere.
+///
+/// # A Win32 driver that does not follow its own extension's rule
+///
+/// The rule is the Vulkan specification's, in `chapters/VK_KHR_surface/wsi.adoc`
+/// beside `VkWin32SurfaceCreateInfoKHR`: "With Win32, minImageExtent,
+/// maxImageExtent, and currentExtent must always equal the window size." An AMD
+/// RX 9060 XT follows it and this test clamps there, run by hand on 2026-09-15.
+/// **Mesa's software Win32 WSI does not**: `wsi_win32_surface_get_capabilities`
+/// in `src/vulkan/wsi/wsi_common_win32.cpp` (read at `mesa-26.1.5`) reports
+/// `minImageExtent` of 1×1 and `maxImageExtent` of the device's largest 2D
+/// image, and stretches whatever it is given at present. So on the lavapipe a
+/// Windows CI runner uses, the request is inside the range the surface reported
+/// and `crcbl-vk` correctly honours it. The seam's `SurfaceCaps` carries no
+/// extent range, so the test cannot read that answer back; on Win32 it accepts
+/// exactly two extents — the window's, which is a clamp, or the request's, which
+/// is that driver — and logs the second by name. Anything else, a rounded or
+/// halved size, fails on every platform, and X11 keeps the whole assertion.
 #[test]
 #[ignore = "needs a window system and a Vulkan loader; run tests/run-windowed-e2e.sh"]
 fn the_extent_is_clamped_to_what_the_server_actually_permits() {
@@ -997,6 +1014,16 @@ fn the_extent_is_clamped_to_what_the_server_actually_permits() {
     );
 
     let acquired = fixture.acquire();
+    if cfg!(target_os = "windows") && acquired.extent == requested {
+        eprintln!(
+            "crcbl windowed e2e: asked for {requested:?} on a {size:?} window and got it — this \
+             Win32 driver reports an image extent range wider than the window, which \
+             VK_KHR_win32_surface forbids; see this test's docs"
+        );
+        fixture.draw_and_present(&acquired);
+        fixture.finish();
+        return;
+    }
     assert_eq!(
         acquired.extent, size,
         "the swapchain was asked for {requested:?} on a {size:?} window. On X11 and Win32 \
@@ -1022,12 +1049,18 @@ fn the_extent_is_clamped_to_what_the_server_actually_permits() {
 /// **A run of frames reaches the display, and the validation layer sees nothing
 /// wrong with how.**
 ///
-/// The observables are two:
+/// The observables are three:
 ///
-/// * The ring **rotated**: over [`FRAMES`] acquires, more than one distinct
-///   [`AcquiredFrame::index`] came back. A swapchain that handed out one image
-///   forever would present the frame currently on screen, and every other
-///   assertion in this test would still pass.
+/// * The backend's **acquire slots rotated**: over [`FRAMES`] acquires, more
+///   than one distinct [`AcquiredFrame::acquire_semaphore`] came back.
+///   `crcbl-vk` walks its ring of acquire semaphores and fences once per acquire
+///   whatever image the driver answers with, so a backend that cached one frame
+///   and stopped calling `vkAcquireNextImageKHR` fails here on every window
+///   system.
+/// * The **images** rotated: more than one distinct [`AcquiredFrame::index`].
+///   A swapchain that handed out one image forever would present the frame
+///   currently on screen. **This half is a property of the WSI, not only of the
+///   backend**, and is scoped accordingly — see below.
 /// * The validation report is **clean and enabled**, checked by
 ///   [`Windowed::finish`]. That is what covers everything a return value cannot:
 ///   an acquire semaphore reused while its acquire is still pending (the classic
@@ -1035,18 +1068,41 @@ fn the_extent_is_clamped_to_what_the_server_actually_permits() {
 ///   exists to prevent and which only shows up once the run is longer than the
 ///   ring), an image presented from the wrong layout, a present without a wait.
 ///
-/// [`FRAMES`] is what makes the first of those reachable: the fence-guarded slot
-/// reuse in `acquire_next_frame` is dead code on any run shorter than the
-/// swapchain's image count.
+/// [`FRAMES`] is what makes the slot reuse reachable: the fence-guarded reuse in
+/// `acquire_next_frame` is dead code on any run shorter than the ring.
+///
+/// # Why image rotation is not asserted on Win32
+///
+/// A WSI that **copies** at present legally hands the same image back every
+/// time. Mesa's Win32 software path — lavapipe on a Windows CI runner — is one:
+/// `wsi_win32_queue_present` in `src/vulkan/wsi/wsi_common_win32.cpp` (read at
+/// `mesa-26.1.5`) `memcpy`s the image into a DIB, `StretchBlt`s it to the
+/// window and marks the image idle before returning, and
+/// `wsi_win32_find_idle_image` takes the first idle image, so every acquire
+/// answers index 0 however fast or slow the machine is. Reproduced locally
+/// against the CI job's own lavapipe build on 2026-09-15: 32 acquires, one
+/// index. X11 keeps a presented image busy until the server has it, so rotation
+/// stays a hard assertion there. On Win32 a single index is logged by name
+/// rather than failed, and the acquire-slot rotation above is what still holds
+/// the backend to account. Win32 on hardware rotated over three images when run
+/// by hand on an RX 9060 XT, but that is not asserted: the test cannot tell a
+/// copying WSI from a retaining one without naming the driver.
 #[test]
 #[ignore = "needs a window system and a Vulkan loader; run tests/run-windowed-e2e.sh"]
 fn a_run_of_frames_presents_with_no_validation_error() {
     let mut fixture = Windowed::open();
     let mut indices = Vec::new();
+    let mut acquire_slots = Vec::new();
 
     for _ in 0..FRAMES {
         let acquired = fixture.acquire();
         indices.push(acquired.index);
+        acquire_slots.push(
+            acquired
+                .acquire_semaphore
+                .expect("a windowed Vulkan acquire hands back its acquire semaphore")
+                .to_bits(),
+        );
         fixture.draw_and_present(&acquired);
         // The window system is still talking while frames go out — a real frame
         // loop pumps, and a client that never reads its socket is one whose X
@@ -1054,20 +1110,39 @@ fn a_run_of_frames_presents_with_no_validation_error() {
         fixture.pump();
     }
 
+    acquire_slots.sort_unstable();
+    acquire_slots.dedup();
+    assert!(
+        acquire_slots.len() > 1,
+        "{FRAMES} acquires all came back on one acquire semaphore. crcbl-vk rotates its \
+         acquire slots on every acquire whatever image the driver returns, so a single slot \
+         means the backend stopped acquiring."
+    );
+
     let mut distinct = indices.clone();
     distinct.sort_unstable();
     distinct.dedup();
-    assert!(
-        distinct.len() > 1,
-        "{FRAMES} acquires all returned image index {:?}. A swapchain that never rotates \
-         presents the image the display is already showing, and nothing else here would \
-         notice.",
-        distinct
-    );
-    eprintln!(
-        "crcbl windowed e2e: {FRAMES} frames presented over {} swapchain images",
-        distinct.len()
-    );
+    if distinct.len() == 1 && cfg!(target_os = "windows") {
+        eprintln!(
+            "crcbl windowed e2e: {FRAMES} frames presented, every acquire on image index {:?} \
+             over {} acquire slots — a WSI that copies at present, which Win32 permits; see \
+             this test's docs",
+            distinct,
+            acquire_slots.len()
+        );
+    } else {
+        assert!(
+            distinct.len() > 1,
+            "{FRAMES} acquires all returned image index {:?}. A swapchain that never rotates \
+             presents the image the display is already showing, and nothing else here would \
+             notice.",
+            distinct
+        );
+        eprintln!(
+            "crcbl windowed e2e: {FRAMES} frames presented over {} swapchain images",
+            distinct.len()
+        );
+    }
 
     fixture.finish();
 }
