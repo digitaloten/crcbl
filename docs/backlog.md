@@ -3,6 +3,58 @@
 What was raised and not finished. A changelog says what shipped; this says what
 did not, and why. Delete an entry when it ships — `git log` is the history.
 
+## Water, wind, grass and hair: planned, nothing built (2026-09-15)
+
+Four engine topics and three fixtures were researched and planned at the user's
+request, with the implementation deliberately left for later:
+[55-water.md](plan/55-water.md), [56-wind.md](plan/56-wind.md),
+[57-grass.md](plan/57-grass.md), [58-hair.md](plan/58-hair.md), and the samples
+[tide](plan/sample/21-tide.md), [meadow](plan/sample/22-meadow.md) and
+[mane](plan/sample/23-mane.md). ROADMAP rows P7D–P7G and S4F–S4H carry them.
+What the plans leave open:
+
+- **Order and start are the user's call.** Nothing is scheduled ahead of
+  existing work. The dependency order the plans imply: the two physics
+  prerequisites below, then wind W1 (small, and read by everything else), then
+  water rungs 1–2 and grass G1–G2 in either order, then hair H1–H3. Water rung 1
+  (a still pool: the surface pass, refraction, absorption, sky reflection) needs
+  neither physics nor wind and is the smallest visible first slice.
+- **Two `crcbl-phys` prerequisites gate floating and wind-pushed bodies.**
+  `RigidBody` has no inertia, torque or angular velocity, and
+  `PhysicsSystem::step` applies every `ForceProvider` to every dynamic body with
+  no per-body parameters. Buoyancy that rights a hull and wind that spins debris
+  need rotation; a crate and a boat that float differently need a per-body
+  medium component. Neither is planned in detail anywhere yet; 55's decision 13
+  names both. The contact solver being unbuilt is a separate, older gap.
+- **Decision: guarded copies of the light walk, or a shared Slang module.**
+  Water, grass and hair each draw in a pass of their own lit by the clustered
+  lights and the cascades, and `mesh.slang` is where that walk lives with no
+  `#include`. The plans follow `volumetric.slang`'s precedent — a copy held
+  letter for letter by a guard — which would make four guarded copies. The
+  alternative is a Slang module imported by every lit shader, which changes how
+  `crcbl-shaders`' build hashes sources. Not researched further.
+- **Decision: vertex colour as wind data.** 57's T1 bakes Crysis's bending data
+  into `MeshVertex::color` for wind-flagged meshes, moving that mesh's albedo
+  tint into its material. It needs no new vertex stream — the forward vertex
+  stage already binds every storage buffer a browser guarantees — but it changes
+  what one attribute means per mesh.
+- **Alpha-to-coverage is only on MSAA views**, which are off by default
+  ([49-antialiasing.md](plan/49-antialiasing.md)). Card grass and hair cards
+  therefore ship as cutouts with cooked coverage mips on the default view, and
+  their look on it is the one to price.
+- **Research not reachable, so not claimed in the plans**: the Sea of Thieves
+  water talk's video and any slides (only the SIGGRAPH 2018 abstract is
+  published); Acerola's videos (his repositories were read); Unreal's water and
+  groom source; public ocean talks for Ghost of Tsushima, Frostbite, Skull and
+  Bones and later Assassin's Creed titles; waterfall breakdowns for God of War,
+  Uncharted and Zelda; Assassin's Creed III and IV and Far Cry coastline
+  internals; Far Cry 5's wind runtime; primary sources for Breath of the Wild,
+  Genshin, Sable and Ghibli-style grass.
+- **Doc drift seen while surveying, not fixed** (out of the planning task's
+  scope): `docs/plan/00-overview.md` still says towers is missing from `apps/`,
+  which was built 2026-09-07; `README.md` says seventeen samples ship as browser
+  demos where `web/build.sh`'s `DEMOS` lists eighteen.
+
 ## Performance: VRAM, CPU and GPU cost (2026-09-15)
 
 The standing goal is the least VRAM, CPU and GPU time the engine can spend for

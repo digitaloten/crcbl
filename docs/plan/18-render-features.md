@@ -34,6 +34,9 @@ churned in a move commit.
 | Irradiance probes: the L1 grid                                          | [50-irradiance-probes.md](50-irradiance-probes.md) |
 | Volumetrics: height fog, the froxel column, light shafts                | [51-volumetrics.md](51-volumetrics.md)             |
 | Blended transparency: the sorted pass and its keys                      | [53-transparency.md](53-transparency.md)           |
+| Water: the surface pass, waves, foam, underwater                        | [55-water.md](55-water.md)                         |
+| Grass and vegetation wind: cards, blades, shells, trees                 | [57-grass.md](57-grass.md)                         |
+| Hair and fur: shells, cards, strands and their shading                  | [58-hair.md](58-hair.md)                           |
 
 **What this engine does not do at all** is a different question from how well it
 does these, and it is answered in one place:

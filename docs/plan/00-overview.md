@@ -153,6 +153,10 @@ Cross-cutting topic docs (identity, no ordering implied):
 | 52    | [52-debug-console.md](52-debug-console.md)         | The debug console: variables and commands declared beside the code        |
 | 53    | [53-transparency.md](53-transparency.md)           | Blended transparency: the sorted pass, its keys, and what it blocks       |
 | 54    | [54-android.md](54-android.md)                     | Android: the shell backend the platform is missing, and its device floor  |
+| 55    | [55-water.md](55-water.md)                         | Water: bodies, the surface pass, waves, foam and buoyancy                 |
+| 56    | [56-wind.md](56-wind.md)                           | Wind: the two-layer field, gusts, motors and every consumer               |
+| 57    | [57-grass.md](57-grass.md)                         | Grass and vegetation wind: cards, blades, shells, swaying trees           |
+| 58    | [58-hair.md](58-hair.md)                           | Hair and fur: shells, cards on simulated chains, strands                  |
 
 Sequencing is the [ROADMAP](ROADMAP.md)'s job: phases P0–P4A build the full
 engine base (window → render → sim → physics slice → UI slice → audio) before
@@ -165,18 +169,19 @@ baked in from the start — wasm is a first-class target, not a port.
 Each roadmap S-phase is proven by a **sample project** — small complete
 games/tools in `apps/`, numbered in build order: see
 [sample/00-samples-overview.md](sample/00-samples-overview.md), which is the
-canonical list and now runs to twenty documents (breakout, asteroids, horde,
-hud, viewer, orbit, towers, arena, puppet, sparks, breach, flappy, lantern,
-quarry, shard, bracket, mirrors, sundial, alcove, options).
+canonical list and now runs to twenty-three documents (breakout, asteroids,
+horde, hud, viewer, orbit, towers, arena, puppet, sparks, breach, flappy,
+lantern, quarry, shard, bracket, mirrors, sundial, alcove, options, tide,
+meadow, mane).
 
 **What is in `apps/` today, read from the tree on 2026-09-06**, is seventeen of
-those twenty — `breakout`, `asteroids`, `flappy`, `horde`, `hud`, `lantern`,
-`viewer`, `orbit`, `puppet`, `sparks`, `quarry`, `shard`, `breach`, `bracket`,
-`options`, `sundial` and `alcove` — beside three that are not samples at all:
-`apps/bare` (the engine used as a plain library, loop hand-written),
-`apps/sandbox` (the dev playground the first window lived in) and
-`apps/render-harness` (drives the backend-agnostic golden scenes through a
-browser). The three still missing are **towers**, **arena** and **mirrors**,
+the twenty documents that existed then — `breakout`, `asteroids`, `flappy`,
+`horde`, `hud`, `lantern`, `viewer`, `orbit`, `puppet`, `sparks`, `quarry`,
+`shard`, `breach`, `bracket`, `options`, `sundial` and `alcove` — beside three
+that are not samples at all: `apps/bare` (the engine used as a plain library,
+loop hand-written), `apps/sandbox` (the dev playground the first window lived
+in) and `apps/render-harness` (drives the backend-agnostic golden scenes through
+a browser). The three still missing are **towers**, **arena** and **mirrors**,
 which is worth knowing because exit criteria all over these documents name
 towers as the thing that proves them.
 [sample/00-samples-overview.md](sample/00-samples-overview.md) is the canonical

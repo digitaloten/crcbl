@@ -54,6 +54,9 @@ ships with spatial audio, and publishes as a wasm demo on the GitHub Pages site
 | 18  | [sundial](18-sundial.md)     | S4D (P7B–P7C)                | Shadow ladder: every filter, a moving sun, and somewhere for each named shadow artefact to appear                  |
 | 19  | [alcove](19-alcove.md)       | S4D (P7B–P7C)                | AO ladder: every occlusion technique, an AO-only view, and flat surfaces that hide nothing                         |
 | 20  | [options](20-options.md)     | S4E (P10)                    | Settings acceptance: the whole catalogue on a screen, saved and reloaded, on desktop and in a browser tab          |
+| 21  | [tide](21-tide.md)           | S4F (P7E)                    | Water acceptance: ocean, lake, river, waterfall, shore, pool and underwater, floated by the physics it draws       |
+| 22  | [meadow](22-meadow.md)       | S4G (P7D, P7F)               | Grass and wind acceptance: cards, blades and shells under one two-layer wind that also pushes bodies               |
+| 23  | [mane](23-mane.md)           | S4H (P7G)                    | Hair acceptance: fur, cards on simulated chains and strands, driven by the motion of what they hang from           |
 
 01–06 stay tiny (days, not weeks, each; hud is continuous — a P4 skeleton that
 grows until P10). 07 is the MVP-era flagship and long-lived dogfood. 08 exists
@@ -81,6 +84,18 @@ site leads with, since breach's competitive game never ships to a browser. 16 is
 a **tech demo with no game in it at all** — matchmaking, rating and ranked auth
 in isolation, which is the only way a matchmaker can be evaluated without a real
 playerbase.
+
+21, 22 and 23 are a **third wave of fixtures, planned 2026-09-15, and each
+proves an engine system rather than a technique**: water
+([../55-water.md](../55-water.md)), wind with grass and vegetation
+([../56-wind.md](../56-wind.md), [../57-grass.md](../57-grass.md)) and hair
+([../58-hair.md](../58-hair.md)). Their common subject is agreement between the
+readers of one field — the renderer drawing a wave, a gust or a strand, and the
+physics or animation that moves with it — so each measures that agreement, not
+only a picture. Each is a gallery of several scenes or looks in one sample
+rather than one sample per body of water or per style of grass, because the
+scenes share the system under test and would otherwise each repeat every
+registry a new demo joins. None has an `apps/` crate yet.
 
 **Where the ladder stands.** Every sample on it except arena (08) and mirrors
 (17) has an `apps/` crate that builds for `wasm32`, and every one of them but
