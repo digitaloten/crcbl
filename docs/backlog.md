@@ -3,6 +3,262 @@
 What was raised and not finished. A changelog says what shipped; this says what
 did not, and why. Delete an entry when it ships — `git log` is the history.
 
+## Performance: VRAM, CPU and GPU cost (2026-09-15)
+
+The standing goal is the least VRAM, CPU and GPU time the engine can spend for
+the frame it draws. These items come from a **read-only review** of the tree at
+`31dd606a` (VRAM, render-path CPU, GPU pass cost, non-render CPU). Nothing below
+was measured unless it says so: every number is a size formula worked for a
+named scene or an estimate, and each item names what to measure before and after
+it lands. **Windows- and macOS-only work is deferred**; where a fix has a D3D12
+or Metal half, the Vulkan and WebGPU halves go first and the rest stays here.
+
+Measured, once: a game scene of 17219 instance capacity and 938 buckets (`ew`,
+R700 scope on a 2 GiB GeForce MX550) aborted with `OutOfDeviceMemory`; temporary
+allocation logging showed 61.7 MiB per `visible and bucket runs` buffer and
+about 864 MiB of them per renderer.
+
+### Measurement first
+
+- **No memory accounting.** Add a `crcbl-vk` counter of allocation count and
+  bytes per `MemoryLocation`, with the top labels, reported after
+  `ForwardRenderer::with_scene` and after the first steady frame, and compared
+  against `VK_EXT_memory_budget` where the device has it. Every VRAM item below
+  is verified against it.
+- **No render CPU benchmark.** The only CPU span over recording is `DRAW_SPAN`
+  (`crates/crcbl/src/perf.rs`); `crcbl bench` has `jobs` and `phys` only. Add
+  spans around graph build, compile, execute and submit, a counting allocator
+  over a null-device frame, and `crcbl bench` scenarios for a rendered frame,
+  `phys-step`, `net-snapshot`, `client-interpolate`, `audio-mix` and an idle
+  menu loop.
+
+### VRAM
+
+- **P1 — `DrawGen`'s bucket runs reserve every instance in every bucket.**
+  `DrawGen::new` sizes `visible and bucket runs` as
+  `capacity * (1 + bucket_count) * 4` bytes and `DrawGen::bucket_base` places
+  bucket `b` at `capacity + b * capacity` (`draw_gen.slang` agrees), though an
+  instance lands in one bucket per pass. Seven generators (camera, two cascades,
+  four light slots) × `FRAMES_IN_FLIGHT` hold 14 of them; every `create_view`
+  adds two. **Fix:** count per bucket, prefix-sum on the GPU, then scatter into
+  a run region sized `capacity`; `DrawConstants::base` stops being fixed at
+  build and has to come from a per-bucket word the geometry stage reads.
+  Constraints: `draw_gen.slang` is at WebGPU's eight storage bindings; the
+  `first_instance = 0` rule in `mesh.slang`'s header; the overflow clamp becomes
+  per bucket. **Saving:** about 862 MiB in the measured scene.
+- **P2 — `lod group state` strides over every DAG group in the scene.**
+  `group_stride = level_groups.len()` and the state is
+  `capacity * group_stride * 4` per generator, but an instance reads only its
+  own mesh's `group_count`. **Fix:** stride by the largest single mesh's group
+  count and index by the local group; `ClusterDrawConstants::group_stride` and
+  `mesh_cluster.slang` change together. Log the stride for a real scene first —
+  an all-flat scene has a stride of one and this is moot there.
+- **P3 — GPU-only buffers are rings for no stated reason.** `runs`, `args`,
+  `counts` and `cull stats` in `DrawGen`, the light grid's froxel grid, the
+  cluster-selection rings (`View::cluster_selection`, and `shadow selection`
+  over `SHADOW_VIEWS`) are written and read by shaders inside one frame, unlike
+  host-written rings. **Fix:** one buffer each, imported per frame in
+  `ShaderReadWrite` as `group_state` already is; keep rings for host-written
+  data. Check the `cull_stats` copy stays inside its producing frame, and leave
+  the volumetric rings until they are shown not to be history.
+- **P4 — every light-slot generator is built whether or not a light is
+  shadowed.** Four `DrawGen`s in `build` ("the unused ones cost memory"). Cheap
+  once P1–P3 land; otherwise build a slot when a shadowed light first needs it,
+  outside `begin_frame`.
+- **P5 — the Vulkan backend allocates one `vkAllocateMemory` per resource.** See
+  "The Vulkan suballocator is still owed" below, whose trigger this goal fires:
+  hundreds of small uniforms are each an allocation against a guaranteed
+  `maxMemoryAllocationCount` of 4096, and large host-visible buffers fill the
+  256 MiB BAR heap first. **Fix:** blocks per memory type with a small-request
+  allocator, dedicated allocations for large ones or where
+  `VK_KHR_dedicated_allocation` asks, one mapping per host-visible block, ranges
+  returned through the deletion queue; the HAL seam does not change. The
+  `gpu-allocator` decision recorded below stands. D3D12
+  (`CreateCommittedResource`) and Metal (no `MTLHeap`) have the same shape and
+  are deferred.
+- **P6 — `motion` and `reflectivity` are allocated when nothing reads them.**
+  Both are forward-pass attachments on every frame (`View::add_passes`); nothing
+  reads `motion` yet, and `reflectivity` only serves SSR. Pipeline variants
+  without them, selected by effects and debug view. 7.9 MiB each at 1080p.
+- **P7 — transients alias only identical descriptions.** `graph.rs` `assign` and
+  `TransientPool::image` key on extent, format, usage, mips and samples, so
+  same-format images with different usage never share, and nothing plans memory
+  by lifetime. Normalise usage per format class; after P5, bind images to shared
+  memory by lifetime; retire an old extent when the timeline clears it rather
+  than after `RETIRE_AFTER_FRAMES` idle frames.
+- **P8 — the shadow atlas is `D32Float`.** 3072² at 36 MiB; `D16Unorm` halves
+  it. The bias constants are in texels and need retuning; goldens move.
+- **P9 — material pages are uncompressed RGBA8.** BC7/BC5/BC4 through an offline
+  encode in `crcbl-assets`, keeping RGBA8 for WebGPU devices without
+  `texture-compression-bc`. Saving depends on page extents, not measured.
+- **P10 — static and staging data sit in host-visible memory.** Cluster data
+  (`ClusterPool::new`) and draw tables are `HostUpload`; every one-shot staging
+  buffer is a full-size dedicated allocation; the instance ring is two
+  capacity-sized `HostUpload` buffers. Move static data to device-local, reuse
+  one growable staging buffer, and have apps size `scene::Capacities` from
+  content (`Capacities::default().instances` is `16 * 1024`).
+
+### Render-path CPU
+
+- **P11 — the Vulkan encoder pays a linear scan and a lock per bind and draw.**
+  `VkCommandEncoder::use_object` scans `references` on every bind, draw and
+  barrier; `bind_group` takes the device mutex, does three lookups and collects
+  the layout's dynamic entries into a fresh `Vec`; `resolve_pipeline`,
+  `indirect` and `indirect_count` take the mutex again. With one bind and draw
+  per bucket per view this is thousands of lock takes a frame. **Fix:** push
+  references unconditionally and sort/dedup at `finish`; store a layout's
+  dynamic kinds when the layout is created; cache handle → raw per encoder. The
+  deletion queue's completeness (VUID-03874) is the risk.
+- **P12 — the render graph allocates thousands of times a frame.** `String`
+  labels per pass and image, a `Vec` per pass access list, `ImageTracker`
+  transitions allocating per access, `emit` and `attachments` building `Vec`s
+  per batch, `ordinal` quadratic and run twice, `timing.rs` copying labels, and
+  `format!` labels in `forward.rs` and `forward/view.rs`. **Fix:**
+  `&'static str` or `Cow` labels, reused scratch vectors, `SmallVec` accesses,
+  ordinals computed once. Later: cache a compiled plan keyed by the declarations
+  and the pool's ending states.
+- **P13 — bucket partitions are rebuilt and cloned every frame.** `calls` is
+  rebuilt in `add_frame_passes` and `add_shadow_pass`, `partitions` allocates
+  per pipeline, and `View::add_passes` clones both lists per view — though
+  bucket modes are fixed at build. Build them once (`Arc<[BucketDraws]>` or
+  ranges).
+- **P14 — `cached_group` makes every caller allocate its entries on a hit.** It
+  takes `Vec<BindGroupEntry>` by value, so `mesh_group_entries[frame].clone()`
+  and the tonemap `vec![]` run every frame (19 call sites). Take a closure or a
+  slice and copy only on a miss.
+- **P15 — the sky LUT is re-encoded and rewritten every frame, per view.**
+  `SkyPass::begin_frame` writes `SkyView::rows()` (a 98 KiB `Vec`) whenever an
+  atmosphere is set, though `refresh_sky_view` usually changes nothing. Keep the
+  encoded bytes in `PresentedSky` with a generation, and write a slot only when
+  it is behind.
+- **P16 — instance uploads merge runs slowly and write one call per run.**
+  `DirtyRanges::mark` inserts into a sorted `Vec` (quadratic for scattered
+  writes); `flush` makes one locked `write_buffer` per run. Merge runs across
+  small gaps, track dirtiness per slot as a bitset, and add a batched write with
+  a per-call fallback.
+- **P17 — a command pool is created and destroyed every frame.**
+  `VkCommandEncoder::begin` creates a pool and `destroy_command_buffer` destroys
+  it. One pool per in-flight slot, reset once `retire_to` confirms completion.
+- **P18 — smaller per-frame costs.** SipHash `HashMap`s in `TransientPool`
+  looked up three times per transient; `submit` and `poll_retire` scanning the
+  deletion queue per reference even when it is empty, and `RetireQueue::retire`
+  removing by index in a loop; `begin_frame`'s `rows`, shadow
+  `views`/`culls`/`layout`, `shadow_group_record` `Vec<u8>` and
+  `light_grid.rs`'s per-view zero vector; extent-only blocks (bloom, fxaa,
+  cmaa2, upscale) rewritten every frame.
+- **P19 — blocking waits hold the device mutex.** `acquire_next_frame` waits on
+  fences and `acquire_next_image` with `u64::MAX`, and `wait_until_presented`
+  waits for present, all under `state()`. Harmless single-threaded; a stall for
+  a vsync once any worker calls the device. Release the lock around the wait.
+
+### GPU time
+
+- **P20 — `draw_gen.slang` searches every bucket for each survivor.** Its
+  scatter loops `bucket < bucket_count` reading the tables twice per step, per
+  visible instance, per generator: O(visible × buckets) — about nine million
+  reads a view in the measured scene (estimate). **Fix:** a
+  `(level mesh, mode) → bucket` table written at build, making the scatter O(1).
+- **P21 — one bind and one indirect call per bucket per pass per view.**
+  `BucketDraws::record` issues a call for every bucket, empty or not, in the
+  prepass, the forward pass and every shadow view — about ten thousand calls a
+  frame with 938 buckets and a point light. **Fix (Vulkan first):** contiguous
+  bucket ranges per partition and one `DrawIndexedIndirectCount` per range, with
+  the per-bucket constants moved out of the dynamic uniform. WebGPU needs
+  `indirect-first-instance`; the current path stays as the fallback, and the
+  one-call-per-bucket tests change.
+- **P22 — the shadow cache breaks on any camera move or any instance change.**
+  `shadow_group_record` hashes the global `InstancePool::revision` and the
+  camera's selection eye for every group, so light maps that do not depend on
+  the camera redraw as it moves and one mover redraws every tile; holds are also
+  off while anything skins or the probe updater runs. **Fix:** key the eye only
+  where DAG LOD reads it, quantised; per-group dirtiness from moved instances'
+  bounds against each group's frustum; consider `r_shadow_cadence = 2` for tier
+  one and up.
+- **P23 — probe irradiance does 32–64 loads per fragment with no early-out.**
+  `probe_irradiance` evaluates eight corners (sixteen in the level blend), each
+  with four `Load`s and a `GetDimensions`, even with zero probes or the 1×1
+  visibility placeholder; `ssr.slang` repeats it before its own early-out.
+  **Fix:** uniform branches for no probes and no captured visibility, hoist
+  `GetDimensions`; optionally one bilinear sample, which moves goldens.
+- **P24 — the sun's PCSS always runs a 16-tap blocker search.**
+  `cascade_visibility` searches before `tile_pcf`'s five-tap probe and repeats
+  for the next cascade in the fade band. Run the probe first and return on
+  all-lit or all-shadowed.
+- **P25 — no occlusion or small-feature culling, and point lights draw their
+  whole sphere into all six faces.** `cull.slang` tests planes only; the Hi-Z
+  pyramid exists only for SSR. Reuse last frame's pyramid for a conservative
+  reprojected test, add a projected-size cull, and cull point-light faces
+  separately (watch the VRAM of per-face runs against P1).
+- **P26 — the probe updater regathers every probe every frame.** Round-robin a
+  fraction per frame and regather only on change; while it is on nothing in the
+  atlas is held. `rsm-punctual` records with zero faces.
+- **P27 — SSR marches at full resolution** (96 steps) and computes the
+  environment before its cheap exits. Half resolution with a depth-aware
+  upsample, and the early-outs first.
+- **P28 — light clustering redoes per-tile work per froxel, every frame.**
+  `light_cluster.slang` unprojects four corners and takes a `pow` per froxel and
+  loops all lights per froxel. Per-tile light lists then a per-froxel depth
+  test; skip the dispatch when neither the camera nor the lights moved.
+- **P29 — smaller GPU items.** Pages sampled for materials that have none (a
+  pipeline variant or uniform branch — check WGSL's uniformity rule); the
+  exposure histogram bins every full-resolution texel (sample every fourth, or a
+  bloom mip); `bloom-composite` is a full-resolution copy the tonemap could fold
+  in; volumetric fog dispatches at zero density and runs a 37-tap PCF per
+  froxel.
+- **P30 — the exposure histogram dispatch exceeds Vulkan's guaranteed work-group
+  count at 4K.** `texels.div_ceil(64)` is 129600 at 3840×2160, over the minimum
+  `maxComputeWorkGroupCount[0]` of 65535. A correctness bug on devices at the
+  minimum, not a speed one; fix with a 2D dispatch.
+
+### Non-render CPU
+
+- **P31 — an idle frame spins.** `Loop::frame` waits a fixed `WINDOWED_IDLE` of
+  4 ms for events before the limiter runs, `FrameLimit::DEFAULT_FPS` is 1000,
+  and nothing throttles an unfocused or minimised window, so a menu on a
+  non-blocking present mode renders at 150–250 fps (estimate). **Fix:** fold the
+  event wait into the pacer's deadline, cap non-FIFO modes at the display rate,
+  and a background policy (unfocused ≈ 30 fps, minimised waits for events and
+  skips drawing).
+- **P32 — `spin_until` busy-spins up to half of each period.** `SPIN_GUARD` is
+  100 µs but the slack is capped only at `SLACK_PERIOD_SHARE` of the period. Cap
+  the spin absolutely and skip it under FIFO.
+- **P33 — `PhysicsSystem::step` allocates, sorts and refits every step.** Four
+  SipHash `HashMap<Entity, _>`s, `keys().collect()` plus a sort per step, about
+  six lookups per body, and `set_*` → `Bvh::update_aabb` for every body whether
+  it moved or not, walking to the root. **Fix:** a dense store kept in entity
+  order, skip unchanged transforms, fat AABBs with early-exit refits.
+  Determinism is the constraint: keep ascending entity order and check
+  closest-hit tie breaking against tree shape.
+- **P34 — the server re-serialises and re-hashes the whole world every tick.**
+  `emit_snapshot` → `collect_systems` allocates a `HashSet`, a `String` per
+  system and a `Vec` per system; `Baseline::from_snapshot` builds nested
+  `HashMap`s with one blob per entity; `encode_from_baseline` looks up and
+  clones per entity. **Also a determinism bug:** `added`/`modified` follow
+  `HashMap` iteration order, so delta bytes differ between processes. **Fix:** a
+  sorted arena baseline and a merge-join diff into a reused buffer.
+- **P35 — the client builds a `HashMap` per packet and sorts per
+  `interpolate`.** `frame_from_baseline` and `interpolate` (called every render
+  frame). Sorted frames and an allocation-free `interpolate_into`.
+- **P36 — the jobs pool spins and wakes everyone** (latent: the engine does not
+  use it yet). A `yield_now` driver loop, `notify_all` per submission, parking
+  after one failed steal, shared counters bouncing between cores.
+- **P37 — the audio mixer holds a mutex for the whole block.** `fill` locks
+  voices while mixing; game-thread calls take the same lock, and the audio
+  thread can free sample data. SPSC command ring, atomics for gains.
+- **P38 — UI text and triangles allocate per frame.** `DrawCommand::Text` owns a
+  `String` per label per frame, and `to_triangles_split` allocates its vectors.
+  A text arena and `to_triangles_into`.
+
+### Checked and fine
+
+Log macros test the level before formatting; disabled tracing is one atomic
+load; the debug overlay and console return early when hidden; animation sampling
+does not allocate; ECS schedules run without archetype moves; tick catch-up is
+capped; steady-state frames make no descriptor writes (`adopt_page_sampler` and
+`refresh_sky_view` return early); the depth prepass with a read-only
+`GreaterOrEqual` colour pass removes overdraw; SSAO already runs at half
+resolution.
+
 ## D3D12 on hardware: what structured storage views made visible (2026-09-15)
 
 Until storage buffers became structured views, no shader on a D3D12 **hardware**
