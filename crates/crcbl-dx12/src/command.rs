@@ -294,6 +294,50 @@ pub(crate) struct Dx12CommandEncoder {
     /// boundaries are two ordinary calls, and this carries the second one from
     /// the pass's opening to its close.
     pass_end_timestamp: Option<(ID3D12QueryHeap, D3D12_QUERY_TYPE, u32)>,
+    /// Debug-event nesting, so an unbalanced
+    /// [`end_debug_label`](CommandEncoder::end_debug_label) is dropped rather
+    /// than closing an event nobody opened, and so `finish` can close what is
+    /// still open. `crcbl-vk` keeps the same count for the same reasons.
+    label_depth: u32,
+    /// Whether the open render pass opened an event of its own, so its close
+    /// pops that one rather than a caller's enclosing label. See `crcbl-vk`'s
+    /// field of the same name for the defect that shape prevents.
+    render_pass_label: bool,
+    /// The same, for the open compute pass.
+    compute_pass_label: bool,
+}
+
+/// `WINPIX_EVENT_UNICODE_VERSION` — the `Metadata` value that says an event's
+/// payload is a NUL-terminated UTF-16 string.
+///
+/// This is the encoding PIX defined before `WinPixEventRuntime` existed, and
+/// the one PIX and RenderDoc both still decode from a bare
+/// `ID3D12GraphicsCommandList::BeginEvent`, so no library is needed to emit a
+/// named region.
+const PIX_EVENT_UNICODE_VERSION: u32 = 0;
+
+/// The most UTF-16 code units of a label an event carries, NUL excluded.
+///
+/// A capture tool shows a region's name on one line, so nothing is lost by
+/// the cap; what it buys is that the payload's byte length always fits the
+/// `u32` `BeginEvent` takes, by construction rather than by a check at every
+/// call.
+const PIX_EVENT_MAX_UNITS: usize = 1 << 16;
+
+/// `label` as the payload [`PIX_EVENT_UNICODE_VERSION`] describes: UTF-16 with
+/// a terminating NUL, cut at [`PIX_EVENT_MAX_UNITS`].
+fn pix_event_payload(label: &str) -> Vec<u16> {
+    label
+        .encode_utf16()
+        .take(PIX_EVENT_MAX_UNITS)
+        .chain(core::iter::once(0))
+        .collect()
+}
+
+/// The byte length `BeginEvent` and `SetMarker` are told a payload has.
+fn pix_payload_bytes(payload: &[u16]) -> u32 {
+    u32::try_from(core::mem::size_of_val(payload))
+        .expect("PIX_EVENT_MAX_UNITS keeps every payload's byte length inside a u32")
 }
 
 impl core::fmt::Debug for Dx12CommandEncoder {
@@ -329,6 +373,9 @@ impl Dx12CommandEncoder {
             in_compute_pass: false,
             resolves: Vec::new(),
             pass_end_timestamp: None,
+            label_depth: 0,
+            render_pass_label: false,
+            compute_pass_label: false,
         };
         // The queue check comes first and is the one failure here that is a
         // caller bug rather than a driver refusal — a queue from another device
@@ -346,6 +393,26 @@ impl Dx12CommandEncoder {
             Err(error) => encoder.fail(error),
         }
         encoder
+    }
+
+    /// Closes every debug event the caller left open, so the list a capture
+    /// tool reads is balanced whatever the caller did. `finish` calls it.
+    ///
+    /// Its own method because nothing in D3D12 would notice it missing: the
+    /// debug layer does not check `BeginEvent` against `EndEvent` — measured by
+    /// removing this loop, which left every validated test green — so the depth
+    /// it drives to zero is what the test reads instead.
+    pub(crate) fn close_open_labels(&mut self) {
+        while self.label_depth > 0 {
+            self.end_debug_label();
+        }
+    }
+
+    /// How many debug events are open, for the test that holds the bookkeeping
+    /// the debug layer does not check.
+    #[cfg(test)]
+    pub(crate) const fn label_depth(&self) -> u32 {
+        self.label_depth
     }
 
     /// The list, or `None` once something has failed.
@@ -1345,19 +1412,58 @@ fn set_root_descriptor(list: &ID3D12GraphicsCommandList, compute: bool, root: Bo
 impl CommandEncoder for Dx12CommandEncoder {
     // --- debug ---
 
-    /// Accepted and dropped.
+    /// Opens a PIX event, in the payload encoding [`PIX_EVENT_UNICODE_VERSION`]
+    /// names.
     ///
-    /// A D3D12 debug region is a PIX event, whose payload format belongs to
-    /// `WinPixEventRuntime` rather than to D3D12 — which is exactly why
-    /// `crate::adapter` does not report
-    /// [`Features::DEBUG_MARKERS`](crcbl_hal::Features::DEBUG_MARKERS), and why
-    /// the seam documents a marker as degrading rather than failing when it is
-    /// absent.
-    fn begin_debug_label(&mut self, _label: &str) {}
+    /// Recorded on the command list itself, so a capture shows the region
+    /// where the commands inside it are — which is what
+    /// [`Features::DEBUG_MARKERS`](crcbl_hal::Features::DEBUG_MARKERS) promises
+    /// and why `crate::adapter` reports it.
+    fn begin_debug_label(&mut self, label: &str) {
+        let Some(list) = self.list() else { return };
+        let payload = pix_event_payload(label);
+        // SAFETY: `list` is live and recording, and `payload` is a live local
+        // whose byte length is what `size` passes; D3D12 copies the payload
+        // before returning.
+        unsafe {
+            list.BeginEvent(
+                PIX_EVENT_UNICODE_VERSION,
+                Some(payload.as_ptr().cast()),
+                pix_payload_bytes(&payload),
+            );
+        }
+        self.label_depth += 1;
+    }
 
-    fn end_debug_label(&mut self) {}
+    fn end_debug_label(&mut self) {
+        if self.label_depth == 0 {
+            return;
+        }
+        // Decremented whatever happens below, so `finish`'s closing loop always
+        // reaches zero.
+        self.label_depth -= 1;
+        // Not gated on the failure flag, for `end_render_pass`'s reason: an
+        // event left open is a capture tree folded into the wrong region, and
+        // the list is still recording whether or not a command was refused.
+        let Some(list) = self.list.as_ref() else {
+            return;
+        };
+        // SAFETY: `list` is live and recording, and an event is open on it.
+        unsafe { list.EndEvent() };
+    }
 
-    fn insert_debug_marker(&mut self, _label: &str) {}
+    fn insert_debug_marker(&mut self, label: &str) {
+        let Some(list) = self.list() else { return };
+        let payload = pix_event_payload(label);
+        // SAFETY: as for `begin_debug_label`.
+        unsafe {
+            list.SetMarker(
+                PIX_EVENT_UNICODE_VERSION,
+                Some(payload.as_ptr().cast()),
+                pix_payload_bytes(&payload),
+            );
+        }
+    }
 
     // --- sync ---
 
@@ -1817,6 +1923,10 @@ impl CommandEncoder for Dx12CommandEncoder {
             list.RSSetScissorRects(&[area]);
             list.OMSetStencilRef(crcbl_hal::stencil::INITIAL_REFERENCE);
         }
+        if let Some(label) = desc.label {
+            self.begin_debug_label(label);
+            self.render_pass_label = true;
+        }
         self.open_pass_timestamps("begin_render_pass", desc.timestamp_writes);
         self.in_render_pass = true;
     }
@@ -1839,6 +1949,9 @@ impl CommandEncoder for Dx12CommandEncoder {
         // output merger still holds a descriptor for.
         self.record_resolves();
         self.close_pass_timestamps();
+        if core::mem::take(&mut self.render_pass_label) {
+            self.end_debug_label();
+        }
     }
 
     /// Sets the viewport, one to one.
@@ -2268,6 +2381,10 @@ impl CommandEncoder for Dx12CommandEncoder {
             ));
             return;
         }
+        if let Some(label) = desc.label {
+            self.begin_debug_label(label);
+            self.compute_pass_label = true;
+        }
         self.open_pass_timestamps("begin_compute_pass", desc.timestamp_writes);
         self.in_compute_pass = true;
     }
@@ -2282,6 +2399,9 @@ impl CommandEncoder for Dx12CommandEncoder {
         self.in_compute_pass = false;
         self.compute = None;
         self.close_pass_timestamps();
+        if core::mem::take(&mut self.compute_pass_label) {
+            self.end_debug_label();
+        }
     }
 
     /// Binds a compute pipeline state object and its root signature.
@@ -2528,6 +2648,7 @@ impl CommandEncoder for Dx12CommandEncoder {
                 "finish with a compute pass still open".to_string(),
             ));
         }
+        self.close_open_labels();
         if let Some(error) = self.failed.take() {
             return Err(error);
         }
@@ -2766,5 +2887,43 @@ impl Dx12CommandEncoder {
             release_location(&mut texture);
             release_location(&mut placed);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The payload is the label in UTF-16 with one terminating NUL, and its byte
+    /// length is two per code unit — what `BeginEvent`'s `Size` must say, since
+    /// a length one unit short cuts the NUL and a capture tool reads past it.
+    #[test]
+    fn a_pix_payload_is_nul_terminated_utf16_and_its_size_counts_every_byte() {
+        let payload = pix_event_payload("forward");
+        assert_eq!(payload.last(), Some(&0));
+        assert_eq!(
+            String::from_utf16(&payload[..payload.len() - 1]).expect("valid UTF-16"),
+            "forward"
+        );
+        assert_eq!(pix_payload_bytes(&payload), 16);
+
+        // A character outside the BMP is two code units, so counting `char`s
+        // instead of units would under-report the size.
+        let wide = pix_event_payload("shadow 🌒");
+        assert_eq!(wide.len(), "shadow 🌒".encode_utf16().count() + 1);
+        assert_eq!(pix_payload_bytes(&wide) as usize, wide.len() * 2);
+
+        let empty = pix_event_payload("");
+        assert_eq!(empty, [0]);
+    }
+
+    /// A label past the cap is cut there rather than making a size that does
+    /// not fit `BeginEvent`'s `u32`.
+    #[test]
+    fn a_pix_payload_is_cut_at_the_cap() {
+        let long = "x".repeat(PIX_EVENT_MAX_UNITS + 7);
+        let payload = pix_event_payload(&long);
+        assert_eq!(payload.len(), PIX_EVENT_MAX_UNITS + 1);
+        assert_eq!(payload.last(), Some(&0));
     }
 }

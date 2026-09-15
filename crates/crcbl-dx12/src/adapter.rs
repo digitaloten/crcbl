@@ -611,11 +611,17 @@ fn device_type_of(raw: &RawCaps) -> DeviceType {
 ///   ranges D3D12 accepts, and the seam's limit has no way to say "shared with
 ///   your bind groups".
 ///
+/// * [`Features::DEBUG_MARKERS`] — **unconditional, and there is no query to
+///   make.** `BeginEvent`, `EndEvent` and `SetMarker` are methods of every
+///   `ID3D12GraphicsCommandList`. It used to be withheld on the grounds that a
+///   PIX event's payload format belongs to `WinPixEventRuntime`, a library this
+///   workspace does not depend on; that is true of PIX's newer encoding and not
+///   of the one `WINPIX_EVENT_UNICODE_VERSION` names, a plain UTF-16 string
+///   that PIX and RenderDoc both decode from the bare calls. `crate::command`
+///   records that encoding, so no dependency was needed.
+///
 /// # Absent, with the reason for each
 ///
-/// * [`Features::DEBUG_MARKERS`] — PIX events go through `WinPixEventRuntime`,
-///   a library this workspace does not depend on, so this needs a decision
-///   before it needs a slice.
 /// * [`Features::ASYNC_COMPUTE_QUEUE`] and [`Features::TRANSFER_QUEUE`] —
 ///   `D3D12_COMMAND_LIST_TYPE_COMPUTE` and `_COPY` are exactly these, and
 ///   `crcbl_hal::QueueKind` already records that as why it is not named
@@ -660,6 +666,7 @@ fn features_of(raw: &RawCaps) -> Features {
         | Features::INDIRECT_FIRST_INSTANCE
         | Features::PRESENT_FEEDBACK
         | Features::PUSH_CONSTANTS
+        | Features::DEBUG_MARKERS
         | Features::TIMELINE_SEMAPHORE
         | Features::TIMESTAMP_QUERY
         | Features::OCCLUSION_QUERY

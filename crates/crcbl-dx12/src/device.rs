@@ -9753,6 +9753,134 @@ pub(crate) mod tests {
         device.destroy_image(target);
     }
 
+    /// Debug labels record as PIX events and a command list full of them still
+    /// submits and runs, whatever shape the caller's nesting took.
+    ///
+    /// Every shape `crate::command`'s bookkeeping exists for is here: a labelled
+    /// render pass and a labelled compute pass inside a caller's label, so each
+    /// pass must close its own event and not the caller's; an
+    /// `end_debug_label` with nothing open, which must be dropped; and a label
+    /// left open at `finish`, which must be closed there.
+    ///
+    /// **The debug layer does not check event balance** — removing
+    /// `close_open_labels` from `finish` left this test green under validation —
+    /// so the bookkeeping is asserted on the encoder's own open-event depth,
+    /// after every step, on the concrete `Dx12CommandEncoder`. The rest is what
+    /// only a device can say: that `finish` hands back a command buffer, that it
+    /// submits and the queue drains, that the clear inside the labelled pass
+    /// still lands — so the events did not swallow the commands between them —
+    /// and that the debug layer said nothing, which `open_device`'s teardown
+    /// asserts.
+    #[test]
+    #[ignore = "needs a real D3D12 device; run tests/run-dx12-e2e.sh"]
+    fn debug_labels_record_around_passes_and_unbalanced_ones_do_not_break_the_list() {
+        let (_instance, device) = open_device();
+        assert!(
+            device.caps().supports(Features::DEBUG_MARKERS),
+            "the adapter reports DEBUG_MARKERS, so the device must carry it"
+        );
+        let (target, view) = color_target(&device);
+        let readback = readback_buffer(&device, TARGET_BYTES);
+        let pass = clear_pass(
+            view,
+            CLEAR,
+            LoadOp::Clear,
+            Rect2d::from_size(TARGET.width, TARGET.height),
+        );
+
+        let range = ImageSubresourceRange::all(Format::Rgba8Unorm);
+        let queue = device
+            .queue(QueueKind::Graphics)
+            .expect("the graphics queue exists");
+
+        let mut encoder = Dx12CommandEncoder::new(
+            Arc::clone(&device.inner),
+            &CommandEncoderDesc {
+                label: Some("crcbl-dx12 labelled encoder"),
+                queue,
+            },
+        );
+        encoder.end_debug_label();
+        assert_eq!(
+            encoder.label_depth(),
+            0,
+            "an end with nothing open is dropped"
+        );
+        encoder.begin_debug_label("crcbl-dx12 frame");
+        encoder.insert_debug_marker("crcbl-dx12 before the pass");
+        assert_eq!(encoder.label_depth(), 1, "a marker opens nothing");
+        encoder.pipeline_barrier(&Barriers {
+            images: &[ImageBarrier::new(
+                target,
+                range,
+                ResourceState::Undefined,
+                ResourceState::ColorAttachment,
+            )],
+            ..Barriers::default()
+        });
+        encoder.begin_render_pass(&pass.desc());
+        assert_eq!(
+            encoder.label_depth(),
+            2,
+            "a labelled pass opens its own event"
+        );
+        encoder.end_render_pass();
+        assert_eq!(
+            encoder.label_depth(),
+            1,
+            "the pass closes its own event and leaves the caller's open"
+        );
+        encoder.begin_compute_pass(&ComputePassDesc {
+            label: Some("crcbl-dx12 empty compute"),
+            timestamp_writes: None,
+        });
+        assert_eq!(encoder.label_depth(), 2);
+        encoder.end_compute_pass();
+        assert_eq!(encoder.label_depth(), 1);
+        encoder.pipeline_barrier(&Barriers {
+            images: &[ImageBarrier::new(
+                target,
+                range,
+                ResourceState::ColorAttachment,
+                ResourceState::TransferSrc,
+            )],
+            ..Barriers::default()
+        });
+        encoder.copy_image_to_buffer(&whole_image_copy(readback, 0, target));
+        encoder.begin_debug_label("crcbl-dx12 left open for finish");
+        assert_eq!(encoder.label_depth(), 2);
+        encoder.close_open_labels();
+        assert_eq!(
+            encoder.label_depth(),
+            0,
+            "finish's closing step leaves no event open"
+        );
+        // Opened again, so the `finish` below has something left to close.
+        encoder.begin_debug_label("crcbl-dx12 left open for finish");
+
+        let buffer = Box::new(encoder)
+            .finish()
+            .unwrap_or_else(|error| panic!("stage=finish: {error:?}"));
+        device
+            .submit(queue, &SubmitInfo::new(&[buffer]))
+            .unwrap_or_else(|error| panic!("stage=submit: {error:?}"));
+        device
+            .wait_idle()
+            .unwrap_or_else(|error| panic!("stage=wait_idle: {error:?}"));
+        device.destroy_command_buffer(buffer);
+
+        let bytes = read_back(&device, readback, TARGET_BYTES);
+        assert_eq!(
+            bytes,
+            expected(CLEAR_TEXEL),
+            "the clear inside the labelled pass must still land"
+        );
+
+        device.destroy_buffer(readback);
+        device.destroy_image_view(view);
+        device.destroy_image(target);
+    }
+
     /// A destroyed command buffer stops resolving, so a second submission of it
     /// is a stale handle rather than a second execution.
     #[test]

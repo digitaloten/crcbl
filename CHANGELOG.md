@@ -84,6 +84,17 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- **`crcbl-dx12` records debug labels, and reports `Features::DEBUG_MARKERS`.**
+  `CommandEncoder::begin_debug_label`, `end_debug_label` and
+  `insert_debug_marker` were accepted and dropped on D3D12, so a PIX or
+  RenderDoc capture of a D3D12 frame showed one flat list of commands where a
+  Vulkan capture showed every pass by name. They now record
+  `ID3D12GraphicsCommandList::BeginEvent`, `EndEvent` and `SetMarker` in PIX's
+  UTF-16 event encoding, which both tools decode with no `WinPixEventRuntime`
+  dependency; a labelled render or compute pass opens an event of its own, an
+  unbalanced `end_debug_label` is dropped, and `finish` closes any label still
+  open — the same rules `crcbl-vk` follows.
+
 - **towers grows milestone 1's combat content** —
   `docs/plan/sample/07-towers.md`'s slice 3a. Three tower kinds where there was
   one: the single-target **bolt** tower, a **splash** tower whose shot raises an
