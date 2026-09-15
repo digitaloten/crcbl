@@ -152,7 +152,13 @@ jobs:
       # had been masked all along. After a dependency lands, or after this file
       # changes, trigger it deliberately with `gh workflow run cron.yml` instead
       # of waiting for a Monday to tell you.
-      - run: cargo miri setup
+      #
+      # `CARGO_BUILD_WARNINGS=warn` for the sysroot build only, for the reason
+      # on the same step of `ci.yml`'s `miri-jobs`: `setup-rust-toolchain@v2`
+      # denies warnings, and cargo-miri's generated sysroot manifest carries one.
+      # The test step keeps `deny`, which is also this job's only warning gate
+      # now that v2 no longer defaults `RUSTFLAGS` to `-D warnings`.
+      - run: CARGO_BUILD_WARNINGS=warn cargo miri setup
       # **`--tests`, and it is load-bearing rather than tidy.** Without it cargo
       # also *builds* every example of every crate named here, and
       # `crcbl-jobs`' `web_worker_gate` is a `cdylib` — which miri's target does

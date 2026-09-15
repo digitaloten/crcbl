@@ -511,7 +511,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: miri-jobs
-      - run: cargo miri setup
+      # **`build.warnings` is relaxed for the sysroot build and nothing else.**
+      # `setup-rust-toolchain@v2` exports `CARGO_BUILD_WARNINGS=deny` for every
+      # later step, and the throwaway `custom-local-sysroot` manifest
+      # `cargo miri setup` writes to build std trips cargo's
+      # `unused_dependencies` lint on its own `sysroot` dependency — so the step
+      # died with "warnings are denied by `build.warnings` configuration" before
+      # building anything of ours (the v2 bump's first run, 2026-09-14). That
+      # manifest is cargo-miri's, not this workspace's. The test step below
+      # keeps `deny`: checked locally, `cargo miri test` under `deny` reuses the
+      # sysroot built here rather than rebuilding it.
+      - run: CARGO_BUILD_WARNINGS=warn cargo miri setup
       - name: Interpret the job system's concurrent unsafe
         run: cargo miri test --tests -p crcbl-jobs
 
