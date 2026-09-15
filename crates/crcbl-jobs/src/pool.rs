@@ -101,7 +101,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError};
 
 use crate::deque::{self, Steal};
 use crate::spawn::{Spawn, SpawnError};
@@ -407,6 +407,35 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Takes one of the pool's locks **from the thread that called `par_for`**,
+/// which may be one forbidden to block.
+///
+/// `crate::workers`' `hold` is the same function for the same reason, and its
+/// docs have the whole argument: on `wasm32` with atomics a contended std
+/// `Mutex::lock` falls through to `futex_wait` and so to `Atomics.wait`, which
+/// a browser's main thread throws on rather than blocking in, while `try_lock`
+/// is one `compare_exchange` with no futex path. `lock` above is what a worker
+/// uses, because a worker is a thread that may block.
+///
+/// **This was a real failure, not a theory.** `threaded wasm gates (linux)`
+/// went red on 2026-09-15 with `RuntimeError: Atomics.wait cannot be called in
+/// this context` out of `Pool::run_in_parallel` into `Mutex::lock_contended`:
+/// the driver took the sleep lock to count its submission at the moment a
+/// worker held it to park. Intermittent, because it needs that overlap.
+///
+/// Spinning terminates because no critical section on these locks waits while
+/// holding them: a worker's `Condvar::wait` releases the lock for the whole of
+/// its sleep, and everything else under them is a few field writes.
+fn lock_from_the_caller<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    loop {
+        match mutex.try_lock() {
+            Ok(guard) => return guard,
+            Err(TryLockError::Poisoned(poisoned)) => return poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => core::hint::spin_loop(),
+        }
+    }
+}
+
 impl Pool {
     /// Builds a pool sized to the machine, through `spawner`.
     ///
@@ -587,7 +616,7 @@ impl Pool {
         // decrements it only after it has finished *and* let go of everything it
         // borrowed from `job`. So this is the only reference left, and the panic
         // — if there was one — belongs to the calling thread now.
-        if let Some((_, panic)) = lock(&job.panic).take() {
+        if let Some((_, panic)) = lock_from_the_caller(&job.panic).take() {
             resume_unwind(panic);
         }
     }
@@ -647,7 +676,7 @@ impl Pool {
             .fetch_max(queued, Ordering::Relaxed);
 
         let parked = {
-            let mut sleep = lock(&self.shared.sleep);
+            let mut sleep = lock_from_the_caller(&self.shared.sleep);
             sleep.submissions += 1;
             sleep.parked
         };
@@ -691,7 +720,7 @@ impl Pool {
 impl Drop for Pool {
     fn drop(&mut self) {
         {
-            let mut sleep = lock(&self.shared.sleep);
+            let mut sleep = lock_from_the_caller(&self.shared.sleep);
             sleep.shutdown = true;
         }
         // Unconditionally, unlike a submission: shutdown happens once, so

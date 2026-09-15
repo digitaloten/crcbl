@@ -1251,6 +1251,16 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Fixed
 
+- **`Pool::par_for` no longer throws on a browser's main thread when a worker is
+  parking.** The calling thread took the pool's sleep lock with `Mutex::lock` to
+  count its submission, and on `wasm32` with atomics a contended std mutex waits
+  through `Atomics.wait` — which a browser's main thread refuses with
+  `RuntimeError: Atomics.wait cannot be called in this context`. It needed a
+  worker to be holding the lock at that instant, so it surfaced intermittently
+  in the threaded demos. The calling thread now takes the pool's locks with
+  `try_lock` and spins, as `crcbl_jobs::workers` already did for its own queue;
+  workers, which may block, are unchanged.
+
 - **Vulkan presents to a Win32 window.** `crcbl-vk` refused
   `SurfaceTarget::Win32` with "Win32 surfaces land at P14", so on Windows every
   sample opened its window, opened the Vulkan backend and then exited at
