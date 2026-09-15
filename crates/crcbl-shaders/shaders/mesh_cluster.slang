@@ -871,7 +871,7 @@ struct ClusterPayload
     uint instance;
 };
 
-/// Where this bucket's run of visible instances starts, and which clusters its
+/// Where to find this bucket's run of visible instances, and which clusters its
 /// mesh owns. Matching `crcbl_shaders::meshlet::ClusterDrawConstants`.
 ///
 /// A block of its own rather than `mesh.slang`'s `DrawConstants`, because it
@@ -880,9 +880,12 @@ struct ClusterPayload
 /// raster path uses for its own.
 struct ClusterDrawConstants
 {
-    /// This bucket's first slot in `visible_instances`, added to the group's
-    /// instance slot.
-    uint base;
+    /// The word of `visible_instances` holding where this bucket's run starts
+    /// **this frame** — the same word `mesh.slang`'s `DrawConstants::start_at`
+    /// names, whose header says why a start the GPU decides per frame reaches a
+    /// stage through a word of the run's own buffer. The group's instance slot
+    /// is added to the start read there.
+    uint start_at;
     /// This bucket's mesh's first cluster in `clusters`.
     uint cluster_base;
     /// How many clusters that mesh has. The dispatch's x extent is this number
@@ -1550,7 +1553,8 @@ void emit_cluster(
     // The instance names its mesh and the mesh names its vertices, exactly as
     // in `mesh.slang`: nothing on this path came from the dispatch, which is
     // what lets one bucket cover whatever culling left it.
-    GpuInstance instance = instances[visible_instances[draw.base + instance_slot]];
+    uint run = visible_instances[draw.start_at];
+    GpuInstance instance = instances[visible_instances[run + instance_slot]];
     GpuMesh mesh = meshes[instance.mesh];
 
     // The overlay colour, chosen once for the whole cluster rather than per
@@ -1698,6 +1702,12 @@ void meshMain(
 /// count hold whatever the buffer last had — from ever reaching `instances` as
 /// an index.
 ///
+/// Slot zero of a bucket that drew nothing is in bounds too, **and that is the
+/// layout's doing rather than this stage's**: such a bucket can start one word
+/// past the run region, and `draw_gen.slang` puts the per-bucket starts there,
+/// so the word read is a start rather than the end of the buffer. See its
+/// `visible_instances` declaration.
+///
 /// The counters are one atomic per invocation and no more, as they were when
 /// there was a single one: the verdict picks the word, and the `if` around it
 /// replaces the add of zero this used to do for a group outside the cut. It is
@@ -1709,7 +1719,8 @@ void taskMain(uint3 group: SV_GroupID)
 {
     uint active = group_is_live(group);
     Meshlet cluster = clusters[draw.cluster_base + group.x * active];
-    uint instance_index = visible_instances[draw.base + group.y * active] * active;
+    uint run = visible_instances[draw.start_at];
+    uint instance_index = visible_instances[run + group.y * active] * active;
     GpuInstance instance = instances[instance_index];
 
     uint index = draw.cluster_base + group.x * active;

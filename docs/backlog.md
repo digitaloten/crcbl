@@ -34,18 +34,6 @@ about 864 MiB of them per renderer.
 
 ### VRAM
 
-- **P1 — `DrawGen`'s bucket runs reserve every instance in every bucket.**
-  `DrawGen::new` sizes `visible and bucket runs` as
-  `capacity * (1 + bucket_count) * 4` bytes and `DrawGen::bucket_base` places
-  bucket `b` at `capacity + b * capacity` (`draw_gen.slang` agrees), though an
-  instance lands in one bucket per pass. Seven generators (camera, two cascades,
-  four light slots) × `FRAMES_IN_FLIGHT` hold 14 of them; every `create_view`
-  adds two. **Fix:** count per bucket, prefix-sum on the GPU, then scatter into
-  a run region sized `capacity`; `DrawConstants::base` stops being fixed at
-  build and has to come from a per-bucket word the geometry stage reads.
-  Constraints: `draw_gen.slang` is at WebGPU's eight storage bindings; the
-  `first_instance = 0` rule in `mesh.slang`'s header; the overflow clamp becomes
-  per bucket. **Saving:** about 862 MiB in the measured scene.
 - **P2 — `lod group state` strides over every DAG group in the scene.**
   `group_stride = level_groups.len()` and the state is
   `capacity * group_stride * 4` per generator, but an instance reads only its
@@ -63,7 +51,7 @@ about 864 MiB of them per renderer.
   the volumetric rings until they are shown not to be history.
 - **P4 — every light-slot generator is built whether or not a light is
   shadowed.** Four `DrawGen`s in `build` ("the unused ones cost memory"). Cheap
-  once P1–P3 land; otherwise build a slot when a shadowed light first needs it,
+  once P2–P3 land; otherwise build a slot when a shadowed light first needs it,
   outside `begin_frame`.
 - **P5 — the Vulkan backend allocates one `vkAllocateMemory` per resource.** See
   "The Vulkan suballocator is still owed" below, whose trigger this goal fires:
@@ -188,7 +176,8 @@ about 864 MiB of them per renderer.
   whole sphere into all six faces.** `cull.slang` tests planes only; the Hi-Z
   pyramid exists only for SSR. Reuse last frame's pyramid for a conservative
   reprojected test, add a projected-size cull, and cull point-light faces
-  separately (watch the VRAM of per-face runs against P1).
+  separately (watch the VRAM of per-face runs: a generator's survivors-and-runs
+  buffer is `crcbl_shaders::draw_gen::runs_words` per frame in flight).
 - **P26 — the probe updater regathers every probe every frame.** Round-robin a
   fraction per frame and regather only on change; while it is on nothing in the
   atlas is held. `rsm-punctual` records with zero faces.
@@ -258,6 +247,36 @@ capped; steady-state frames make no descriptor writes (`adopt_page_sampler` and
 `refresh_sky_view` return early); the depth prepass with a read-only
 `GreaterOrEqual` colour pass removes overdraw; SSAO already runs at half
 resolution.
+
+## What the shared run region left unverified (2026-09-15)
+
+`DrawGen`'s bucket runs now share one region of `instance_capacity` words and
+`draw_gen.slang` decides each run's start per frame (`binMain`, `startsMain`,
+`scatterMain`); the geometry stages read the start out of the word
+`DrawConstants::start_at` names. Verified on lavapipe with validation and sync
+validation fatal: `run-draw-gen-e2e.sh`, `run-forward-e2e.sh`,
+`run-render-e2e.sh`, `run-mesh-e2e.sh`. What that does not cover:
+
+- **Not run on Metal, D3D12 or WebGPU.** All three consume the regenerated
+  `draw_gen`, `mesh` and `mesh_cluster` artifacts. The MSL kernels were read and
+  bind every buffer at the same index in all three entry points, and
+  `crcbl-dx12`'s host-side DXIL tests (register union, workgroup sizes) pass;
+  nothing executed them. `crcbl-dx12/src/device.rs`'s cluster probe renamed
+  `ClusterDrawConstants::base` to `start_at` under `cfg(target_os = "windows")`
+  and was not compiled here — CI's Windows leg is the first build of it.
+- **The extra load per vertex is not measured.** `vertexMain`, `depthVertexMain`
+  and both `mesh_cluster.slang` instance reads now index `visible_instances`
+  twice. Measure a vertex-heavy scene's forward and shadow pass time before and
+  after on a real GPU; if it shows, the start can be read once per instance
+  where a stage has somewhere to keep it.
+- **`startsMain` is one invocation walking every bucket.** Fine at the measured
+  938 buckets by argument, not by timing; a table in the tens of thousands would
+  want the timing checked against a device watchdog.
+- **Memory saved is a formula, not a measurement.** The per-buffer size is
+  pinned by
+  `draw_gen::tests::the_measured_scene_pays_a_word_per_bucket_rather_than_a_capacity`;
+  the `ew` scene that ran out of memory was not re-run. It needs the memory
+  accounting in "Measurement first" to say what a renderer holds now.
 
 ## D3D12 on hardware: what structured storage views made visible (2026-09-15)
 

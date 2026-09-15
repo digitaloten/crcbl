@@ -1219,7 +1219,7 @@ reading settled:
   constants (`INSTANCE_MATERIAL_MODE_MASK` in `draw_gen.slang` and
   `mesh_cluster.slang`), `DEPTH_MODES` and `ForwardRenderer::depth_partitions`
   moving together as their docs demand, and a bucket per mode the scene holds in
-  `DrawGen::bucket_base`'s scattered run. An all-opaque scene keeps one bucket
+  `DrawGen::bucket_start_word`'s region. An all-opaque scene keeps one bucket
   per mesh level, which is what should keep every golden untouched, and
   `an_all_opaque_scene_keeps_one_bucket_per_mesh_level` is the assertion to read
   before spending anything else on the claim.

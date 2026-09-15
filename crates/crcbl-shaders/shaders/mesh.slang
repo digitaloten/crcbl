@@ -105,8 +105,8 @@
 // — which is the shape §3.3 emits and the reason this is the arrangement now
 // rather than after the cull pass is written.
 //
-// # The instance comes from the visible list, and the draw says where its run
-// starts
+// # The instance comes from the visible list, and the draw says where to find
+// its run
 //
 // Since 2026-08 the draws are `draw_gen.slang`'s: one per bucket, `first
 // instance` zero and an instance count the GPU wrote. `SV_InstanceID` is then
@@ -114,8 +114,30 @@
 // buys — and it walks the bucket's run of `visible_instances` rather than
 // naming an instance itself.
 //
-// So `DrawConstants` carries the run's *start*, decided when the bucket table
-// is built, and the instance index arrives from a buffer the cull pass filled.
+// **Where that run starts is the GPU's too, and a different number every
+// frame.** Since 2026-09 every bucket's run shares one region the size of the
+// instance capacity, packed end to end, so a run starts past however many
+// survivors the buckets in front of it took — `draw_gen.slang`'s header has the
+// prefix sum and why a region per bucket ran a device out of memory. Three
+// places could have carried a per-frame start to this stage, and two of them
+// are shut:
+//
+// * **The draw's first instance** is the number an indirect draw already has
+//   for it, and it is exactly the base the section above rules out: it reaches
+//   `SV_InstanceID` added on WGSL and MSL and subtracted on SPIR-V and DXIL.
+// * **This block** is written by the host once, at build, and the host never
+//   learns a survivor count. Rewriting it per frame would need the count read
+//   back, which is the one thing a GPU-driven frame does not do.
+// * **`visible_instances`**, which this stage already binds. The layout binds
+//   every storage buffer a WebGPU device guarantees, so a buffer of starts
+//   would be a renderer that cannot be built in a browser — but the start can
+//   be a region of the buffer the run is in.
+//
+// So `draw_gen.slang` writes bucket `b`'s start into a word of
+// `visible_instances` that is fixed when the bucket table is built, and
+// `DrawConstants::start_at` names that word: the stage reads the start there
+// and adds `SV_InstanceID` to it. What this costs is one more load per vertex,
+// and what it keeps is both bases at zero and the binding count where it was.
 // A draw therefore covers however many instances survived culling without the
 // CPU learning the number, which is what §3.3 is for.
 //
@@ -1320,18 +1342,21 @@ static const float CLUSTER_NEAR = 0.1;
 /// `crcbl_shaders::light::CLUSTER_FAR`.
 static const float CLUSTER_FAR = 1000.0;
 
-/// Where this draw's run of visible instances starts and what geometry it
+/// Where to find this draw's run of visible instances and what geometry it
 /// draws, matching `crcbl_shaders::mesh::DrawConstants`.
 ///
 /// One block per draw, reached through a dynamic offset — the same mechanism,
 /// for the same reason, as `sprite.slang`'s `SpriteConstants::base`. The header
-/// says why the first number cannot be the draw's own base instance.
+/// says why the first number cannot be the draw's own base instance, and why it
+/// is not the run's start either.
 struct DrawConstants
 {
-    /// This draw's bucket's first slot in `visible_instances`, added to
-    /// `SV_InstanceID` — which counts from zero on every target, because every
-    /// draw this pass records passes zero for its first instance.
-    uint base;
+    /// The word of `visible_instances` holding where this draw's bucket's run
+    /// starts **this frame** — `draw_gen.slang`'s `run_start_word`. The start
+    /// read there is an index into the same buffer, and `SV_InstanceID` is added
+    /// to it: it counts from zero on every target, because every draw this pass
+    /// records passes zero for its first instance.
+    uint start_at;
     /// Which mesh this draw's geometry is, as an index into `meshes`.
     ///
     /// **The bucket's mesh, not the instance's**, and the two are the same thing
@@ -1401,8 +1426,8 @@ ConstantBuffer<DrawConstants> draw;
 StructuredBuffer<GpuMesh> meshes;
 
 /// The per-bucket runs of surviving instance indices `draw_gen.slang` scatters
-/// into. Read-only here: this stage picks its instance out of a run and edits
-/// nothing.
+/// into, and the word per bucket saying where each run starts this frame.
+/// Read-only here: this stage picks its instance out of a run and edits nothing.
 [[vk::binding(5, 0)]]
 StructuredBuffer<uint> visible_instances;
 
@@ -2117,7 +2142,8 @@ uint frame_word(uint mesh_flags, TangentFrame basis)
 [shader("vertex")]
 VertexOutput vertexMain(uint index: SV_VertexID, uint instance_id: SV_InstanceID)
 {
-    GpuInstance instance = instances[visible_instances[draw.base + instance_id]];
+    uint run = visible_instances[draw.start_at];
+    GpuInstance instance = instances[visible_instances[run + instance_id]];
     // The mesh names its vertices, and it is the bucket's mesh — the same entry
     // `draw_gen.slang` took this draw's index range from, so the base vertex and
     // the indices cannot come from two different meshes. Nothing on this path
@@ -2227,7 +2253,8 @@ VertexOutput vertexMain(uint index: SV_VertexID, uint instance_id: SV_InstanceID
 [shader("vertex")]
 float4 depthVertexMain(uint index: SV_VertexID, uint instance_id: SV_InstanceID) : SV_Position
 {
-    GpuInstance instance = instances[visible_instances[draw.base + instance_id]];
+    uint run = visible_instances[draw.start_at];
+    GpuInstance instance = instances[visible_instances[run + instance_id]];
     GpuMesh mesh = meshes[draw.mesh];
     // `vertexMain`'s base-vertex rule, and it must stay the same rule: a skinned
     // instance's vertices are the run this frame's dispatch deformed them into,

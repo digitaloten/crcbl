@@ -100,9 +100,9 @@
 //! and one draw could cover instances of different meshes. The instance comes
 //! from the bucket's run of survivors, walked with `SV_InstanceID`, which counts
 //! from zero on every target *because* the first instance is zero. All a draw
-//! says for itself is where its run starts, in a [`mesh::DrawConstants`] block
-//! reached through a dynamic offset: one block per bucket, written once at
-//! build.
+//! says for itself is which word holds its run's start — the start is the GPU's,
+//! per frame — in a [`mesh::DrawConstants`] block reached through a dynamic
+//! offset: one block per bucket, written once at build.
 //!
 //! That is what makes the pool's *second* resident,
 //! [`mesh::pyramid_vertices`], draw its own geometry rather than the cube's.
@@ -3095,12 +3095,13 @@ impl BucketDraws {
         let stride = crcbl_shaders::draw_gen::DRAW_ARGS_SIZE as u32;
         let mesh_stride = crcbl_shaders::draw_gen::MESH_ARGS_SIZE as u32;
         for (constant_offset, args_offset, count_offset, mesh_args_offset) in &self.calls {
-            // The block written at build for this bucket: where its run of
-            // surviving instances starts. `SV_InstanceID` walks the run from
-            // there, each entry names an instance, the instance names its mesh,
-            // and the mesh table says where that mesh's vertices start — none of
-            // which the draw call carries. The mesh path's block says the same and
-            // three things more; see `meshlet::ClusterDrawConstants`.
+            // The block written at build for this bucket: which word holds where
+            // its run of surviving instances starts this frame. `SV_InstanceID`
+            // walks the run from that start, each entry names an instance, the
+            // instance names its mesh, and the mesh table says where that mesh's
+            // vertices start — none of which the draw call carries. The mesh
+            // path's block says the same and three things more; see
+            // `meshlet::ClusterDrawConstants`.
             encoder.bind_group(0, group, &[*constant_offset], self.layout);
             match self.emit {
                 EmitTail::Mesh => {
@@ -3853,8 +3854,8 @@ impl ForwardRenderer {
         // scene whose materials are all opaque gets exactly the table it always
         // had — same length, same order, same bytes — so the twin costs nothing
         // where nothing is masked, which is every demo and every golden here. A
-        // bucket is not free: `DrawGen::bucket_base` gives each one a whole
-        // instance capacity of `u32` in the scattered runs.
+        // bucket is not free: every pass records one indirect call per bucket
+        // per view, and every generator holds its run start.
         let scene_modes: Vec<u32> = {
             let held: Vec<u32> = DEPTH_MODES
                 .into_iter()
@@ -4958,10 +4959,18 @@ impl ForwardRenderer {
         )?);
         let primary = rollback.primary.as_ref().expect("just stored");
 
-        // Written here and never again: where a bucket's run of instances
-        // starts is fixed by the bucket table, and the table is fixed at build.
-        // What varies per frame is how much of the run is filled, and the GPU
-        // writes that into the bucket's indirect arguments.
+        // Written here and never again: **which word holds** a bucket's run
+        // start is fixed by the bucket table and the capacity, and both are
+        // fixed at build. What varies per frame is where the run starts and how
+        // much of it is filled, and the GPU writes both — the start into that
+        // word, the count into the bucket's indirect arguments. See
+        // `mesh.slang`'s header for why the block names a word rather than
+        // carrying the start.
+        //
+        // Taken from the camera's generator and bound for every generator's
+        // draws: the shadow culls and every secondary view are built from the
+        // same table and the same capacity, so `bucket_start_word` answers the
+        // same for all of them.
         let draws = &primary.draws;
         let mut bucket_constants = vec![0u32; bucket_meshes.len()];
         for (bucket, offset) in bucket_constants.iter_mut().enumerate() {
@@ -4969,16 +4978,16 @@ impl ForwardRenderer {
             let bucket =
                 u32::try_from(bucket).unwrap_or_else(|_| unreachable!("a table of a few buckets"));
             *offset = bucket * draw_stride;
-            let base = draws.bucket_base(bucket);
+            let start_at = draws.bucket_start_word(bucket);
             // The mesh path's block says three more things — where this
             // bucket's mesh's clusters are, how many it has, and which element
             // of the indirect arguments holds its instance count — because a
             // dispatch carries none of them and a `draw_indexed_indirect` does
             // not need them. All three are fixed when the bucket table is,
-            // exactly like `base`.
+            // exactly like `start_at`.
             let block = if emit.is_mesh() {
                 crcbl_shaders::meshlet::ClusterDrawConstants {
-                    base,
+                    start_at,
                     cluster_base: bucket_cluster_bases[index],
                     cluster_count: bucket_clusters[index],
                     bucket,
@@ -5005,7 +5014,7 @@ impl ForwardRenderer {
                 // geometry the draw's index range belongs to; the instance goes
                 // on naming level 0. See `mesh::DrawConstants::mesh`.
                 mesh::DrawConstants {
-                    base,
+                    start_at,
                     mesh: bucket_meshes[index],
                 }
                 .to_bytes()
@@ -13621,10 +13630,10 @@ mod tests {
     ///
     /// This is what replaced "the block names an instance": a draw covers
     /// however many instances survived culling, so what it can say for itself is
-    /// only where its slice of the survivors begins. Two buckets sharing a base
-    /// would draw each other's objects — with the *right* geometry, because the
-    /// index range comes from the arguments, which is exactly the kind of
-    /// plausible wrong picture a golden image struggles with.
+    /// only where to find its slice of the survivors. Two buckets naming one
+    /// start word would draw each other's objects — with the *right* geometry,
+    /// because the index range comes from the arguments, which is exactly the
+    /// kind of plausible wrong picture a golden image struggles with.
     ///
     /// Read out of the bytes that reached the device rather than out of the
     /// renderer's own fields, because the failure is a block written wrong and
@@ -13637,33 +13646,33 @@ mod tests {
         let blocks = recorder
             .buffer_bytes(renderer.draw_constants)
             .expect("the blocks are live");
-        let base_at = |offset: u32| {
+        let start_word_at = |offset: u32| {
             let at = offset as usize;
             u32::from_le_bytes(blocks[at..at + 4].try_into().expect("four bytes"))
         };
 
-        let cube = base_at(renderer.bucket_constants[DEMO_CUBE]);
-        let pyramid = base_at(renderer.bucket_constants[DEMO_PYRAMID]);
-        // **Not zero**, and that is the point since the runs came to share a
-        // buffer with `cull.slang`'s survivor list: the first bucket's run starts
-        // where that list ends. A base of zero would have the first bucket walk
-        // the survivors instead of its own run — the same instances in a
-        // different order, which draws a plausible picture.
+        let draws = &renderer.primary.draws;
+        let cube = start_word_at(renderer.bucket_constants[DEMO_CUBE]);
+        let pyramid = start_word_at(renderer.bucket_constants[DEMO_PYRAMID]);
+        // **Behind the survivors, their routes and the runs**, which share the
+        // buffer: a block naming a word inside the runs would have the draw read
+        // an instance index as its start, and one inside the survivor list or
+        // the routes a start that is the same instances in a different order, or
+        // a bucket number — both of which draw a plausible picture.
         assert_eq!(
             cube,
-            renderer.primary.draws.visible_capacity(),
-            "the first bucket's run starts past the survivor list"
+            draws.runs_at() + draws.visible_capacity(),
+            "the first bucket's start word is the first word past one capacity of runs"
         );
         assert_eq!(
             pyramid,
-            renderer.primary.draws.visible_capacity() * 2,
-            "and the second's starts a whole run later — the stride is the \
-             capacity, so a bucket that filled up still cannot reach the next"
+            cube + (DEMO_PYRAMID - DEMO_CUBE) as u32,
+            "and the second's is a word later — a start per bucket, not a run per bucket"
         );
         assert_eq!(
             cube,
-            renderer.primary.draws.bucket_base(DEMO_CUBE as u32),
-            "the block carries what `DrawGen::bucket_base` says, because a reader \
+            draws.bucket_start_word(DEMO_CUBE as u32),
+            "the block carries what `DrawGen::bucket_start_word` says, because a reader \
              copying a run back uses that accessor and the shader uses this block"
         );
         renderer.destroy(device.as_ref());
@@ -13739,10 +13748,9 @@ mod tests {
     /// and no twin.
     ///
     /// The zero-cost half of the per-bucket split, and the one a null device can
-    /// state exactly. A bucket is not free: `DrawGen::bucket_base` gives each one
-    /// a whole instance capacity of `u32` in the scattered runs, and every pass
-    /// records one indirect call per bucket per view. So a table that twinned
-    /// unconditionally would double the runs buffer and the recorded draws of
+    /// state exactly. A bucket is not free: every pass records one indirect call
+    /// per bucket per view, and every generator holds a run start per bucket. So
+    /// a table that twinned unconditionally would double the recorded draws of
     /// every demo and every golden in this tree, none of which mask anything.
     ///
     /// The oracle is [`level_buckets`](ForwardRenderer::level_buckets), which is
@@ -13754,14 +13762,12 @@ mod tests {
     ///
     /// # A twin per mode the scene **holds**, not per mode that exists
     ///
-    /// [`DEPTH_MODES`] has four entries and a bucket is not free —
-    /// `DrawGen::bucket_base` gives each one a whole instance capacity of `u32`
-    /// in the scattered runs, and every pass records one indirect call per
-    /// bucket — so the rule that matters is which values the description's own
-    /// materials carry. Two rows of two modes are two twins whichever two they
-    /// are, and the pair below says so both ways: three modes across three rows
-    /// is three, and three rows collapsed onto two *values* is two even though
-    /// between them they set both mode bits.
+    /// [`DEPTH_MODES`] has four entries and a bucket is not free — every pass
+    /// records one indirect call per bucket — so the rule that matters is which
+    /// values the description's own materials carry. Two rows of two modes are
+    /// two twins whichever two they are, and the pair below says so both ways:
+    /// three modes across three rows is three, and three rows collapsed onto two
+    /// *values* is two even though between them they set both mode bits.
     #[test]
     fn an_all_opaque_scene_keeps_one_bucket_per_mesh_level() {
         use crcbl_shaders::mesh::GpuMaterial;
@@ -14483,10 +14489,10 @@ mod tests {
             }
             assert_eq!(
                 dispatches,
-                3 * (1 + shadow::CASCADES) + 1 + RESOLVE_DISPATCHES,
-                "the clearing pass, the cull pass and the draw-argument pass, in front of \
-                 the draws — once for the camera and once per shadow cascade — plus topic \
-                 18's one clustering dispatch, which is the camera's alone because a \
+                DrawGen::DISPATCHES as usize * (1 + shadow::CASCADES) + 1 + RESOLVE_DISPATCHES,
+                "the clearing pass, the cull pass and the draw-argument pass's three, in \
+                 front of the draws — once for the camera and once per shadow cascade — plus \
+                 topic 18's one clustering dispatch, which is the camera's alone because a \
                  cascade shades nothing, plus the resolve's own"
             );
             assert_eq!(
@@ -16246,11 +16252,11 @@ mod tests {
             renderer.shadow_lights().base_of(0).is_some(),
             "the spot must hold a run for the count below to include a light slot's cull"
         );
-        // The camera's own triple and topic 18's clustering dispatch, plus a
-        // triple per cascade and one for the spot's slot.
+        // The camera's own draw generation and topic 18's clustering dispatch,
+        // plus a generation per cascade and one for the spot's slot.
         assert_eq!(
             first,
-            DrawGen::MAX_PASSES as usize * (2 + shadow::CASCADES) + 1 + RESOLVE_DISPATCHES,
+            DrawGen::DISPATCHES as usize * (2 + shadow::CASCADES) + 1 + RESOLVE_DISPATCHES,
             "the drawing frame did not record the culls this test is about skipping"
         );
 
@@ -16270,7 +16276,7 @@ mod tests {
             );
             assert_eq!(
                 dispatches(&recorder, at),
-                DrawGen::MAX_PASSES as usize + 1 + RESOLVE_DISPATCHES,
+                DrawGen::DISPATCHES as usize + 1 + RESOLVE_DISPATCHES,
                 "round {round} kept a shadow cull it had no pass to feed"
             );
             assert_eq!(

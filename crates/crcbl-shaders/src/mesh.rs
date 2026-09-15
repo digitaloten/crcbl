@@ -2222,20 +2222,26 @@ impl GpuMaterial {
     }
 }
 
-/// Where one draw call's run of visible instances starts and what geometry it
+/// Where to find one draw call's run of visible instances and what geometry it
 /// draws, matching `struct DrawConstants` in `shaders/mesh.slang`.
 ///
-/// **[`base`](Self::base) would be `draw_indexed`'s own base instance if the
-/// four targets agreed about what that does to `SV_InstanceID`, and they do
-/// not.** That shader's header measures the disagreement on all four; the
-/// consequence for a producer of these bytes is that every draw passes zero for
-/// its own bases, and the instance is looked up rather than named.
+/// **The run's start would be `draw_indexed`'s own base instance if the four
+/// targets agreed about what that does to `SV_InstanceID`, and they do not.**
+/// That shader's header measures the disagreement on all four; the consequence
+/// for a producer of these bytes is that every draw passes zero for its own
+/// bases, and the instance is looked up rather than named.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DrawConstants {
-    /// The draw's bucket's first slot in the list `draw_gen.slang` scatters
-    /// surviving instances into. `SV_InstanceID` counts from zero within the
-    /// draw and indexes the run from here.
-    pub base: u32,
+    /// The word of the buffer `draw_gen.slang` scatters surviving instances into
+    /// that holds where this draw's bucket's run starts **this frame** —
+    /// [`draw_gen::run_start_word`](crate::draw_gen::run_start_word).
+    ///
+    /// A word rather than the start, because the start is a per-frame number
+    /// the GPU decides and this block is written once, at build — see
+    /// `mesh.slang`'s header. The vertex stage reads the start out of that
+    /// word, and `SV_InstanceID` counts from zero within the draw and indexes
+    /// the run from there.
+    pub start_at: u32,
     /// The bucket's mesh, as an index into the mesh table — where the vertex
     /// stage takes [`GpuMesh::base_vertex`] from.
     ///
@@ -2254,7 +2260,7 @@ impl DrawConstants {
     #[must_use]
     pub fn to_bytes(&self) -> [u8; DRAW_CONSTANTS_SIZE] {
         let mut bytes = [0u8; DRAW_CONSTANTS_SIZE];
-        bytes[0..4].copy_from_slice(&self.base.to_le_bytes());
+        bytes[0..4].copy_from_slice(&self.start_at.to_le_bytes());
         bytes[4..8].copy_from_slice(&self.mesh.to_le_bytes());
         // The two trailing `uint`s are padding and stay zero.
         bytes
@@ -4940,10 +4946,14 @@ mod tests {
              block that is not one already is a block the shader and the CPU \
              disagree about the width of"
         );
-        let bytes = DrawConstants { base: 1, mesh: 2 }.to_bytes();
+        let bytes = DrawConstants {
+            start_at: 1,
+            mesh: 2,
+        }
+        .to_bytes();
         let uint_at =
             |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("4"));
-        assert_eq!(uint_at(0), 1, "base at offset 0");
+        assert_eq!(uint_at(0), 1, "start_at at offset 0");
         assert_eq!(uint_at(4), 2, "mesh at offset 4");
         for pad in [8, 12] {
             assert_eq!(

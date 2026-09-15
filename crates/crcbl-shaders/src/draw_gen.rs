@@ -27,22 +27,23 @@
 //!
 //! [`crcbl_render::ForwardRenderer`]: https://docs.rs/crcbl-render
 
-/// Invocations per workgroup, matching `[numthreads(64, 1, 1)]` in
-/// `shaders/draw_gen.slang`.
+/// Invocations per workgroup, matching `[numthreads(64, 1, 1)]` on
+/// `binMain` and `scatterMain` in `shaders/draw_gen.slang`.
 ///
-/// One invocation owns bucket `i` if there is one *and* scatters visible
+/// One `binMain` invocation owns bucket `i` if there is one *and* routes visible
 /// instance `i` if there is one, so a caller dispatches
-/// `max(buckets, visible_capacity).div_ceil(WORKGROUP_SIZE)` groups.
+/// `max(buckets, visible_capacity).div_ceil(WORKGROUP_SIZE)` groups of it;
+/// `scatterMain` only scatters, so `visible_capacity.div_ceil(WORKGROUP_SIZE)`.
+/// `startsMain` is one invocation and declares `[numthreads(1, 1, 1)]`.
 pub const WORKGROUP_SIZE: u32 = 64;
 
 /// Bytes of the uniform block.
 ///
-/// Nine `uint`, then the padding `std140` puts in front of the `float4` that
-/// follows — a `float4` is 16-aligned, so the ninth `uint` costs a whole row —
-/// and then two `float4`. Checked against the `Offset` decorations `slangc`
-/// emits by this module's
+/// Eight `uint` and then two `float4`, which `std140` puts at the next multiple
+/// of 16 — offset 32, directly behind the eighth. Checked against the `Offset`
+/// decorations `slangc` emits by this module's
 /// `the_draw_gen_params_block_matches_the_offsets_slangc_emits`.
-pub const PARAMS_SIZE: usize = 80;
+pub const PARAMS_SIZE: usize = 64;
 
 /// The uniform block, matching `struct DrawGenParams` in
 /// `shaders/draw_gen.slang`.
@@ -54,11 +55,11 @@ pub struct Params {
     /// Buckets in the table, which is also how many argument structures the
     /// pass writes.
     pub bucket_count: u32,
-    /// Instance indices one bucket's run holds, and the stride between two
-    /// buckets' runs.
-    pub bucket_capacity: u32,
     /// Elements `cull.slang`'s visible list holds. Its counter can exceed this;
     /// the shader clamps before it indexes anything.
+    ///
+    /// Also the length of the route and run regions behind the list — see
+    /// [`runs_at`], which is where the layout this places is written down.
     pub visible_capacity: u32,
     /// How many groups one instance's run of the LOD hysteresis state holds —
     /// every resident mesh's group count summed, and the stride between two
@@ -146,7 +147,6 @@ impl Params {
         let mut put = |at: usize, word: [u8; 4]| bytes[at..at + 4].copy_from_slice(&word);
         for (slot, value) in [
             self.bucket_count,
-            self.bucket_capacity,
             self.visible_capacity,
             self.group_stride,
             self.bucket_modes_at,
@@ -160,13 +160,13 @@ impl Params {
         {
             put(slot * 4, value.to_le_bytes());
         }
-        // Offset 48 is where `std140` puts the first `float4`: the nine `uint`
-        // above end at 36, and a `float4` is 16-aligned.
+        // Offset 32 is where `std140` puts the first `float4`: the eight `uint`
+        // above end there, and a `float4` is 16-aligned.
         for (axis, value) in self.camera_position.into_iter().enumerate() {
-            put(48 + axis * 4, value.to_le_bytes());
+            put(32 + axis * 4, value.to_le_bytes());
         }
         for (slot, value) in self.lod_params.into_iter().enumerate() {
-            put(64 + slot * 4, value.to_le_bytes());
+            put(48 + slot * 4, value.to_le_bytes());
         }
         bytes
     }
@@ -289,6 +289,55 @@ pub fn pack_tables(
     })
 }
 
+/// What `draw_gen.slang` writes as a survivor's route when no bucket matches its
+/// mesh and its material mode, matching `NO_BUCKET` there. `scatterMain` sends
+/// such a survivor nowhere.
+pub const NO_BUCKET: u32 = u32::MAX;
+
+/// The first word of the run region in the buffer `draw_gen.slang` binds as
+/// `visible_instances` — where the first bucket's run starts in every frame.
+///
+/// That buffer is four regions, with `C` for `visible_capacity` and `B` for the
+/// bucket count, and this module's three functions are where each begins:
+///
+/// | region | words |
+/// |---|---|
+/// | `cull.slang`'s survivor list | `0..C` |
+/// | each survivor's route — its bucket, or [`NO_BUCKET`] | `C..runs_at(C)` |
+/// | every bucket's run, end to end | `runs_at(C)..run_start_word(C, 0)` |
+/// | each bucket's run start this frame | `run_start_word(C, 0)..runs_words(C, B)` |
+///
+/// **The runs share one region of `C` words**, because a survivor lands in one
+/// bucket and the runs between them hold what the list does. A run's start is
+/// therefore a per-frame number — the survivors in every earlier bucket — which
+/// `draw_gen.slang`'s `startsMain` writes, and which a geometry stage reads out
+/// of the word [`run_start_word`] names. See that shader's header.
+#[must_use]
+pub const fn runs_at(visible_capacity: u32) -> u32 {
+    2 * visible_capacity
+}
+
+/// Which word of the same buffer holds where bucket `bucket`'s run starts this
+/// frame, as an absolute word index into that buffer — the word
+/// [`DrawConstants::start_at`](crate::mesh::DrawConstants::start_at) names.
+///
+/// See [`runs_at`] for the layout.
+#[must_use]
+pub const fn run_start_word(visible_capacity: u32, bucket: u32) -> u32 {
+    3 * visible_capacity + bucket
+}
+
+/// Words the whole buffer holds: the four regions [`runs_at`] lays out, and so
+/// **one capacity of runs however many buckets there are**, plus a word of start
+/// per bucket.
+///
+/// `None` if that is more words than a `u32` addresses, which is what the shader
+/// indexes the buffer with.
+#[must_use]
+pub fn runs_words(visible_capacity: u32, bucket_count: u32) -> Option<u32> {
+    visible_capacity.checked_mul(3)?.checked_add(bucket_count)
+}
+
 /// Words in one indexed-indirect argument structure.
 pub const DRAW_ARGS_WORDS: usize = 5;
 
@@ -311,8 +360,8 @@ pub struct DrawIndexedArgs {
     /// Indices this draw reads, starting at [`first_index`](Self::first_index).
     pub index_count: u32,
     /// Instances of it to draw. Written by the GPU: this is the word
-    /// `draw_gen.slang` increments as it scatters, so it is both the count and
-    /// the pass's slot allocator.
+    /// `draw_gen.slang`'s `scatterMain` increments as it scatters, so it is both
+    /// the count and the pass's slot allocator.
     pub instance_count: u32,
     /// First index, in the shared index pool.
     pub first_index: u32,
@@ -452,11 +501,20 @@ mod tests {
     #[test]
     fn the_workgroup_size_matches_the_numthreads_draw_gen_slang_declares() {
         let source = include_str!("../shaders/draw_gen.slang");
-        let declaration = format!("[numthreads({WORKGROUP_SIZE}, 1, 1)]");
+        for entry in ["binMain", "scatterMain"] {
+            let declaration = format!(
+                "[numthreads({WORKGROUP_SIZE}, 1, 1)]\nvoid {entry}(uint3 thread: SV_DispatchThreadID)"
+            );
+            assert!(
+                source.contains(&declaration),
+                "draw_gen.slang does not declare `{declaration}`; WORKGROUP_SIZE has drifted from \
+                 the shader"
+            );
+        }
         assert!(
-            source.contains(&declaration),
-            "draw_gen.slang does not declare `{declaration}`; WORKGROUP_SIZE has drifted from the \
-             shader"
+            source.contains("[numthreads(1, 1, 1)]\nvoid startsMain()"),
+            "draw_gen.slang's prefix sum is not one invocation, and `crcbl_render::DrawGen` \
+             dispatches exactly one"
         );
     }
 
@@ -465,8 +523,8 @@ mod tests {
     #[test]
     fn the_draw_gen_params_block_matches_the_offsets_slangc_emits() {
         // `OpMemberDecorate %DrawGenParams_std140 n Offset …`: 0, 4, 8, 12, 16,
-        // 20, 24, 28, 32, 48, 64.
-        assert_eq!(PARAMS_SIZE, 80);
+        // 20, 24, 28, 32, 48.
+        assert_eq!(PARAMS_SIZE, 64);
         assert_eq!(
             PARAMS_SIZE % 16,
             0,
@@ -475,7 +533,6 @@ mod tests {
         );
         let bytes = Params {
             bucket_count: 2,
-            bucket_capacity: 5,
             visible_capacity: 9,
             group_stride: 11,
             bucket_modes_at: 12,
@@ -492,29 +549,23 @@ mod tests {
         let float_at =
             |offset: usize| f32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("4"));
         assert_eq!(uint_at(0), 2, "bucket_count at offset 0");
-        assert_eq!(uint_at(4), 5, "bucket_capacity at offset 4");
-        assert_eq!(uint_at(8), 9, "visible_capacity at offset 8");
-        assert_eq!(uint_at(12), 11, "group_stride at offset 12");
-        assert_eq!(uint_at(16), 12, "bucket_modes_at at offset 16");
-        assert_eq!(uint_at(20), 13, "bucket_clusters_at at offset 20");
-        assert_eq!(uint_at(24), 17, "mesh_levels_at at offset 24");
-        assert_eq!(uint_at(28), 19, "level_groups_at at offset 28");
-        assert_eq!(uint_at(32), 23, "level_meshes_at at offset 32");
+        assert_eq!(uint_at(4), 9, "visible_capacity at offset 4");
+        assert_eq!(uint_at(8), 11, "group_stride at offset 8");
+        assert_eq!(uint_at(12), 12, "bucket_modes_at at offset 12");
+        assert_eq!(uint_at(16), 13, "bucket_clusters_at at offset 16");
+        assert_eq!(uint_at(20), 17, "mesh_levels_at at offset 20");
+        assert_eq!(uint_at(24), 19, "level_groups_at at offset 24");
+        assert_eq!(uint_at(28), 23, "level_meshes_at at offset 28");
+        assert_eq!(float_at(32), 1.5, "camera_position at offset 32");
+        assert_eq!(float_at(40), 3.5, "and it is three floats wide");
+        assert_eq!(uint_at(44), 0, "the fourth component is padding, and zero");
+        assert_eq!(float_at(48), 4.5, "lod_params at offset 48");
+        assert_eq!(float_at(52), 5.5, "and its expand budget beside it");
+        assert_eq!(float_at(56), 6.5, "and the hold budget after that");
         assert!(
-            bytes[36..48].iter().all(|byte| *byte == 0),
-            "the row std140 pads out before the first float4 is written, and it is zero: {:?}",
-            &bytes[36..48]
-        );
-        assert_eq!(float_at(48), 1.5, "camera_position at offset 48");
-        assert_eq!(float_at(56), 3.5, "and it is three floats wide");
-        assert_eq!(uint_at(60), 0, "the fourth component is padding, and zero");
-        assert_eq!(float_at(64), 4.5, "lod_params at offset 64");
-        assert_eq!(float_at(68), 5.5, "and its expand budget beside it");
-        assert_eq!(float_at(72), 6.5, "and the hold budget after that");
-        assert!(
-            bytes[76..].iter().all(|byte| *byte == 0),
+            bytes[60..].iter().all(|byte| *byte == 0),
             "the std140 tail padding is written, and it is zero: {:?}",
-            &bytes[76..]
+            &bytes[60..]
         );
     }
 
@@ -640,6 +691,67 @@ mod tests {
         assert!(
             packed.offsets.mesh_levels_at < packed.offsets.level_groups_at,
             "an empty per-mesh region still holds a record"
+        );
+    }
+
+    /// **The shader lays out its survivors-and-runs buffer where this module
+    /// says**, region by region.
+    ///
+    /// The regions are addressed by arithmetic on both sides and nothing
+    /// compares the two at run time: a shader whose starts moved in front of the
+    /// runs would scatter into the words a geometry stage reads a start out of,
+    /// and every draw would walk an instance index as if it were a word offset.
+    /// So each accessor's body is held to the function here, and the functions
+    /// are held to the order the layout table documents.
+    #[test]
+    fn the_shader_lays_out_the_runs_buffer_where_this_module_says() {
+        let source = include_str!("../shaders/draw_gen.slang");
+        for (accessor, body) in [
+            (
+                "uint route_word(uint survivor)",
+                "return gen.visible_capacity + survivor;",
+            ),
+            ("uint runs_at()", "return 2 * gen.visible_capacity;"),
+            (
+                "uint run_start_word(uint bucket)",
+                "return 3 * gen.visible_capacity + bucket;",
+            ),
+        ] {
+            let spelled = format!("{accessor}\n{{\n    {body}\n}}");
+            assert!(
+                source.contains(&spelled),
+                "draw_gen.slang does not define `{accessor}` as `{body}`, which is the layout \
+                 `run_start_word` and `runs_at` here describe"
+            );
+        }
+        let declaration = format!("static const uint NO_BUCKET = {NO_BUCKET:#x};");
+        assert!(
+            source.contains(&declaration),
+            "draw_gen.slang does not declare `{declaration}`"
+        );
+
+        // The regions, in order and end to end: routes behind the survivors, one
+        // capacity of runs behind the routes, and the starts behind the runs.
+        let capacity = 17;
+        assert_eq!(
+            runs_at(capacity),
+            2 * capacity,
+            "a capacity of survivors and one of routes"
+        );
+        assert_eq!(
+            run_start_word(capacity, 0),
+            runs_at(capacity) + capacity,
+            "one capacity of runs for every bucket together"
+        );
+        assert_eq!(
+            runs_words(capacity, 5),
+            Some(run_start_word(capacity, 5)),
+            "and the buffer ends behind the last bucket's start"
+        );
+        assert_eq!(
+            runs_words(u32::MAX / 2, 1),
+            None,
+            "a layout a u32 cannot index is refused"
         );
     }
 

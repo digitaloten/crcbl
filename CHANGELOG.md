@@ -16,6 +16,26 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Breaking
 
+- **Draw generation's bucket runs share one region the size of the instance
+  capacity, so a run's start is decided per frame on the GPU.** Each frame's
+  `visible and bucket runs` buffer was `capacity * (1 + buckets)` words — every
+  bucket reserved a run for every instance — and is now `3 * capacity + buckets`
+  words (`crcbl_shaders::draw_gen::runs_words`): the survivor list, each
+  survivor's route, one run region every bucket packs into, and a start word per
+  bucket. A scene of 17219 instances and 938 buckets goes from 61.7 MiB a
+  buffer, about 864 MiB a renderer, to 205.4 KiB a buffer. `draw_gen.slang`'s
+  `computeMain` is three entry points the `draw-args` pass dispatches in turn —
+  `binMain` routes and counts each survivor, `startsMain` prefix-sums the counts
+  into starts, `scatterMain` writes the runs — so `DrawGen::DISPATCHES` (five)
+  is what a frame records, while `DrawGen::MAX_PASSES` stays three. The geometry
+  stages read a bucket's start out of the runs buffer: `DrawGen::bucket_base` is
+  replaced by `DrawGen::bucket_start_word`, the word holding that start, and
+  `mesh::DrawConstants::base` and `meshlet::ClusterDrawConstants::base` are
+  `start_at` and carry that word rather than the start. A reader copying a run
+  back reads the start first; `DrawGen::runs_at` and `DrawGen::runs_size` say
+  where the region begins and how large the buffer is.
+  `draw_gen::Params::bucket_capacity` is gone, so `draw_gen::PARAMS_SIZE` is 64.
+
 - **A cull knows which view it culls for.** `crcbl_shaders::cull::Params` and
   `cull.slang`'s `CullParams` gained `hidden_view: u32` (in the block's former
   tail padding, so `PARAMS_SIZE` is still 112), `DrawGenDesc` gained the same
@@ -107,6 +127,10 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Added
 
+- `crcbl_hal::null::Recorder::buffer_size` answers the size a live buffer was
+  created with in any memory location, where `buffer_bytes` holds contents for
+  mappable memory only — so a null-device test can assert what a device-local
+  allocation costs.
 - **`ForwardRenderer` draws more than one camera without a second scene.**
   `create_view` builds a view of the scene the renderer already holds and
   `destroy_view` releases it; `begin_view` writes a view's blocks for the frame

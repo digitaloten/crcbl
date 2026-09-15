@@ -7616,7 +7616,7 @@ pub(crate) mod tests {
         };
 
         let draw_constants = crcbl_shaders::meshlet::ClusterDrawConstants {
-            base: 0,
+            start_at: 0,
             cluster_base: 0,
             cluster_count: PROBE_CLUSTERS,
             bucket: 0,
@@ -7684,6 +7684,8 @@ pub(crate) mod tests {
             }
             .to_bytes(),
         );
+        // One word read twice: as the run's start, which `start_at` above names,
+        // and then as the run's only entry — instance 0 either way.
         let visible_instances = read_storage("mesh_cluster visible instances", &0u32.to_le_bytes());
         let materials = read_storage("mesh_cluster materials", &GpuMaterial::UNTINTED.to_bytes());
         let cluster_bytes: Vec<u8> = clusters

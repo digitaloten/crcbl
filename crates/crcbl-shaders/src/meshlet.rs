@@ -390,11 +390,12 @@ pub const CLUSTER_DRAW_CONSTANTS_SIZE: usize = 32;
 /// use them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ClusterDrawConstants {
-    /// This bucket's first slot in the list `draw_gen.slang` scatters
-    /// surviving instances into — the same number
-    /// [`DrawConstants::base`](crate::mesh::DrawConstants::base) carries, added
-    /// to the dispatch's instance slot instead of to `SV_InstanceID`.
-    pub base: u32,
+    /// The word holding where this bucket's run of surviving instances starts
+    /// this frame — the same number
+    /// [`DrawConstants::start_at`](crate::mesh::DrawConstants::start_at)
+    /// carries, and the start read there is added to the dispatch's instance
+    /// slot instead of to `SV_InstanceID`.
+    pub start_at: u32,
     /// This bucket's mesh's first cluster in the cluster buffer.
     pub cluster_base: u32,
     /// How many clusters that mesh has. The dispatch is sized to it, and the
@@ -445,7 +446,7 @@ impl ClusterDrawConstants {
         let mut bytes = [0u8; CLUSTER_DRAW_CONSTANTS_SIZE];
         let mut at = 0usize;
         for value in [
-            self.base,
+            self.start_at,
             self.cluster_base,
             self.cluster_count,
             self.bucket,
@@ -1002,7 +1003,7 @@ mod tests {
         assert_eq!(CLUSTER_DRAW_CONSTANTS_SIZE % 16, 0);
 
         let bytes = ClusterDrawConstants {
-            base: 1,
+            start_at: 1,
             cluster_base: 2,
             cluster_count: 3,
             bucket: 4,
@@ -1012,7 +1013,7 @@ mod tests {
         .to_bytes();
         let uint_at =
             |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("4"));
-        assert_eq!(uint_at(0), 1, "base at offset 0");
+        assert_eq!(uint_at(0), 1, "start_at at offset 0");
         assert_eq!(uint_at(4), 2, "cluster_base at offset 4");
         assert_eq!(uint_at(8), 3, "cluster_count at offset 8");
         assert_eq!(uint_at(12), 4, "bucket at offset 12");

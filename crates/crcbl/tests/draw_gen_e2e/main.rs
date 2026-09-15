@@ -19,9 +19,9 @@
 //! The gap grew when the draw-args pass was repacked from fourteen storage
 //! buffers to eight: five host-static tables merged into one word buffer with
 //! offsets in `Params`, the survivor list sharing a buffer with the per-bucket
-//! runs via `bucket_base`, and the counts sharing one with the mesh-dispatch
-//! extents. Every one of those is an offset a backend can get wrong without
-//! changing a pixel.
+//! runs and their starts via `bucket_start_word`, and the counts sharing one
+//! with the mesh-dispatch extents. Every one of those is an offset a backend can
+//! get wrong without changing a pixel.
 //!
 //! Nothing here names a backend type — only `crcbl::hal`, `crcbl::render`,
 //! `crcbl::shaders` and `crcbl::backend::open` — so one binary run four times is

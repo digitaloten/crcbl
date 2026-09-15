@@ -900,33 +900,46 @@ mod tests {
     /// the `windows` cfg.
     #[test]
     fn the_committed_containers_carry_the_workgroup_size_crcbl_shaders_publishes() {
-        let compute: &[(&str, &crcbl_shaders::Shader, u32)] = &[
+        let compute: &[(&str, &crcbl_shaders::Shader, &str, u32)] = &[
             (
                 "compute_probe",
                 &crcbl_shaders::COMPUTE_PROBE,
+                "computeMain",
                 crcbl_shaders::compute_probe::WORKGROUP_SIZE,
             ),
             (
                 "cull",
                 &crcbl_shaders::CULL,
+                "computeMain",
                 crcbl_shaders::cull::WORKGROUP_SIZE,
             ),
             (
                 "draw_gen",
                 &crcbl_shaders::DRAW_GEN,
+                "binMain",
+                crcbl_shaders::draw_gen::WORKGROUP_SIZE,
+            ),
+            // The prefix sum is one invocation, and `crcbl-shaders` pins its
+            // `[numthreads(1, 1, 1)]` beside `WORKGROUP_SIZE` — so the literal
+            // here is the shader's number, not a second one.
+            ("draw_gen", &crcbl_shaders::DRAW_GEN, "startsMain", 1),
+            (
+                "draw_gen",
+                &crcbl_shaders::DRAW_GEN,
+                "scatterMain",
                 crcbl_shaders::draw_gen::WORKGROUP_SIZE,
             ),
         ];
         assert!(!compute.is_empty(), "nothing to check");
-        for (name, shader, size) in compute {
+        for (name, shader, entry, size) in compute {
             let bytes = shader
-                .dxil("computeMain")
-                .unwrap_or_else(|| panic!("{name} commits a DXIL container"));
+                .dxil(entry)
+                .unwrap_or_else(|| panic!("{name} commits a DXIL container for {entry}"));
             let parsed = Dxil::parse(bytes, name).unwrap_or_else(|error| panic!("{name}: {error}"));
             assert_eq!(
                 parsed.numthreads(),
                 Some([*size, 1, 1]),
-                "{name}'s container disagrees with WORKGROUP_SIZE"
+                "{name}'s {entry} container disagrees with its workgroup size"
             );
         }
 
@@ -1051,15 +1064,18 @@ mod tests {
             (
                 "draw_gen",
                 &crcbl_shaders::DRAW_GEN,
-                &["computeMain"],
+                // Three entry points over one layout; `binMain` alone reaches
+                // every binding, and the other two a share of them.
+                &["binMain", "startsMain", "scatterMain"],
                 // **Eight storage bindings and no more**, which is what a
                 // WebGPU device guarantees per stage — see that source's
                 // header. Read only: the instance array (1), the mesh table
                 // (2), the culling statistics (3) and every host-written table
-                // in one buffer (4). Writable: the survivor list and the
-                // per-bucket runs (5), the indirect arguments (6), the draw
-                // counts beside the mesh-dispatch extents (7), and
-                // `docs/plan/25-lod.md`'s hysteresis state (8).
+                // in one buffer (4). Writable: the survivor list, its routes,
+                // the per-bucket runs and their starts (5), the indirect
+                // arguments (6), the draw counts beside the mesh-dispatch
+                // extents (7), and `docs/plan/25-lod.md`'s hysteresis state
+                // (8).
                 &[Cbv, Srv, Srv, Srv, Srv, Uav, Uav, Uav, Uav],
             ),
             (

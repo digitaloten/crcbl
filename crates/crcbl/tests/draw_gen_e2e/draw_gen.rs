@@ -17,11 +17,17 @@
 //! **This is the file the draw-args repack most needs read on every backend.**
 //! That pass went from fourteen storage buffers to eight: five host-static
 //! tables merged into one word buffer addressed by offsets in `Params`, the
-//! survivor list sharing a buffer with the per-bucket runs at
-//! [`GeneratedDraws::bucket_base`](crcbl::render::GeneratedDraws::bucket_base),
-//! and the counts sharing one with the mesh-dispatch extents. Every one of those
-//! is an offset a backend can compute differently, and none of them changes a
-//! pixel.
+//! survivor list sharing a buffer with the routes, the per-bucket runs and their
+//! starts at `DrawGen::bucket_start_word`, and the counts sharing one with the
+//! mesh-dispatch extents. Every one of those is an offset a backend can compute
+//! differently, and none of them changes a pixel.
+//!
+//! **And the runs share one region, so where each starts is the GPU's prefix
+//! sum** rather than a stride fixed at build. Every frame read back here is held
+//! to that — [`Generated::assert_runs_pack_at_their_starts`] runs on each — and
+//! [`runs_from_several_buckets_pack_end_to_end_at_this_frames_starts`] is the
+//! scene that makes a wrong sum visible, with more than one instance in more
+//! than one bucket.
 
 use crate::harness::{Headless, poisoned};
 use crate::mesh_scene::{MESH_EXTENT, mesh_camera, place, place_cube_at};
@@ -59,12 +65,6 @@ const PYRAMID_AWAY: Vec3 = Vec3::new(60.0, 0.0, 0.0);
 /// and Metal's `fillBuffer:range:value:` repeats a *byte*, so a word whose bytes
 /// differ has no encoding there. `crcbl-mtl`'s own probe uses the same value.
 const SENTINEL: u32 = 0xABAB_ABAB;
-
-/// Entries of one bucket's run to copy back. The scene has one instance per
-/// bucket and this is comfortably more, so a run that scattered too *many*
-/// entries shows up as a non-zero word past the count rather than as a copy that
-/// stopped early.
-const RUN_SAMPLE: u64 = 8;
 
 /// The mesh table as the pool builds it, in upload order: the cube first, the
 /// pyramid immediately after it.
@@ -149,9 +149,17 @@ struct Generated {
     args: Vec<DrawIndexedArgs>,
     /// One draw count per bucket — what `IndirectCount`'s call reads.
     counts: Vec<u32>,
-    /// The first [`RUN_SAMPLE`] entries of each bucket's run of instance
-    /// indices.
-    runs: Vec<Vec<u32>>,
+    /// Where each bucket's run started this frame, read out of the word
+    /// `DrawGen::bucket_start_word` names — an absolute word index into
+    /// [`words`](Self::words).
+    starts: Vec<u32>,
+    /// The whole survivors-and-runs buffer, one `u32` per word, so a start can
+    /// be followed to its run without trusting it to stay in bounds.
+    words: Vec<u32>,
+    /// `DrawGen::runs_at`: the first word of the run region.
+    runs_at: u32,
+    /// `DrawGen::visible_capacity`: how long the run region is.
+    capacity: u32,
     /// `cull.slang`'s true survivor count.
     visible_count: u32,
 }
@@ -164,15 +172,52 @@ impl Generated {
     /// as invocations arrive and nothing about the picture depends on which
     /// instance landed where.
     fn run(&self, bucket: usize) -> Vec<u32> {
+        let start = self.starts[bucket] as usize;
         let count = self.args[bucket].instance_count as usize;
         assert!(
-            count <= self.runs[bucket].len(),
-            "bucket {bucket} claims {count} instances, which is more than this test copied \
-             back — widen RUN_SAMPLE"
+            start + count <= self.words.len(),
+            "bucket {bucket}'s run of {count} at word {start} ends past the {}-word buffer",
+            self.words.len()
         );
-        let mut run = self.runs[bucket][..count].to_vec();
+        let mut run = self.words[start..start + count].to_vec();
         run.sort_unstable();
         run
+    }
+
+    /// **Every bucket's run starts where the one before it ended**, the first
+    /// at the run region's first word — the prefix sum `draw_gen.slang`'s
+    /// `startsMain` computes, checked against the counts the scatter produced.
+    ///
+    /// The counts are the scatter's slot allocator and the starts are summed
+    /// from the routing half's own count, so the two are independent halves of
+    /// one number: a sum that skipped a bucket, counted one twice or started
+    /// anywhere but the run region disagrees here. And the runs between them
+    /// fit the region, which is what makes a bucket unable to write past its
+    /// successor's first word or past the buffer.
+    fn assert_runs_pack_at_their_starts(&self) {
+        let mut expected = self.runs_at;
+        for (bucket, (start, args)) in self.starts.iter().zip(&self.args).enumerate() {
+            assert_eq!(
+                *start,
+                expected,
+                "bucket {bucket}'s run starts at word {start}, but the buckets in front of it \
+                 took {} words from word {}: starts {:?}, counts {:?}",
+                expected - self.runs_at,
+                self.runs_at,
+                self.starts,
+                self.args
+                    .iter()
+                    .map(|args| args.instance_count)
+                    .collect::<Vec<_>>()
+            );
+            expected += args.instance_count;
+        }
+        assert!(
+            expected <= self.runs_at + self.capacity,
+            "the runs end at word {expected}, past the {}-word run region at word {}",
+            self.capacity,
+            self.runs_at
+        );
     }
 }
 
@@ -226,8 +271,11 @@ fn generate_with(
     let buckets = draws.bucket_count() as usize;
     let args_bytes = buckets as u64 * DRAW_ARGS_SIZE as u64;
     let counts_bytes = buckets as u64 * 4;
-    let run_bytes = RUN_SAMPLE * 4;
-    let total = args_bytes + counts_bytes + 4 + run_bytes * buckets as u64;
+    // The whole survivors-and-runs buffer rather than a sample of each run: a
+    // start can name any word of it, and a copy that followed the start would
+    // trust the number under test to say what to copy.
+    let runs_bytes = draws.runs_size();
+    let total = args_bytes + counts_bytes + 4 + runs_bytes;
     let staging = device
         .create_buffer(&BufferDesc {
             label: Some("draw gen readback"),
@@ -243,9 +291,10 @@ fn generate_with(
         draws.runs(frame),
         draws.visible_count(frame),
     );
-    let run_offsets: Vec<u64> = (0..draws.bucket_count())
-        .map(|bucket| u64::from(draws.bucket_base(bucket)) * 4)
+    let start_words: Vec<u32> = (0..draws.bucket_count())
+        .map(|bucket| draws.bucket_start_word(bucket))
         .collect();
+    let (runs_at, capacity) = (draws.runs_at(), draws.visible_capacity());
 
     let mut encoder = device.create_command_encoder(&CommandEncoderDesc {
         label: Some("draw gen frame"),
@@ -380,14 +429,7 @@ fn generate_with(
     copy(args, 0, 0, args_bytes);
     copy(counts, 0, args_bytes, counts_bytes);
     copy(visible_count, 0, args_bytes + counts_bytes, 4);
-    for (bucket, offset) in run_offsets.iter().enumerate() {
-        copy(
-            runs,
-            *offset,
-            args_bytes + counts_bytes + 4 + run_bytes * bucket as u64,
-            run_bytes,
-        );
-    }
+    copy(runs, 0, args_bytes + counts_bytes + 4, runs_bytes);
     encoder.pipeline_barrier(&Barriers {
         buffers: &transitions(false),
         ..Barriers::default()
@@ -420,7 +462,17 @@ fn generate_with(
         let at = offset as usize;
         u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"))
     };
-    Generated {
+    let words: Vec<u32> = (0..runs_bytes / 4)
+        .map(|word| word_at(args_bytes + counts_bytes + 4 + word * 4))
+        .collect();
+    let generated = Generated {
+        starts: start_words
+            .iter()
+            .map(|word| words[*word as usize])
+            .collect(),
+        words,
+        runs_at,
+        capacity,
         args: (0..buckets)
             .map(|bucket| {
                 let at = bucket * DRAW_ARGS_SIZE;
@@ -435,15 +487,12 @@ fn generate_with(
             .map(|bucket| word_at(args_bytes + bucket * 4))
             .collect(),
         visible_count: word_at(args_bytes + counts_bytes),
-        runs: (0..buckets as u64)
-            .map(|bucket| {
-                let base = args_bytes + counts_bytes + 4 + run_bytes * bucket;
-                (0..RUN_SAMPLE)
-                    .map(|slot| word_at(base + slot * 4))
-                    .collect()
-            })
-            .collect(),
-    }
+    };
+    // Every frame this suite reads back, whatever it goes on to assert: a run
+    // that starts in the wrong place draws the wrong objects with the right
+    // counts, which is exactly what the assertions after this cannot all see.
+    generated.assert_runs_pack_at_their_starts();
+    generated
 }
 
 /// Opens the pieces every test here needs.
@@ -543,6 +592,95 @@ fn the_generated_arguments_are_the_draws_the_cpu_would_have_recorded() {
             "a bucket with something in it draws once"
         );
     }
+
+    teardown(headless, renderer, pool);
+}
+
+/// **Runs from several buckets pack end to end, each at the start this frame
+/// computed for it** — the prefix sum, on a scene where it is not trivially
+/// right.
+///
+/// One instance per bucket, which is every other scene here, leaves most wrong
+/// sums looking right: a sum that forgot to add puts the second bucket's run on
+/// top of the first's one entry, and a sum that added one per bucket rather than
+/// the bucket's count lands on the same word. Two cubes and three pyramids make
+/// both visible — the pyramid's run must start two words after the cube's, and
+/// every bucket after them five words in — and each run must still name the
+/// instances the CPU reference kept, so two runs written over each other fail
+/// on their contents as well as on their starts.
+#[test]
+#[ignore = "needs a real GPU and a backend pin; run tests/run-draw-gen-e2e.sh"]
+fn runs_from_several_buckets_pack_end_to_end_at_this_frames_starts() {
+    let (headless, mut renderer, mut pool) = setup();
+    // Instance 0 is `setup`'s cube; these are 1 to 4, in this order.
+    let pyramids = [
+        PYRAMID_AT,
+        Vec3::new(1.05, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, -1.05),
+    ];
+    place_pyramid(&mut renderer, pyramids[0]);
+    place_pyramid(&mut renderer, pyramids[1]);
+    let second_cube = Mat4::from_translation(Vec3::new(0.0, 0.0, 1.05)) * cube_model();
+    place(
+        &mut renderer,
+        crcbl::render::scene::DEMO_CUBE,
+        crcbl::render::scene::DEMO_UNTINTED,
+        second_cube,
+    );
+    place_pyramid(&mut renderer, pyramids[2]);
+
+    let camera = mesh_camera(Projection::default());
+    let generated = generate(&headless, &mut renderer, &mut pool, &camera);
+
+    let meshes = mesh_table();
+    let at = |transform: Mat4, mesh| GpuInstance {
+        transform: transform.to_cols_array(),
+        mesh,
+        flags: GpuInstance::LIVE,
+        ..GpuInstance::default()
+    };
+    let instances = vec![
+        at(cube_model(), 0),
+        at(Mat4::from_translation(pyramids[0]), 1),
+        at(Mat4::from_translation(pyramids[1]), 1),
+        at(second_cube, 0),
+        at(Mat4::from_translation(pyramids[2]), 1),
+    ];
+    let aspect = MESH_EXTENT.0 as f32 / MESH_EXTENT.1 as f32;
+    let frustum = Frustum::from_view_projection(camera.view_projection(aspect));
+    let visible = visible_instances(&frustum, &instances, &meshes, 0);
+    assert_eq!(
+        visible,
+        vec![0, 1, 2, 3, 4],
+        "every object has to be on screen, or the runs below are shorter than the scene that \
+         makes a wrong sum visible"
+    );
+    assert_eq!(generated.visible_count, 5, "and the GPU kept all five");
+
+    let kept = |mesh: u32| -> Vec<u32> {
+        visible
+            .iter()
+            .copied()
+            .filter(|index| instances[*index as usize].mesh == mesh)
+            .collect()
+    };
+    assert_eq!(generated.run(0), kept(0), "the cube's run names both cubes");
+    assert_eq!(
+        generated.run(1),
+        kept(1),
+        "and the pyramid's names all three pyramids, rather than the cubes' words it would \
+         overlap if its start were wrong"
+    );
+    assert_eq!(
+        (
+            generated.starts[1] - generated.starts[0],
+            generated.starts[2] - generated.starts[0]
+        ),
+        (2, 5),
+        "the pyramid's run starts after the cube's two entries, and the next bucket's after \
+         all five: starts {:?}",
+        generated.starts
+    );
 
     teardown(headless, renderer, pool);
 }
@@ -673,8 +811,8 @@ fn an_instance_hidden_from_the_camera_is_culled_before_its_bound_is_tested() {
 /// is a number a single frame produces, and none of them survives the poison
 /// leaking through: the survivor count would be `SENTINEL + 2`, an occupied
 /// bucket's instance count `SENTINEL + 1`, and a draw count would stay at
-/// `SENTINEL` outright, because `draw_gen.slang` stores its `1` only for the
-/// invocation that took slot zero and no invocation would.
+/// `SENTINEL` outright, because `draw_gen.slang` stores its `1` rather than
+/// adding it, and only for a bucket something was routed to.
 ///
 /// **The empty buckets are the sharpest numbers here**, not gaps. Only the cube
 /// and the pyramid are in this scene, so every bucket after theirs — the open

@@ -1,6 +1,6 @@
 struct DrawConstants_std140_0
 {
-    @align(16) base_0 : u32,
+    @align(16) start_at_0 : u32,
     @align(4) mesh_0 : u32,
     @align(8) pad0_0 : u32,
     @align(4) pad1_0 : u32,
@@ -298,11 +298,11 @@ struct VertexOutput_0
 fn vertexMain(@builtin(vertex_index) index_0 : u32, @builtin(instance_index) instance_id_0 : u32) -> VertexOutput_0
 {
     var mesh_2 : GpuMesh_std430_0 = meshes_0[draw_0.mesh_0];
-    var _S6 : bool = (((instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].flags_0) & (u32(2)))) != u32(0);
+    var _S6 : bool = (((instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].flags_0) & (u32(2)))) != u32(0);
     var base_vertex_2 : u32;
     if(_S6)
     {
-        base_vertex_2 = instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].base_vertex_0;
+        base_vertex_2 = instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].base_vertex_0;
     }
     else
     {
@@ -312,14 +312,14 @@ fn vertexMain(@builtin(vertex_index) index_0 : u32, @builtin(instance_index) ins
     var previous_base_0 : u32;
     if(_S6)
     {
-        previous_base_0 = instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_base_vertex_0;
+        previous_base_0 = instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_base_vertex_0;
     }
     else
     {
         previous_base_0 = base_vertex_2;
     }
     var previous_position_0 : vec3<f32> = load_position_0(index_0 + previous_base_0);
-    var _S7 : mat4x4<f32> = mat4x4<f32>(instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].transform_0.data_0[i32(0)][i32(0)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].transform_0.data_0[i32(1)][i32(0)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].transform_0.data_0[i32(2)][i32(0)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].transform_0.data_0[i32(3)][i32(0)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].transform_0.data_0[i32(0)][i32(1)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].transform_0.data_0[i32(1)][i32(1)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].transform_0.data_0[i32(2)][i32(1)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].transform_0.data_0[i32(3)][i32(1)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].transform_0.data_0[i32(0)][i32(2)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].transform_0.data_0[i32(1)][i32(2)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].transform_0.data_0[i32(2)][i32(2)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].transform_0.data_0[i32(3)][i32(2)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].transform_0.data_0[i32(0)][i32(3)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].transform_0.data_0[i32(1)][i32(3)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].transform_0.data_0[i32(2)][i32(3)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].transform_0.data_0[i32(3)][i32(3)]);
+    var _S7 : mat4x4<f32> = mat4x4<f32>(instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].transform_0.data_0[i32(0)][i32(0)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].transform_0.data_0[i32(1)][i32(0)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].transform_0.data_0[i32(2)][i32(0)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].transform_0.data_0[i32(3)][i32(0)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].transform_0.data_0[i32(0)][i32(1)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].transform_0.data_0[i32(1)][i32(1)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].transform_0.data_0[i32(2)][i32(1)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].transform_0.data_0[i32(3)][i32(1)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].transform_0.data_0[i32(0)][i32(2)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].transform_0.data_0[i32(1)][i32(2)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].transform_0.data_0[i32(2)][i32(2)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].transform_0.data_0[i32(3)][i32(2)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].transform_0.data_0[i32(0)][i32(3)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].transform_0.data_0[i32(1)][i32(3)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].transform_0.data_0[i32(2)][i32(3)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].transform_0.data_0[i32(3)][i32(3)]);
     var world_0 : vec4<f32> = (((vec4<f32>(vertex_1.position_1, 1.0f)) * (_S7)));
     var output_0 : VertexOutput_0;
     output_0.position_2 = (((world_0) * (mat4x4<f32>(frame_0.view_proj_0.data_1[i32(0)][i32(0)], frame_0.view_proj_0.data_1[i32(1)][i32(0)], frame_0.view_proj_0.data_1[i32(2)][i32(0)], frame_0.view_proj_0.data_1[i32(3)][i32(0)], frame_0.view_proj_0.data_1[i32(0)][i32(1)], frame_0.view_proj_0.data_1[i32(1)][i32(1)], frame_0.view_proj_0.data_1[i32(2)][i32(1)], frame_0.view_proj_0.data_1[i32(3)][i32(1)], frame_0.view_proj_0.data_1[i32(0)][i32(2)], frame_0.view_proj_0.data_1[i32(1)][i32(2)], frame_0.view_proj_0.data_1[i32(2)][i32(2)], frame_0.view_proj_0.data_1[i32(3)][i32(2)], frame_0.view_proj_0.data_1[i32(0)][i32(3)], frame_0.view_proj_0.data_1[i32(1)][i32(3)], frame_0.view_proj_0.data_1[i32(2)][i32(3)], frame_0.view_proj_0.data_1[i32(3)][i32(3)]))));
@@ -338,10 +338,10 @@ fn vertexMain(@builtin(vertex_index) index_0 : u32, @builtin(instance_index) ins
         _S9 = vertex_1.color_1;
     }
     output_0.color_2 = _S9;
-    output_0.material_1 = instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].material_0;
+    output_0.material_1 = instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].material_0;
     output_0.uv_0 = vertex_1.uv0_0;
     output_0.clip_position_0 = output_0.position_2;
-    output_0.previous_clip_position_0 = ((((((vec4<f32>(previous_position_0, 1.0f)) * (mat4x4<f32>(instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_transform_0.data_0[i32(0)][i32(0)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_transform_0.data_0[i32(1)][i32(0)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_transform_0.data_0[i32(2)][i32(0)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_transform_0.data_0[i32(3)][i32(0)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_transform_0.data_0[i32(0)][i32(1)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_transform_0.data_0[i32(1)][i32(1)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_transform_0.data_0[i32(2)][i32(1)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_transform_0.data_0[i32(3)][i32(1)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_transform_0.data_0[i32(0)][i32(2)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_transform_0.data_0[i32(1)][i32(2)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_transform_0.data_0[i32(2)][i32(2)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_transform_0.data_0[i32(3)][i32(2)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_transform_0.data_0[i32(0)][i32(3)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_transform_0.data_0[i32(1)][i32(3)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_transform_0.data_0[i32(2)][i32(3)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_0]].previous_transform_0.data_0[i32(3)][i32(3)]))))) * (mat4x4<f32>(frame_0.previous_view_proj_0.data_1[i32(0)][i32(0)], frame_0.previous_view_proj_0.data_1[i32(1)][i32(0)], frame_0.previous_view_proj_0.data_1[i32(2)][i32(0)], frame_0.previous_view_proj_0.data_1[i32(3)][i32(0)], frame_0.previous_view_proj_0.data_1[i32(0)][i32(1)], frame_0.previous_view_proj_0.data_1[i32(1)][i32(1)], frame_0.previous_view_proj_0.data_1[i32(2)][i32(1)], frame_0.previous_view_proj_0.data_1[i32(3)][i32(1)], frame_0.previous_view_proj_0.data_1[i32(0)][i32(2)], frame_0.previous_view_proj_0.data_1[i32(1)][i32(2)], frame_0.previous_view_proj_0.data_1[i32(2)][i32(2)], frame_0.previous_view_proj_0.data_1[i32(3)][i32(2)], frame_0.previous_view_proj_0.data_1[i32(0)][i32(3)], frame_0.previous_view_proj_0.data_1[i32(1)][i32(3)], frame_0.previous_view_proj_0.data_1[i32(2)][i32(3)], frame_0.previous_view_proj_0.data_1[i32(3)][i32(3)]))));
+    output_0.previous_clip_position_0 = ((((((vec4<f32>(previous_position_0, 1.0f)) * (mat4x4<f32>(instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_transform_0.data_0[i32(0)][i32(0)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_transform_0.data_0[i32(1)][i32(0)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_transform_0.data_0[i32(2)][i32(0)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_transform_0.data_0[i32(3)][i32(0)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_transform_0.data_0[i32(0)][i32(1)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_transform_0.data_0[i32(1)][i32(1)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_transform_0.data_0[i32(2)][i32(1)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_transform_0.data_0[i32(3)][i32(1)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_transform_0.data_0[i32(0)][i32(2)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_transform_0.data_0[i32(1)][i32(2)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_transform_0.data_0[i32(2)][i32(2)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_transform_0.data_0[i32(3)][i32(2)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_transform_0.data_0[i32(0)][i32(3)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_transform_0.data_0[i32(1)][i32(3)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_transform_0.data_0[i32(2)][i32(3)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_0]].previous_transform_0.data_0[i32(3)][i32(3)]))))) * (mat4x4<f32>(frame_0.previous_view_proj_0.data_1[i32(0)][i32(0)], frame_0.previous_view_proj_0.data_1[i32(1)][i32(0)], frame_0.previous_view_proj_0.data_1[i32(2)][i32(0)], frame_0.previous_view_proj_0.data_1[i32(3)][i32(0)], frame_0.previous_view_proj_0.data_1[i32(0)][i32(1)], frame_0.previous_view_proj_0.data_1[i32(1)][i32(1)], frame_0.previous_view_proj_0.data_1[i32(2)][i32(1)], frame_0.previous_view_proj_0.data_1[i32(3)][i32(1)], frame_0.previous_view_proj_0.data_1[i32(0)][i32(2)], frame_0.previous_view_proj_0.data_1[i32(1)][i32(2)], frame_0.previous_view_proj_0.data_1[i32(2)][i32(2)], frame_0.previous_view_proj_0.data_1[i32(3)][i32(2)], frame_0.previous_view_proj_0.data_1[i32(0)][i32(3)], frame_0.previous_view_proj_0.data_1[i32(1)][i32(3)], frame_0.previous_view_proj_0.data_1[i32(2)][i32(3)], frame_0.previous_view_proj_0.data_1[i32(3)][i32(3)]))));
     return output_0;
 }
 
@@ -355,15 +355,15 @@ fn depthVertexMain(@builtin(vertex_index) index_1 : u32, @builtin(instance_index
 {
     var mesh_3 : GpuMesh_std430_0 = meshes_0[draw_0.mesh_0];
     var base_vertex_3 : u32;
-    if((((instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].flags_0) & (u32(2)))) != u32(0))
+    if((((instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].flags_0) & (u32(2)))) != u32(0))
     {
-        base_vertex_3 = instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].base_vertex_0;
+        base_vertex_3 = instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].base_vertex_0;
     }
     else
     {
         base_vertex_3 = mesh_3.base_vertex_1;
     }
-    var _S10 : vertexOutput_0 = vertexOutput_0( ((((((vec4<f32>(load_position_0(index_1 + base_vertex_3), 1.0f)) * (mat4x4<f32>(instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].transform_0.data_0[i32(0)][i32(0)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].transform_0.data_0[i32(1)][i32(0)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].transform_0.data_0[i32(2)][i32(0)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].transform_0.data_0[i32(3)][i32(0)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].transform_0.data_0[i32(0)][i32(1)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].transform_0.data_0[i32(1)][i32(1)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].transform_0.data_0[i32(2)][i32(1)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].transform_0.data_0[i32(3)][i32(1)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].transform_0.data_0[i32(0)][i32(2)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].transform_0.data_0[i32(1)][i32(2)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].transform_0.data_0[i32(2)][i32(2)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].transform_0.data_0[i32(3)][i32(2)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].transform_0.data_0[i32(0)][i32(3)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].transform_0.data_0[i32(1)][i32(3)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].transform_0.data_0[i32(2)][i32(3)], instances_0[visible_instances_0[draw_0.base_0 + instance_id_1]].transform_0.data_0[i32(3)][i32(3)]))))) * (mat4x4<f32>(frame_0.view_proj_0.data_1[i32(0)][i32(0)], frame_0.view_proj_0.data_1[i32(1)][i32(0)], frame_0.view_proj_0.data_1[i32(2)][i32(0)], frame_0.view_proj_0.data_1[i32(3)][i32(0)], frame_0.view_proj_0.data_1[i32(0)][i32(1)], frame_0.view_proj_0.data_1[i32(1)][i32(1)], frame_0.view_proj_0.data_1[i32(2)][i32(1)], frame_0.view_proj_0.data_1[i32(3)][i32(1)], frame_0.view_proj_0.data_1[i32(0)][i32(2)], frame_0.view_proj_0.data_1[i32(1)][i32(2)], frame_0.view_proj_0.data_1[i32(2)][i32(2)], frame_0.view_proj_0.data_1[i32(3)][i32(2)], frame_0.view_proj_0.data_1[i32(0)][i32(3)], frame_0.view_proj_0.data_1[i32(1)][i32(3)], frame_0.view_proj_0.data_1[i32(2)][i32(3)], frame_0.view_proj_0.data_1[i32(3)][i32(3)])))) );
+    var _S10 : vertexOutput_0 = vertexOutput_0( ((((((vec4<f32>(load_position_0(index_1 + base_vertex_3), 1.0f)) * (mat4x4<f32>(instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].transform_0.data_0[i32(0)][i32(0)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].transform_0.data_0[i32(1)][i32(0)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].transform_0.data_0[i32(2)][i32(0)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].transform_0.data_0[i32(3)][i32(0)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].transform_0.data_0[i32(0)][i32(1)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].transform_0.data_0[i32(1)][i32(1)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].transform_0.data_0[i32(2)][i32(1)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].transform_0.data_0[i32(3)][i32(1)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].transform_0.data_0[i32(0)][i32(2)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].transform_0.data_0[i32(1)][i32(2)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].transform_0.data_0[i32(2)][i32(2)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].transform_0.data_0[i32(3)][i32(2)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].transform_0.data_0[i32(0)][i32(3)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].transform_0.data_0[i32(1)][i32(3)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].transform_0.data_0[i32(2)][i32(3)], instances_0[visible_instances_0[visible_instances_0[draw_0.start_at_0] + instance_id_1]].transform_0.data_0[i32(3)][i32(3)]))))) * (mat4x4<f32>(frame_0.view_proj_0.data_1[i32(0)][i32(0)], frame_0.view_proj_0.data_1[i32(1)][i32(0)], frame_0.view_proj_0.data_1[i32(2)][i32(0)], frame_0.view_proj_0.data_1[i32(3)][i32(0)], frame_0.view_proj_0.data_1[i32(0)][i32(1)], frame_0.view_proj_0.data_1[i32(1)][i32(1)], frame_0.view_proj_0.data_1[i32(2)][i32(1)], frame_0.view_proj_0.data_1[i32(3)][i32(1)], frame_0.view_proj_0.data_1[i32(0)][i32(2)], frame_0.view_proj_0.data_1[i32(1)][i32(2)], frame_0.view_proj_0.data_1[i32(2)][i32(2)], frame_0.view_proj_0.data_1[i32(3)][i32(2)], frame_0.view_proj_0.data_1[i32(0)][i32(3)], frame_0.view_proj_0.data_1[i32(1)][i32(3)], frame_0.view_proj_0.data_1[i32(2)][i32(3)], frame_0.view_proj_0.data_1[i32(3)][i32(3)])))) );
     return _S10;
 }
 
@@ -1582,14 +1582,14 @@ fn punctual_visibility_0( tile_4 : u32,  world_position_6 : vec3<f32>,  to_light
     return tile_pcf_0(atlas_0, tile_uv_6, ndc_1.z, pixel_6, 2.0f);
 }
 
-fn point_visibility_0( light_1 : ptr<function, GpuLight_std430_0>,  base_1 : u32,  world_position_7 : vec3<f32>,  to_light_5 : vec3<f32>,  n_dot_l_3 : f32,  geometric_normal_4 : vec3<f32>,  pixel_7 : vec2<f32>) -> f32
+fn point_visibility_0( light_1 : ptr<function, GpuLight_std430_0>,  base_0 : u32,  world_position_7 : vec3<f32>,  to_light_5 : vec3<f32>,  n_dot_l_3 : f32,  geometric_normal_4 : vec3<f32>,  pixel_7 : vec2<f32>) -> f32
 {
     if(n_dot_l_3 <= 0.0f)
     {
         return 1.0f;
     }
     var from_light_1 : vec3<f32> = world_position_7 - (*light_1).position_0.xyz;
-    return punctual_visibility_0(base_1 + point_face_0(from_light_1), world_position_7, to_light_5, n_dot_l_3, 2.0f * max(max(abs(from_light_1.x), abs(from_light_1.y)), abs(from_light_1.z)), geometric_normal_4, pixel_7);
+    return punctual_visibility_0(base_0 + point_face_0(from_light_1), world_position_7, to_light_5, n_dot_l_3, 2.0f * max(max(abs(from_light_1.x), abs(from_light_1.y)), abs(from_light_1.z)), geometric_normal_4, pixel_7);
 }
 
 fn spot_visibility_0( light_2 : ptr<function, GpuLight_std430_0>,  tile_5 : u32,  world_position_8 : vec3<f32>,  to_light_6 : vec3<f32>,  n_dot_l_4 : f32,  geometric_normal_5 : vec3<f32>,  pixel_8 : vec2<f32>) -> f32
@@ -1840,10 +1840,10 @@ fn probe_level_irradiance_0( level_3 : u32,  world_position_13 : vec3<f32>,  nor
     var origin_2 : vec3<f32> = frame_0.probe_level_origin_0[level_3].xyz;
     var inv_0 : vec3<f32> = frame_0.probe_level_inv_spacing_0[level_3].xyz;
     var grid_0 : vec3<f32> = clamp((world_position_13 - origin_2) * inv_0, _S172, last_1);
-    var base_2 : vec3<f32> = floor(grid_0);
-    var f_0 : vec3<f32> = grid_0 - base_2;
-    var _S173 : vec3<u32> = vec3<u32>(base_2);
-    var _S174 : vec3<u32> = vec3<u32>(min(base_2 + _S171, last_1));
+    var base_1 : vec3<f32> = floor(grid_0);
+    var f_0 : vec3<f32> = grid_0 - base_1;
+    var _S173 : vec3<u32> = vec3<u32>(base_1);
+    var _S174 : vec3<u32> = vec3<u32>(min(base_1 + _S171, last_1));
     var _S175 : f32 = inv_0.x;
     var _S176 : f32;
     if(_S175 != 0.0f)
@@ -2079,8 +2079,8 @@ fn fragmentMain( _S194 : pixelInput_0, @builtin(front_facing) front_facing_1 : b
     var _S209 : f32 = max(dot(normal_14, to_eye_1), 0.00009999999747379f);
     var _S210 : vec2<f32> = position_5.xy;
     var _S211 : u32 = froxel_of_0(_S210, (((vec4<f32>(_S194.world_position_15, 1.0f)) * (mat4x4<f32>(frame_0.view_proj_0.data_1[i32(0)][i32(0)], frame_0.view_proj_0.data_1[i32(1)][i32(0)], frame_0.view_proj_0.data_1[i32(2)][i32(0)], frame_0.view_proj_0.data_1[i32(3)][i32(0)], frame_0.view_proj_0.data_1[i32(0)][i32(1)], frame_0.view_proj_0.data_1[i32(1)][i32(1)], frame_0.view_proj_0.data_1[i32(2)][i32(1)], frame_0.view_proj_0.data_1[i32(3)][i32(1)], frame_0.view_proj_0.data_1[i32(0)][i32(2)], frame_0.view_proj_0.data_1[i32(1)][i32(2)], frame_0.view_proj_0.data_1[i32(2)][i32(2)], frame_0.view_proj_0.data_1[i32(3)][i32(2)], frame_0.view_proj_0.data_1[i32(0)][i32(3)], frame_0.view_proj_0.data_1[i32(1)][i32(3)], frame_0.view_proj_0.data_1[i32(2)][i32(3)], frame_0.view_proj_0.data_1[i32(3)][i32(3)])))).w);
-    var base_3 : u32 = _S211 * u32(17);
-    var _S212 : u32 = min(cluster_lights_0[base_3], u32(16));
+    var base_2 : u32 = _S211 * u32(17);
+    var _S212 : u32 = min(cluster_lights_0[base_2], u32(16));
     var table_0 : TableTap_0 = table_tap_0(_S209, roughness_2);
     var dfg_0 : vec2<f32> = dfg_at_0(table_0);
     var _S213 : f32 = dfg_0.x;
@@ -2100,7 +2100,7 @@ fn fragmentMain( _S194 : pixelInput_0, @builtin(front_facing) front_facing_1 : b
         {
             break;
         }
-        var _S217 : GpuLight_std430_0 = lights_0[cluster_lights_0[base_3 + u32(1) + slot_0]];
+        var _S217 : GpuLight_std430_0 = lights_0[cluster_lights_0[base_2 + u32(1) + slot_0]];
         var _S218 : u32 = _S217.kind_0;
         var _S219 : bool = (_S217.kind_0) == u32(0);
         var to_light_7 : vec3<f32>;

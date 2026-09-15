@@ -64,23 +64,64 @@
 // zero: `SV_InstanceID` is then `0..instance_count` everywhere. So each bucket
 // gets one argument structure whose instance count this pass writes, plus a
 // contiguous run of instance indices the vertex stage indexes with that id —
-// which is what `visible_instances` below holds and what `mesh.slang`'s
-// `DrawConstants::base` points into.
+// which is what `visible_instances` below holds, starting at the word
+// `mesh.slang`'s `DrawConstants::start_at` names.
 //
 // The CPU therefore records **one draw per bucket**, a number fixed when the
 // bucket table is built, whatever the scene holds — which is the property §3.3
 // is about.
 //
+// # Three dispatches, because where a run starts is this frame's
+//
+// **Every bucket's run lives in one region sized by the instance capacity**, not
+// in a region per bucket. Until 2026-09 each bucket reserved a whole capacity of
+// words — which cannot overflow and costs `capacity * (1 + buckets)` words per
+// frame in flight per generator. A scene of 17219 instances and 938 buckets made
+// that 61.7 MiB a buffer and ran a 2 GiB device out of memory, although a
+// surviving instance lands in exactly one bucket and the buckets between them
+// never hold more than the survivor list does.
+//
+// Packing the runs end to end means a run's start depends on how many survivors
+// every earlier bucket took, which is a number no invocation has until all of
+// them have counted. So the pass is three entry points, dispatched in order
+// inside the one compute pass `crcbl_render::DrawGen` records:
+//
+// 1. `binMain`, one invocation per bucket and per survivor: writes each bucket's
+//    static arguments, selects the survivor's level, and **routes** it — the
+//    bucket it belongs to goes into the route region, and the bucket's mesh
+//    dispatch y extent counts it.
+// 2. `startsMain`, one invocation: walks the buckets in order and writes each
+//    one's start as the sum of the counts in front of it — a prefix sum.
+// 3. `scatterMain`, one invocation per survivor: reads its route and that
+//    bucket's start, takes a slot in the run, and writes the instance index.
+//
+// The survivor list, the routes, the runs and the starts are all regions of
+// `visible_instances`; its declaration below has the table. A region per bucket
+// cost `capacity` words each, and now a bucket costs the one word of its start.
+//
+// **The routes are a region of their own**, and that is what a parallel scatter
+// requires rather than a convenience: invocation `i` reads survivor `i`'s route
+// while other invocations write into the runs, so the route cannot live in the
+// region being scattered into, and the survivor list cannot hold it either —
+// that is the instance index being scattered.
+//
+// **The prefix sum is serial**, in one invocation, for the reason
+// `exposure.slang`'s reduce is: the bucket table is fixed at build and small —
+// one entry per (resident mesh level, material mode) — so a walk of it is one
+// addition per bucket, where a parallel scan would be several dispatches and an
+// order a device schedules.
+//
 // # The instance count is the atomic, and that is deliberate
 //
-// A bucket's `instance_count` is the slot allocator: a scattering invocation
-// takes its place in the run by incrementing it. Writing it afterwards would
-// need a second dispatch, because nothing inside one dispatch can wait for every
-// other invocation to have finished counting.
+// A bucket's `instance_count` is `scatterMain`'s slot allocator: a scattering
+// invocation takes its place in the run by incrementing it, and the run's start
+// is added to the slot it gets back. Writing the count afterwards would need a
+// fourth dispatch, because nothing inside one dispatch can wait for every other
+// invocation to have finished counting.
 //
 // The rest of each argument — index count, first index, and the two bases that
-// are always zero — is written by the invocation that *owns* that bucket, one
-// per bucket, at words the scattering invocations never touch. Different words,
+// are always zero — is written by the `binMain` invocation that *owns* that
+// bucket, one per bucket, at words no other invocation touches. Different words,
 // so there is no race between the two halves and no ordering to establish.
 //
 // The caller zeroes the argument buffer before the dispatch, exactly as it
@@ -104,12 +145,14 @@
 //
 // # A bucket's run cannot overflow, by arithmetic rather than by assertion
 //
-// Every scattering invocation contributes exactly one instance to exactly one
-// bucket, so the sum over buckets is the number of invocations that scattered —
-// which `visible_count` below clamps to `min(visible_capacity, bucket_capacity)`
-// before anything is read. A single bucket therefore cannot exceed
-// `bucket_capacity`, and the write below needs no bounds check that would be
-// unreachable if it did.
+// Every routed survivor is counted into exactly one bucket by `binMain` and
+// takes exactly one slot in that bucket by `scatterMain`, and both walk the same
+// survivors: `visible_count` below is clamped to `visible_capacity` before
+// anything is read, and nothing in the pass writes it between the dispatches. So
+// bucket `b`'s slots are `0..count(b)`, its run is `start(b)..start(b + 1)`, and
+// the last run ends at most `visible_capacity` words into the run region — the
+// runs sum to the survivors, and the survivors fit the list. The writes below
+// need no bounds check that would be unreachable if they did.
 //
 // An instance list too small for the scene is visible in *`cull.slang`'s*
 // counter, which is the true survivor count and is deliberately unbounded; this
@@ -151,11 +194,13 @@
 //   `asfloat`, and the word each field lands on is a named constant below
 //   rather than a struct member Slang lays out. `crcbl_shaders::level_select` is
 //   the host encoder and pins those constants.
-// * `visible_instances` holds `cull.slang`'s survivor list **and** the per-bucket
-//   runs this pass scatters into, in that order. One binding rather than two
-//   because a read-only descriptor and a writable descriptor of one buffer in
-//   one bind group is a usage conflict on WebGPU — so the survivors are read
-//   back through the writable view.
+// * `visible_instances` holds `cull.slang`'s survivor list, each survivor's
+//   route, the per-bucket runs this pass scatters into and each run's start, in
+//   that order. One binding rather than four because a read-only descriptor and
+//   a writable descriptor of one buffer in one bind group is a usage conflict on
+//   WebGPU — so the survivors are read back through the writable view — and
+//   because the starts are read by the geometry stages, whose own storage
+//   bindings are spent too.
 // * `counts_and_mesh_args` holds the per-bucket draw counts and then the
 //   per-bucket mesh-dispatch extents. Both are indirect arguments on every path
 //   that reads either, so they are never in two resource states at once — which
@@ -164,7 +209,7 @@
 //
 // What a caller must not assume: that any of `DrawGen`'s buffer accessors hand
 // back distinct buffers. `visible` and `runs` are one buffer, and so are `counts`
-// and `mesh_args`; the byte offsets are `DrawGen::bucket_base`,
+// and `mesh_args`; the offsets are `DrawGen::bucket_start_word`,
 // `DrawGen::count_offset` and `DrawGen::mesh_args_offset`, and reading a region
 // at offset zero because it used to be its own allocation reads the region in
 // front of it.
@@ -404,11 +449,13 @@ struct DrawGenParams
     /// Buckets in the table: `bucket_meshes` has this many entries and so does
     /// the argument buffer.
     uint bucket_count;
-    /// Instance indices one bucket's run can hold, which is also the stride
-    /// between two buckets' runs in `visible_instances`.
-    uint bucket_capacity;
-    /// Elements of `visible` that hold anything — `cull.slang`'s capacity. Its
-    /// counter can exceed this, which is how an overflow is visible at all.
+    /// Elements of the survivor list that hold anything — `cull.slang`'s
+    /// capacity. Its counter can exceed this, which is how an overflow is
+    /// visible at all.
+    ///
+    /// **Also the length of the route and run regions**, which is what places
+    /// every region of `visible_instances` after the list: the runs between them
+    /// hold every survivor the list does, so no bucket needs a stride of its own.
     uint visible_capacity;
     /// How many groups one instance's run of `group_state` holds — every
     /// resident mesh's group count summed, and the stride between two instances
@@ -419,7 +466,7 @@ struct DrawGenParams
     /// Where the per-bucket **material modes** start in `tables`, in words.
     ///
     /// The other half of a bucket's key: bucket `b` draws mesh `bucket_mesh(b)`
-    /// shaded in mode `bucket_mode(b)`, and the scatter below sends an instance
+    /// shaded in mode `bucket_mode(b)`, and `binMain` below routes an instance
     /// to the bucket that matches both. A scene whose materials are all one mode
     /// has one bucket per mesh exactly as it always did — the region is there,
     /// every word of it equal, and no draw is added.
@@ -532,18 +579,36 @@ StructuredBuffer<uint> visible_count;
 [[vk::binding(4, 0)]]
 StructuredBuffer<uint> tables;
 
-/// `cull.slang`'s compacted survivors, then the per-bucket runs of instance
-/// indices the vertex stage reads.
+/// `cull.slang`'s compacted survivors, each survivor's route, the per-bucket runs
+/// of instance indices the geometry stages read, and where each run starts.
 ///
-/// **Two regions in one buffer, and read *and* written through one descriptor.**
-/// The survivors occupy words `0..gen.visible_capacity`, in whatever order that
-/// pass's atomic handed slots out — nothing here depends on the order — and
-/// bucket `b`'s run starts at `gen.visible_capacity + b * gen.bucket_capacity`,
-/// which is what `mesh.slang`'s `DrawConstants::base` carries and what
-/// `SV_InstanceID` walks.
+/// **Four regions in one buffer, and read *and* written through one
+/// descriptor.** With `C` for `gen.visible_capacity` and `B` for
+/// `gen.bucket_count`:
+///
+/// | region | words | written by | read by |
+/// |---|---|---|---|
+/// | survivors | `0..C` | `cull.slang` | `binMain`, `scatterMain` |
+/// | routes: survivor `i`'s bucket | `C..2C` | `binMain` | `scatterMain` |
+/// | runs, every bucket's end to end | `2C..3C` | `scatterMain` | geometry stages |
+/// | starts: bucket `b`'s first run word | `3C..3C+B` | `startsMain` | `scatterMain`, geometry stages |
+///
+/// The survivors are in whatever order `cull.slang`'s atomic handed slots out,
+/// and each run in whatever order `scatterMain`'s did — nothing here depends on
+/// either. A start is an **absolute** word index into this buffer, so a reader
+/// adds `SV_InstanceID` to it and indexes again; `run_start_word` is the word
+/// `mesh.slang`'s `DrawConstants::start_at` names.
+///
+/// **The starts are last so that every start is itself in bounds.** A bucket
+/// that drew nothing after every survivor went into buckets in front of it
+/// starts at `3C`, which is past the runs — and `mesh_cluster.slang`'s task
+/// stage reads the word at a bucket's start even for a group it then multiplies
+/// away. With the starts behind the runs that word is the first start rather
+/// than the end of the buffer, and there is always one, because a table with no
+/// buckets is refused at build.
 ///
 /// Writable rather than a read-only view of the survivors beside a writable view
-/// of the runs: binding one buffer twice, once each way, in a single bind group
+/// of the rest: binding one buffer twice, once each way, in a single bind group
 /// is a usage conflict on WebGPU. A `RWStructuredBuffer` reads perfectly well,
 /// and the survivor half is read-only here by what this shader does with it.
 [[vk::binding(5, 0)]]
@@ -586,9 +651,10 @@ RWStructuredBuffer<Atomic<uint> > args;
 /// counts, and no pass wants the buffer in two resource states at once.
 ///
 /// Flat and atomic for `args`' reason, and the same division of labour: word
-/// `MESH_ARG_GROUP_Y` is incremented by each scattering invocation, exactly as
-/// `ARG_INSTANCE_COUNT` is, and the other two are plain stores by the
-/// invocation that owns the bucket.
+/// `MESH_ARG_GROUP_Y` is incremented by each routing invocation, exactly as
+/// `ARG_INSTANCE_COUNT` is by each scattering one, and the other two are plain
+/// stores by the invocation that owns the bucket. The draw counts are plain
+/// stores too, by `startsMain` alone.
 [[vk::binding(7, 0)]]
 RWStructuredBuffer<Atomic<uint> > counts_and_mesh_args;
 
@@ -706,14 +772,34 @@ uint level_mesh_at(uint level)
     return tables[gen.level_meshes_at + level];
 }
 
-/// Where bucket `bucket`'s run of surviving instance indices starts in
-/// `visible_instances`, past the survivor list that shares the buffer.
-///
-/// The same arithmetic `crcbl_render::DrawGen::bucket_base` performs, and what
-/// `mesh.slang`'s `DrawConstants::base` carries.
-uint bucket_base(uint bucket)
+/// What `binMain` routes a survivor to when no bucket matches its mesh and its
+/// mode — and what `scatterMain` then sends nowhere. No table reaches this many
+/// buckets: `crcbl_render::DrawGen` counts them in a `u32`.
+static const uint NO_BUCKET = 0xffffffff;
+
+/// Which word of `visible_instances` holds survivor `survivor`'s route, past the
+/// survivor list.
+uint route_word(uint survivor)
 {
-    return gen.visible_capacity + bucket * gen.bucket_capacity;
+    return gen.visible_capacity + survivor;
+}
+
+/// The first word of the run region, past the survivors and their routes — the
+/// start of the first bucket's run in every frame.
+uint runs_at()
+{
+    return 2 * gen.visible_capacity;
+}
+
+/// Which word of `visible_instances` holds where bucket `bucket`'s run starts
+/// this frame, past the runs.
+///
+/// The same arithmetic `crcbl_render::DrawGen::bucket_start_word` performs, and
+/// the word `mesh.slang`'s `DrawConstants::start_at` names — fixed at build,
+/// where the start it holds is `startsMain`'s every frame.
+uint run_start_word(uint bucket)
+{
+    return 3 * gen.visible_capacity + bucket;
 }
 
 /// Which word of `counts_and_mesh_args` holds bucket `bucket`'s draw count.
@@ -882,15 +968,28 @@ uint select_level(GpuInstance instance, uint instance_index)
     return chosen;
 }
 
+/// How many survivors this frame's dispatches walk: `cull.slang`'s true count,
+/// clamped to the list that holds them.
+///
+/// One function for `binMain` and `scatterMain`, because the run arithmetic
+/// rests on the two walking the same survivors — see the header. The counter is
+/// a read-only binding here, so nothing between the two dispatches can move it.
+uint survivor_count()
+{
+    return min(visible_count[INSTANCE_SURVIVOR_WORD], gen.visible_capacity);
+}
+
 /// Invocations per workgroup, matching
 /// `crcbl_shaders::draw_gen::WORKGROUP_SIZE`.
 ///
 /// One invocation covers *both* halves: it owns bucket `index` if there is one,
-/// and it scatters visible instance `index` if there is one. A dispatch is
+/// and it routes visible instance `index` if there is one. A dispatch is
 /// therefore sized for the larger of the two.
+///
+/// The first of the pass's three dispatches — see the header.
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void computeMain(uint3 thread: SV_DispatchThreadID)
+void binMain(uint3 thread: SV_DispatchThreadID)
 {
     uint index = thread.x;
 
@@ -912,7 +1011,7 @@ void computeMain(uint3 thread: SV_DispatchThreadID)
         args[at + ARG_FIRST_INSTANCE].store(0);
 
         // The static half of the same bucket's mesh dispatch. The y extent is
-        // the scattering half's, below, for the reason `ARG_INSTANCE_COUNT` is:
+        // the routing half's, below, for the reason `ARG_INSTANCE_COUNT` is:
         // nothing inside one dispatch can wait for every other invocation to
         // have finished counting.
         counts_and_mesh_args[mesh_arg_word(index, MESH_ARG_GROUP_X)]
@@ -920,16 +1019,14 @@ void computeMain(uint3 thread: SV_DispatchThreadID)
         counts_and_mesh_args[mesh_arg_word(index, MESH_ARG_GROUP_Z)].store(1);
     }
 
-    // Clamped by both capacities, which is what makes a bucket's run unable to
-    // overflow — see the header.
-    uint count = min(visible_count[INSTANCE_SURVIVOR_WORD],
-        min(gen.visible_capacity, gen.bucket_capacity));
-    if (index >= count)
+    // Clamped to the list, which is what makes the runs unable to overflow —
+    // see the header.
+    if (index >= survivor_count())
     {
         return;
     }
 
-    // The survivor list is the front of the same buffer the runs are scattered
+    // The survivor list is the front of the same buffer the routes are written
     // into — see `visible_instances`.
     uint instance_index = visible_instances[index];
     GpuInstance instance = instances[instance_index];
@@ -939,6 +1036,9 @@ void computeMain(uint3 thread: SV_DispatchThreadID)
     // here names the mesh that actually draws, which the bucket table then
     // routes exactly as it routes a mesh with no hierarchy. A mesh with none
     // resolves back to itself, so there is no branch for the ordinary case.
+    //
+    // Here and not in `scatterMain`, because `select_level` writes the
+    // hysteresis state and every element of it has exactly one writer a frame.
     uint mesh_id = level_mesh_at(
         mesh_levels_of(instance.mesh).first_level + select_level(instance, instance_index));
     // The other half of the key, and the reason a cutout costs only its own
@@ -950,29 +1050,76 @@ void computeMain(uint3 thread: SV_DispatchThreadID)
     // entry per (resident mesh, mode present in the scene) today — so this is a
     // couple of comparisons; a (mesh, mode) → bucket map is what a table large
     // enough to notice would want.
+    uint routed = NO_BUCKET;
     for (uint bucket = 0; bucket < gen.bucket_count; ++bucket)
     {
         if (bucket_mesh(bucket) != mesh_id || bucket_mode(bucket) != mode)
         {
             continue;
         }
-        uint slot = args[bucket * DRAW_ARGS_WORDS + ARG_INSTANCE_COUNT].add(1);
-        // The mesh dispatch's y extent, counted by the same invocations and to
-        // the same total. Two adds rather than one read of the other word,
-        // because a word another invocation is still incrementing is not a
-        // total yet — and the two are held equal by measurement rather than by
-        // assertion: `crcbl-vk`'s `the_mesh_dispatch_extent_is_the_culled
-        // _instance_count` reads both buffers back and compares them.
+        routed = bucket;
+        // Counted into the mesh dispatch's y extent, which is what `startsMain`
+        // sums. `scatterMain` counts the same survivors again into
+        // `ARG_INSTANCE_COUNT`, so the two words reach the same total — held
+        // equal by measurement rather than by assertion: `crcbl-vk`'s
+        // `the_mesh_dispatch_extent_is_the_culled_instance_count` reads both
+        // buffers back and compares them.
         counts_and_mesh_args[mesh_arg_word(bucket, MESH_ARG_GROUP_Y)].add(1);
+        break;
+    }
+    // Invocation `index` owns word `index` of the routes, so this is a plain
+    // store rather than an atomic. An instance matching no bucket is routed
+    // nowhere and never drawn — see `crcbl_shaders::draw_gen`'s module docs.
+    visible_instances[route_word(index)] = routed;
+}
 
-        visible_instances[bucket_base(bucket) + slot] = instance_index;
-        // Exactly one invocation per bucket takes slot zero, so exactly one
-        // writes this — a plain store rather than an atomic, and not a value
-        // several invocations race to agree on.
-        if (slot == 0)
+/// The second of the pass's three dispatches: where every bucket's run starts
+/// this frame, and whether it draws at all.
+///
+/// One invocation walking the table in bucket order, for the reason the header
+/// gives. By the time it runs every `binMain` invocation has finished, so each
+/// y extent is a total rather than a counter still moving — which is the whole
+/// reason this is a dispatch of its own.
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void startsMain()
+{
+    uint start = runs_at();
+    for (uint bucket = 0; bucket < gen.bucket_count; ++bucket)
+    {
+        visible_instances[run_start_word(bucket)] = start;
+        uint routed = counts_and_mesh_args[mesh_arg_word(bucket, MESH_ARG_GROUP_Y)].load();
+        // `1` for a bucket with something in it; an empty one keeps the zero
+        // the clearing pass wrote, which is what `IndirectCount`'s call reads.
+        if (routed != 0)
         {
             counts_and_mesh_args[count_word(bucket)].store(1);
         }
-        break;
+        start += routed;
     }
+}
+
+/// The third of the pass's three dispatches: every routed survivor's instance
+/// index, written into its bucket's run.
+///
+/// One invocation per survivor, and it reads three regions of
+/// `visible_instances` it never writes — the survivor, its route and its
+/// bucket's start — while writing only into the runs, so no invocation reads a
+/// word another one writes.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void scatterMain(uint3 thread: SV_DispatchThreadID)
+{
+    uint index = thread.x;
+    if (index >= survivor_count())
+    {
+        return;
+    }
+    uint bucket = visible_instances[route_word(index)];
+    if (bucket == NO_BUCKET)
+    {
+        return;
+    }
+    uint slot = args[bucket * DRAW_ARGS_WORDS + ARG_INSTANCE_COUNT].add(1);
+    visible_instances[visible_instances[run_start_word(bucket)] + slot] = visible_instances[index];
 }

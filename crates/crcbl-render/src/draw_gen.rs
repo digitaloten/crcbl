@@ -7,17 +7,20 @@
 //!  add_passes ──┬─ compute "clear-counters" ──▶ cull stats, draw args,
 //!               │                             counts+mesh args
 //!               │                                        │ graph barrier
-//!               ├─ compute "cull"      instances ──▶ survivors | · · ·
+//!               ├─ compute "cull"      instances ──▶ survivors | · | · | ·
 //!               │                                 ──▶ cull stats
 //!               │                                        │ graph barrier
-//!               └─ compute "draw-args" survivors ──▶ · · · | bucket runs
-//!                                               ──▶ draw args
-//!                                               ──▶ counts+mesh args
+//!               └─ compute "draw-args"
+//!                    bin      survivors ──▶ · | routes | · | ·
+//!                                       ──▶ draw args, counts+mesh args
+//!                    starts   counts    ──▶ · | · | · | run starts
+//!                    scatter  routes    ──▶ · | · | bucket runs | ·
+//!                                       ──▶ draw args
 //!                                                        │ graph barrier
 //!                        the caller's render pass ◀──────┘  IndirectArgument
 //! ```
 //!
-//! `a | b` is one buffer with two regions; the passes below say which is which.
+//! `a | b` is one buffer with regions; the passes below say which is which.
 //!
 //! `docs/plan/03-gpu-driven-rendering.md` §3.3, both halves: "compute pass:
 //! frustum cull against instance AABBs → compacted visible instance list →
@@ -55,6 +58,10 @@
 //! instance count and the y extent of its mesh dispatch are atomics, and an
 //! argument buffer left holding last frame's totals would draw last frame's
 //! scene twice over. Something has to zero them.
+//!
+//! The run starts and the routes are **not** among them, and need not be: the
+//! draw-argument pass writes every start and every route it later reads in the
+//! same frame, before it reads them. Only a counter reads what it adds to.
 //!
 //! The seam has a fill for exactly this — `CommandEncoder::fill_buffer`, "the
 //! idiomatic way to zero an indirect count buffer" — and it is unusable here
@@ -100,6 +107,41 @@
 //! what a caller sizes against, and the counter is where a scene that outgrew it
 //! says so.
 //!
+//! # The runs share one region, so a run's start is decided per frame
+//!
+//! **A bucket's run is not a region of its own.** Every bucket used to reserve a
+//! whole [`DrawGenDesc::instance_capacity`] of `u32`, which can never overflow
+//! and made the survivors-and-runs buffer `capacity * (1 + buckets)` words — per
+//! frame in flight, per generator, and a renderer holds a generator per camera,
+//! cascade, shadow light slot and secondary view. In a game scene of 17219
+//! instances and 938 buckets that was 61.7 MiB a buffer and about 864 MiB a
+//! renderer, and it ran a 2 GiB device out of memory.
+//!
+//! A survivor lands in exactly one bucket, so the runs between them hold what the
+//! survivor list does, and the buffer is now **one capacity of runs** beside the
+//! list — plus a capacity of routes and a word per bucket, for the reasons below.
+//! [`draw_gen::runs_at`] has the table, and [`draw_gen::runs_words`] is the size;
+//! `tests::the_measured_scene_pays_a_word_per_bucket_rather_than_a_capacity`
+//! works the same scene through both formulas.
+//!
+//! What that costs is that where a run starts depends on how many survivors the
+//! buckets in front of it took, which the GPU learns only once every survivor is
+//! counted. So `draw_gen.slang` is three entry points dispatched in turn inside
+//! the one `draw-args` pass — route and count each survivor, prefix-sum the
+//! counts into starts, scatter each survivor at its bucket's start — and that
+//! shader's header argues each. The **routes** are the capacity the buffer grew
+//! by: a parallel scatter reads each survivor's bucket while writing the runs,
+//! so the two cannot be one region.
+//!
+//! **And the geometry stages read the start rather than being told it.** The
+//! `DrawConstants` block a draw binds is written once at build, and the draw's
+//! first instance is the one number the four shader targets disagree about, so
+//! neither can carry a per-frame start; the vertex stage's storage bindings are
+//! spent. So the starts are a region of the buffer the stages already read, and
+//! the block names **the word** a bucket's start is in —
+//! [`DrawGen::bucket_start_word`], fixed at build. `mesh.slang`'s header is where
+//! that is argued in full.
+//!
 //! # Buffers here are shared, and the accessors are views rather than allocations
 //!
 //! **The draw-argument pass binds eight storage buffers**, which is what a
@@ -112,8 +154,9 @@
 //! back the same buffer**:
 //!
 //! * [`DrawGen::visible`] and [`DrawGen::runs`] are one buffer. The survivor
-//!   list is at offset zero and bucket `b`'s run starts at
-//!   [`DrawGen::bucket_base`]`(b) * 4` bytes.
+//!   list is at offset zero, and bucket `b`'s run starts at the word this frame
+//!   wrote into word [`DrawGen::bucket_start_word`]`(b)` of it — an absolute
+//!   word index, so a reader multiplies that by four too.
 //! * [`DrawGen::counts`] and [`DrawGen::mesh_args`] are one buffer. The counts
 //!   are at offset zero and bucket `b`'s dispatch extents at
 //!   [`DrawGen::mesh_args_offset`]`(b)`.
@@ -199,9 +242,10 @@ pub struct DrawGenDesc<'a> {
     pub level_meshes: &'a [u32],
     /// Instances the pool this culls can hold.
     ///
-    /// Sizes the visible list *and* every bucket's run, which is what makes a
-    /// bucket unable to overflow: at most this many instances survive, and they
-    /// are spread across the buckets rather than duplicated into each.
+    /// Sizes the visible list, its routes, and the one run region every bucket
+    /// shares, which is what makes a bucket unable to overflow: at most this
+    /// many instances survive, and they are spread across the buckets rather
+    /// than duplicated into each — see the module docs.
     ///
     /// It also sizes `docs/plan/25-lod.md`'s hysteresis state, which is one word
     /// per (instance slot, group) — see [`DrawGen::group_state`].
@@ -259,13 +303,15 @@ pub struct GeneratedDraws {
     /// [`ResourceState::IndirectArgument`] — **once**, whichever region the
     /// pass reads.
     pub counts_id: BufferId,
-    /// `cull.slang`'s survivor list **and** the per-bucket runs of surviving
-    /// instance indices the vertex stage reads, in that order, in one buffer.
-    /// Declare it as a shader read.
+    /// `cull.slang`'s survivor list, each survivor's route, the per-bucket runs
+    /// of surviving instance indices the vertex stage reads, and where each run
+    /// starts this frame, in that order, in one buffer. Declare it as a shader
+    /// read.
     ///
-    /// A pass that draws reads only the runs, at
-    /// [`DrawGen::bucket_base`]`(b)` words in — which is the number
-    /// [`DrawConstants::base`](crcbl_shaders::mesh::DrawConstants::base) carries.
+    /// A pass that draws reads only the starts and the runs: bucket `b`'s start
+    /// at word [`DrawGen::bucket_start_word`]`(b)` — which is the number
+    /// [`DrawConstants::start_at`](crcbl_shaders::mesh::DrawConstants::start_at)
+    /// carries — and then the run from the word that start names.
     pub runs_id: BufferId,
     /// `docs/plan/25-lod.md`'s hysteresis state, as the graph knows it.
     ///
@@ -341,8 +387,9 @@ pub struct DrawGen {
     gen_params: Vec<BufferHandle>,
     cull_params: Vec<BufferHandle>,
     visible_count: Vec<BufferHandle>,
-    /// `cull.slang`'s survivor list, then the per-bucket runs — see the module
-    /// docs, and [`DrawGen::bucket_base`] for where a bucket's run starts.
+    /// `cull.slang`'s survivor list, its routes, the per-bucket runs and their
+    /// starts — see the module docs, and [`DrawGen::bucket_start_word`] for where
+    /// a bucket's start is.
     runs: Vec<BufferHandle>,
     args: Vec<BufferHandle>,
     /// The per-bucket draw counts, then the per-bucket mesh-dispatch extents.
@@ -359,10 +406,18 @@ pub struct DrawGen {
     cull_pipeline: ComputePipelineHandle,
     gen_layout: BindGroupLayoutHandle,
     gen_pipeline_layout: PipelineLayoutHandle,
-    gen_pipeline: ComputePipelineHandle,
+    /// `draw_gen.slang`'s three entry points, in the order the `draw-args` pass
+    /// dispatches them: route and count, prefix-sum the counts into starts,
+    /// scatter. One layout serves all three.
+    bin_pipeline: ComputePipelineHandle,
+    starts_pipeline: ComputePipelineHandle,
+    scatter_pipeline: ComputePipelineHandle,
 
     bucket_count: u32,
     capacity: u32,
+    /// Words in each frame's [`runs`](Self::runs) buffer —
+    /// [`draw_gen::runs_words`], checked once at build.
+    runs_words: u32,
     hidden_view: u32,
 }
 
@@ -430,6 +485,14 @@ impl DrawGen {
         let bucket_count = u32::try_from(desc.bucket_meshes.len())
             .map_err(|_| HalError::InvalidDescriptor("more buckets than a u32".to_string()))?;
         let capacity = desc.instance_capacity;
+        // Checked here, once, because the shader indexes the whole buffer with a
+        // `uint` and every accessor below does the same arithmetic unchecked.
+        let runs_words = draw_gen::runs_words(capacity, bucket_count).ok_or_else(|| {
+            HalError::InvalidDescriptor(format!(
+                "{capacity} instances and {bucket_count} buckets lay out more survivor and run \
+                 words than a u32 addresses"
+            ))
+        })?;
 
         let mut buffer = |label: &str, size: u64, usage, memory| -> Result<_, HalError> {
             let handle = device.create_buffer(&BufferDesc {
@@ -563,7 +626,6 @@ impl DrawGen {
                 0,
                 &draw_gen::Params {
                     bucket_count,
-                    bucket_capacity: capacity,
                     visible_capacity: capacity,
                     group_stride,
                     bucket_modes_at: table_offsets.bucket_modes_at,
@@ -605,16 +667,19 @@ impl DrawGen {
                 BufferUsage::STORAGE | BufferUsage::TRANSFER_SRC | BufferUsage::TRANSFER_DST,
                 MemoryLocation::DeviceLocal,
             )?);
-            // The survivor list and the per-bucket runs, in that order, in one
-            // buffer — see the module docs. `cull.slang` writes the first
-            // `capacity` words and `draw_gen.slang` scatters into the rest;
-            // nothing reads a word of one region through the other, and the
-            // shader is bound the whole buffer once because a read-only view of
-            // half of it beside a writable view of the other half is a usage
-            // conflict on WebGPU.
+            // The survivor list, its routes, the per-bucket runs and their
+            // starts, in that order, in one buffer — see the module docs.
+            // `cull.slang` writes the first `capacity` words and
+            // `draw_gen.slang` the rest; nothing reads a word of one region
+            // through another, and the shader is bound the whole buffer once
+            // because a read-only view of part of it beside a writable view of
+            // the rest is a usage conflict on WebGPU.
+            //
+            // **One capacity of runs however many buckets there are**: a word
+            // per bucket is all the bucket count still costs here.
             runs.push(buffer(
                 &format!("visible and bucket runs {frame}"),
-                u64::from(capacity) * (1 + u64::from(bucket_count)) * 4,
+                u64::from(runs_words) * 4,
                 BufferUsage::STORAGE | BufferUsage::TRANSFER_SRC,
                 MemoryLocation::DeviceLocal,
             )?);
@@ -737,9 +802,10 @@ impl DrawGen {
             // three selection tables were all decided when a mesh became
             // resident.
             storage(4, true, UINT_STRIDE),
-            // The survivor list and the per-bucket runs. Writable, and read
-            // through the same descriptor — binding one buffer read-only *and*
-            // writable in one group is a usage conflict on WebGPU.
+            // The survivor list, its routes, the per-bucket runs and their
+            // starts. Writable, and read through the same descriptor — binding
+            // one buffer read-only *and* writable in one group is a usage
+            // conflict on WebGPU.
             storage(5, false, UINT_STRIDE),
             // The indirect arguments.
             storage(6, false, UINT_STRIDE),
@@ -763,14 +829,40 @@ impl DrawGen {
             push_constants: None,
         })?;
         rollback.pipeline_layouts.push(gen_pipeline_layout);
-        let gen_pipeline = compute_pipeline(
+        // Three entry points of one module over the one layout above, which is
+        // why these are `compute_pipeline_entry`: the route, the prefix sum and
+        // the scatter share the bucket table's accessors and shaders here have
+        // no `#include`. Each is pushed as soon as it exists, so a failure on
+        // the second releases the first.
+        let bin_pipeline = compute_pipeline_entry(
             device,
-            "draw args",
+            "draw args bin",
             &DRAW_GEN,
+            "binMain",
             gen_pipeline_layout,
             draw_gen::WORKGROUP_SIZE,
         )?;
-        rollback.pipelines.push(gen_pipeline);
+        rollback.pipelines.push(bin_pipeline);
+        let starts_pipeline = compute_pipeline_entry(
+            device,
+            "draw args starts",
+            &DRAW_GEN,
+            "startsMain",
+            gen_pipeline_layout,
+            // One invocation for the whole prefix sum, on the shader's own
+            // terms: every start depends on the one before it.
+            1,
+        )?;
+        rollback.pipelines.push(starts_pipeline);
+        let scatter_pipeline = compute_pipeline_entry(
+            device,
+            "draw args scatter",
+            &DRAW_GEN,
+            "scatterMain",
+            gen_pipeline_layout,
+            draw_gen::WORKGROUP_SIZE,
+        )?;
+        rollback.pipelines.push(scatter_pipeline);
 
         let mut clear_groups = Vec::with_capacity(frames);
         let mut cull_groups = Vec::with_capacity(frames);
@@ -800,9 +892,10 @@ impl DrawGen {
                     bound(0, cull_params[frame]),
                     bound(1, desc.instances[frame]),
                     bound(2, desc.mesh_table),
-                    // The survivor list is the front of the buffer whose tail
-                    // holds the per-bucket runs; this pass writes only the front
-                    // and `CullParams::capacity` is what bounds it there.
+                    // The survivor list is the front of the buffer whose later
+                    // regions hold the routes, the runs and their starts; this
+                    // pass writes only the front and `CullParams::capacity` is
+                    // what bounds it there.
                     bound(3, runs[frame]),
                     bound(4, visible_count[frame]),
                 ],
@@ -855,9 +948,12 @@ impl DrawGen {
             cull_pipeline,
             gen_layout,
             gen_pipeline_layout,
-            gen_pipeline,
+            bin_pipeline,
+            starts_pipeline,
+            scatter_pipeline,
             bucket_count,
             capacity,
+            runs_words,
             hidden_view: desc.hidden_view,
         })
     }
@@ -868,22 +964,44 @@ impl DrawGen {
         self.bucket_count
     }
 
-    /// Instances one bucket's run holds, which is also the visible list's
-    /// capacity — see [`DrawGenDesc::instance_capacity`].
+    /// Instances the visible list holds, and so how many every bucket's run
+    /// holds between them — see [`DrawGenDesc::instance_capacity`].
     #[must_use]
     pub const fn visible_capacity(&self) -> u32 {
         self.capacity
     }
 
-    /// Where bucket `bucket`'s run starts in [`DrawGen::runs`], in words, as the
-    /// number `mesh.slang`'s `DrawConstants::base` carries.
+    /// Which word of [`DrawGen::runs`] holds where bucket `bucket`'s run starts
+    /// this frame, as the number `mesh.slang`'s `DrawConstants::start_at`
+    /// carries.
     ///
-    /// **Past the survivor list**, which shares that buffer and occupies its
-    /// first [`visible_capacity`](Self::visible_capacity) words — see the module
-    /// docs. A reader copying a run back multiplies this by four.
+    /// **The word, not the start.** The start is a per-frame number the
+    /// draw-argument pass writes into this word — an absolute word index into
+    /// the same buffer, never below [`runs_at`](Self::runs_at) — and the word is
+    /// fixed at build, which is what lets a constant block written once name it.
+    /// Past the survivors, their routes and the runs; see the module docs. A
+    /// reader copying either back multiplies by four.
+    ///
+    /// The same for every generator a renderer builds from one bucket table and
+    /// one capacity, which is what lets one set of constant blocks serve the
+    /// camera, every shadow cull and every secondary view.
     #[must_use]
-    pub const fn bucket_base(&self, bucket: u32) -> u32 {
-        self.capacity + bucket * self.capacity
+    pub const fn bucket_start_word(&self, bucket: u32) -> u32 {
+        draw_gen::run_start_word(self.capacity, bucket)
+    }
+
+    /// The first word of the run region in [`DrawGen::runs`] — where bucket
+    /// zero's run starts in every frame, and the floor of every other start.
+    #[must_use]
+    pub const fn runs_at(&self) -> u32 {
+        draw_gen::runs_at(self.capacity)
+    }
+
+    /// Bytes of each frame's [`DrawGen::runs`] buffer: the survivors, their
+    /// routes, one capacity of runs and a start word per bucket.
+    #[must_use]
+    pub const fn runs_size(&self) -> u64 {
+        self.runs_words as u64 * 4
     }
 
     /// Byte offset of bucket `bucket`'s argument structure.
@@ -914,8 +1032,9 @@ impl DrawGen {
     /// pass's bind group names.
     ///
     /// The same buffer [`DrawGen::visible`] hands back: bucket `bucket`'s run
-    /// starts [`bucket_base`](Self::bucket_base)`(bucket)` words in, past the
-    /// survivor list.
+    /// starts at the word this frame wrote into word
+    /// [`bucket_start_word`](Self::bucket_start_word)`(bucket)`, past the
+    /// survivor list and its routes.
     ///
     /// # Panics
     ///
@@ -939,8 +1058,8 @@ impl DrawGen {
     /// into the instance array, in no particular order, in the **first
     /// [`visible_capacity`](Self::visible_capacity) words** of the buffer.
     ///
-    /// The same buffer [`DrawGen::runs`] hands back; the per-bucket runs follow
-    /// the survivors in it. See the module docs.
+    /// The same buffer [`DrawGen::runs`] hands back; the routes, the per-bucket
+    /// runs and their starts follow the survivors in it. See the module docs.
     ///
     /// # Panics
     ///
@@ -1110,7 +1229,6 @@ impl DrawGen {
             0,
             &draw_gen::Params {
                 bucket_count: self.bucket_count,
-                bucket_capacity: self.capacity,
                 visible_capacity: self.capacity,
                 group_stride: self.group_stride,
                 bucket_modes_at: self.table_offsets.bucket_modes_at,
@@ -1144,6 +1262,16 @@ impl DrawGen {
     /// [`PassTimers`](crate::timing::PassTimers) adds up — see
     /// [`MAX_TIMED_PASSES`](crate::timing::MAX_TIMED_PASSES).
     pub const MAX_PASSES: u32 = 3;
+
+    /// How many dispatches [`add_passes`](Self::add_passes) records for a frame
+    /// that tests at least one instance: the clear, the cull, and the
+    /// draw-argument pass's route, prefix sum and scatter.
+    ///
+    /// **Not [`MAX_PASSES`](Self::MAX_PASSES)**, which counts graph passes: the
+    /// last of those dispatches three entry points, for the reason the module
+    /// docs give. A frame that tests no instance records neither the cull nor
+    /// the scatter, since a dispatch of no workgroups is one Metal rejects.
+    pub const DISPATCHES: u32 = 5;
 
     /// Adds the cull and draw-argument passes to `graph` and returns what the
     /// caller's render pass draws from.
@@ -1270,30 +1398,57 @@ impl DrawGen {
                 encoder.dispatch(cull_groups, 1, 1);
             });
 
-        let gen_pipeline = self.gen_pipeline;
+        let pipelines = (
+            self.bin_pipeline,
+            self.starts_pipeline,
+            self.scatter_pipeline,
+        );
         let gen_layout = self.gen_pipeline_layout;
         let gen_group = self.gen_groups[frame];
-        // One invocation owns bucket `i` *and* scatters visible instance `i`, so
-        // the dispatch covers the larger of the two — and is never empty, because
-        // the static half of every bucket's arguments has to be written even for
-        // a frame that culled everything.
-        let gen_groups = instance_count
+        // One `binMain` invocation owns bucket `i` *and* routes visible instance
+        // `i`, so its dispatch covers the larger of the two — and is never empty,
+        // because the static half of every bucket's arguments has to be written
+        // even for a frame that culled everything.
+        let bin_groups = instance_count
             .max(self.bucket_count)
             .div_ceil(draw_gen::WORKGROUP_SIZE);
+        // `scatterMain` only scatters, and the survivors are at most the tested
+        // instances.
+        let scatter_groups = instance_count.div_ceil(draw_gen::WORKGROUP_SIZE);
         graph
             .add_compute_pass("draw-args")
             .read_buffer(visible_count)
-            // Read for the survivor list and written for the runs, which share
-            // it — one declaration, and `ShaderReadWrite` is what it really is.
+            // Read for the survivor list and written for the routes, the runs
+            // and their starts, which share it — one declaration, and
+            // `ShaderReadWrite` is what it really is.
             .use_buffer(runs, ResourceState::ShaderReadWrite)
             .use_buffer(args, ResourceState::ShaderReadWrite)
             .use_buffer(counts, ResourceState::ShaderReadWrite)
             .use_buffer(group_state, ResourceState::ShaderReadWrite)
             .execute(move |ctx| {
+                // **Three dispatches in one pass, in this order, with no
+                // barrier between them**: all three bind the one group in the
+                // states declared above, and each reads what the one before it
+                // finished writing — the counts are totals by the time the
+                // prefix sum runs, and every start is written by the time the
+                // scatter reads one. A pass is recorded in order and nothing in
+                // it runs concurrently with the dispatch before it.
+                let (bin, starts, scatter) = pipelines;
                 let encoder = ctx.encoder();
-                encoder.bind_compute_pipeline(gen_pipeline);
+                encoder.bind_compute_pipeline(bin);
                 encoder.bind_group(0, gen_group, &[], gen_layout);
-                encoder.dispatch(gen_groups, 1, 1);
+                encoder.dispatch(bin_groups, 1, 1);
+                encoder.bind_compute_pipeline(starts);
+                encoder.bind_group(0, gen_group, &[], gen_layout);
+                encoder.dispatch(1, 1, 1);
+                // No instances tested is no survivors to scatter, and a
+                // dispatch of no workgroups is one Metal rejects outright.
+                if scatter_groups == 0 {
+                    return;
+                }
+                encoder.bind_compute_pipeline(scatter);
+                encoder.bind_group(0, gen_group, &[], gen_layout);
+                encoder.dispatch(scatter_groups, 1, 1);
             });
 
         GeneratedDraws {
@@ -1309,7 +1464,9 @@ impl DrawGen {
 
     /// Releases everything, in dependency order. The device must be idle.
     pub fn destroy(self, device: &dyn Device) {
-        device.destroy_compute_pipeline(self.gen_pipeline);
+        device.destroy_compute_pipeline(self.scatter_pipeline);
+        device.destroy_compute_pipeline(self.starts_pipeline);
+        device.destroy_compute_pipeline(self.bin_pipeline);
         device.destroy_pipeline_layout(self.gen_pipeline_layout);
         device.destroy_compute_pipeline(self.cull_pipeline);
         device.destroy_pipeline_layout(self.cull_pipeline_layout);
@@ -1595,5 +1752,175 @@ impl Rollback {
         for handle in self.buffers {
             device.destroy_buffer(handle);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crcbl_hal::null::{NullInstance, Recorder};
+    use crcbl_hal::{DeviceDesc, Instance, QueueKind};
+    use crcbl_shaders::level_select::MeshLevels;
+
+    fn open() -> (Recorder, Box<dyn Device>, QueueHandle) {
+        let recorder = Recorder::new();
+        let instance = NullInstance::gpu_driven().with_recorder(recorder.clone());
+        let adapter = instance.adapters().remove(0);
+        let device = instance
+            .create_device(&DeviceDesc::for_adapter(adapter.id))
+            .expect("the null backend always opens");
+        let queue = device.queue(QueueKind::Graphics).expect("always present");
+        (recorder, device, queue)
+    }
+
+    /// A generator over `buckets` buckets of `capacity` instances, every bucket
+    /// drawing its own flat mesh — the smallest table that is still a table of
+    /// that length.
+    fn generator(device: &dyn Device, queue: QueueHandle, capacity: u32, buckets: u32) -> DrawGen {
+        let storage = |label: &str, size: u64| {
+            device
+                .create_buffer(&BufferDesc {
+                    label: Some(label),
+                    size,
+                    usage: BufferUsage::STORAGE,
+                    memory: MemoryLocation::HostUpload,
+                })
+                .expect("a storage buffer")
+        };
+        let instances = [storage("instances", 4)];
+        let mesh_table = storage("mesh table", 4);
+        let bucket_meshes: Vec<u32> = (0..buckets).collect();
+        let zeroes = vec![0u32; bucket_meshes.len()];
+        let mesh_levels: Vec<MeshLevels> = bucket_meshes
+            .iter()
+            .map(|mesh| MeshLevels {
+                first_level: *mesh,
+                ..MeshLevels::FLAT
+            })
+            .collect();
+        DrawGen::new(
+            device,
+            queue,
+            &DrawGenDesc {
+                label: Some("draw gen test"),
+                instances: &instances,
+                mesh_table,
+                bucket_meshes: &bucket_meshes,
+                bucket_modes: &zeroes,
+                bucket_clusters: &zeroes,
+                mesh_levels: &mesh_levels,
+                level_groups: &[],
+                level_meshes: &bucket_meshes,
+                instance_capacity: capacity,
+                hidden_view: 0,
+            },
+        )
+        .expect("the null backend builds a generator")
+    }
+
+    /// **The runs buffer costs a word per bucket, not a capacity per bucket.**
+    ///
+    /// Two generators of one capacity and very different bucket counts, and the
+    /// size the device was actually asked for — read off the allocation rather
+    /// than off [`DrawGen::runs_size`], which a build that sized the buffer some
+    /// other way would still answer correctly. When each bucket reserved its own
+    /// run this difference was `capacity` words a bucket, so the second
+    /// generator's buffer was sixty-four times the first's.
+    #[test]
+    fn the_runs_buffer_grows_by_a_word_per_bucket() {
+        const CAPACITY: u32 = 1000;
+        let (recorder, device, queue) = open();
+        let device = device.as_ref();
+        let few = generator(device, queue, CAPACITY, 1);
+        let many = generator(device, queue, CAPACITY, 64);
+        let size = |draws: &DrawGen| {
+            recorder
+                .buffer_size(draws.runs(0))
+                .expect("the runs buffer is live")
+        };
+
+        assert_eq!(
+            size(&many) - size(&few),
+            u64::from(many.bucket_count() - few.bucket_count()) * 4,
+            "sixty-three more buckets cost sixty-three more words of run start, and nothing else"
+        );
+        assert_eq!(
+            size(&few),
+            (3 * u64::from(CAPACITY) + 1) * 4,
+            "one bucket's generator holds the survivors, their routes, one capacity of runs and \
+             one start"
+        );
+        for draws in [&few, &many] {
+            assert_eq!(
+                draws.runs_size(),
+                size(draws),
+                "and the accessor a reader sizes a copy by is the size that was allocated"
+            );
+        }
+
+        few.destroy(device);
+        many.destroy(device);
+        recorder.assert_valid();
+    }
+
+    /// **Every start word is past the runs and inside the buffer**, and bucket
+    /// zero's run opens the run region.
+    ///
+    /// The words a constant block names are fixed at build and read by the
+    /// geometry stages every frame, so two buckets sharing one would draw one
+    /// bucket's run twice, and a word past the end is a read of nothing. The
+    /// last bucket's word is the buffer's last.
+    #[test]
+    fn every_bucket_start_is_a_word_of_its_own_behind_the_runs() {
+        const CAPACITY: u32 = 100;
+        let (recorder, device, queue) = open();
+        let device = device.as_ref();
+        let draws = generator(device, queue, CAPACITY, 5);
+
+        assert_eq!(
+            draws.runs_at(),
+            2 * CAPACITY,
+            "past the survivors and their routes"
+        );
+        let starts: Vec<u32> = (0..draws.bucket_count())
+            .map(|bucket| draws.bucket_start_word(bucket))
+            .collect();
+        assert_eq!(
+            starts,
+            (0..5)
+                .map(|bucket| 3 * CAPACITY + bucket)
+                .collect::<Vec<_>>(),
+            "one word per bucket, in bucket order, behind one capacity of runs"
+        );
+        assert_eq!(
+            u64::from(starts[starts.len() - 1] + 1) * 4,
+            draws.runs_size(),
+            "and the last bucket's start is the buffer's last word"
+        );
+
+        draws.destroy(device);
+        recorder.assert_valid();
+    }
+
+    /// **The scene that ran a 2 GiB device out of memory**, through the layout
+    /// each bucket used to reserve and through the one it has now.
+    ///
+    /// 17219 instances and 938 buckets are the measured `ew` scene
+    /// `docs/backlog.md`'s performance review records; the numbers here are its
+    /// byte sizes, asserted rather than written into a comment, so the module
+    /// docs' claim moves with the formula.
+    #[test]
+    fn the_measured_scene_pays_a_word_per_bucket_rather_than_a_capacity() {
+        const CAPACITY: u32 = 17219;
+        const BUCKETS: u32 = 938;
+        let per_bucket_runs = u64::from(CAPACITY) * (1 + u64::from(BUCKETS)) * 4;
+        let shared_runs = u64::from(
+            draw_gen::runs_words(CAPACITY, BUCKETS).expect("the scene's layout addresses"),
+        ) * 4;
+        assert_eq!(
+            per_bucket_runs, 64_674_564,
+            "61.7 MiB a buffer, as measured"
+        );
+        assert_eq!(shared_runs, 210_380, "205.4 KiB a buffer");
     }
 }

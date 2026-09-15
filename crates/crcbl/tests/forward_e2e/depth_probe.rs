@@ -103,8 +103,9 @@ struct DepthProbe {
     /// `mesh.slang` reads its instance out of a run rather than naming one,
     /// because the engine's own draws come out of `draw_gen.slang` — see
     /// `crcbl::render::draw_gen`. This probe records an ordinary `draw_indexed`
-    /// of one instance, so `SV_InstanceID` is 0, the block's base is 0, and this
-    /// entry is what sends it to instance 0.
+    /// of one instance, so `SV_InstanceID` is 0 and the block's `start_at` is 0.
+    /// **The one word is read twice**: first as the run's start, which is 0, and
+    /// then as the run's only entry, which is what sends the draw to instance 0.
     visible_instances: crcbl::hal::BufferHandle,
     /// A one-layer `D2Array` page of one white texel, and its view.
     ///

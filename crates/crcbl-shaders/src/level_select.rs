@@ -246,8 +246,9 @@ impl MeshLevels {
     /// One frame of this mesh's selection: every one of its groups' expansion
     /// updated in `state`, and the level a uniform cut draws returned.
     ///
-    /// **`computeMain` in `draw_gen.slang` is this function**, one invocation per
-    /// visible instance, and the two halves are deliberately one loop:
+    /// **`draw_gen.slang`'s `select_level` is this function**, which `binMain`
+    /// runs once per visible instance, and the two halves are deliberately one
+    /// loop:
     ///
     /// * The state is written for **every** group, whatever the level answer is,
     ///   because the mesh path descends the same groups per cluster and reads

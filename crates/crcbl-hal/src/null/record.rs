@@ -1024,6 +1024,22 @@ impl Recorder {
         }
     }
 
+    /// The size `buffer` was created with, whatever memory it lives in — `None`
+    /// for a handle that is not a live buffer.
+    ///
+    /// [`buffer_bytes`](Self::buffer_bytes) holds contents for mappable memory
+    /// only, so it cannot say how large a device-local buffer is. That size is
+    /// what a test of an allocation's **cost** asserts on: a buffer whose length
+    /// grew with the wrong input is correct in every byte it holds.
+    #[must_use]
+    pub fn buffer_size(&self, buffer: BufferHandle) -> Option<u64> {
+        let state = self.lock();
+        match &state.get(ObjectKind::Buffer, buffer.to_bits())?.detail {
+            Detail::Buffer { size, .. } => Some(*size),
+            _ => unreachable!("a buffer handle always carries buffer detail"),
+        }
+    }
+
     /// Every shader module created so far, as `(label, formats the descriptor
     /// carried)`, in creation order.
     ///
