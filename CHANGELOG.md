@@ -1240,6 +1240,15 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Fixed
 
+- **Vulkan presents to a Win32 window.** `crcbl-vk` refused
+  `SurfaceTarget::Win32` with "Win32 surfaces land at P14", so on Windows every
+  sample opened its window, opened the Vulkan backend and then exited at
+  `Instance::create_surface` without drawing a frame; only `CRCBL_GPU=dx12` or
+  `--headless` ran. `VkInstance` now enables `VK_KHR_win32_surface` when the
+  loader offers it and creates the surface from the shell's `HWND` and
+  `HINSTANCE`, the way the Wayland and XCB targets already were. A loader
+  without the extension still answers `HalError::Unsupported`, now naming it.
+
 - Skinned instances and their selected mesh-shader clusters are no longer
   rejected using undeformed source bounds or normal cones. This fixes animated
   limbs disappearing when the bind pose is outside the camera. Static geometry

@@ -219,6 +219,7 @@ pub(crate) struct InstanceInner {
     pub(crate) surface_ext: Option<khr::surface::Instance>,
     pub(crate) wayland_ext: Option<khr::wayland_surface::Instance>,
     pub(crate) xcb_ext: Option<khr::xcb_surface::Instance>,
+    pub(crate) win32_ext: Option<khr::win32_surface::Instance>,
     pub(crate) debug_ext: Option<ext::debug_utils::Instance>,
     messenger: vk::DebugUtilsMessengerEXT,
     messenger_user_data: *mut c_void,
@@ -507,6 +508,7 @@ impl VkInstance {
             khr::surface::NAME,
             khr::wayland_surface::NAME,
             khr::xcb_surface::NAME,
+            khr::win32_surface::NAME,
             // Not used directly by anything here — it is a *dependency* of the
             // device-level `VK_EXT_present_timing`, which `vk.xml` declares as
             // `VK_KHR_swapchain+VK_KHR_present_id2+VK_KHR_get_surface_capabilities2+VK_KHR_calibrated_timestamps`.
@@ -723,6 +725,8 @@ impl VkInstance {
             .then(|| khr::wayland_surface::Instance::new(&entry, &raw));
         let xcb_ext = has_extension(khr::xcb_surface::NAME)
             .then(|| khr::xcb_surface::Instance::new(&entry, &raw));
+        let win32_ext = has_extension(khr::win32_surface::NAME)
+            .then(|| khr::win32_surface::Instance::new(&entry, &raw));
 
         let adapters = adapter::enumerate(&raw, debug_utils, surface_caps2);
         if adapters.is_empty() {
@@ -760,6 +764,7 @@ impl VkInstance {
                 surface_ext,
                 wayland_ext,
                 xcb_ext,
+                win32_ext,
                 debug_ext,
                 messenger,
                 messenger_user_data: user_data,
@@ -875,7 +880,19 @@ impl Instance for VkInstance {
             // swapchain built on it is a ring of plain images. See
             // `crate::swapchain`.
             SurfaceTarget::Offscreen => vk::SurfaceKHR::null(),
-            SurfaceTarget::Win32 { .. } => return unsupported("Win32 surfaces land at P14"),
+            SurfaceTarget::Win32 { hinstance, hwnd } => {
+                let Some(ext) = self.inner.win32_ext.as_ref() else {
+                    return unsupported("VK_KHR_win32_surface is not available");
+                };
+                let info = vk::Win32SurfaceCreateInfoKHR::default()
+                    .hinstance(hinstance.as_ptr() as vk::HINSTANCE)
+                    .hwnd(hwnd.as_ptr() as vk::HWND);
+                // SAFETY: as for Wayland — the caller promises `hinstance` is
+                // the module that registered `hwnd`'s class and `hwnd` a live
+                // window, and that both outlive the surface.
+                unsafe { ext.create_win32_surface(&info, None) }
+                    .map_err(|error| conv::hal_error("vkCreateWin32SurfaceKHR", error))?
+            }
             SurfaceTarget::AppKit { .. } => return unsupported("AppKit surfaces land at P14"),
             SurfaceTarget::Web { .. } => {
                 return unsupported("a canvas is crcbl-webgpu's target, not Vulkan's");
