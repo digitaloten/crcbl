@@ -188,16 +188,20 @@ impl ProbeGather {
         };
         let entries = [
             uniform(0),
-            storage(1, true),
+            storage(1, true, size_of::<[f32; 4]>() as u32),
             sampled(2, ImageViewType::D2Array),
             sampled(3, ImageViewType::D2),
             sampled(4, ImageViewType::D2),
             sampled(5, ImageViewType::D2),
-            storage(6, false),
+            storage(6, false, size_of::<[f32; 4]>() as u32),
             sampled(7, ImageViewType::D2),
             sampled(8, ImageViewType::D2),
             sampled(9, ImageViewType::D2),
-            storage(10, true),
+            storage(
+                10,
+                true,
+                crcbl_shaders::probe_gather::PRODUCER_STRIDE as u32,
+            ),
         ];
         let layout_desc = BindGroupLayoutDesc {
             label: Some(label),

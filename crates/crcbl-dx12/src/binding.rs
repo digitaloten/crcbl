@@ -123,8 +123,8 @@ use crcbl_hal::{
     ShaderStages,
 };
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_BUFFER_SRV, D3D12_BUFFER_SRV_FLAG_RAW, D3D12_BUFFER_UAV, D3D12_BUFFER_UAV_FLAG_RAW,
-    D3D12_CONSTANT_BUFFER_VIEW_DESC, D3D12_CPU_DESCRIPTOR_HANDLE,
+    D3D12_BUFFER_SRV, D3D12_BUFFER_SRV_FLAG_NONE, D3D12_BUFFER_SRV_FLAG_RAW, D3D12_BUFFER_UAV,
+    D3D12_BUFFER_UAV_FLAG_NONE, D3D12_CONSTANT_BUFFER_VIEW_DESC, D3D12_CPU_DESCRIPTOR_HANDLE,
     D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, D3D12_DESCRIPTOR_HEAP_DESC,
     D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE,
     D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
@@ -137,7 +137,7 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_UAV_DIMENSION_BUFFER, D3D12_UNORDERED_ACCESS_VIEW_DESC,
     D3D12_UNORDERED_ACCESS_VIEW_DESC_0, ID3D12DescriptorHeap, ID3D12Device, ID3D12Resource,
 };
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_TYPELESS;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_UNKNOWN};
 
 use crate::buffer;
 use crate::conv;
@@ -176,6 +176,9 @@ pub(crate) struct RangePlan {
     /// `NumDescriptors` for the *root signature*, which is [`u32::MAX`] for an
     /// unbounded range and [`count`](Self::count) otherwise.
     declared: u32,
+    /// A storage buffer's element stride, from its layout entry; zero for
+    /// every other kind, which no view built from this plan reads.
+    stride: u32,
 }
 
 /// One binding that takes a dynamic offset, and so becomes a root descriptor.
@@ -193,6 +196,9 @@ pub(crate) struct RootPlan {
     /// This binding's own visibility. A root descriptor is one binding, so it
     /// need not widen to the union of the set's the way a table does.
     visibility: ShaderStages,
+    /// A storage buffer's element stride, as [`RangePlan::stride`]; zero for a
+    /// uniform buffer.
+    stride: u32,
 }
 
 impl RootPlan {
@@ -494,6 +500,7 @@ pub(crate) fn plan_layout(
                 range_type: range_type
                     .unwrap_or_else(|| unreachable!("a dynamic binding is a buffer")),
                 visibility: entry.visibility,
+                stride: storage_stride(entry.kind),
             });
             continue;
         }
@@ -509,6 +516,7 @@ pub(crate) fn plan_layout(
             count: if unbounded { 0 } else { count },
             offset: next_offset(table),
             declared: if unbounded { u32::MAX } else { count },
+            stride: storage_stride(entry.kind),
         });
         if unbounded {
             variable = Some((entry.binding, in_views));
@@ -528,6 +536,16 @@ pub(crate) fn plan_layout(
         variable,
         visibility,
     })
+}
+
+/// A storage buffer's declared element stride, or zero for any other kind —
+/// which is what marks a plan as a storage buffer, since a sampled image takes
+/// an SRV range too.
+const fn storage_stride(kind: BindingKind) -> u32 {
+    match kind {
+        BindingKind::StorageBuffer { stride, .. } => stride,
+        _ => 0,
+    }
 }
 
 /// Whether a binding takes one of `bind_group`'s dynamic offsets.
@@ -590,6 +608,10 @@ pub(crate) struct SetTables {
     /// The union of the *table* entries' visibilities, which is what a
     /// descriptor table takes. Each root descriptor carries its own.
     pub(crate) visibility: ShaderStages,
+    /// Every storage buffer the set declares, at the register it was assigned —
+    /// tables and root descriptors alike, since both are `StructuredBuffer`s in
+    /// the source. `set` is zero here; `crate::pipeline` fills it in.
+    pub(crate) storage: Vec<dxil::StorageRegister>,
 }
 
 /// One root descriptor, ready to become a `D3D12_ROOT_PARAMETER`.
@@ -665,11 +687,40 @@ pub(crate) fn ranges(layout: &BindGroupLayoutRecord, registers: &mut dxil::Regis
         })
         .collect();
 
+    let storage = layout
+        .views
+        .iter()
+        .zip(&assigned)
+        .map(|(plan, register)| (plan.binding, plan.range_type, plan.stride, *register))
+        .chain(
+            layout
+                .roots
+                .iter()
+                .zip(
+                    assigned
+                        .iter()
+                        .skip(layout.views.len() + layout.samplers.len()),
+                )
+                .map(|(plan, register)| (plan.binding, plan.range_type, plan.stride, *register)),
+        )
+        .filter(|(.., stride, _)| *stride > 0)
+        .map(
+            |(binding, range_type, stride, register)| dxil::StorageRegister {
+                set: 0,
+                binding,
+                class: register_class(range_type),
+                register,
+                stride,
+            },
+        )
+        .collect();
+
     SetTables {
         views,
         samplers,
         roots,
         visibility: layout.visibility,
+        storage,
     }
 }
 
@@ -842,6 +893,7 @@ pub(crate) fn write_entry(
         plan.range_type,
         heap.cpu(block, slot),
         entry.binding,
+        plan.stride,
     )?;
     Ok(None)
 }
@@ -957,6 +1009,7 @@ impl Resolved {
         range_type: D3D12_DESCRIPTOR_RANGE_TYPE,
         at: D3D12_CPU_DESCRIPTOR_HANDLE,
         binding: u32,
+        stride: u32,
     ) -> Result<(), HalError> {
         match self {
             Self::Buffer {
@@ -990,25 +1043,23 @@ impl Resolved {
             } if range_type == D3D12_DESCRIPTOR_RANGE_TYPE_SRV
                 || range_type == D3D12_DESCRIPTOR_RANGE_TYPE_UAV =>
             {
-                // A **raw** view rather than a structured one, because the seam
-                // has no element stride to give — `BindingResource::Buffer` is a
-                // byte range. A raw view's element is four bytes and the HLSL's
-                // own `StructuredBuffer<T>` declaration supplies the stride,
-                // which is what `_FLAG_RAW` means and why the format is
-                // `R32_TYPELESS`. `crate::buffer` owns the arithmetic and the
-                // alignment D3D12 requires of the start.
-                let (first, elements) = buffer::raw_view_range(*offset, *size, binding)?;
+                // A **structured** view, carrying the stride the layout declared:
+                // Slang emits `StructuredBuffer<T>`, and a driver addresses its
+                // elements by the view's `StructureByteStride`. `crate::buffer`
+                // owns the arithmetic and says why a raw view was wrong.
+                let (first, elements) =
+                    buffer::structured_view_range(*offset, *size, stride, binding)?;
                 if range_type == D3D12_DESCRIPTOR_RANGE_TYPE_SRV {
                     let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-                        Format: DXGI_FORMAT_R32_TYPELESS,
+                        Format: DXGI_FORMAT_UNKNOWN,
                         ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
                         Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
                         Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                             Buffer: D3D12_BUFFER_SRV {
                                 FirstElement: first,
                                 NumElements: elements,
-                                StructureByteStride: 0,
-                                Flags: D3D12_BUFFER_SRV_FLAG_RAW,
+                                StructureByteStride: stride,
+                                Flags: D3D12_BUFFER_SRV_FLAG_NONE,
                             },
                         },
                     };
@@ -1027,15 +1078,15 @@ impl Resolved {
                     // and takes the device down at the next call.
                     buffer::check_unordered_access(*location, binding)?;
                     let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
-                        Format: DXGI_FORMAT_R32_TYPELESS,
+                        Format: DXGI_FORMAT_UNKNOWN,
                         ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
                         Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
                             Buffer: D3D12_BUFFER_UAV {
                                 FirstElement: first,
                                 NumElements: elements,
-                                StructureByteStride: 0,
+                                StructureByteStride: stride,
                                 CounterOffsetInBytes: 0,
-                                Flags: D3D12_BUFFER_UAV_FLAG_RAW,
+                                Flags: D3D12_BUFFER_UAV_FLAG_NONE,
                             },
                         },
                     };
@@ -1170,6 +1221,7 @@ mod tests {
                 BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: 4,
                 },
             ),
             entry(1, BindingKind::Sampler { comparison: false }),
@@ -1218,6 +1270,7 @@ mod tests {
                 BindingKind::StorageBuffer {
                     read_only,
                     dynamic: false,
+                    stride: 4,
                 },
             )];
             let record = plan(&entries).expect("one storage buffer");
@@ -1398,6 +1451,7 @@ mod tests {
                         BindingKind::StorageBuffer {
                             read_only: true,
                             dynamic: true,
+                            stride: 4,
                         },
                     )
                 }],
@@ -1486,6 +1540,7 @@ mod tests {
                 BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: 4,
                 },
             ),
             entry(2, BindingKind::Sampler { comparison: false }),
@@ -1494,6 +1549,7 @@ mod tests {
                 BindingKind::StorageBuffer {
                     read_only: false,
                     dynamic: false,
+                    stride: 4,
                 },
             ),
             entry(
@@ -1538,6 +1594,7 @@ mod tests {
             BindingKind::StorageBuffer {
                 read_only: true,
                 dynamic: false,
+                stride: 4,
             },
         )];
         let second = plan(&more).expect("one binding");
@@ -1565,6 +1622,7 @@ mod tests {
                 BindingKind::StorageBuffer {
                     read_only: false,
                     dynamic: true,
+                    stride: 4,
                 },
             ),
             entry(

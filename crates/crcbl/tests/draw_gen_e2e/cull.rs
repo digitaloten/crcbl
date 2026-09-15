@@ -376,12 +376,15 @@ impl CullProbe {
             )
             .expect("write");
 
-        let storage = |read_only| crcbl::hal::BindGroupLayoutEntry {
+        // `stride` is each buffer's element as `cull.slang` declares it: the
+        // instance and mesh tables' structs, then the `uint` outputs.
+        let storage = |read_only, stride: usize| crcbl::hal::BindGroupLayoutEntry {
             binding: 0,
             visibility: crcbl::hal::ShaderStages::COMPUTE,
             kind: crcbl::hal::BindingKind::StorageBuffer {
                 read_only,
                 dynamic: false,
+                stride: stride as u32,
             },
             count: 1,
             flags: crcbl::hal::BindingFlags::empty(),
@@ -398,19 +401,19 @@ impl CullProbe {
             // pass never edits an instance or a mesh entry.
             crcbl::hal::BindGroupLayoutEntry {
                 binding: 1,
-                ..storage(true)
+                ..storage(true, crcbl::shaders::mesh::INSTANCE_STRIDE)
             },
             crcbl::hal::BindGroupLayoutEntry {
                 binding: 2,
-                ..storage(true)
+                ..storage(true, crcbl::shaders::mesh::MESH_ENTRY_STRIDE)
             },
             crcbl::hal::BindGroupLayoutEntry {
                 binding: 3,
-                ..storage(false)
+                ..storage(false, size_of::<u32>())
             },
             crcbl::hal::BindGroupLayoutEntry {
                 binding: 4,
-                ..storage(false)
+                ..storage(false, size_of::<u32>())
             },
         ];
         let bind_group_layout = device

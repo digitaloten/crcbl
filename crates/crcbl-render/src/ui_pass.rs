@@ -274,6 +274,7 @@ impl UiRenderer {
                 kind: BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: size_of::<Vertex2d>() as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),

@@ -77,7 +77,7 @@ use crcbl_shaders::{CMAA2_APPLY, CMAA2_EDGES, CMAA2_SHAPES};
 use std::cell::Cell;
 use std::rc::Rc;
 
-use crate::draw_gen::{bound, compute_pipeline_entry, storage, uniform};
+use crate::draw_gen::{UINT_STRIDE, bound, compute_pipeline_entry, storage, uniform};
 use crate::graph::{ImageId, RenderGraph};
 use crate::transient::TransientBufferDesc;
 
@@ -201,8 +201,8 @@ impl Cmaa2 {
         let working_entries = [
             uniform(0),
             sampled_compute(1),
-            storage(2, false),
-            storage(3, false),
+            storage(2, false, UINT_STRIDE),
+            storage(3, false, UINT_STRIDE),
         ];
         let working_desc = BindGroupLayoutDesc {
             label: Some("cmaa2 working"),
@@ -230,6 +230,7 @@ impl Cmaa2 {
                 kind: BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: UINT_STRIDE,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),

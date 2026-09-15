@@ -60,7 +60,12 @@ const STREAM_MAGIC = new Uint8Array([
 /**
  * `tag::STREAM_VERSION`.
  *
- * `6` since `CreateGraphicsPipeline`'s depth bias stopped carrying its constant
+ * `7` since a storage buffer's layout entry grew a trailing `u32` stride —
+ * the element size D3D12's structured views need, which `readBindingKind` reads
+ * and the replayer drops because `GPUBufferBindingLayout` has no member for it.
+ * A new word inside an existing record is exactly what this number catches.
+ *
+ * It was `6` since `CreateGraphicsPipeline`'s depth bias stopped carrying its constant
  * as an `f32` and started carrying it as an `i32`: `crcbl_hal::DepthBias`'s
  * constant counts the depth buffer's minimum resolvable difference, which is
  * what `GPUDepthBias` and D3D12's `DepthBias` both are, so the seam counts in
@@ -87,7 +92,7 @@ const STREAM_MAGIC = new Uint8Array([
  * exists to catch, and the reason this half and `crcbl-webgpu`'s
  * `tag::STREAM_VERSION` move together in one commit.
  */
-const STREAM_VERSION = 6;
+const STREAM_VERSION = 7;
 
 // ── Caps ─────────────────────────────────────────────────────────────────────
 
@@ -1296,6 +1301,10 @@ class ByteReader {
           name,
           readOnly: this.readPresent('BindingKind::read_only'),
           dynamic: this.readPresent('BindingKind::dynamic'),
+          // D3D12's structured-view element size. WebGPU has no member for it,
+          // so the replayer never reads it — but it is in the record, and the
+          // cursor has to step over it.
+          stride: this.readU32(),
         };
       case 'SampledImage':
         return {

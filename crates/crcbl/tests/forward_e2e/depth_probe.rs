@@ -726,6 +726,7 @@ impl DepthProbe {
                 kind: crcbl::hal::BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: size_of::<u32>() as u32,
                 },
                 count: 1,
                 flags: crcbl::hal::BindingFlags::empty(),
@@ -736,6 +737,7 @@ impl DepthProbe {
                 kind: crcbl::hal::BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: crcbl::shaders::mesh::INSTANCE_STRIDE as u32,
                 },
                 count: 1,
                 flags: crcbl::hal::BindingFlags::empty(),
@@ -756,6 +758,7 @@ impl DepthProbe {
                 kind: crcbl::hal::BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: crcbl::shaders::mesh::MESH_ENTRY_STRIDE as u32,
                 },
                 count: 1,
                 flags: crcbl::hal::BindingFlags::empty(),
@@ -766,6 +769,7 @@ impl DepthProbe {
                 kind: crcbl::hal::BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: size_of::<u32>() as u32,
                 },
                 count: 1,
                 flags: crcbl::hal::BindingFlags::empty(),
@@ -785,6 +789,7 @@ impl DepthProbe {
                 kind: crcbl::hal::BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: crcbl::shaders::mesh::MATERIAL_STRIDE as u32,
                 },
                 count: 1,
                 flags: crcbl::hal::BindingFlags::empty(),
@@ -846,6 +851,7 @@ impl DepthProbe {
                 kind: crcbl::hal::BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: crcbl::shaders::light::LIGHT_STRIDE as u32,
                 },
                 count: 1,
                 flags: crcbl::hal::BindingFlags::empty(),
@@ -857,6 +863,7 @@ impl DepthProbe {
                 kind: crcbl::hal::BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: size_of::<u32>() as u32,
                 },
                 count: 1,
                 flags: crcbl::hal::BindingFlags::empty(),
@@ -879,6 +886,7 @@ impl DepthProbe {
                 kind: crcbl::hal::BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: crcbl::shaders::probe::PROBE_STRIDE as u32,
                 },
                 count: 1,
                 flags: crcbl::hal::BindingFlags::empty(),

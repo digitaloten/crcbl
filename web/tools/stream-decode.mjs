@@ -446,7 +446,12 @@ const EXPECTED = [
       {
         binding: 0,
         visibility: ['VERTEX'],
-        kind: { name: 'StorageBuffer', readOnly: true, dynamic: false },
+        kind: {
+          name: 'StorageBuffer',
+          readOnly: true,
+          dynamic: false,
+          stride: 32,
+        },
         count: 1,
         flags: [],
       },
@@ -455,7 +460,12 @@ const EXPECTED = [
       {
         binding: 1,
         visibility: ['COMPUTE'],
-        kind: { name: 'StorageBuffer', readOnly: false, dynamic: true },
+        kind: {
+          name: 'StorageBuffer',
+          readOnly: false,
+          dynamic: true,
+          stride: 16,
+        },
         count: 1,
         flags: [],
       },
@@ -520,7 +530,12 @@ const EXPECTED = [
       {
         binding: 0,
         visibility: ['FRAGMENT'],
-        kind: { name: 'StorageBuffer', readOnly: true, dynamic: false },
+        kind: {
+          name: 'StorageBuffer',
+          readOnly: true,
+          dynamic: false,
+          stride: 64,
+        },
         count: 1,
         flags: [],
       },
@@ -586,7 +601,12 @@ const EXPECTED = [
       {
         binding: 10,
         visibility: ['TASK'],
-        kind: { name: 'StorageBuffer', readOnly: true, dynamic: false },
+        kind: {
+          name: 'StorageBuffer',
+          readOnly: true,
+          dynamic: false,
+          stride: 48,
+        },
         count: 1,
         flags: [],
       },
@@ -1493,7 +1513,7 @@ function samplerBody({
  */
 function layoutBody({
   visibility = u32le(1), // ShaderStages::VERTEX
-  kind = [1, 1, 0], // StorageBuffer { read_only: true, dynamic: false }
+  kind = [1, 1, 0, ...u32le(4)], // StorageBuffer { read_only: true, dynamic: false, stride: 4 }
   count = u32le(1),
   flags = u32le(0),
 } = {}) {
@@ -2194,7 +2214,10 @@ async function main() {
   // `gpu-stream.js` would agree with `gpu-stream.js` whatever it said.
   const decodedKinds = [
     [[0, 1], { name: 'UniformBuffer', dynamic: true }],
-    [[1, 0, 1], { name: 'StorageBuffer', readOnly: false, dynamic: true }],
+    [
+      [1, 0, 1, ...u32le(24)],
+      { name: 'StorageBuffer', readOnly: false, dynamic: true, stride: 24 },
+    ],
     [
       [2, 4, 1],
       { name: 'SampledImage', viewType: 'CubeArray', sampleType: 'Depth' },
@@ -2376,26 +2399,26 @@ async function main() {
   // The version is a `u16` at offset 8, so its low byte alone says 1 — the
   // version this format spoke before both pass commands grew a
   // `timestampWrites`, before the stencil block lost its `reference` word,
-  // before the buffer fill lost its `value` and before the depth bias's
-  // constant became an `i32`, and exactly the buffer an older wasm would send.
+  // before the buffer fill lost its `value`, before the depth bias's constant
+  // became an `i32` and before a storage buffer's layout entry grew a stride,
+  // and exactly the buffer an older wasm would send.
   // The two halves ship as separate artifacts and are cached independently,
   // which is what makes this reachable at all.
   checkRefused(
     withByte(fixture, 8, 1),
-    { kind: 'UnsupportedVersion', found: 1, expected: 6 },
+    { kind: 'UnsupportedVersion', found: 1, expected: 7 },
     'a stream from a build that speaks another version is refused'
   );
   // And the version immediately before this one, which is the interesting case
-  // rather than a distant number: a `5` stream differs from a `6` only in how
-  // the depth bias's constant is spelled — four bytes either way, an `f32`
-  // there and an `i32` here — so every byte before and after it decodes
-  // identically and the header word is the only thing that can catch it. The
-  // same was true of `4` against `5`, which differed only by the trailing
-  // `value` word on `FillBuffer`.
+  // rather than a distant number: a `6` stream differs from a `7` only in the
+  // four-byte stride inside a storage buffer's layout entry, so an older decoder
+  // would read that word as the next entry's fields and the header word is the
+  // only thing that can catch it. The same was true of `5` against `6`, which
+  // differed only in how the depth bias's constant was spelled.
   checkRefused(
-    withByte(fixture, 8, 5),
-    { kind: 'UnsupportedVersion', found: 5, expected: 6 },
-    'the previous version, which differs only by how one word is spelled, is refused'
+    withByte(fixture, 8, 6),
+    { kind: 'UnsupportedVersion', found: 6, expected: 7 },
+    'the previous version, which differs only by one word inside a record, is refused'
   );
 
   // ---- no byte anywhere turns a decode into an indexing throw -------------

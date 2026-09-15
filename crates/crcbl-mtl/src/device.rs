@@ -4497,6 +4497,7 @@ pub(crate) mod tests {
                     kind: crcbl_hal::BindingKind::StorageBuffer {
                         read_only: true,
                         dynamic: false,
+                        stride: 4,
                     },
                     count: 1,
                     flags: crcbl_hal::BindingFlags::empty(),
@@ -6486,6 +6487,7 @@ using namespace metal;\n\
                     kind: crcbl_hal::BindingKind::StorageBuffer {
                         read_only: true,
                         dynamic: false,
+                        stride: 4,
                     },
                     count: 1,
                     flags: crcbl_hal::BindingFlags::empty(),

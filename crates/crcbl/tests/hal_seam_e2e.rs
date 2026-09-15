@@ -1468,6 +1468,7 @@ impl ComputeProbe {
                 kind: crcbl::hal::BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: size_of::<u32>() as u32,
                 },
                 count: 1,
                 flags: crcbl::hal::BindingFlags::empty(),
@@ -1478,6 +1479,7 @@ impl ComputeProbe {
                 kind: crcbl::hal::BindingKind::StorageBuffer {
                     read_only: false,
                     dynamic: false,
+                    stride: size_of::<u32>() as u32,
                 },
                 count: 1,
                 flags: crcbl::hal::BindingFlags::empty(),
@@ -5127,6 +5129,7 @@ impl Raster {
             kind: crcbl::hal::BindingKind::StorageBuffer {
                 read_only: true,
                 dynamic: false,
+                stride: crcbl::shaders::triangle::VERTEX_STRIDE as u32,
             },
             count: 1,
             flags: crcbl::hal::BindingFlags::empty(),
@@ -6092,6 +6095,7 @@ fn exercise_push_constants_on_compute(headless: &Headless) -> Exercise {
         kind: crcbl::hal::BindingKind::StorageBuffer {
             read_only: false,
             dynamic: false,
+            stride: size_of::<u32>() as u32,
         },
         count: 1,
         flags: crcbl::hal::BindingFlags::empty(),
@@ -6997,6 +7001,7 @@ fn exercise_update_bind_group(headless: &Headless) -> Exercise {
             kind: crcbl::hal::BindingKind::StorageBuffer {
                 read_only: false,
                 dynamic: false,
+                stride: size_of::<u32>() as u32,
             },
             count: 1,
             flags: strong,
@@ -7056,6 +7061,7 @@ fn exercise_update_bind_group(headless: &Headless) -> Exercise {
             kind: crcbl::hal::BindingKind::StorageBuffer {
                 read_only: true,
                 dynamic: false,
+                stride: size_of::<u32>() as u32,
             },
             count: 1,
             flags: crcbl::hal::BindingFlags::empty(),
@@ -7066,6 +7072,7 @@ fn exercise_update_bind_group(headless: &Headless) -> Exercise {
             kind: crcbl::hal::BindingKind::StorageBuffer {
                 read_only: false,
                 dynamic: false,
+                stride: size_of::<u32>() as u32,
             },
             count: 1,
             flags,
@@ -8351,6 +8358,7 @@ fn exercise_bindless_descriptor_array(headless: &Headless) -> Exercise {
         kind: crcbl::hal::BindingKind::StorageBuffer {
             read_only: false,
             dynamic: false,
+            stride: size_of::<u32>() as u32,
         },
         count: 1,
         flags: crcbl::hal::BindingFlags::empty(),
@@ -8361,6 +8369,7 @@ fn exercise_bindless_descriptor_array(headless: &Headless) -> Exercise {
         kind: crcbl::hal::BindingKind::StorageBuffer {
             read_only: true,
             dynamic: false,
+            stride: size_of::<u32>() as u32,
         },
         count: BINDLESS_CEILING,
         // `VARIABLE_COUNT` alone. `PARTIALLY_BOUND` would say the shader may

@@ -47,6 +47,7 @@ fn a_bindless_capable_layout_is_accepted_or_refused_according_to_the_tier() {
             kind: crcbl_hal::BindingKind::StorageBuffer {
                 read_only: true,
                 dynamic: false,
+                stride: size_of::<u32>() as u32,
             },
             count: 1,
             flags: crcbl_hal::BindingFlags::empty(),
@@ -439,6 +440,7 @@ fn a_writable_storage_binding_refuses_host_visible_memory() {
                     kind: crcbl_hal::BindingKind::StorageBuffer {
                         read_only,
                         dynamic: false,
+                        stride: size_of::<u32>() as u32,
                     },
                     count: 1,
                     flags: crcbl_hal::BindingFlags::empty(),

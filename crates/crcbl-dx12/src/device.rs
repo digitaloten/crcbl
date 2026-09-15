@@ -5384,6 +5384,7 @@ pub(crate) mod tests {
                     kind: BindingKind::StorageBuffer {
                         read_only: true,
                         dynamic: false,
+                        stride: crcbl_shaders::triangle::VERTEX_STRIDE as u32,
                     },
                     count: 1,
                     flags: BindingFlags::empty(),
@@ -5902,6 +5903,7 @@ pub(crate) mod tests {
                 kind: BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: crcbl_shaders::mesh_shader::VERTEX_STRIDE as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),
@@ -5912,6 +5914,7 @@ pub(crate) mod tests {
                 kind: BindingKind::StorageBuffer {
                     read_only: false,
                     dynamic: false,
+                    stride: size_of::<u32>() as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),
@@ -7852,14 +7855,20 @@ pub(crate) mod tests {
         // reports no `Features::MESH_SHADER`, so the seam refuses a layout
         // naming those bits, and `ALL` is `D3D12_SHADER_VISIBILITY_ALL`, which
         // does reach both stages.
-        let read_only = BindingKind::StorageBuffer {
+        // Each storage binding carries its element's stride, which this backend
+        // now holds to the containers: `mesh_cluster.slang`'s declarations for
+        // the geometry stages and `mesh.slang`'s for the fragment rows.
+        let read_only = |stride: usize| BindingKind::StorageBuffer {
             read_only: true,
             dynamic: false,
+            stride: stride as u32,
         };
-        let writable = BindingKind::StorageBuffer {
+        let writable = |stride: usize| BindingKind::StorageBuffer {
             read_only: false,
             dynamic: false,
+            stride: stride as u32,
         };
+        let word = size_of::<u32>();
         let entry = |binding: u32, kind: BindingKind| BindGroupLayoutEntry {
             binding,
             visibility: ShaderStages::ALL,
@@ -7869,16 +7878,16 @@ pub(crate) mod tests {
         };
         let layout_entries = vec![
             entry(0, BindingKind::UniformBuffer { dynamic: false }),
-            entry(1, read_only),
-            entry(2, read_only),
+            entry(1, read_only(word)),
+            entry(2, read_only(crcbl_shaders::mesh::INSTANCE_STRIDE)),
             // **Dynamic, and that is the renderer's mechanism**: one block per
             // bucket reached through an offset. It becomes a root descriptor
             // here rather than a table entry, and it still takes a `b` register
             // in declaration order — which is what puts `cull` on `b2`.
             entry(3, BindingKind::UniformBuffer { dynamic: true }),
-            entry(4, read_only),
-            entry(5, read_only),
-            entry(6, read_only),
+            entry(4, read_only(crcbl_shaders::mesh::MESH_ENTRY_STRIDE)),
+            entry(5, read_only(word)),
+            entry(6, read_only(crcbl_shaders::mesh::MATERIAL_STRIDE)),
             BindGroupLayoutEntry {
                 binding: 7,
                 visibility: ShaderStages::ALL,
@@ -7896,19 +7905,25 @@ pub(crate) mod tests {
                 count: 1,
                 flags: BindingFlags::empty(),
             },
-            entry(9, read_only),
-            entry(10, read_only),
-            entry(11, read_only),
-            entry(12, read_only),
+            entry(9, read_only(crcbl_shaders::meshlet::MESHLET_STRIDE)),
+            entry(10, read_only(word)),
+            entry(11, read_only(word)),
+            entry(
+                12,
+                read_only(crcbl_hal::indirect::DRAW_INDEXED_ARGS_BYTES as usize),
+            ),
             entry(13, BindingKind::UniformBuffer { dynamic: false }),
-            entry(14, writable),
-            entry(17, read_only),
-            entry(18, writable),
-            entry(19, read_only),
-            entry(20, read_only),
-            entry(21, read_only),
-            entry(23, read_only),
-            entry(24, read_only),
+            entry(14, writable(word)),
+            entry(
+                17,
+                read_only(crcbl_shaders::cluster_select::CLUSTER_SELECT_STRIDE),
+            ),
+            entry(18, writable(word)),
+            entry(19, read_only(word)),
+            entry(20, read_only(crcbl_shaders::light::LIGHT_STRIDE)),
+            entry(21, read_only(word)),
+            entry(23, read_only(crcbl_shaders::probe::PROBE_STRIDE)),
+            entry(24, read_only(word)),
         ];
         let set_layout = device
             .create_bind_group_layout(&BindGroupLayoutDesc {
@@ -8290,6 +8305,7 @@ pub(crate) mod tests {
                         kind: BindingKind::StorageBuffer {
                             read_only: true,
                             dynamic: false,
+                            stride: crcbl_shaders::triangle::VERTEX_STRIDE as u32,
                         },
                         count: 1,
                         flags: BindingFlags::empty(),
@@ -12337,6 +12353,7 @@ pub(crate) mod tests {
                             kind: BindingKind::StorageBuffer {
                                 read_only: true,
                                 dynamic: false,
+                                stride: size_of::<u32>() as u32,
                             },
                             count: 1,
                             flags: BindingFlags::empty(),
@@ -12347,6 +12364,7 @@ pub(crate) mod tests {
                             kind: BindingKind::StorageBuffer {
                                 read_only: false,
                                 dynamic: false,
+                                stride: size_of::<u32>() as u32,
                             },
                             count: 1,
                             flags: BindingFlags::empty(),
@@ -12807,6 +12825,7 @@ pub(crate) mod tests {
                     kind: BindingKind::StorageBuffer {
                         read_only: true,
                         dynamic: false,
+                        stride: size_of::<u32>() as u32,
                     },
                     count: 1,
                     flags: BindingFlags::empty(),
@@ -12925,6 +12944,7 @@ pub(crate) mod tests {
             kind: BindingKind::StorageBuffer {
                 read_only: false,
                 dynamic: false,
+                stride: size_of::<u32>() as u32,
             },
             count: 1,
             flags: BindingFlags::empty(),
@@ -13007,6 +13027,7 @@ pub(crate) mod tests {
                         kind: BindingKind::StorageBuffer {
                             read_only,
                             dynamic: false,
+                            stride: size_of::<u32>() as u32,
                         },
                         count: 1,
                         flags: BindingFlags::empty(),

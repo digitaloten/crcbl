@@ -315,6 +315,7 @@ impl Ssr {
                 kind: BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: crcbl_shaders::probe::PROBE_STRIDE as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),
@@ -381,6 +382,7 @@ impl Ssr {
             kind: BindingKind::StorageBuffer {
                 read_only: true,
                 dynamic: false,
+                stride: crcbl_shaders::atmosphere::SKY_VIEW_ROW_BYTES as u32,
             },
             count: 1,
             flags: BindingFlags::empty(),

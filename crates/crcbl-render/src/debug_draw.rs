@@ -462,6 +462,7 @@ impl Gpu {
                 kind: BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: size_of::<DebugVertex>() as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),

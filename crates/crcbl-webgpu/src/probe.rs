@@ -1760,6 +1760,7 @@ pub const PROBE_BIND_GROUP_LAYOUT_ENTRIES: [BindGroupLayoutEntry; 4] = [
         kind: BindingKind::StorageBuffer {
             read_only: true,
             dynamic: false,
+            stride: 4,
         },
         count: 1,
         flags: BindingFlags::empty(),
@@ -1844,6 +1845,7 @@ pub const PROBE_GROUP_LAYOUT_ENTRIES: [BindGroupLayoutEntry; 3] = [
         kind: BindingKind::StorageBuffer {
             read_only: true,
             dynamic: false,
+            stride: 4,
         },
         count: 1,
         flags: BindingFlags::empty(),
@@ -2602,6 +2604,7 @@ pub const PROBE_DISPATCH_BIND_GROUP_LAYOUT_ENTRIES: [BindGroupLayoutEntry; 1] =
         kind: BindingKind::StorageBuffer {
             read_only: false,
             dynamic: false,
+            stride: 4,
         },
         count: 1,
         flags: BindingFlags::empty(),
@@ -2864,6 +2867,7 @@ pub const PROBE_COPYCHAIN_BIND_GROUP_LAYOUT_ENTRIES: [BindGroupLayoutEntry; 1] =
         kind: BindingKind::StorageBuffer {
             read_only: false,
             dynamic: false,
+            stride: 4,
         },
         count: 1,
         flags: BindingFlags::empty(),
@@ -3137,6 +3141,7 @@ pub const PROBE_FILL_BIND_GROUP_LAYOUT_ENTRIES: [BindGroupLayoutEntry; 1] =
         kind: BindingKind::StorageBuffer {
             read_only: false,
             dynamic: false,
+            stride: 4,
         },
         count: 1,
         flags: BindingFlags::empty(),

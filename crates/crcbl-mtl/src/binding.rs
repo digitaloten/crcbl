@@ -1510,6 +1510,7 @@ mod tests {
     const STORAGE: BindingKind = BindingKind::StorageBuffer {
         read_only: true,
         dynamic: false,
+        stride: 4,
     };
     const UNIFORM: BindingKind = BindingKind::UniformBuffer { dynamic: false };
     const DYNAMIC_UNIFORM: BindingKind = BindingKind::UniformBuffer { dynamic: true };
@@ -1694,6 +1695,7 @@ mod tests {
                 BindingKind::StorageBuffer {
                     read_only: false,
                     dynamic: false,
+                    stride: 4,
                 },
                 1,
             )]),

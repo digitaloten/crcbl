@@ -161,6 +161,7 @@ impl SkyPass {
                 kind: BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: crcbl_shaders::atmosphere::SKY_VIEW_ROW_BYTES as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),

@@ -644,6 +644,7 @@ fn probe_entry() -> BindGroupLayoutEntry {
         kind: BindingKind::StorageBuffer {
             read_only: true,
             dynamic: false,
+            stride: 4,
         },
         count: 1,
         flags: BindingFlags::empty(),
@@ -696,6 +697,7 @@ fn a_bind_group_layout_carries_a_multi_entry_list_in_the_descriptors_own_order()
             kind: BindingKind::StorageBuffer {
                 read_only: false,
                 dynamic: true,
+                stride: 4,
             },
             count: 1,
             flags: BindingFlags::empty(),
@@ -818,6 +820,7 @@ fn two_entries_differing_in_one_field_are_distinguishable_field_by_field() {
                 kind: BindingKind::StorageBuffer {
                     read_only: false,
                     dynamic: false,
+                    stride: 4,
                 },
                 ..base
             },
@@ -828,6 +831,7 @@ fn two_entries_differing_in_one_field_are_distinguishable_field_by_field() {
                 kind: BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: true,
+                    stride: 4,
                 },
                 ..base
             },
@@ -1059,8 +1063,8 @@ fn the_bindless_count_sentinel_and_its_flags_cross_verbatim_rather_than_being_re
     let bytes = stream.bytes();
 
     // The count and the flags are the last eight bytes of the body, behind the
-    // `StorageBuffer` code and its two presence bytes.
-    let count_at = LAYOUT_KIND_AT + 1 + 2;
+    // `StorageBuffer` code, its two presence bytes and its `u32` stride.
+    let count_at = LAYOUT_KIND_AT + 1 + 2 + 4;
     assert_eq!(
         &bytes[count_at..count_at + 4],
         &u32::MAX.to_le_bytes(),

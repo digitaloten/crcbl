@@ -16,6 +16,20 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
 
 ### Breaking
 
+- **A storage buffer's layout entry declares its element stride.**
+  `BindingKind::StorageBuffer` gained `stride: u32`, the byte size of one
+  element of the array the shader declares — `sizeof(T)` for a
+  `StructuredBuffer<T>`. Every construction of the variant has to name it, and
+  `BindGroupLayoutDesc::check_entries` refuses zero. D3D12 needs the number for
+  its structured views; `crcbl-vk` holds it to the SPIR-V's `ArrayStride` and
+  `crcbl-dx12` to the DXIL container's structured-buffer metadata, so
+  `create_*_pipeline` answers `HalError::ShaderCompilation` naming the binding
+  and both strides when a layout and its shader disagree. `crcbl-shaders`
+  already publishes the strides (`mesh::INSTANCE_STRIDE`, `light::LIGHT_STRIDE`,
+  …), which is where `crcbl-render`'s layouts now take them from. The WebGPU
+  stream carries the word, so `tag::STREAM_VERSION` and `gpu-stream.js` are at
+  `7` and a page holding an older decoder is refused by the header.
+
 - `UiRenderer::add_pass` is gone.
   `UiRenderer::add_passes(graph, target, extent, menu)` replaces it and adds the
   whole sandwich — `ui-composite` for the draw list below the overlay cut, the
@@ -1250,6 +1264,19 @@ effect, test-only and docs-only changes, CI repairs — is deliberately left out
   migration — everything here is v0.
 
 ### Fixed
+
+- **D3D12 shaders read and write their storage buffers on hardware.**
+  `crcbl-dx12` bound every storage buffer through a raw view (`R32_TYPELESS`,
+  `D3D12_BUFFER_SRV_FLAG_RAW`, stride zero), which is `ByteBuffer`'s shape;
+  Slang emits `StructuredBuffer<T>`, and a hardware driver addresses that by the
+  view's `StructureByteStride`, so every element aliased the first. On an AMD RX
+  9060 XT nothing any shader drew or computed through a storage buffer landed —
+  a pulled triangle collapsed to a point and a compute pass wrote one element —
+  while WARP, the only D3D12 device CI has, read the buffers the way the shader
+  meant and every suite stayed green. The views are structured now, built from
+  the layout's declared stride: `crcbl-dx12`'s device suite passes on that GPU
+  with the debug layer on, the two mesh-pipeline repros that remove the WARP
+  device among it.
 
 - **`Pool::par_for` no longer throws on a browser's main thread when a worker is
   parking.** The calling thread took the pool's sleep lock with `Mutex::lock` to

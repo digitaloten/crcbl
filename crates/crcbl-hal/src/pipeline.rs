@@ -133,6 +133,32 @@ pub enum BindingKind {
         read_only: bool,
         /// Whether the binding takes a dynamic offset at bind time.
         dynamic: bool,
+        /// Bytes per element of the array the shader declares — `sizeof(T)`
+        /// for a `StructuredBuffer<T>`, SPIR-V's `ArrayStride` on the runtime
+        /// array inside the block.
+        ///
+        /// **D3D12 is the backend that needs it**: a structured buffer's
+        /// shader resource and unordered access views carry
+        /// `StructureByteStride`, and a driver addresses elements by it — a
+        /// view without it aliases every element onto the first on hardware.
+        /// Vulkan, Metal and WebGPU address a storage buffer by the shader's
+        /// own layout and do not consume the figure.
+        ///
+        /// It is **checked** wherever a backend compiles an artifact that
+        /// states it, so a wrong number is a refused pipeline rather than a
+        /// wrong picture on one GPU: `crcbl-vk` against the SPIR-V's
+        /// `ArrayStride`, `crcbl-dx12` against the DXIL's structured-buffer
+        /// metadata. That is
+        /// [`ComputePipelineDesc::workgroup_size`]'s arrangement turned round —
+        /// a number one backend needs, carried by the seam, and held to the
+        /// shader by the backends that can read it.
+        ///
+        /// It is also a fact about the bytes a caller writes, which the engine
+        /// writes once for every backend: two targets disagreeing about it
+        /// would already be wrong data on one of them.
+        ///
+        /// Never zero; `BindGroupLayoutDesc::check_entries` refuses it.
+        stride: u32,
     },
     /// A sampled image.
     SampledImage {
@@ -357,6 +383,13 @@ impl BindGroupLayoutDesc<'_> {
             if entry.count == 0 {
                 return Err(HalError::InvalidDescriptor(format!(
                     "binding {} has count 0; a binding must hold at least one descriptor",
+                    entry.binding
+                )));
+            }
+            if matches!(entry.kind, BindingKind::StorageBuffer { stride: 0, .. }) {
+                return Err(HalError::InvalidDescriptor(format!(
+                    "binding {} is a storage buffer with a stride of 0; a storage buffer's \
+                     stride is the byte size of one element of the array the shader declares",
                     entry.binding
                 )));
             }
@@ -1573,6 +1606,7 @@ mod tests {
             kind: BindingKind::StorageBuffer {
                 read_only: true,
                 dynamic: false,
+                stride: 4,
             },
             count: 1,
             flags: BindingFlags::empty(),
@@ -1649,6 +1683,7 @@ mod tests {
             kind: BindingKind::StorageBuffer {
                 read_only: true,
                 dynamic: false,
+                stride: 4,
             },
             count: 1,
             flags: BindingFlags::empty(),
@@ -1685,6 +1720,7 @@ mod tests {
             kind: BindingKind::StorageBuffer {
                 read_only: true,
                 dynamic: false,
+                stride: 4,
             },
             count: PORTABLE_STORAGE_BUFFERS_PER_STAGE + 1,
             flags: BindingFlags::empty(),
@@ -1808,6 +1844,7 @@ mod tests {
             kind: BindingKind::StorageBuffer {
                 read_only: true,
                 dynamic: false,
+                stride: 4,
             },
             count,
             flags,
@@ -2047,6 +2084,7 @@ mod tests {
                 BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: true,
+                    stride: 4,
                 }
             },
             count: 1,
@@ -2067,6 +2105,7 @@ mod tests {
         let storage = BindingKind::StorageBuffer {
             read_only: true,
             dynamic: false,
+            stride: 4,
         };
 
         // The accepting half: without it every rejection below is satisfied by
@@ -2106,6 +2145,7 @@ mod tests {
             BindingKind::StorageBuffer {
                 read_only: false,
                 dynamic: false,
+                stride: 4,
             },
         ] {
             check_binding_offset_alignment(&unaligned, kind, 7, 3)

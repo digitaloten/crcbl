@@ -1563,7 +1563,8 @@ mod tests {
         assert_eq!(
             descriptor_type(K::StorageBuffer {
                 read_only: true,
-                dynamic: true
+                dynamic: true,
+                stride: 4,
             }),
             vk::DescriptorType::STORAGE_BUFFER_DYNAMIC
         );
@@ -1572,11 +1573,13 @@ mod tests {
         assert_eq!(
             descriptor_type(K::StorageBuffer {
                 read_only: true,
-                dynamic: false
+                dynamic: false,
+                stride: 4,
             }),
             descriptor_type(K::StorageBuffer {
                 read_only: false,
-                dynamic: false
+                dynamic: false,
+                stride: 4,
             })
         );
         assert_eq!(

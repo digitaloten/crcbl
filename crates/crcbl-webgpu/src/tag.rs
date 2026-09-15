@@ -48,7 +48,14 @@ pub const STREAM_MAGIC: &[u8; 8] = b"CRCBLGPU";
 
 /// Current stream format version.
 ///
-/// `6` since `CreateGraphicsPipeline`'s depth bias stopped carrying its constant
+/// `7` since a storage buffer's layout entry grew a trailing `u32` stride:
+/// [`BindingKind::StorageBuffer`]'s `stride`
+/// is the element size D3D12's structured views need, and the replayer reads
+/// and drops it because `GPUBufferBindingLayout` has no member for it. A new
+/// word inside an existing record is the changed-record case this number
+/// exists for: an older decoder would read the stride as the next entry's code.
+///
+/// It was `6` since `CreateGraphicsPipeline`'s depth bias stopped carrying its constant
 /// as an `f32` and started carrying it as an `i32`:
 /// [`DepthBias::constant`](crcbl_hal::DepthBias::constant) is a count of the
 /// depth buffer's minimum resolvable difference, which D3D12 and WebGPU both
@@ -81,7 +88,7 @@ pub const STREAM_MAGIC: &[u8; 8] = b"CRCBLGPU";
 /// sample mask and carries on, decoding a stream that still parses and means
 /// something else. A new tag would not have moved these words, which is why
 /// they are version bumps and not new commands.
-pub const STREAM_VERSION: u16 = 6;
+pub const STREAM_VERSION: u16 = 7;
 
 /// Bytes before the first command: [`STREAM_MAGIC`], [`STREAM_VERSION`], and the
 /// sequence number of the first command in the buffer.
@@ -1708,7 +1715,8 @@ pub const fn sample_type_from_code(code: u8) -> Option<SampleType> {
 
 /// [`BindingKind::UniformBuffer`]; a `bool` `dynamic` follows.
 pub const BINDING_KIND_UNIFORM_BUFFER: u8 = 0x00;
-/// [`BindingKind::StorageBuffer`]; `read_only` then `dynamic`, both `bool`.
+/// [`BindingKind::StorageBuffer`]; `read_only` then `dynamic`, both `bool`, then
+/// the `u32` `stride`.
 pub const BINDING_KIND_STORAGE_BUFFER: u8 = 0x01;
 /// [`BindingKind::SampledImage`]; an [`ImageViewType`] code then a
 /// [`SampleType`] code.
@@ -2651,6 +2659,7 @@ mod tests {
             BindingKind::StorageBuffer {
                 read_only: true,
                 dynamic: false,
+                stride: 4,
             },
             BindingKind::SampledImage {
                 view_type: ImageViewType::D2,
@@ -2680,7 +2689,8 @@ mod tests {
         assert_eq!(
             binding_kind_code(BindingKind::StorageBuffer {
                 read_only: false,
-                dynamic: true
+                dynamic: true,
+                stride: 4,
             }),
             BINDING_KIND_STORAGE_BUFFER
         );

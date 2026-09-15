@@ -362,6 +362,7 @@ pub fn every_command() -> Vec<Command> {
                     kind: BindingKind::StorageBuffer {
                         read_only: true,
                         dynamic: false,
+                        stride: 32,
                     },
                     count: 1,
                     flags: BindingFlags::empty(),
@@ -374,6 +375,7 @@ pub fn every_command() -> Vec<Command> {
                     kind: BindingKind::StorageBuffer {
                         read_only: false,
                         dynamic: true,
+                        stride: 16,
                     },
                     count: 1,
                     flags: BindingFlags::empty(),
@@ -452,6 +454,7 @@ pub fn every_command() -> Vec<Command> {
                     kind: BindingKind::StorageBuffer {
                         read_only: true,
                         dynamic: false,
+                        stride: 64,
                     },
                     count: 1,
                     flags: BindingFlags::empty(),
@@ -524,6 +527,7 @@ pub fn every_command() -> Vec<Command> {
                     kind: BindingKind::StorageBuffer {
                         read_only: true,
                         dynamic: false,
+                        stride: 48,
                     },
                     count: 1,
                     flags: BindingFlags::empty(),

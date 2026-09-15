@@ -609,6 +609,7 @@ impl SpriteRenderer {
                 kind: BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: INSTANCE_STRIDE as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),

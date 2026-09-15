@@ -155,9 +155,14 @@ impl ByteWriter {
         self.put_u8(tag::binding_kind_code(kind));
         match kind {
             BindingKind::UniformBuffer { dynamic } => self.put_bool(dynamic),
-            BindingKind::StorageBuffer { read_only, dynamic } => {
+            BindingKind::StorageBuffer {
+                read_only,
+                dynamic,
+                stride,
+            } => {
                 self.put_bool(read_only);
                 self.put_bool(dynamic);
+                self.put_u32(stride);
             }
             BindingKind::SampledImage {
                 view_type,

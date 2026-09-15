@@ -192,6 +192,10 @@ pub(crate) struct PipelineLayoutEntry {
     /// [`push_constants`](crcbl_hal::CommandEncoder::push_constants) is checked
     /// against — see [`root::write`].
     pub(crate) push_constants: Option<root::Declared>,
+    /// Every storage buffer the sets declare, at its assigned register and with
+    /// its declared stride — what every stage's container is held to by
+    /// [`Dxil::require_storage_strides`](crate::dxil::Dxil::require_storage_strides).
+    pub(crate) storage: Vec<crate::dxil::StorageRegister>,
 }
 
 /// A graphics pipeline: the state object, plus what D3D12 left on the encoder.
@@ -353,6 +357,15 @@ pub(crate) fn layout(
         sets: plan.sets,
         layouts: sets.iter().map(|(handle, _)| *handle).collect(),
         push_constants: plan.push_constants,
+        storage: (0_u32..)
+            .zip(sets)
+            .flat_map(|(set, (_, tables))| {
+                tables
+                    .storage
+                    .iter()
+                    .map(move |register| crate::dxil::StorageRegister { set, ..*register })
+            })
+            .collect(),
     })
 }
 
@@ -512,10 +525,12 @@ pub(crate) fn graphics(
     // entry point so the caller need not split the module in two.
     let vertex_dxil = vertex.container(desc.vertex.entry_point)?;
     vertex_dxil.expect(ShaderStages::VERTEX, desc.vertex.entry_point)?;
+    vertex_dxil.require_storage_strides(&layout.storage, desc.vertex.entry_point)?;
     let fragment_dxil = match (fragment, desc.fragment) {
         (Some(module), Some(entry)) => {
             let dxil = module.container(entry.entry_point)?;
             dxil.expect(ShaderStages::FRAGMENT, entry.entry_point)?;
+            dxil.require_storage_strides(&layout.storage, entry.entry_point)?;
             Some(dxil)
         }
         _ => None,
@@ -822,10 +837,12 @@ pub(crate) fn mesh(
 
     let mesh_dxil = mesh.container(desc.mesh.entry_point)?;
     mesh_dxil.expect(ShaderStages::MESH, desc.mesh.entry_point)?;
+    mesh_dxil.require_storage_strides(&layout.storage, desc.mesh.entry_point)?;
     let task_dxil = match (task, desc.task) {
         (Some(module), Some(entry)) => {
             let dxil = module.container(entry.entry_point)?;
             dxil.expect(ShaderStages::TASK, entry.entry_point)?;
+            dxil.require_storage_strides(&layout.storage, entry.entry_point)?;
             Some(dxil)
         }
         _ => None,
@@ -834,6 +851,7 @@ pub(crate) fn mesh(
         (Some(module), Some(entry)) => {
             let dxil = module.container(entry.entry_point)?;
             dxil.expect(ShaderStages::FRAGMENT, entry.entry_point)?;
+            dxil.require_storage_strides(&layout.storage, entry.entry_point)?;
             Some(dxil)
         }
         _ => None,
@@ -974,6 +992,7 @@ pub(crate) fn compute(
     let label = desc.label.unwrap_or("<unlabelled>");
     let dxil = module.container(desc.compute.entry_point)?;
     dxil.expect(ShaderStages::COMPUTE, desc.compute.entry_point)?;
+    dxil.require_storage_strides(&layout.storage, desc.compute.entry_point)?;
     if let Some(declared) = dxil.numthreads()
         && declared != desc.workgroup_size
     {

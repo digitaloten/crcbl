@@ -53,7 +53,9 @@ use crcbl_shaders::exposure::{
 use std::cell::Cell;
 use std::rc::Rc;
 
-use crate::draw_gen::{bound, compute_pipeline_entry, fill_at_start_up, storage, uniform};
+use crate::draw_gen::{
+    UINT_STRIDE, bound, compute_pipeline_entry, fill_at_start_up, storage, uniform,
+};
 use crate::graph::{ImageId, ImportedBuffer, RenderGraph};
 use crate::ssao::cached_group;
 
@@ -193,12 +195,12 @@ impl Exposure {
                 count: 1,
                 flags: BindingFlags::empty(),
             },
-            storage(2, false),
-            storage(3, false),
+            storage(2, false, UINT_STRIDE),
+            storage(3, false, size_of::<f32>() as u32),
             // Read-only: the reduce reads the frame before's exposure and never
             // writes through this binding, which is what lets it be a different
             // slot of the same ring the entry above writes.
-            storage(4, true),
+            storage(4, true, size_of::<f32>() as u32),
         ];
         let desc = BindGroupLayoutDesc {
             label: Some("exposure"),

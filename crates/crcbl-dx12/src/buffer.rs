@@ -58,20 +58,6 @@ use crcbl_hal::{BufferUsage, HalError, MemoryLocation};
 /// that has D3D12 to ask.
 pub(crate) const CONSTANT_BUFFER_ALIGNMENT: u64 = 256;
 
-/// A raw buffer view — the shape [`raw_view_range`] builds — must start at a
-/// multiple of this many bytes.
-///
-/// D3D12's `D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT`, spelled out for
-/// [`CONSTANT_BUFFER_ALIGNMENT`]'s reason.
-pub(crate) const RAW_VIEW_ALIGNMENT: u64 = 16;
-
-/// Bytes in one element of a raw buffer view.
-///
-/// `DXGI_FORMAT_R32_TYPELESS`, which is the format `_FLAG_RAW` requires, so
-/// `FirstElement` and `NumElements` are both counts of four-byte words rather
-/// than of the shader's own struct.
-const RAW_VIEW_ELEMENT: u64 = 4;
-
 /// The bytes a buffer of `size` has to allocate to satisfy every view its
 /// `usage` allows.
 ///
@@ -133,35 +119,56 @@ pub(crate) fn constant_view_size(
     Ok(bytes)
 }
 
-/// A raw buffer view's `FirstElement` and `NumElements` for
-/// `offset..offset + size`.
+/// A structured buffer view's `FirstElement` and `NumElements` for
+/// `offset..offset + size`, in elements of `stride` bytes.
 ///
-/// A **raw** view rather than a structured one, because the seam has no element
-/// stride to give — `BindingResource::Buffer` is a byte range — and the HLSL's
-/// own `StructuredBuffer<T>` declaration supplies the stride instead. Its
-/// element is four bytes, so a range that is not a whole number of them names
-/// the words it fully covers and no partial one.
-pub(crate) fn raw_view_range(offset: u64, size: u64, binding: u32) -> Result<(u64, u32), HalError> {
-    if !offset.is_multiple_of(RAW_VIEW_ALIGNMENT) {
+/// **Structured, not raw.** Slang emits every storage buffer as
+/// `StructuredBuffer<T>`, and a driver addresses such a buffer's elements by the
+/// view's `StructureByteStride` — so the view carries the stride the layout
+/// declared and counts in its elements. A raw view (`R32_TYPELESS`,
+/// `_FLAG_RAW`, stride zero) is `ByteBuffer`'s shape, and bound under a
+/// `StructuredBuffer<T>` it aliased every element onto the first on an RX 9060
+/// XT while WARP read it the way the shader meant; that is how this function
+/// came to replace `raw_view_range`.
+///
+/// Both ends are in whole elements: the start must be one, because
+/// `FirstElement` has no way to name a byte inside an element, and a range that
+/// is not a whole number of them names the elements it fully covers.
+pub(crate) fn structured_view_range(
+    offset: u64,
+    size: u64,
+    stride: u32,
+    binding: u32,
+) -> Result<(u64, u32), HalError> {
+    if stride == 0 {
+        // `check_entries` refuses this at layout creation; a record that got
+        // here with one would divide by it.
         return Err(HalError::InvalidDescriptor(format!(
-            "binding {binding} starts a raw buffer view at byte {offset}, and D3D12 requires a \
-             multiple of {RAW_VIEW_ALIGNMENT} (D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT)"
+            "binding {binding} is a storage buffer with a stride of 0"
         )));
     }
-    let elements = size / RAW_VIEW_ELEMENT;
+    let element = u64::from(stride);
+    if !offset.is_multiple_of(element) {
+        return Err(HalError::InvalidDescriptor(format!(
+            "binding {binding} starts a structured buffer view at byte {offset}, which is not a \
+             whole number of its {stride}-byte elements; D3D12's FirstElement counts elements, \
+             so the offset must be a multiple of the stride the layout declares"
+        )));
+    }
+    let elements = size / element;
     if elements == 0 {
         return Err(HalError::InvalidDescriptor(format!(
-            "binding {binding} binds {size} bytes as a storage buffer, which is less than the \
-             {RAW_VIEW_ELEMENT}-byte element of a raw buffer view"
+            "binding {binding} binds {size} bytes as a storage buffer, which is less than one of \
+             its {stride}-byte elements"
         )));
     }
     let elements = u32::try_from(elements).map_err(|_| {
         HalError::InvalidDescriptor(format!(
             "binding {binding} binds {size} bytes as a storage buffer, and D3D12's NumElements is \
-             a 32-bit count of {RAW_VIEW_ELEMENT}-byte elements"
+             a 32-bit count of {stride}-byte elements"
         ))
     })?;
-    Ok((offset / RAW_VIEW_ELEMENT, elements))
+    Ok((offset / element, elements))
 }
 
 /// Whether an unordered access view may exist over a buffer in this memory
@@ -345,21 +352,40 @@ mod tests {
         assert!(text.contains("overflow"), "{text}");
     }
 
-    /// A raw view counts four-byte words from a 16-byte-aligned start.
+    /// A structured view counts elements of the declared stride, from a start
+    /// that is a whole element.
+    ///
+    /// Two strides, so a function that ignored its `stride` and counted words —
+    /// the raw view this replaced — fails the 32-byte half.
     #[test]
-    fn a_raw_view_counts_four_byte_words_from_an_aligned_start() {
-        assert_eq!(raw_view_range(0, 64, 0).expect("a whole buffer"), (0, 16));
-        assert_eq!(raw_view_range(16, 64, 0).expect("one word in"), (4, 16));
-        // A range that is not a whole number of words names the words it covers
-        // and no partial one.
-        assert_eq!(raw_view_range(0, 6, 0).expect("six bytes"), (0, 1));
-        for offset in [4, 8, 12, 20] {
-            let text = refusal(raw_view_range(offset, 64, 5), "an unaligned raw view");
+    fn a_structured_view_counts_elements_of_its_stride_from_a_whole_element() {
+        assert_eq!(structured_view_range(0, 64, 4, 0).expect("words"), (0, 16));
+        assert_eq!(
+            structured_view_range(0, 96, 32, 0).expect("vertices"),
+            (0, 3)
+        );
+        assert_eq!(
+            structured_view_range(32, 96, 32, 0).expect("one in"),
+            (1, 3)
+        );
+        // A range that is not a whole number of elements names the elements it
+        // covers and no partial one.
+        assert_eq!(
+            structured_view_range(0, 70, 32, 0).expect("70 bytes"),
+            (0, 2)
+        );
+        for offset in [4, 16, 31] {
+            let text = refusal(
+                structured_view_range(offset, 96, 32, 5),
+                "a mid-element start",
+            );
             assert!(text.contains("binding 5"), "{offset}: {text}");
-            assert!(text.contains("16"), "{offset}: {text}");
+            assert!(text.contains("32-byte"), "{offset}: {text}");
         }
-        let text = refusal(raw_view_range(0, 3, 5), "less than one element");
-        assert!(text.contains("element"), "{text}");
+        let text = refusal(structured_view_range(0, 31, 32, 5), "less than one element");
+        assert!(text.contains("less than one"), "{text}");
+        let text = refusal(structured_view_range(0, 64, 0, 5), "a zero stride");
+        assert!(text.contains("stride of 0"), "{text}");
     }
 
     /// A host-visible buffer is refused for writing, and only for writing.
@@ -377,23 +403,17 @@ mod tests {
         }
     }
 
-    /// The two alignments above are D3D12's own numbers, asserted against the
-    /// header rather than against a comment — in the build that has D3D12 to
+    /// The constant-buffer alignment above is D3D12's own number, asserted against
+    /// the header rather than against a comment — in the build that has D3D12 to
     /// ask.
     #[cfg(target_os = "windows")]
     #[test]
     fn the_alignments_are_the_ones_d3d12_names() {
-        use windows::Win32::Graphics::Direct3D12::{
-            D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT, D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT,
-        };
+        use windows::Win32::Graphics::Direct3D12::D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
 
         assert_eq!(
             CONSTANT_BUFFER_ALIGNMENT,
             u64::from(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT)
-        );
-        assert_eq!(
-            RAW_VIEW_ALIGNMENT,
-            u64::from(D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT)
         );
     }
 }

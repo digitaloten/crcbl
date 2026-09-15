@@ -102,6 +102,10 @@ pub(crate) struct PipelineLayoutEntry {
     /// without the caller's `stages` having to agree exactly.
     pub(crate) push_constant_stages: vk::ShaderStageFlags,
     pub(crate) push_constant_size: u32,
+    /// Every storage buffer the sets declare, with the stride each declares —
+    /// what `entry_name` holds every stage's module to. Kept here because a
+    /// pipeline names its layout, not its sets.
+    pub(crate) storage_strides: Vec<spirv::StorageBuffer>,
 }
 
 /// A graphics or compute pipeline.
@@ -453,7 +457,8 @@ impl VkDevice {
             )));
         }
         let mut set_layouts = Vec::with_capacity(desc.bind_group_layouts.len());
-        for handle in desc.bind_group_layouts {
+        let mut storage_strides = Vec::new();
+        for (set, handle) in (0_u32..).zip(desc.bind_group_layouts) {
             let entry = lookup(
                 &state.bind_group_layouts,
                 "bind group layout",
@@ -461,6 +466,19 @@ impl VkDevice {
                 &inner,
             )?;
             set_layouts.push(entry.raw);
+            storage_strides.extend(
+                entry
+                    .entries
+                    .iter()
+                    .filter_map(|binding| match binding.kind {
+                        BindingKind::StorageBuffer { stride, .. } => Some(spirv::StorageBuffer {
+                            set,
+                            binding: binding.binding,
+                            stride,
+                        }),
+                        _ => None,
+                    }),
+            );
         }
 
         let mut ranges = Vec::new();
@@ -523,6 +541,7 @@ impl VkDevice {
                 raw,
                 push_constant_stages,
                 push_constant_size,
+                storage_strides,
             })),
         )
     }
@@ -549,13 +568,20 @@ impl VkDevice {
             &inner,
         )?;
         let layout_raw = layout.raw;
+        let strides = layout.storage_strides.clone();
 
         // The entry-point names have to outlive `vkCreateGraphicsPipelines`, so
         // they are owned locals rather than temporaries in the builder chain.
         let (vertex_name, vertex_module) =
-            entry_name(&state, &inner, desc.vertex, ShaderStages::VERTEX)?;
+            entry_name(&state, &inner, desc.vertex, ShaderStages::VERTEX, &strides)?;
         let fragment_name = match desc.fragment {
-            Some(entry) => Some(entry_name(&state, &inner, entry, ShaderStages::FRAGMENT)?),
+            Some(entry) => Some(entry_name(
+                &state,
+                &inner,
+                entry,
+                ShaderStages::FRAGMENT,
+                &strides,
+            )?),
             None => None,
         };
 
@@ -643,15 +669,23 @@ impl VkDevice {
             &inner,
         )?;
         let layout_raw = layout.raw;
+        let strides = layout.storage_strides.clone();
 
         // Owned for the same reason the raster path's are: the builder stores
         // the pointer and `vkCreateGraphicsPipelines` reads it after this
         // statement.
         let task_name = match desc.task {
-            Some(entry) => Some(entry_name(&state, &inner, entry, ShaderStages::TASK)?),
+            Some(entry) => Some(entry_name(
+                &state,
+                &inner,
+                entry,
+                ShaderStages::TASK,
+                &strides,
+            )?),
             None => None,
         };
-        let (mesh_name, mesh_module) = entry_name(&state, &inner, desc.mesh, ShaderStages::MESH)?;
+        let (mesh_name, mesh_module) =
+            entry_name(&state, &inner, desc.mesh, ShaderStages::MESH, &strides)?;
         // The same guard the compute path applies, for the same reason and on
         // the two stages a mesh pipeline has: the seam's workgroup sizes exist
         // because Metal takes them at `drawMeshThreadgroups:` and has no
@@ -671,7 +705,13 @@ impl VkDevice {
                 .map_err(HalError::ShaderCompilation)?;
         }
         let fragment_name = match desc.fragment {
-            Some(entry) => Some(entry_name(&state, &inner, entry, ShaderStages::FRAGMENT)?),
+            Some(entry) => Some(entry_name(
+                &state,
+                &inner,
+                entry,
+                ShaderStages::FRAGMENT,
+                &strides,
+            )?),
             None => None,
         };
 
@@ -733,8 +773,15 @@ impl VkDevice {
             &inner,
         )?;
         let layout_raw = layout.raw;
+        let strides = layout.storage_strides.clone();
 
-        let (name, module) = entry_name(&state, &inner, desc.compute, ShaderStages::COMPUTE)?;
+        let (name, module) = entry_name(
+            &state,
+            &inner,
+            desc.compute,
+            ShaderStages::COMPUTE,
+            &strides,
+        )?;
 
         // The seam's workgroup size exists for Metal, which takes it at the
         // dispatch call and has no declaration to compare it with. This backend
@@ -1123,10 +1170,18 @@ fn entry_name(
     inner: &DeviceInner,
     entry: ShaderEntry<'_>,
     stage: ShaderStages,
+    strides: &[spirv::StorageBuffer],
 ) -> Result<(std::ffi::CString, vk::ShaderModule), HalError> {
     let module = lookup(&state.shader_modules, "shader module", entry.module, inner)?;
     spirv::require_entry_point(&module.words, entry.entry_point, stage)
         .map_err(HalError::ShaderCompilation)?;
+    // The declared storage-buffer strides, held to this module the way
+    // `require_workgroup_size` holds a declared workgroup size: D3D12 builds
+    // its structured views from the number, and this backend is compiling the
+    // module that says what it should be.
+    spirv::require_storage_strides(&module.words, strides).map_err(|reason| {
+        HalError::ShaderCompilation(format!("{:?} for {stage:?}: {reason}", entry.entry_point))
+    })?;
     let name = std::ffi::CString::new(entry.entry_point).map_err(|_| {
         HalError::ShaderCompilation(format!(
             "entry point {:?} contains a NUL byte",
@@ -1379,6 +1434,7 @@ mod tests {
             BindingKind::StorageBuffer {
                 read_only: true,
                 dynamic: false,
+                stride: 4,
             },
             &BindingResource::whole_buffer(buffer),
             7,

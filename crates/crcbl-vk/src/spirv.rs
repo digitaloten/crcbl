@@ -286,6 +286,202 @@ pub fn require_entry_point(words: &[u32], name: &str, stage: ShaderStages) -> Re
     ))
 }
 
+/// `OpTypeArray`, `OpTypeRuntimeArray`, `OpTypeStruct` and `OpTypePointer`.
+const OP_TYPE_ARRAY: u16 = 28;
+const OP_TYPE_RUNTIME_ARRAY: u16 = 29;
+const OP_TYPE_STRUCT: u16 = 30;
+const OP_TYPE_POINTER: u16 = 32;
+/// `OpVariable` and `OpDecorate`.
+const OP_VARIABLE: u16 = 59;
+const OP_DECORATE: u16 = 71;
+
+/// Decorations the storage-buffer reader needs.
+const DECORATION_BUFFER_BLOCK: u32 = 3;
+const DECORATION_ARRAY_STRIDE: u32 = 6;
+const DECORATION_BINDING: u32 = 33;
+const DECORATION_DESCRIPTOR_SET: u32 = 34;
+
+/// Storage classes a storage buffer can live in: `StorageBuffer`, and the
+/// SPIR-V 1.0 spelling — `Uniform` holding a `BufferBlock` struct.
+const STORAGE_CLASS_UNIFORM: u32 = 2;
+const STORAGE_CLASS_STORAGE_BUFFER: u32 = 12;
+
+/// One storage buffer a module declares: where it binds, and its element
+/// stride.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StorageBuffer {
+    /// `DescriptorSet`.
+    pub set: u32,
+    /// `Binding`.
+    pub binding: u32,
+    /// `ArrayStride` on the runtime array the block's last member is.
+    pub stride: u32,
+}
+
+/// Every storage buffer the module declares whose block ends in a runtime array
+/// — which is every `StructuredBuffer<T>` Slang emits — with that array's
+/// stride.
+///
+/// A descriptor array of such buffers (`StructuredBuffer<T>[N]` or unbounded)
+/// reports the element buffer's stride once, at its binding.
+///
+/// Reflection is deliberately confined to this one fact; see the module docs
+/// for why this layer does not reflect layouts. It exists so
+/// [`require_storage_strides`] can hold a declared
+/// [`BindingKind::StorageBuffer`](crcbl_hal::BindingKind::StorageBuffer)
+/// stride to the module, exactly as [`require_workgroup_size`] holds a declared
+/// workgroup size.
+///
+/// # Errors
+///
+/// As [`walk`], plus an instruction too short for its opcode's operands.
+pub fn storage_buffers(words: &[u32]) -> Result<Vec<StorageBuffer>, String> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut sets = HashMap::new();
+    let mut bindings = HashMap::new();
+    let mut strides = HashMap::new();
+    let mut buffer_blocks = HashSet::new();
+    let mut arrays = HashMap::new();
+    let mut runtime_arrays = HashSet::new();
+    let mut structs: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut pointers = HashMap::new();
+    let mut variables = Vec::new();
+    walk(words, |opcode, index, operands| {
+        let short = || format!("instruction {opcode} at word {index} is too short");
+        match opcode {
+            OP_DECORATE => {
+                let (&target, &decoration) = (
+                    operands.first().ok_or_else(short)?,
+                    operands.get(1).ok_or_else(short)?,
+                );
+                let literal = operands.get(2).copied();
+                match decoration {
+                    DECORATION_DESCRIPTOR_SET => {
+                        sets.insert(target, literal.ok_or_else(short)?);
+                    }
+                    DECORATION_BINDING => {
+                        bindings.insert(target, literal.ok_or_else(short)?);
+                    }
+                    DECORATION_ARRAY_STRIDE => {
+                        strides.insert(target, literal.ok_or_else(short)?);
+                    }
+                    DECORATION_BUFFER_BLOCK => {
+                        buffer_blocks.insert(target);
+                    }
+                    _ => {}
+                }
+            }
+            OP_TYPE_ARRAY => {
+                arrays.insert(
+                    *operands.first().ok_or_else(short)?,
+                    *operands.get(1).ok_or_else(short)?,
+                );
+            }
+            OP_TYPE_RUNTIME_ARRAY => {
+                let result = *operands.first().ok_or_else(short)?;
+                arrays.insert(result, *operands.get(1).ok_or_else(short)?);
+                runtime_arrays.insert(result);
+            }
+            OP_TYPE_STRUCT => {
+                structs.insert(*operands.first().ok_or_else(short)?, operands[1..].to_vec());
+            }
+            OP_TYPE_POINTER => {
+                pointers.insert(
+                    *operands.first().ok_or_else(short)?,
+                    (
+                        *operands.get(1).ok_or_else(short)?,
+                        *operands.get(2).ok_or_else(short)?,
+                    ),
+                );
+            }
+            OP_VARIABLE => {
+                variables.push((
+                    *operands.first().ok_or_else(short)?,
+                    *operands.get(1).ok_or_else(short)?,
+                    *operands.get(2).ok_or_else(short)?,
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    })?;
+
+    let mut found = Vec::new();
+    for (pointer_type, variable, storage_class) in variables {
+        if storage_class != STORAGE_CLASS_STORAGE_BUFFER && storage_class != STORAGE_CLASS_UNIFORM {
+            continue;
+        }
+        let (Some(&set), Some(&binding)) = (sets.get(&variable), bindings.get(&variable)) else {
+            continue;
+        };
+        let Some(&(_, mut pointee)) = pointers.get(&pointer_type) else {
+            continue;
+        };
+        // A descriptor array of buffers is an array of the block type.
+        while let Some(&element) = arrays.get(&pointee) {
+            if structs.contains_key(&pointee) {
+                break;
+            }
+            pointee = element;
+        }
+        if storage_class == STORAGE_CLASS_UNIFORM && !buffer_blocks.contains(&pointee) {
+            // A uniform block, not a storage buffer.
+            continue;
+        }
+        let Some(last) = structs.get(&pointee).and_then(|members| members.last()) else {
+            continue;
+        };
+        if !runtime_arrays.contains(last) {
+            continue;
+        }
+        let stride = *strides.get(last).ok_or_else(|| {
+            format!(
+                "the storage buffer at set {set} binding {binding} ends in a runtime array with \
+                 no ArrayStride decoration"
+            )
+        })?;
+        found.push(StorageBuffer {
+            set,
+            binding,
+            stride,
+        });
+    }
+    Ok(found)
+}
+
+/// Checks each declared storage-buffer stride against the module, at the
+/// `(set, binding)` it names.
+///
+/// A declared binding the module does not use is not an error — a layout is
+/// shared by every stage of a pipeline and may describe resources another
+/// stage's module reads — so only a binding **both** declare is compared.
+///
+/// # Errors
+///
+/// A `String` naming the binding, both strides and the likely cause.
+pub fn require_storage_strides(words: &[u32], declared: &[StorageBuffer]) -> Result<(), String> {
+    let module = storage_buffers(words)?;
+    for layout in declared {
+        let Some(shader) = module
+            .iter()
+            .find(|shader| shader.set == layout.set && shader.binding == layout.binding)
+        else {
+            continue;
+        };
+        if shader.stride != layout.stride {
+            return Err(format!(
+                "the storage buffer at set {} binding {} is declared with a stride of {} bytes, \
+                 and the shader's element is {} bytes. BindingKind::StorageBuffer's stride is the \
+                 size of one element of the array the shader declares — the element type on \
+                 one side has changed without the other",
+                layout.set, layout.binding, layout.stride, shader.stride
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The seam's stage bit for a SPIR-V execution model.
 fn stage_of(model: u32) -> Option<ShaderStages> {
     match model {
@@ -573,5 +769,53 @@ mod tests {
         let found = entry_points(&words).expect("parses");
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "real");
+    }
+
+    /// **The strides come out of the committed modules at their bindings**, for
+    /// element types whose sizes the sources fix: `triangle.slang`'s
+    /// `StructuredBuffer<Vertex>`, two `float4`s, and the compute probe's
+    /// `uint` buffers. A reader that took the stride off the wrong type, or
+    /// missed a decoration, reports a different number here.
+    #[test]
+    fn the_committed_modules_report_the_strides_their_sources_declare() {
+        let triangle = storage_buffers(crcbl_shaders::TRIANGLE.spirv()).expect("triangle");
+        assert_eq!(
+            triangle,
+            [StorageBuffer {
+                set: 0,
+                binding: 0,
+                stride: crcbl_shaders::triangle::VERTEX_STRIDE as u32,
+            }]
+        );
+
+        let probe = storage_buffers(crcbl_shaders::COMPUTE_PROBE.spirv()).expect("probe");
+        assert!(
+            !probe.is_empty(),
+            "the compute probe declares storage buffers"
+        );
+        assert!(probe.iter().all(|buffer| buffer.stride == 4), "{probe:?}");
+    }
+
+    /// **A declared stride that disagrees with the module is refused, naming the
+    /// binding and both numbers; one that agrees, or names a binding the module
+    /// does not use, is not.** The last half matters because one layout serves
+    /// every stage of a pipeline and each stage's module declares only what it
+    /// reads.
+    #[test]
+    fn a_declared_stride_is_held_to_the_module_at_its_binding() {
+        let words = crcbl_shaders::TRIANGLE.spirv();
+        let at = |binding, stride| StorageBuffer {
+            set: 0,
+            binding,
+            stride,
+        };
+        require_storage_strides(words, &[at(0, 32)]).expect("the declared stride matches");
+        require_storage_strides(words, &[at(7, 4)])
+            .expect("a binding this module does not declare is not compared");
+
+        let error = require_storage_strides(words, &[at(0, 4)]).expect_err("4 is not 32");
+        assert!(error.contains("set 0 binding 0"), "{error}");
+        assert!(error.contains("stride of 4 bytes"), "{error}");
+        assert!(error.contains("32 bytes"), "{error}");
     }
 }

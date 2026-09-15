@@ -1675,7 +1675,8 @@ mod tests {
             assert_eq!(
                 descriptor_range_type(BindingKind::StorageBuffer {
                     read_only,
-                    dynamic: false
+                    dynamic: false,
+                    stride: 4,
                 }),
                 Some(expected),
                 "storage buffer read_only={read_only}"

@@ -249,6 +249,7 @@ impl ByteReader<'_> {
             tag::BINDING_KIND_STORAGE_BUFFER => Ok(BindingKind::StorageBuffer {
                 read_only: self.read_bool("BindingKind::read_only")?,
                 dynamic: self.read_bool("BindingKind::dynamic")?,
+                stride: self.read_u32()?,
             }),
             tag::BINDING_KIND_SAMPLED_IMAGE => Ok(BindingKind::SampledImage {
                 view_type: self.read_image_view_type("BindingKind::view_type")?,

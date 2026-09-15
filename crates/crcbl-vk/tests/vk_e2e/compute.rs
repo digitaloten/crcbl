@@ -246,6 +246,7 @@ impl ComputeProbe {
                 kind: crcbl_hal::BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: size_of::<u32>() as u32,
                 },
                 count: 1,
                 flags: crcbl_hal::BindingFlags::empty(),
@@ -256,6 +257,7 @@ impl ComputeProbe {
                 kind: crcbl_hal::BindingKind::StorageBuffer {
                     read_only: false,
                     dynamic: false,
+                    stride: size_of::<u32>() as u32,
                 },
                 count: 1,
                 flags,
@@ -721,6 +723,7 @@ fn update_bind_group_moves_a_dispatch_onto_a_different_buffer() {
         kind: crcbl_hal::BindingKind::StorageBuffer {
             read_only: true,
             dynamic: false,
+            stride: size_of::<u32>() as u32,
         },
         count: 1,
         flags: crcbl_hal::BindingFlags::empty(),

@@ -3,6 +3,47 @@
 What was raised and not finished. A changelog says what shipped; this says what
 did not, and why. Delete an entry when it ships — `git log` is the history.
 
+## D3D12 on hardware: what structured storage views made visible (2026-09-15)
+
+Until storage buffers became structured views, no shader on a D3D12 **hardware**
+device could read one — every element aliased the first — so nothing in
+`crates/crcbl/tests` had ever drawn a real picture there, and WARP, CI's only
+D3D12 device, never showed the difference. With that fixed, the GPU suites were
+run on an AMD RX 9060 XT (driver 32.0.31041.1004) with `CRCBL_GPU=dx12` and the
+debug layer on, and against WARP the same way (`CRCBL_ADAPTER=cpu`, as CI sets
+it). **WARP: 639 of 639 pass. Hardware: 596 passed and 43 failed**; six of those
+were `draw_gen_e2e`'s cull tests declaring a wrong stride, which the new check
+refused and which pass on hardware since the fix, leaving **37** that WARP
+passes and hardware does not — findings rather than regressions. Grouped by what
+they report, none diagnosed yet:
+
+- **The timestamp pair does not move.** `hal_seam_e2e`'s
+  `every_declared_capability_behaves_the_way_it_was_declared` reads the same
+  tick for the opening and closing write of a pass that cleared 4 MiB. WARP
+  advances. Suspect the query heap's resolve or the queue the writes land on.
+- **A dynamic-offset bind removes the device.**
+  `a_binds_dynamic_offsets_are_held_to_the_layout_that_declared_them` fails at
+  `ID3D12GraphicsCommandList::Close` with `DXGI_ERROR_DEVICE_REMOVED`, zero
+  debug-layer errors. Root descriptors are the path it exercises.
+- **The froxel volume integrates nothing.** Every `mesh_e2e` `hdr::` froxel test
+  and `froxels::the_froxel_column_is_the_scan_of_the_slabs_the_medium_scatters`
+  read zero scattering where the closed form is non-zero.
+- **Exposure reduces to a slightly different number.** `mesh_e2e` `exposure::`
+  (four tests): 1.4012964 on the GPU against the host's 1.4051892 from the same
+  bins — small, systematic, possibly the histogram's atomic increments.
+- **Frames differ between geometry paths, and from goldens.** Every `render_e2e`
+  `*_draws_the_same_frame_on_every_geometry_path` (IndirectCount against
+  IndirectPerBatch on this device), five goldens across `render_e2e` and
+  `mesh_e2e`, `cmaa2::` determinism and edge-band checks, both `shadow_cache::`
+  equivalences and two `forward_e2e` `shadow::` atlas views. The goldens were
+  blessed on lavapipe, so some of these may be tolerance rather than defect; the
+  cross-path and determinism ones cannot be.
+
+**What would close it:** each group is its own slice, run on a hardware D3D12
+device, since CI has none — `docs/notes/ci.md` records that `windows-latest` has
+no GPU. Until then `dx12 e2e (software adapter)` stays the only D3D12 gate, and
+it is blind to all of the above.
+
 ## Posed bounds for deforming geometry
 
 `cull.slang` and `mesh_cluster.slang` conservatively retain live, nonempty
@@ -8583,6 +8624,19 @@ mesh path work.
 
 **The investigation is recorded in `docs/notes/backends.md` under this
 heading.** What stays here is the step it stopped one move short of.
+
+**Measured on hardware, 2026-09-15: both repros pass.** On an AMD RX 9060 XT
+(driver 32.0.31041.1004), with the D3D12 debug layer on and after storage
+buffers became structured views,
+`a_depth_only_mesh_pipeline_draws_the_toy_triangle_on_this_device` and
+`the_cluster_shaders_dag_descent_draws_the_cut_it_chose` both pass; on the same
+machine's WARP both still remove the device. So the zero-render-target mesh
+pipeline is a WARP defect, not this backend's, and the "hardware works" in this
+heading is now a measurement rather than a supposition. Caveat, stated plainly:
+before that change no storage buffer was readable on hardware at all, so this is
+the first hardware run of either — and the second repro's expected values were
+never checked against a device that survived, so its pass says the descent
+agrees with its own synthetic expectation, not that the expectation is right.
 
 **The next step, for whoever picks this up.** `NumRenderTargets = 0` with an
 all-`UNKNOWN` `RTFormats` array is what the failing pipeline hands

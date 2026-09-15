@@ -4290,6 +4290,7 @@ impl ForwardRenderer {
                     // hint — and it is what lets the graph merge read-after-read.
                     read_only: true,
                     dynamic: false,
+                    stride: size_of::<u32>() as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),
@@ -4305,6 +4306,7 @@ impl ForwardRenderer {
                     // one and does not make it read-write here.
                     read_only: true,
                     dynamic: false,
+                    stride: crcbl_shaders::mesh::INSTANCE_STRIDE as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),
@@ -4333,6 +4335,7 @@ impl ForwardRenderer {
                     // instance array nothing rewrites it between frames.
                     read_only: true,
                     dynamic: false,
+                    stride: crcbl_shaders::mesh::MESH_ENTRY_STRIDE as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),
@@ -4348,6 +4351,7 @@ impl ForwardRenderer {
                     // what orders the two.
                     read_only: true,
                     dynamic: false,
+                    stride: size_of::<u32>() as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),
@@ -4371,6 +4375,7 @@ impl ForwardRenderer {
                     // a material is written when it is created, not per frame.
                     read_only: true,
                     dynamic: false,
+                    stride: crcbl_shaders::mesh::MATERIAL_STRIDE as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),
@@ -4422,21 +4427,34 @@ impl ForwardRenderer {
             // `read_only: true` on all four, which is the truth rather than a
             // hint: the mesh stage indexes them and writes nothing, and it is
             // what lets the graph merge read-after-read.
-            let cluster_read = BindingKind::StorageBuffer {
-                read_only: true,
-                dynamic: false,
-            };
-            mesh_entries.extend((9..=12).map(|binding| BindGroupLayoutEntry {
-                binding,
-                // **Not the fragment stage.** These four are the geometry
-                // stage's alone, and `mesh_cluster.slang` has no fragment entry
-                // point of its own to materialise them into — its fragment
-                // stage is `mesh.slang`'s, which names bindings 0 to 8 and
-                // nothing above them.
-                visibility: geometry,
-                kind: cluster_read,
-                count: 1,
-                flags: BindingFlags::empty(),
+            //
+            // Four different element types, so four strides, in binding order:
+            // the clusters (`Meshlet`), the cluster vertex and corner pools
+            // (`uint` each), and the per-cluster draw arguments
+            // (`DrawIndexedArgs`, the indirect layout every API agrees on).
+            let cluster_strides = [
+                crcbl_shaders::meshlet::MESHLET_STRIDE as u32,
+                size_of::<u32>() as u32,
+                size_of::<u32>() as u32,
+                crcbl_hal::indirect::DRAW_INDEXED_ARGS_BYTES as u32,
+            ];
+            mesh_entries.extend((9..=12).zip(cluster_strides).map(|(binding, stride)| {
+                BindGroupLayoutEntry {
+                    binding,
+                    // **Not the fragment stage.** These four are the geometry
+                    // stage's alone, and `mesh_cluster.slang` has no fragment entry
+                    // point of its own to materialise them into — its fragment
+                    // stage is `mesh.slang`'s, which names bindings 0 to 8 and
+                    // nothing above them.
+                    visibility: geometry,
+                    kind: BindingKind::StorageBuffer {
+                        read_only: true,
+                        dynamic: false,
+                        stride,
+                    },
+                    count: 1,
+                    flags: BindingFlags::empty(),
+                }
             }));
         }
         // **`emit.is_mesh()`, not `culls_clusters`, and that is a fix rather
@@ -4477,6 +4495,7 @@ impl ForwardRenderer {
                     // buffer.
                     read_only: false,
                     dynamic: false,
+                    stride: size_of::<u32>() as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),
@@ -4535,6 +4554,7 @@ impl ForwardRenderer {
                 kind: BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: crcbl_shaders::cluster_select::CLUSTER_SELECT_STRIDE as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),
@@ -4553,6 +4573,7 @@ impl ForwardRenderer {
                     // records the cut it chose, one word per resident cluster.
                     read_only: false,
                     dynamic: false,
+                    stride: size_of::<u32>() as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),
@@ -4567,6 +4588,7 @@ impl ForwardRenderer {
                     // decision that has to survive a frame.
                     read_only: true,
                     dynamic: false,
+                    stride: size_of::<u32>() as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),
@@ -4590,6 +4612,7 @@ impl ForwardRenderer {
             kind: BindingKind::StorageBuffer {
                 read_only: true,
                 dynamic: false,
+                stride: crcbl_shaders::light::LIGHT_STRIDE as u32,
             },
             count: 1,
             flags: BindingFlags::empty(),
@@ -4602,6 +4625,7 @@ impl ForwardRenderer {
                 // a layout of its own. The graph is what orders the two.
                 read_only: true,
                 dynamic: false,
+                stride: size_of::<u32>() as u32,
             },
             count: 1,
             flags: BindingFlags::empty(),
@@ -4651,6 +4675,7 @@ impl ForwardRenderer {
                 // writable binding of these rows belongs.
                 read_only: true,
                 dynamic: false,
+                stride: crcbl_shaders::probe::PROBE_STRIDE as u32,
             },
             count: 1,
             flags: BindingFlags::empty(),
@@ -4680,6 +4705,7 @@ impl ForwardRenderer {
                     // other is a descriptor read out of an empty slot.
                     read_only: true,
                     dynamic: false,
+                    stride: size_of::<u32>() as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),
@@ -5489,6 +5515,7 @@ impl ForwardRenderer {
                     // rather than a hint.
                     read_only: true,
                     dynamic: false,
+                    stride: size_of::<u32>() as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),

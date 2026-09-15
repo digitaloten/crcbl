@@ -311,6 +311,7 @@ impl QuadrantResources {
             kind: crcbl_hal::BindingKind::StorageBuffer {
                 read_only: true,
                 dynamic: false,
+                stride: crcbl_shaders::triangle::VERTEX_STRIDE as u32,
             },
             count: 1,
             flags: crcbl_hal::BindingFlags::empty(),

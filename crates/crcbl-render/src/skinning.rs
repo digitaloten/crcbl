@@ -110,7 +110,7 @@ use crcbl_shaders::skinning::{
 use crcbl_shaders::vertex::{QTangent, TangentFrame};
 use glam::{Mat3, Mat4, Vec3, Vec4};
 
-use crate::draw_gen::{bound, compute_pipeline, storage, uniform};
+use crate::draw_gen::{UINT_STRIDE, bound, compute_pipeline, storage, uniform};
 use crate::graph::{BufferId, ImportedBuffer, RenderGraph};
 use crate::mesh_pool::{MeshHandle, MeshPool, MeshPoolError};
 
@@ -545,9 +545,9 @@ impl Skinning {
         // pool is the one writable entry.
         let entries = [
             uniform(0),
-            storage(1, true),
-            storage(2, true),
-            storage(3, false),
+            storage(1, true, crcbl_shaders::skinning::JOINT_STRIDE as u32),
+            storage(2, true, crcbl_shaders::skinning::SKIN_BINDING_STRIDE as u32),
+            storage(3, false, UINT_STRIDE),
         ];
         let layout_desc = BindGroupLayoutDesc {
             label: Some(label),

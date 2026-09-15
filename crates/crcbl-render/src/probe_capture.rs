@@ -879,6 +879,7 @@ fn build_raster(
             kind: BindingKind::StorageBuffer {
                 read_only: true,
                 dynamic: false,
+                stride: size_of::<u32>() as u32,
             },
             count: 1,
             flags: BindingFlags::empty(),
@@ -995,12 +996,15 @@ fn build_resolve(
     atlas: ImageViewHandle,
     moments: BufferHandle,
 ) -> Result<Bound<ComputePipelineHandle>, HalError> {
-    let readable = |binding: u32| BindGroupLayoutEntry {
+    // `stride` is the element each read declares: the probe directions are
+    // `float4`s and the cube faces `float4x4`s.
+    let readable = |binding: u32, stride: u32| BindGroupLayoutEntry {
         binding,
         visibility: ShaderStages::COMPUTE,
         kind: BindingKind::StorageBuffer {
             read_only: true,
             dynamic: false,
+            stride,
         },
         count: 1,
         flags: BindingFlags::empty(),
@@ -1013,8 +1017,8 @@ fn build_resolve(
             count: 1,
             flags: BindingFlags::empty(),
         },
-        readable(1),
-        readable(2),
+        readable(1, size_of::<[f32; 4]>() as u32),
+        readable(2, size_of::<[[f32; 4]; 4]>() as u32),
         BindGroupLayoutEntry {
             binding: 3,
             visibility: ShaderStages::COMPUTE,
@@ -1035,6 +1039,7 @@ fn build_resolve(
             kind: BindingKind::StorageBuffer {
                 read_only: false,
                 dynamic: false,
+                stride: size_of::<f32>() as u32,
             },
             count: 1,
             flags: BindingFlags::empty(),

@@ -806,6 +806,7 @@ fn the_seam_checks_this_backend_skipped_now_run_before_anything_is_encoded() {
         kind: BindingKind::StorageBuffer {
             read_only: true,
             dynamic: false,
+            stride: 4,
         },
         count,
         flags,
@@ -1314,10 +1315,12 @@ fn a_buffer_binding_is_held_to_its_slots_ceiling_and_memory() {
     let writable = layout_of(BindingKind::StorageBuffer {
         read_only: false,
         dynamic: false,
+        stride: 4,
     });
     let read_only = layout_of(BindingKind::StorageBuffer {
         read_only: true,
         dynamic: false,
+        stride: 4,
     });
     let small = buffer_of(4096, MemoryLocation::DeviceLocal);
     let over = buffer_of(ceiling + 4096, MemoryLocation::DeviceLocal);
@@ -1453,6 +1456,7 @@ fn a_binding_offset_is_held_to_its_slots_alignment() {
     let storage = layout_of(BindingKind::StorageBuffer {
         read_only: true,
         dynamic: false,
+        stride: 4,
     });
     let buffer = device
         .create_buffer(&BufferDesc {

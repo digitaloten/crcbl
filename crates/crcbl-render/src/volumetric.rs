@@ -80,7 +80,7 @@ use crcbl_shaders::volumetric::{
 use crcbl_shaders::{VOLUMETRIC, VOLUMETRIC_COMPOSITE};
 
 use crate::camera::{DirectionalLight, Fog};
-use crate::draw_gen::{bound, compute_pipeline_entry, storage, uniform};
+use crate::draw_gen::{UINT_STRIDE, bound, compute_pipeline_entry, storage, uniform};
 use crate::graph::{BufferId, ImageId, ImportedBuffer, RenderGraph};
 use crate::light_grid::{FrameView, Grid, LightGrid};
 use crate::shadow::{self, Cascades};
@@ -268,7 +268,7 @@ impl Volumetric {
         // and D3D12 agree about — see `crcbl_shaders::declaration_order`.
         let compute_entries = [
             uniform(0),
-            storage(1, false),
+            storage(1, false, crcbl_shaders::volumetric::FROXEL_STRIDE as u32),
             BindGroupLayoutEntry {
                 binding: 2,
                 visibility: ShaderStages::COMPUTE,
@@ -294,12 +294,12 @@ impl Volumetric {
                 count: 1,
                 flags: BindingFlags::empty(),
             },
-            storage(4, false),
+            storage(4, false, crcbl_shaders::volumetric::LIGHTING_STRIDE as u32),
             // The light rows and the froxel lists, read and never written —
             // `StructuredBuffer` in the shader, and the clustering pass is what
             // wrote the second before this pass runs.
-            storage(5, true),
-            storage(6, true),
+            storage(5, true, crcbl_shaders::light::LIGHT_STRIDE as u32),
+            storage(6, true, UINT_STRIDE),
         ];
         let compute_desc = BindGroupLayoutDesc {
             label: Some("volumetric"),
@@ -374,6 +374,7 @@ impl Volumetric {
                     // in the shader, which is the truth rather than a hint.
                     read_only: true,
                     dynamic: false,
+                    stride: crcbl_shaders::volumetric::FROXEL_STRIDE as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),
@@ -386,6 +387,7 @@ impl Volumetric {
                     // measured it. Read and never written here.
                     read_only: true,
                     dynamic: false,
+                    stride: crcbl_shaders::volumetric::LIGHTING_STRIDE as u32,
                 },
                 count: 1,
                 flags: BindingFlags::empty(),

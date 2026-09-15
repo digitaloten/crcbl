@@ -351,6 +351,10 @@ mod dred;
 // crate believes about the artifacts it consumes.
 #[cfg(any(target_os = "windows", test))]
 mod dxil;
+// The structured buffers a container declares, read from its bitcode — pure,
+// and compiled on any host under test for `dxil`'s reason above.
+#[cfg(any(target_os = "windows", test))]
+mod bitcode;
 #[cfg(target_os = "windows")]
 mod handle;
 #[cfg(target_os = "windows")]

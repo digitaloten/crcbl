@@ -639,10 +639,10 @@ impl DrawGen {
         // --- the clearing pass ---
         let clear_entries = [
             uniform(0),
-            storage(1, false),
-            storage(2, false),
+            storage(1, false, UINT_STRIDE),
+            storage(2, false, UINT_STRIDE),
             // The draw counts and the mesh-dispatch extents, one buffer.
-            storage(3, false),
+            storage(3, false, UINT_STRIDE),
         ];
         let clear_desc = BindGroupLayoutDesc {
             label: Some("clear counters"),
@@ -678,10 +678,10 @@ impl DrawGen {
             // `StructuredBuffer` in the shader, so read-only here: the cull
             // pass decides what is visible and never edits an instance or a
             // mesh entry.
-            storage(1, true),
-            storage(2, true),
-            storage(3, false),
-            storage(4, false),
+            storage(1, true, crcbl_shaders::mesh::INSTANCE_STRIDE as u32),
+            storage(2, true, crcbl_shaders::mesh::MESH_ENTRY_STRIDE as u32),
+            storage(3, false, UINT_STRIDE),
+            storage(4, false, UINT_STRIDE),
         ];
         let cull_desc = BindGroupLayoutDesc {
             label: Some("cull"),
@@ -716,28 +716,28 @@ impl DrawGen {
         let gen_entries = [
             uniform(0),
             // The instance array and the mesh table, read only.
-            storage(1, true),
-            storage(2, true),
+            storage(1, true, crcbl_shaders::mesh::INSTANCE_STRIDE as u32),
+            storage(2, true, crcbl_shaders::mesh::MESH_ENTRY_STRIDE as u32),
             // The culling statistics, read only: this pass clamps against the
             // survivor count and adds to nothing.
-            storage(3, true),
+            storage(3, true, UINT_STRIDE),
             // Every host-written table in one buffer, read only: the bucket
             // table, the per-bucket cluster counts and `docs/plan/25-lod.md`'s
             // three selection tables were all decided when a mesh became
             // resident.
-            storage(4, true),
+            storage(4, true, UINT_STRIDE),
             // The survivor list and the per-bucket runs. Writable, and read
             // through the same descriptor — binding one buffer read-only *and*
             // writable in one group is a usage conflict on WebGPU.
-            storage(5, false),
+            storage(5, false, UINT_STRIDE),
             // The indirect arguments.
-            storage(6, false),
+            storage(6, false, UINT_STRIDE),
             // The draw counts and the mesh-dispatch extents.
-            storage(7, false),
+            storage(7, false, UINT_STRIDE),
             // The hysteresis state, read *and* written: this pass is the
             // only writer, and it reads the previous frame's answer out of
             // the same element it then overwrites.
-            storage(8, false),
+            storage(8, false, UINT_STRIDE),
         ];
         let gen_desc = BindGroupLayoutDesc {
             label: Some("draw args"),
@@ -1342,16 +1342,23 @@ pub(crate) const fn uniform(binding: u32) -> BindGroupLayoutEntry {
     }
 }
 
+/// A `uint` element's stride — the element of every counter, index and bitmask
+/// buffer these compute passes declare.
+pub(crate) const UINT_STRIDE: u32 = size_of::<u32>() as u32;
+
 /// A storage-buffer layout entry for the compute stage. `read_only` is the
 /// shader's own `StructuredBuffer` versus `RWStructuredBuffer`, so it is the
-/// truth rather than a hint.
-pub(crate) const fn storage(binding: u32, read_only: bool) -> BindGroupLayoutEntry {
+/// truth rather than a hint, and `stride` is the byte size of that buffer's
+/// element type — `crcbl-vk` and `crcbl-dx12` both refuse a pipeline whose
+/// shader disagrees.
+pub(crate) const fn storage(binding: u32, read_only: bool, stride: u32) -> BindGroupLayoutEntry {
     BindGroupLayoutEntry {
         binding,
         visibility: ShaderStages::COMPUTE,
         kind: BindingKind::StorageBuffer {
             read_only,
             dynamic: false,
+            stride,
         },
         count: 1,
         flags: BindingFlags::empty(),

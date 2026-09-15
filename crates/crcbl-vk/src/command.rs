@@ -1696,6 +1696,7 @@ mod tests {
                 BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: true,
+                    stride: 4,
                 }
             },
             count: 1,

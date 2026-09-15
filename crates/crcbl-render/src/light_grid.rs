@@ -53,7 +53,7 @@ use crcbl_shaders::light::{
 };
 use glam::{Mat4, Vec3};
 
-use crate::draw_gen::{bound, compute_pipeline, storage, uniform};
+use crate::draw_gen::{UINT_STRIDE, bound, compute_pipeline, storage, uniform};
 use crate::graph::{BufferId, ImportedBuffer, RenderGraph};
 
 /// Froxels the grid buffer holds, and the ceiling [`Grid::for_frame`] fits a
@@ -231,9 +231,9 @@ impl LightGrid {
         // Metal and D3D12 agree about — see `crcbl_shaders::declaration_order`.
         let entries = [
             uniform(0),
-            storage(1, true),
-            storage(2, false),
-            storage(3, false),
+            storage(1, true, crcbl_shaders::light::LIGHT_STRIDE as u32),
+            storage(2, false, UINT_STRIDE),
+            storage(3, false, UINT_STRIDE),
         ];
         let layout_desc = BindGroupLayoutDesc {
             label: Some(label),

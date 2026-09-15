@@ -927,6 +927,7 @@ fn visible_to(stage: ShaderStages) -> [BindGroupLayoutEntry; 1] {
         kind: BindingKind::StorageBuffer {
             read_only: true,
             dynamic: false,
+            stride: 4,
         },
         count: 1,
         flags: crate::BindingFlags::empty(),
@@ -2671,6 +2672,7 @@ fn a_gpu_driven_frame_records_the_expected_stream() {
                 kind: BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: 4,
                 },
                 count: 1,
                 flags: crate::BindingFlags::empty(),
@@ -3924,6 +3926,7 @@ fn a_bind_group_is_checked_against_its_layout() {
                 kind: BindingKind::StorageBuffer {
                     read_only: true,
                     dynamic: false,
+                    stride: 4,
                 },
                 count: 2,
                 flags: crate::BindingFlags::empty(),
@@ -4019,6 +4022,7 @@ fn a_host_visible_buffer_cannot_fill_a_writable_storage_binding() {
                     kind: BindingKind::StorageBuffer {
                         read_only,
                         dynamic: false,
+                        stride: 4,
                     },
                     count: 1,
                     flags: crate::BindingFlags::empty(),
@@ -4584,6 +4588,7 @@ fn a_buffer_range_over_the_slots_limit_is_refused() {
             BindingKind::StorageBuffer {
                 read_only: true,
                 dynamic: false,
+                stride: 4,
             },
             limits.max_storage_buffer_range,
             "max_storage_buffer_range",
@@ -5157,6 +5162,7 @@ fn a_binding_offset_is_held_to_its_slots_alignment() {
                     BindingKind::StorageBuffer {
                         read_only: true,
                         dynamic: false,
+                        stride: 4,
                     },
                 ),
             ],
@@ -5252,6 +5258,7 @@ fn a_binds_dynamic_offsets_are_held_to_the_layouts_slots() {
                     BindingKind::StorageBuffer {
                         read_only: true,
                         dynamic: true,
+                        stride: 4,
                     },
                 ),
             ],
