@@ -24,8 +24,8 @@
 #
 # Exits non-zero if Xvfb will not start, if the display does not answer before
 # the deadline, if no tests ran, if the suite never named the adapter it
-# presented on, or if any test fails. The server log tail goes out on every
-# failure path.
+# presented on, or if any test fails. On Linux the server log tail goes out on
+# every failure path.
 #
 # # Why X11, and why a window manager changes nothing here
 #
@@ -55,6 +55,25 @@
 # # ENVIRONMENT
 #
 # Everything `tools/x11-display.sh` reads applies, `CRCBL_E2E_X11_WM` included.
+# Neither applies on Windows, where there is no server to start.
+#
+# # And on Windows, under Git Bash
+#
+# The same suite runs against the Win32 shell and `VK_KHR_win32_surface`, and
+# this script is its harness there too rather than a PowerShell twin: every
+# guard below — the zero-count check, the cancelled-run check, the adapter line —
+# is then the one text `shellcheck` and a Linux developer can exercise, which is
+# `crates/crcbl-dx12/tests/run-dx12-e2e.sh`'s argument for bash on
+# `windows-latest` and holds here for the same reason. What this script needs
+# is `mktemp`, `tee` and `grep`, all of which that image's Git Bash has.
+#
+# What changes is only what a Windows session already provides: a desktop, so
+# nothing is started and there is no server log to tail; and a loader that is
+# `vulkan-1.dll` rather than `libvulkan.so.1`. `run-vk-e2e.ps1` records why the
+# Windows *vk* harness is PowerShell — the loader discarding environment it was
+# handed through Git Bash — and that does not reach this script: it pins no
+# driver through the loader's variables, and the variables it does set are read
+# by the test process, which `run-dx12-e2e.sh` shows arriving intact.
 
 set -euo pipefail
 
@@ -67,12 +86,42 @@ REPO_ROOT="$(cd "${CRATE_DIR}/../.." && pwd)"
 # shellcheck source=tools/nextest-summary.sh
 source "${REPO_ROOT}/tools/nextest-summary.sh"
 
-# And starting the display is `tools/x11-display.sh`'s: it exports `DISPLAY`,
-# `SCREEN`, `RUNTIME_DIR`, `XVFB_PID` and `WM_PID`, defines `log_tail`, owns the
-# cleanup trap, and starts a window manager when `CRCBL_E2E_X11_WM` is set. It
-# exits this shell if the server never comes up.
-# shellcheck source=tools/x11-display.sh
-source "${REPO_ROOT}/tools/x11-display.sh"
+case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*)
+        # The session's own desktop, which is what the suite draws on. A
+        # directory for the logs and a `log_tail` with nothing to tail are the
+        # two things `tools/x11-display.sh` would otherwise have provided.
+        RUNTIME_DIR="$(mktemp -d -t crcbl-windowed-e2e.XXXXXX)"
+        cleanup() {
+            local status=$?
+            rm -rf "$RUNTIME_DIR"
+            exit "$status"
+        }
+        trap cleanup EXIT INT TERM
+        log_tail() { :; }
+        WINDOW_SYSTEM="this session's Win32 desktop"
+        # `System32` is where a Vulkan runtime installs the loader, and `PATH`
+        # is where an SDK or a CI job that extracted one puts it instead.
+        have_vulkan_loader() {
+            [ -e "$(cygpath -u "${SYSTEMROOT:-C:\\Windows}")/System32/vulkan-1.dll" ] \
+                || type -P vulkan-1.dll >/dev/null 2>&1
+        }
+        ;;
+    *)
+        # And starting the display is `tools/x11-display.sh`'s: it exports
+        # `DISPLAY`, `SCREEN`, `RUNTIME_DIR`, `XVFB_PID` and `WM_PID`, defines
+        # `log_tail`, owns the cleanup trap, and starts a window manager when
+        # `CRCBL_E2E_X11_WM` is set. It exits this shell if the server never
+        # comes up.
+        # shellcheck source=tools/x11-display.sh
+        source "${REPO_ROOT}/tools/x11-display.sh"
+        WINDOW_SYSTEM="${DISPLAY}"
+        have_vulkan_loader() {
+            [ -e /usr/lib/x86_64-linux-gnu/libvulkan.so.1 ] || [ -e /usr/lib/libvulkan.so.1 ] \
+                || ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1'
+        }
+        ;;
+esac
 
 cd "$REPO_ROOT"
 
@@ -82,8 +131,7 @@ cd "$REPO_ROOT"
 # `docs/plan/12-testing.md` names. There is no null-backend fallback to fall
 # through to — a run that never reached a `VkSwapchainKHR` is exactly what this
 # gate is about.
-if [ -e /usr/lib/x86_64-linux-gnu/libvulkan.so.1 ] || [ -e /usr/lib/libvulkan.so.1 ] \
-    || ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1'; then
+if have_vulkan_loader; then
     :
 else
     echo "crcbl windowed e2e: no Vulkan loader; skipping the windowed swapchain pass" >&2
@@ -96,8 +144,8 @@ fi
 
 OUTPUT="${RUNTIME_DIR}/nextest.log"
 set +e
-# `--test-threads 1` because each test opens its own X connection, its own
-# Vulkan instance and its own window on one shared server, and because the
+# `--test-threads 1` because each test opens its own shell connection, its own
+# Vulkan instance and its own window on one shared display, and because the
 # validation report each fixture asserts on is per-instance: two tests racing
 # would still each read their own report, but the display would be answering
 # geometry questions about two windows at once.
@@ -169,4 +217,4 @@ fi
 # captured-output block.
 echo "crcbl windowed e2e: ${ADAPTER#*crcbl windowed e2e: }"
 
-echo "crcbl windowed e2e: $CRCBL_NEXTEST_TESTS_RUN tests presented to a real window on ${DISPLAY}"
+echo "crcbl windowed e2e: $CRCBL_NEXTEST_TESTS_RUN tests presented to a real window on ${WINDOW_SYSTEM}"

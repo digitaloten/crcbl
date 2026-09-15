@@ -11661,13 +11661,27 @@ under the same heading, and it binds any Windows test written from now on.
   unexercised; only the budget arithmetic is covered, on Linux. The clipboard
   tests also share the desktop's clipboard — two Windows suites in parallel
   would interfere, which is why the e2e suite is `--test-threads 1`.
-- **No sample-level pass, and what blocks it is a missing job rather than a
-  missing renderer.** The Linux suites run the sandbox and press F11 at it.
-  `windows-latest` has had a renderer since 2026-08-10 — `vk-e2e-windows` runs
-  the forward suite against a registered lavapipe ICD, and `dx12-e2e` runs six
-  harnesses on WARP including a swapchain acquired and presented on a real
-  `HWND`. There is simply no Windows counterpart to `samples-windowed` or
-  `windowed-e2e`.
+- **No sample-level pass in CI.** The Linux suites run the sandbox and press F11
+  at it, and `samples-windowed` runs every sample in a window; Windows has
+  neither. This entry used to say what blocked it was a missing job rather than
+  a missing renderer, and for Vulkan that was wrong: `crcbl-vk` refused
+  `SurfaceTarget::Win32` outright until 2026-09-15, so no sample could present
+  windowed on Vulkan at all, and nothing on the board could see it because every
+  Windows Vulkan step presented offscreen. That is fixed, and `windowed-e2e`'s
+  suite now runs on Windows too, as a step of `vk-e2e-windows` against lavapipe.
+
+  **What has been run, once, by hand:** on 2026-09-15, on a Windows 11 desktop
+  with an AMD Radeon RX 9060 XT, every sample in
+  `tools/run-samples-windowed.sh`'s `SAMPLES` table ran windowed for 120 frames
+  on both `--backend vk` and `--backend dx12`, each exiting 0 with its summary
+  line naming the win32 shell, the requested extent and `windowed`, and no
+  teardown-leak line. **Neither validation layer was installed**, so those runs
+  say nothing about validation. The script itself still cannot run on Windows:
+  it sources `tools/x11-display.sh`, asserts `on the x11 shell`, and its
+  autoexec check moves the config root through `XDG_CONFIG_HOME`, which
+  `dirs::config_dir` does not read on Windows. Porting it is the job; the
+  autoexec half needs a different way to point `NativeStorage` at a scratch
+  directory.
 
 ### Owed on the Win32 backend
 

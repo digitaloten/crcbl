@@ -2428,6 +2428,27 @@ jobs:
         env:
           CRCBL_GPU: vk
         run: crates/crcbl/tests/run-forward-e2e.sh
+      # **The windowed swapchain, on Win32.** Every other step on this job
+      # presents to an offscreen ring, and until `crcbl-vk` wired
+      # `VK_KHR_win32_surface` a Win32 window could not be given a Vulkan
+      # surface at all — every sample on Windows failed at
+      # `Instance::create_surface` when it opened windowed, and nothing on this
+      # board could have gone red for it. `tests/windowed_e2e.rs` is the same
+      # suite `windowed-e2e` runs under Xvfb, against the desktop this
+      # runner boots with and the lavapipe and validation layer the steps above
+      # registered.
+      #
+      # **`shell: bash`, for `run-dx12-e2e.sh`'s reason and on this job's
+      # precedent** — the forward step above. The harness pins no driver through
+      # the loader's environment, so the Git Bash hazard `run-vk-e2e.ps1` records
+      # does not reach it; what it sets is read by the test process.
+      #
+      # A lavapipe build that did not offer the extension fails here by name,
+      # with `create_surface`'s "VK_KHR_win32_surface is not available", rather
+      # than skipping.
+      - name: Present to a real Win32 window on lavapipe
+        shell: bash
+        run: crates/crcbl/tests/run-windowed-e2e.sh
       # The golden images are the likeliest failure once the loader is reached,
       # and the one that cannot be diagnosed from a log: this leg renders on a
       # *different* Mesa build from the Linux leg, and `crcbl-golden`'s

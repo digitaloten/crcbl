@@ -1,4 +1,5 @@
-//! The **windowed** swapchain, on a real X server and a real Vulkan WSI.
+//! The **windowed** swapchain, on a real window system — X11 or Win32 — and a
+//! real Vulkan WSI.
 //!
 //! # The gap this closes
 //!
@@ -61,8 +62,28 @@
 //! stays green. `tests/run-windowed-e2e.sh` is the only thing that turns them
 //! on, and it fails when the suite reports zero tests run —
 //! `docs/plan/12-testing.md` calls a silently-skipped e2e a known trap.
+//!
+//! # And on Win32, which is the same suite against a different WSI
+//!
+//! Every test here runs on Windows as well, against the Win32 shell and
+//! `VK_KHR_win32_surface`. That extension is the only thing that stood between
+//! a Windows machine and a windowed Vulkan frame — `crcbl-vk` refused a
+//! [`SurfaceTarget::Win32`](crcbl::core::SurfaceTarget::Win32) outright until
+//! it was wired — so it is exactly the path an offscreen suite on a Windows
+//! runner cannot see.
+//!
+//! The assertions do not change, because the two window systems agree on the
+//! fact they rest on: the `VK_KHR_win32_surface` specification requires
+//! `minImageExtent`, `maxImageExtent` and `currentExtent` to equal the window's
+//! size, just as the X server reports them. What differs is only *who else* is
+//! involved, and that is [`platform`]: on X11 a second client resizes the window
+//! and a window manager has to let go of it at teardown; on Win32 `SetWindowPos`
+//! is the outside resize and there is no manager to wait for.
 
-#![cfg(all(target_os = "linux", feature = "windowed-e2e"))]
+#![cfg(all(
+    any(target_os = "linux", target_os = "windows"),
+    feature = "windowed-e2e"
+))]
 
 use core::time::Duration;
 use std::time::Instant;
@@ -74,11 +95,196 @@ use crcbl::hal::{
     ResourceState, SemaphoreSignal, SemaphoreWait, StoreOp, SubmitInfo, SurfaceCaps, SurfaceError,
     SurfaceHandle, SwapchainDesc, SwapchainHandle,
 };
-use crcbl::shell::x11_test_support::Peer;
-use crcbl::shell::{
-    LogicalSize, PhysicalSize, Shell, ShellBackend, ShellCaps, SurfaceTarget, WindowDesc, WindowId,
-};
+use crcbl::shell::{LogicalSize, PhysicalSize, Shell, ShellCaps, WindowDesc, WindowId};
 use crcbl_vk::VkInstance;
+
+/// What differs between the two window systems this suite runs against, and
+/// nothing else.
+///
+/// Each half answers the same five questions: which shell to name, what the
+/// native window is called, how to resize it from outside the shell, what has
+/// to be serviced while the shell pumps, and whether anything still holds the
+/// window after it was destroyed.
+#[cfg(target_os = "linux")]
+mod platform {
+    use crcbl::shell::x11_test_support::Peer;
+    use crcbl::shell::{PhysicalSize, ShellBackend, SurfaceTarget};
+
+    /// Named rather than picked by the registry, which tries Wayland first.
+    pub const SHELL: ShellBackend = ShellBackend::X11;
+
+    /// Whether a window with server decorations needs to go quiet before its
+    /// geometry can be trusted. On X11 it does: a window manager reparents and
+    /// frames on its own schedule. See [`super::PartialWindowed::settle`].
+    pub const SETTLES: bool = true;
+
+    /// The window as the peer names it: its XID.
+    pub type Native = u32;
+
+    /// The XID out of the shell's target, or `None` for any other kind.
+    pub fn native(target: SurfaceTarget) -> Option<Native> {
+        match target {
+            SurfaceTarget::Xcb { window, .. } => Some(window),
+            _ => None,
+        }
+    }
+
+    /// A second X client, which is who resizes a window on X11.
+    pub struct Outside {
+        peer: Peer,
+    }
+
+    impl Outside {
+        pub fn new() -> Self {
+            Self {
+                peer: Peer::new().expect("libxcb-xtest and a second connection"),
+            }
+        }
+
+        /// The peer's socket has to be read, or its connection backs up.
+        pub fn service(&mut self) {
+            self.peer.service();
+        }
+
+        /// A `ConfigureRequest`, which a window manager may grant, alter or drop.
+        pub fn resize(&mut self, window: Native, size: PhysicalSize) {
+            self.peer.resize(window, size.width, size.height);
+        }
+
+        /// Whether the window manager still lists `window` in
+        /// `_NET_CLIENT_LIST`.
+        pub fn still_listed(&mut self, window: Native) -> bool {
+            let root = self.peer.root();
+            let listed = self
+                .peer
+                .window_property(root, "_NET_CLIENT_LIST")
+                .unwrap_or_default();
+            listed
+                .chunks_exact(4)
+                .any(|word| u32::from_ne_bytes(word.try_into().expect("four bytes")) == window)
+        }
+    }
+}
+
+/// The Win32 half. `crates/crcbl-shell/tests/win32_e2e.rs` declares the same
+/// `user32` calls for the same reason: the shell's own FFI is private, and a
+/// test that resizes a window from outside the shell must not go through it.
+#[cfg(target_os = "windows")]
+mod platform {
+    use core::ffi::c_void;
+
+    use crcbl::shell::{PhysicalSize, ShellBackend, SurfaceTarget};
+
+    /// Named rather than picked by the registry, as on X11: a fallback to the
+    /// headless shell would hand over an offscreen target and the premise of
+    /// every test here would be gone.
+    pub const SHELL: ShellBackend = ShellBackend::Win32;
+
+    /// No. `CreateWindowExW` and `ShowWindow` are synchronous, so a configured
+    /// window is a settled one — and a Windows desktop is never quiet anyway:
+    /// real `WM_MOUSEMOVE` and DWM traffic arrive every few milliseconds, so
+    /// waiting for silence would spend the whole deadline on every test.
+    pub const SETTLES: bool = false;
+
+    /// The `HWND`.
+    pub type Native = *mut c_void;
+
+    /// The `HWND` out of the shell's target, or `None` for any other kind.
+    pub fn native(target: SurfaceTarget) -> Option<Native> {
+        match target {
+            SurfaceTarget::Win32 { hwnd, .. } => Some(hwnd.as_ptr()),
+            _ => None,
+        }
+    }
+
+    /// `RECT`.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    /// `SWP_NOMOVE`.
+    const SWP_NO_MOVE: u32 = 0x0002;
+    /// `SWP_NOZORDER`.
+    const SWP_NO_Z_ORDER: u32 = 0x0004;
+    /// `SWP_NOACTIVATE`.
+    const SWP_NO_ACTIVATE: u32 = 0x0010;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetWindowRect(hwnd: Native, rect: *mut Rect) -> i32;
+        fn GetClientRect(hwnd: Native, rect: *mut Rect) -> i32;
+        fn SetWindowPos(
+            hwnd: Native,
+            after: Native,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            flags: u32,
+        ) -> i32;
+    }
+
+    /// Nothing outside the shell to service: the window is this process's own.
+    pub struct Outside;
+
+    impl Outside {
+        pub fn new() -> Self {
+            Self
+        }
+
+        pub fn service(&mut self) {}
+
+        /// `SetWindowPos`, sized so the **client area** lands on `size`.
+        ///
+        /// `SetWindowPos` takes the outer size, frame included, and the frame's
+        /// thickness depends on the style and the monitor's DPI. So the frame is
+        /// measured off the window as it stands — outer minus client — rather
+        /// than computed from a style this file would have to keep in step with
+        /// the shell's.
+        pub fn resize(&mut self, window: Native, size: PhysicalSize) {
+            let mut outer = Rect::default();
+            let mut client = Rect::default();
+            // SAFETY: `window` is a live window of this process, and both
+            // rectangles are initialised locals the calls write into.
+            let measured = unsafe {
+                GetWindowRect(window, &raw mut outer) != 0
+                    && GetClientRect(window, &raw mut client) != 0
+            };
+            assert!(
+                measured,
+                "GetWindowRect/GetClientRect refused a live window"
+            );
+            let frame_width = (outer.right - outer.left) - (client.right - client.left);
+            let frame_height = (outer.bottom - outer.top) - (client.bottom - client.top);
+            let width = i32::try_from(size.width).expect("a window-sized width") + frame_width;
+            let height = i32::try_from(size.height).expect("a window-sized height") + frame_height;
+            // SAFETY: as above. `SWP_NOMOVE` makes the position arguments unused
+            // and the null insert-after handle is unused under `SWP_NOZORDER`;
+            // `SWP_NOACTIVATE` keeps the resize from taking the foreground.
+            unsafe {
+                SetWindowPos(
+                    window,
+                    core::ptr::null_mut(),
+                    0,
+                    0,
+                    width,
+                    height,
+                    SWP_NO_MOVE | SWP_NO_Z_ORDER | SWP_NO_ACTIVATE,
+                )
+            };
+        }
+
+        /// Never: `DestroyWindow` is synchronous and there is no manager.
+        pub fn still_listed(&mut self, _window: Native) -> bool {
+            false
+        }
+    }
+}
 
 /// How long any single wait here may take before the test fails.
 ///
@@ -129,15 +335,15 @@ const FRAMES: u32 = 32;
 /// drains the pipeline to a single frame.
 const PRESENT_LAG: u64 = 2;
 
-/// A window on a real X server, a Vulkan device that can present to it, and a
-/// swapchain configured on it.
+/// A window on a real window system, a Vulkan device that can present to it,
+/// and a swapchain configured on it.
 struct Windowed {
     shell: Box<dyn Shell>,
-    peer: Peer,
+    outside: platform::Outside,
     window: WindowId,
     /// Captured at construction because [`Windowed::teardown`] needs it after
     /// the window is gone.
-    xid: u32,
+    native: platform::Native,
     instance: VkInstance,
     /// Emptied by [`Windowed::teardown`], which is what makes that function
     /// idempotent and lets [`Drop`] run it after a panicking test.
@@ -182,8 +388,8 @@ impl Windowed {
         let expect_wm = std::env::var("CRCBL_E2E_EXPECT_WM").is_ok();
         let deadline = Instant::now() + WAIT;
         let shell = loop {
-            let shell = crcbl::shell::open_backend(ShellBackend::X11)
-                .expect("the harness exported DISPLAY for a live Xvfb");
+            let shell = crcbl::shell::open_backend(platform::SHELL)
+                .expect("the harness brought up a window system for this shell");
             if !expect_wm || shell.caps().contains(ShellCaps::SERVER_DECORATIONS) {
                 break shell;
             }
@@ -199,11 +405,11 @@ impl Windowed {
             std::thread::sleep(Duration::from_millis(50));
         };
 
-        let peer = Peer::new().expect("libxcb-xtest and a second connection");
-        let mut fixture = PartialWindowed { shell, peer };
+        let outside = platform::Outside::new();
+        let mut fixture = PartialWindowed { shell, outside };
         let window = fixture.create_window();
-        let xid = fixture.xid(window);
-        let PartialWindowed { shell, peer } = fixture;
+        let native = fixture.native(window);
+        let PartialWindowed { shell, outside } = fixture;
 
         let size = shell
             .window_state(window)
@@ -215,16 +421,17 @@ impl Windowed {
         let instance = VkInstance::open().expect("the harness checked for a Vulkan loader");
         let target = shell.surface_target(window).expect("surface target");
         assert!(
-            matches!(target, SurfaceTarget::Xcb { .. }),
-            "the X11 shell must hand over an Xcb target, not {target:?} — every citation \
-             this suite is written against branches on the surface being a real one"
+            platform::native(target).is_some(),
+            "the {} shell must hand over its own native target, not {target:?} — every citation \
+             this suite is written against branches on the surface being a real one",
+            platform::SHELL.as_str()
         );
         // SAFETY: `target` names the live window created above, which this
         // fixture owns and which `teardown` destroys only *after* the swapchain
         // and the surface. That is the whole of `Instance::create_surface`'s
         // contract.
         let surface = unsafe { instance.create_surface(&target) }
-            .expect("the Vulkan WSI accepts the shell's Xcb target");
+            .expect("the Vulkan WSI accepts the shell's native target");
 
         // **Adapter selection is surface-aware, and has to be.** Xvfb
         // advertises no DRI3, so a discrete radv GPU that enumerates first
@@ -312,9 +519,9 @@ impl Windowed {
 
         Self {
             shell,
-            peer,
+            outside,
             window,
-            xid,
+            native,
             instance,
             device: Some(device),
             surface,
@@ -347,9 +554,9 @@ impl Windowed {
         (size.width, size.height)
     }
 
-    /// One turn of the loop: the peer, then the shell.
+    /// One turn of the loop: whoever is outside the shell, then the shell.
     fn pump(&mut self) {
-        self.peer.service();
+        self.outside.service();
         self.shell.pump(&mut |_| {});
     }
 
@@ -556,17 +763,9 @@ impl Windowed {
         // on the failure path too, where a second panic would destroy the
         // output the failing test is trying to produce.
         let deadline = Instant::now() + WAIT;
-        let root = self.peer.root();
         while Instant::now() < deadline {
             self.shell.pump(&mut |_| {});
-            let listed = self
-                .peer
-                .window_property(root, "_NET_CLIENT_LIST")
-                .unwrap_or_default();
-            let still_there = listed
-                .chunks_exact(4)
-                .any(|word| u32::from_ne_bytes(word.try_into().expect("four bytes")) == self.xid);
-            if !still_there {
+            if !self.outside.still_listed(self.native) {
                 return;
             }
         }
@@ -608,14 +807,15 @@ impl Drop for Windowed {
     }
 }
 
-/// The shell and the peer, before there is a window to put in [`Windowed`].
+/// The shell and whoever is outside it, before there is a window to put in
+/// [`Windowed`].
 ///
 /// Exists so window creation can be written once against `&mut` borrows of both
 /// halves; folding it into [`Windowed::open_requesting`] would mean building the
 /// fixture around a window that does not exist yet.
 struct PartialWindowed {
     shell: Box<dyn Shell>,
-    peer: Peer,
+    outside: platform::Outside,
 }
 
 impl PartialWindowed {
@@ -638,7 +838,7 @@ impl PartialWindowed {
 
         let deadline = Instant::now() + WAIT;
         loop {
-            self.peer.service();
+            self.outside.service();
             self.shell.pump(&mut |_| {});
             let configured = self
                 .shell
@@ -660,8 +860,9 @@ impl PartialWindowed {
         // surface's `currentExtent` follows the window, so a swapchain created
         // mid-reparent would be sized against a geometry about to change. There
         // is no event that says "the manager has finished", so quiet is the
-        // only available definition.
-        if managed {
+        // only available definition. [`platform::SETTLES`] says why Win32 skips
+        // it.
+        if managed && platform::SETTLES {
             self.settle();
         }
         window
@@ -677,7 +878,7 @@ impl PartialWindowed {
         let mut quiet = 0;
         while quiet < QUIET_TURNS && Instant::now() < deadline {
             let mut seen = 0_u32;
-            self.peer.service();
+            self.outside.service();
             self.shell.pump(&mut |_| seen += 1);
             if seen == 0 {
                 quiet += 1;
@@ -688,12 +889,16 @@ impl PartialWindowed {
         }
     }
 
-    /// The window's XID, which is what the peer has to name it by.
-    fn xid(&self, window: WindowId) -> u32 {
-        match self.shell.surface_target(window).expect("surface target") {
-            SurfaceTarget::Xcb { window, .. } => window,
-            other => panic!("the X11 shell handed over {other:?}"),
-        }
+    /// The window's native name — an XID or an `HWND` — which is what the
+    /// outside party has to name it by.
+    fn native(&self, window: WindowId) -> platform::Native {
+        let target = self.shell.surface_target(window).expect("surface target");
+        platform::native(target).unwrap_or_else(|| {
+            panic!(
+                "the {} shell handed over {target:?}",
+                platform::SHELL.as_str()
+            )
+        })
     }
 }
 
@@ -720,7 +925,7 @@ impl PartialWindowed {
 /// and `crcbl-webgpu` is one. This binary names `crcbl_vk::VkInstance`, which is
 /// what makes the stronger assertion sound here — see the module docs.
 #[test]
-#[ignore = "needs an X server and a Vulkan loader; run tests/run-windowed-e2e.sh"]
+#[ignore = "needs a window system and a Vulkan loader; run tests/run-windowed-e2e.sh"]
 fn a_windowed_swapchain_is_not_the_offscreen_ring() {
     let fixture = Windowed::open();
     let size = fixture.window_size();
@@ -755,8 +960,9 @@ fn a_windowed_swapchain_is_not_the_offscreen_ring() {
 /// **The extent comes back clamped to what the server permits, not echoed.**
 ///
 /// The observable: [`AcquiredFrame::extent`] is the *window's* size after a
-/// swapchain was deliberately asked for a different one. On X11 the server
-/// reports `minImageExtent == maxImageExtent == currentExtent`, so the legal
+/// swapchain was deliberately asked for a different one. On X11 the server —
+/// and, by `VK_KHR_win32_surface`'s own rule, on Win32 — reports
+/// `minImageExtent == maxImageExtent == currentExtent`, so the legal
 /// range for `imageExtent` is a single point and there is no swapchain at the
 /// requested size to be had — `crcbl-vk`'s `resolve_swapchain_extent` clamps,
 /// and `AcquiredFrame::extent` is where it reports what it did.
@@ -772,7 +978,7 @@ fn a_windowed_swapchain_is_not_the_offscreen_ring() {
 /// range is wide (Wayland's) and this test wants the case that is illegal
 /// everywhere.
 #[test]
-#[ignore = "needs an X server and a Vulkan loader; run tests/run-windowed-e2e.sh"]
+#[ignore = "needs a window system and a Vulkan loader; run tests/run-windowed-e2e.sh"]
 fn the_extent_is_clamped_to_what_the_server_actually_permits() {
     /// What is added to each of the window's dimensions.
     const OVERSHOOT: (u32, u32) = (137, 91);
@@ -793,7 +999,7 @@ fn the_extent_is_clamped_to_what_the_server_actually_permits() {
     let acquired = fixture.acquire();
     assert_eq!(
         acquired.extent, size,
-        "the swapchain was asked for {requested:?} on a {size:?} window. On X11 \
+        "the swapchain was asked for {requested:?} on a {size:?} window. On X11 and Win32 \
          minImageExtent == maxImageExtent == currentExtent, so {requested:?} is not a size \
          a VkSwapchainKHR legally exists at — the backend must clamp and must report the \
          size it configured on AcquiredFrame::extent. Getting {requested:?} back means the \
@@ -833,7 +1039,7 @@ fn the_extent_is_clamped_to_what_the_server_actually_permits() {
 /// reuse in `acquire_next_frame` is dead code on any run shorter than the
 /// swapchain's image count.
 #[test]
-#[ignore = "needs an X server and a Vulkan loader; run tests/run-windowed-e2e.sh"]
+#[ignore = "needs a window system and a Vulkan loader; run tests/run-windowed-e2e.sh"]
 fn a_run_of_frames_presents_with_no_validation_error() {
     let mut fixture = Windowed::open();
     let mut indices = Vec::new();
@@ -882,13 +1088,14 @@ fn a_run_of_frames_presents_with_no_validation_error() {
 /// "reconfigure" allocates plain images — and it is where the surface
 /// reference-counting bug found on the first resize under sway lived.
 ///
-/// The resize is driven by [`Peer::resize`] because on X11 that is who does it:
-/// a window manager or a user drag, both of them other programs. And frames are
+/// The resize is driven from outside the shell because that is who does it: a
+/// window manager or a user drag on X11, both of them other programs, and on
+/// Win32 `SetWindowPos` — the call a drag's modal loop ends in. And frames are
 /// presented on **both** sides of it, so the assertion is about a swapchain that
 /// was working before and is working after, not about one that was merely
 /// created twice.
 #[test]
-#[ignore = "needs an X server and a Vulkan loader; run tests/run-windowed-e2e.sh"]
+#[ignore = "needs a window system and a Vulkan loader; run tests/run-windowed-e2e.sh"]
 fn a_resize_from_outside_forces_a_reconfigure_at_the_new_extent() {
     let mut fixture = Windowed::open();
     let before = fixture.window_size();
@@ -902,7 +1109,7 @@ fn a_resize_from_outside_forces_a_reconfigure_at_the_new_extent() {
     assert_eq!(acquired.extent, before);
     fixture.draw_and_present(&acquired);
 
-    let xid = fixture.xid;
+    let native = fixture.native;
     // **Asked again on every turn, because a `ConfigureRequest` is a request.**
     // A window manager owns the geometry of what it manages, and ICCCM lets it
     // grant, alter or ignore any single request; nothing acknowledges one that
@@ -914,7 +1121,8 @@ fn a_resize_from_outside_forces_a_reconfigure_at_the_new_extent() {
     // request that was dropped rather than one that was answered differently.
     // Re-asking costs nothing and cannot confuse the result: a request for the
     // size the window already has is one the manager grants by changing
-    // nothing.
+    // nothing. On Win32 the first ask is synchronous and the loop ends on the
+    // next turn.
     fixture.pump_until("the shell to report the resize", |fixture| {
         if fixture
             .shell
@@ -923,7 +1131,7 @@ fn a_resize_from_outside_forces_a_reconfigure_at_the_new_extent() {
         {
             return true;
         }
-        fixture.peer.resize(xid, RESIZED.width, RESIZED.height);
+        fixture.outside.resize(native, RESIZED);
         false
     });
 
